@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "aspboost-mobile",
+    "name": "ASP Boost",
     "slug": "aspboost-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -13,7 +13,8 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aspboost.app"
     },
     "android": {
       "adaptiveIcon": {
