@@ -17,6 +17,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import NumericKeypad from '../components/NumericKeypad';
 
 // Types
 interface Measurement {
@@ -262,6 +263,13 @@ export default function ExerciseDetailView({
   const [videoError, setVideoError] = useState(false);
   const [shouldRenderPlayer, setShouldRenderPlayer] = useState(false);
 
+  // Custom keypad state
+  const [activeInput, setActiveInput] = useState<{
+    setIndex: number;
+    metricId: string;
+    isDecimal: boolean;
+  } | null>(null);
+
   // Calculate video dimensions
   const videoWidth = Math.min(screenWidth - 32, 400);
   const videoHeight = videoWidth * (9 / 16);
@@ -321,6 +329,75 @@ export default function ExerciseDetailView({
   const handleSetCardLayout = (index: number, event: LayoutChangeEvent) => {
     const { y } = event.nativeEvent.layout;
     setCardPositions.current[index] = y;
+  };
+
+  // Custom keypad handlers
+  const handleKeypadPress = (key: string) => {
+    if (!activeInput) return;
+    const { setIndex, metricId } = activeInput;
+    const currentInputs = exerciseInputs[exercise.id] || [];
+    const setData = currentInputs[setIndex] || {};
+    const currentValue = setData[metricId]?.toString() || '';
+
+    // Prevent multiple decimals
+    if (key === '.' && currentValue.includes('.')) return;
+
+    const newValue = currentValue + key;
+    onInputChange(setIndex, metricId, newValue);
+  };
+
+  const handleKeypadBackspace = () => {
+    if (!activeInput) return;
+    const { setIndex, metricId } = activeInput;
+    const currentInputs = exerciseInputs[exercise.id] || [];
+    const setData = currentInputs[setIndex] || {};
+    const currentValue = setData[metricId]?.toString() || '';
+    const newValue = currentValue.slice(0, -1);
+    onInputChange(setIndex, metricId, newValue);
+  };
+
+  const handleKeypadDone = () => {
+    if (!activeInput) {
+      setActiveInput(null);
+      return;
+    }
+
+    const { setIndex, metricId } = activeInput;
+    const currentMetricIndex = metricFields.indexOf(metricId);
+    const currentInputs = exerciseInputs[exercise.id] || [];
+    const setData = currentInputs[setIndex] || {};
+
+    // When user enters a value, auto-fill any empty fields with their placeholder values
+    // This ensures reps get filled when weight is entered, etc.
+    const currentValue = setData[metricId];
+    if (currentValue != null && currentValue !== '') {
+      const placeholders = getPlaceholderValuesForSet(setIndex);
+      metricFields.forEach(field => {
+        const fieldValue = setData[field];
+        // If this field is empty and has a placeholder, auto-fill it
+        if ((fieldValue === undefined || fieldValue === null || fieldValue === '') && placeholders[field] !== undefined) {
+          onInputChange(setIndex, field, placeholders[field], undefined, true);
+        }
+      });
+    }
+
+    // Check if there's a next metric in the current set
+    if (currentMetricIndex < metricFields.length - 1) {
+      // Move to next metric in same set
+      const nextMetricId = metricFields[currentMetricIndex + 1];
+      const nextMeasurement = customMeasurements.find(
+        m => m.primary_metric_id === nextMetricId || m.secondary_metric_id === nextMetricId
+      );
+      const nextMetricType = nextMeasurement?.primary_metric_id === nextMetricId
+        ? nextMeasurement?.primary_metric_type
+        : nextMeasurement?.secondary_metric_type;
+      const isDecimal = nextMetricType === 'decimal';
+
+      setActiveInput({ setIndex, metricId: nextMetricId, isDecimal });
+    } else {
+      // All metrics filled, close keypad
+      setActiveInput(null);
+    }
   };
 
   // Show PR alert animation
@@ -549,21 +626,30 @@ export default function ExerciseDetailView({
 
               // Use intensity-calculated value if available, otherwise use target value
               const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
+              const isDecimal = metricType === 'decimal';
+              const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
               return (
                 <View key={metricId} style={styles.metricInput}>
                   <Text style={styles.metricLabel}>{label}</Text>
-                  <TextInput
+                  <TouchableOpacity
                     style={[
                       styles.input,
                       currentValue != null && currentValue !== '' && styles.inputFilled,
+                      isActive && styles.inputActive,
                     ]}
-                    value={currentValue != null ? String(currentValue) : ''}
-                    onChangeText={(text) => onInputChange(i, metricId, text)}
-                    placeholder={placeholderValue ? String(placeholderValue) : `Enter ${label}`}
-                    placeholderTextColor="#737373"
-                    keyboardType={getKeyboardType(metricType)}
-                  />
+                    onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[
+                      styles.inputText,
+                      (currentValue == null || currentValue === '') && styles.inputPlaceholder,
+                    ]}>
+                      {currentValue != null && currentValue !== ''
+                        ? String(currentValue)
+                        : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               );
             })}
@@ -760,31 +846,17 @@ export default function ExerciseDetailView({
           )}
         </View>
 
-        {/* Exercise Details Section (Notes, Description, Tempo) */}
+        {/* Exercise Details - Compact inline display */}
         {(exercise.notes || exercise.exercises.description || exercise.tempo) && (
-          <View style={styles.exerciseDetailsSection}>
-            {/* Tempo Badge */}
+          <View style={styles.exerciseDetailsInline}>
             {exercise.tempo && (
-              <View style={styles.tempoBadge}>
-                <Text style={styles.tempoIcon}>⏱</Text>
-                <Text style={styles.tempoText}>Tempo: {exercise.tempo}</Text>
-              </View>
+              <Text style={styles.inlineDetail}>⏱ {exercise.tempo}</Text>
             )}
-
-            {/* Exercise Notes (from routine_exercise) */}
             {exercise.notes && (
-              <View style={styles.notesContainer}>
-                <Text style={styles.notesIcon}>📝</Text>
-                <Text style={styles.exerciseNotes}>{exercise.notes}</Text>
-              </View>
+              <Text style={styles.inlineDetail}>📝 {exercise.notes}</Text>
             )}
-
-            {/* Exercise Description (from exercise itself) */}
             {exercise.exercises.description && (
-              <View style={styles.descriptionContainer}>
-                <Text style={styles.descriptionIcon}>ℹ️</Text>
-                <Text style={styles.exerciseDescription}>{exercise.exercises.description}</Text>
-              </View>
+              <Text style={styles.inlineDetail}>ℹ️ {exercise.exercises.description}</Text>
             )}
           </View>
         )}
@@ -977,6 +1049,17 @@ export default function ExerciseDetailView({
         </View>
       </View>
       </KeyboardAvoidingView>
+
+      {/* Custom Numeric Keypad */}
+      {activeInput && (
+        <NumericKeypad
+          onKeyPress={handleKeypadPress}
+          onBackspace={handleKeypadBackspace}
+          onDone={handleKeypadDone}
+          showDecimal={activeInput.isDecimal}
+          hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -1075,6 +1158,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#6EE7B7',
   },
+  exerciseDetailsInline: {
+    marginTop: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  inlineDetail: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    lineHeight: 16,
+  },
+  // Legacy styles kept for compatibility
   exerciseDetailsSection: {
     marginTop: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
@@ -1403,13 +1498,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
     borderRadius: 8,
+    justifyContent: 'center',
+  },
+  inputText: {
     fontSize: 16,
     color: '#FFFFFF',
+  },
+  inputPlaceholder: {
+    color: '#737373',
+  },
+  inputActive: {
+    borderColor: '#10B981',
+    borderWidth: 2,
   },
   inputFilled: {
     backgroundColor: 'rgba(155, 221, 255, 0.1)',
     borderColor: 'rgba(155, 221, 255, 0.3)',
-    color: '#9BDDFF',
   },
   notesField: {
     width: '100%',
