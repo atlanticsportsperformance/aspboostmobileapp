@@ -12,8 +12,13 @@ import {
   Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import HittingCard from '../components/dashboard/HittingCard';
+import ForceProfileCard from '../components/dashboard/ForceProfileCard';
+import ArmCareCard from '../components/dashboard/ArmCareCard';
+import PitchingCard from '../components/dashboard/PitchingCard';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
@@ -25,10 +30,30 @@ interface WorkoutInstance {
   id: string;
   scheduled_date: string;
   status: string;
+  completed_at: string | null;
   workouts: {
     name: string;
     category: string;
     estimated_duration_minutes: number | null;
+    notes: string | null;
+    routines: Array<{
+      id: string;
+      name: string;
+      scheme: string;
+      order_index: number;
+      notes: string | null;
+      text_info: string | null;
+      routine_exercises: Array<{
+        id: string;
+        order_index: number;
+        sets: number;
+        metric_targets: any;
+        exercises: {
+          id: string;
+          name: string;
+        };
+      }>;
+    }>;
   };
 }
 
@@ -46,6 +71,8 @@ interface Booking {
 interface ForceProfile {
   composite_score: number;
   percentile_rank: number;
+  best_metric: { name: string; percentile: number; value: number } | null;
+  worst_metric: { name: string; percentile: number; value: number } | null;
 }
 
 interface HittingData {
@@ -73,6 +100,30 @@ interface ArmCareData {
     arm_score: number;
     date: string;
   };
+}
+
+interface StuffPlusByPitch {
+  pitchType: string;
+  stuffPlus: number;
+  date: string;
+}
+
+interface PitchingData {
+  prs: {
+    max_velo: { value: number; date: string } | null;
+  };
+  latest: {
+    max_velo: number | null;
+    avg_velo_30d: number | null;
+    avg_velo_recent: number | null;
+    timestamp: string | null;
+  };
+  stuffPlus: {
+    allTimeBest: StuffPlusByPitch[]; // Best stuff+ for each pitch type (all-time)
+    recentSession: StuffPlusByPitch[]; // Stuff+ for each pitch type (most recent session)
+    overallBest: number | null; // Highest stuff+ overall
+    overallRecent: number | null; // Highest stuff+ from recent session
+  } | null;
 }
 
 const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; label: string } } = {
@@ -114,56 +165,267 @@ export default function DashboardScreen({ navigation }: any) {
   const [forceProfile, setForceProfile] = useState<ForceProfile | null>(null);
   const [hittingData, setHittingData] = useState<HittingData | null>(null);
   const [armCareData, setArmCareData] = useState<ArmCareData | null>(null);
+  const [pitchingData, setPitchingData] = useState<PitchingData | null>(null);
   const [valdProfileId, setValdProfileId] = useState<string | null>(null);
+  const [latestPrediction, setLatestPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
+  const [bodyweightData, setBodyweightData] = useState<{ current: number; previous: number | null; date: string } | null>(null);
+
+  // Additional data presence flags for FAB (matching web app)
+  const [hasPitchingData, setHasPitchingData] = useState(false);
+  const [hasResourcesData, setHasResourcesData] = useState(false);
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
+  const [newResourcesCount, setNewResourcesCount] = useState(0);
+  const [userId, setUserId] = useState<string | null>(null);
 
   // FAB menu state
   const [fabOpen, setFabOpen] = useState(false);
 
-  const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData;
+  // Settings dropdown state
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Expanded workout card state
+  const [expandedWorkoutId, setExpandedWorkoutId] = useState<string | null>(null);
+
+  // Resume workout modal state
+  const [resumeWorkoutData, setResumeWorkoutData] = useState<{
+    instanceId: string;
+    workoutName: string;
+    elapsedTime: number;
+  } | null>(null);
+  const [showResumeModal, setShowResumeModal] = useState(false);
+
+  const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
 
   useEffect(() => {
     loadDashboard();
   }, []);
 
+  // Check if workout is in progress and show resume modal
+  async function checkAndShowResumeModal(workout: WorkoutInstance) {
+    try {
+      // Check if this workout is in progress
+      if (workout.status === 'in_progress') {
+        // Check if there's saved state in AsyncStorage
+        const savedData = await AsyncStorage.getItem(`workout_${workout.id}`);
+        const elapsedTime = savedData ? JSON.parse(savedData).elapsedTime || 0 : 0;
+
+        setResumeWorkoutData({
+          instanceId: workout.id,
+          workoutName: workout.workouts.name,
+          elapsedTime,
+        });
+        setShowResumeModal(true);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error checking workout status:', error);
+      return false;
+    }
+  }
+
+  // Resume workout modal handlers
+  async function handleResumeWorkout() {
+    if (resumeWorkoutData) {
+      setShowResumeModal(false);
+      navigation.navigate('WorkoutLogger', { workoutInstanceId: resumeWorkoutData.instanceId, athleteId });
+    }
+  }
+
+  async function handleRestartWorkout() {
+    if (resumeWorkoutData) {
+      // Clear saved state
+      await AsyncStorage.removeItem(`workout_${resumeWorkoutData.instanceId}`);
+      setShowResumeModal(false);
+      navigation.navigate('WorkoutLogger', { workoutInstanceId: resumeWorkoutData.instanceId, athleteId });
+    }
+  }
+
+  async function handleDiscardWorkout() {
+    if (resumeWorkoutData) {
+      // Clear saved state
+      await AsyncStorage.removeItem(`workout_${resumeWorkoutData.instanceId}`);
+
+      // Update workout instance status to 'not_started'
+      await supabase
+        .from('workout_instances')
+        .update({ status: 'not_started' })
+        .eq('id', resumeWorkoutData.instanceId);
+
+      setShowResumeModal(false);
+      setResumeWorkoutData(null);
+    }
+  }
+
+  function formatElapsedTime(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) {
+      return `${mins} min${mins !== 1 ? 's' : ''} ago`;
+    } else {
+      const hours = Math.floor(mins / 60);
+      return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    }
+  }
+
   async function fetchForceProfile(athleteIdParam: string, valdProfileIdParam: string | null) {
-    // Get athlete's play level
-    const { data: athlete } = await supabase
+    console.log('📊 [Force Profile] Starting fetch for athlete:', athleteIdParam);
+
+    // Get athlete's org_id for composite config
+    const { data: athlete, error: athleteError } = await supabase
       .from('athletes')
-      .select('play_level')
+      .select('org_id, play_level')
       .eq('id', athleteIdParam)
       .single();
 
-    if (!athlete?.play_level || !valdProfileIdParam) {
+    console.log('📊 [Force Profile] Athlete org_id:', athlete?.org_id, 'Error:', athleteError?.message);
+
+    if (!athlete?.org_id) {
+      console.log('📊 [Force Profile] No org_id, exiting');
       setValdProfileId(null);
       setForceProfile(null);
       return;
     }
 
-    setValdProfileId(valdProfileIdParam);
-
-    // Fetch latest FORCE_PROFILE composite from athlete_percentile_history
-    const { data: composite } = await supabase
-      .from('athlete_percentile_history')
-      .select('percentile_play_level, test_date')
-      .eq('athlete_id', athleteIdParam)
-      .eq('test_type', 'FORCE_PROFILE')
-      .eq('play_level', athlete.play_level)
-      .order('test_date', { ascending: false })
+    // Get the org's default composite config (matches web app logic)
+    // First try default, then fall back to any config for the org
+    let { data: compositeConfig, error: configError } = await supabase
+      .from('composite_score_configs')
+      .select('*')
+      .eq('org_id', athlete.org_id)
+      .eq('is_default', true)
       .limit(1)
-      .single();
+      .maybeSingle();
 
-    console.log('Force profile composite:', composite);
+    console.log('📊 [Force Profile] Default config:', compositeConfig?.name, 'Error:', configError?.message);
 
-    if (!composite) {
+    // If no default, try any config for this org
+    if (!compositeConfig) {
+      const { data: anyConfig, error: anyErr } = await supabase
+        .from('composite_score_configs')
+        .select('*')
+        .eq('org_id', athlete.org_id)
+        .limit(1)
+        .maybeSingle();
+      console.log('📊 [Force Profile] Fallback config:', anyConfig?.name, 'Error:', anyErr?.message);
+      compositeConfig = anyConfig;
+      configError = anyErr;
+    }
+
+    // If still no config, use hardcoded default (same as seed script)
+    if (!compositeConfig) {
+      console.log('📊 [Force Profile] Using hardcoded default config');
+      compositeConfig = {
+        name: 'Overall Athleticism',
+        metrics: [
+          { test_type: 'imtp', metric: 'net_peak_vertical_force_trial_value' },
+          { test_type: 'imtp', metric: 'relative_strength_trial_value' },
+          { test_type: 'sj', metric: 'peak_takeoff_power_trial_value' },
+          { test_type: 'cmj', metric: 'bodymass_relative_takeoff_power_trial_value' },
+          { test_type: 'ppu', metric: 'peak_takeoff_force_trial_value' },
+          { test_type: 'hj', metric: 'hop_mean_rsi_trial_value' },
+        ],
+      };
+    }
+
+    console.log('📊 [Force Profile] Config has', compositeConfig.metrics?.length, 'metrics:', JSON.stringify(compositeConfig.metrics));
+
+    // Calculate composite score from force_plate_percentiles (matches web app calculateCompositeScore)
+    const metrics = compositeConfig.metrics || [];
+    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+
+    for (const metricSpec of metrics) {
+      console.log('📊 [Force Profile] Querying for', metricSpec.test_type, metricSpec.metric);
+
+      const { data: percentileData, error } = await supabase
+        .from('force_plate_percentiles')
+        .select('test_id, test_date, percentiles')
+        .eq('athlete_id', athleteIdParam)
+        .eq('test_type', metricSpec.test_type)
+        .order('test_date', { ascending: false })
+        .limit(1)
+        .single();
+
+      console.log('📊 [Force Profile] Result for', metricSpec.test_type, ':', percentileData ? 'found' : 'not found', 'Error:', error?.message);
+
+      if (!error && percentileData?.percentiles) {
+        const metricPercentile = percentileData.percentiles[metricSpec.metric];
+        console.log('📊 [Force Profile] Metric percentile for', metricSpec.metric, ':', metricPercentile);
+        if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
+          // Fetch the actual raw value from the test table
+          let rawValue = 0;
+          const { data: testData } = await supabase
+            .from(`${metricSpec.test_type}_tests`)
+            .select(metricSpec.metric)
+            .eq('test_id', percentileData.test_id)
+            .single();
+
+          if (testData && testData[metricSpec.metric] !== undefined) {
+            rawValue = Number(testData[metricSpec.metric]) || 0;
+          }
+          console.log('📊 [Force Profile] Raw value for', metricSpec.metric, ':', rawValue);
+
+          // Get display name for the metric
+          const displayName = getMetricDisplayName(metricSpec.test_type, metricSpec.metric);
+          percentiles.push({
+            name: displayName,
+            percentile: Math.round(metricPercentile),
+            value: rawValue,
+            test_type: metricSpec.test_type,
+            metric: metricSpec.metric,
+          });
+        }
+      }
+    }
+
+    console.log('📊 [Force Profile] Collected percentiles:', percentiles.length, 'from', metrics.length, 'metrics');
+
+    if (percentiles.length === 0) {
+      console.log('📊 [Force Profile] No percentiles found, exiting');
       setValdProfileId(null);
       setForceProfile(null);
       return;
     }
+
+    // Calculate composite as average of percentiles (matches web app)
+    const compositeScore = Math.round(
+      (percentiles.reduce((sum, p) => sum + p.percentile, 0) / percentiles.length) * 10
+    ) / 10;
+
+    // Find best and worst metrics
+    percentiles.sort((a, b) => b.percentile - a.percentile);
+    const best = percentiles[0];
+    const worst = percentiles[percentiles.length - 1];
+
+    // Set valdProfileId to indicate we have force data (even if no vald_profile_id)
+    setValdProfileId(valdProfileIdParam || 'has_force_data');
 
     setForceProfile({
-      composite_score: Math.round(composite.percentile_play_level || 0),
-      percentile_rank: Math.round(composite.percentile_play_level || 0),
+      composite_score: compositeScore,
+      percentile_rank: compositeScore,
+      best_metric: best,
+      worst_metric: worst,
     });
+  }
+
+  // Helper function to get display names for metrics (matches web app format)
+  function getMetricDisplayName(testType: string, metric: string): string {
+    const displayMap: Record<string, string> = {
+      // Using testType|metric format like web app
+      'imtp|net_peak_vertical_force_trial_value': 'IMTP Net Force',
+      'imtp|relative_strength_trial_value': 'IMTP Relative',
+      'sj|peak_takeoff_power_trial_value': 'SJ Power',
+      'cmj|bodymass_relative_takeoff_power_trial_value': 'CMJ Power/BM',
+      'ppu|peak_takeoff_force_trial_value': 'PPU Force',
+      'hj|hop_mean_rsi_trial_value': 'HJ RSI',
+      // Additional metrics
+      'cmj|peak_takeoff_power_trial_value': 'CMJ Power',
+      'cmj|jump_height_trial_value': 'CMJ Height',
+      'sj|jump_height_trial_value': 'SJ Height',
+      'hj|contact_time_trial_value': 'HJ Contact',
+      'ppu|peak_takeoff_force_bm_trial_value': 'PPU Force/BM',
+    };
+    const key = `${testType}|${metric}`;
+    return displayMap[key] || metric.replace('_trial_value', '').replace(/_/g, ' ');
   }
 
   async function fetchHittingData(athleteIdParam: string) {
@@ -275,6 +537,94 @@ export default function DashboardScreen({ navigation }: any) {
     }
   }
 
+  async function fetchPredictions(athleteIdParam: string) {
+    try {
+      // Query the predictions table for the latest pitch velocity prediction
+      const { data, error } = await supabase
+        .from('predictions')
+        .select('predicted_value, predicted_value_low, predicted_value_high, predicted_at')
+        .eq('athlete_id', athleteIdParam)
+        .order('predicted_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Predictions query error:', error);
+        setLatestPrediction(null);
+        return;
+      }
+
+      if (data) {
+        console.log('Latest prediction:', data);
+        setLatestPrediction({
+          predicted_value: data.predicted_value,
+          predicted_value_low: data.predicted_value_low,
+          predicted_value_high: data.predicted_value_high,
+        });
+      } else {
+        setLatestPrediction(null);
+      }
+    } catch (err) {
+      console.error('Failed to fetch predictions:', err);
+      setLatestPrediction(null);
+    }
+  }
+
+  async function fetchBodyweightData(athleteIdParam: string) {
+    try {
+      // Query CMJ tests for bodyweight - try multiple possible column names
+      // Get the two most recent tests to calculate % change
+      const { data: cmjTests, error } = await supabase
+        .from('cmj_tests')
+        .select('*')
+        .eq('athlete_id', athleteIdParam)
+        .order('created_at', { ascending: false })
+        .limit(2);
+
+      if (error) {
+        console.error('Bodyweight query error:', error);
+        setBodyweightData(null);
+        return;
+      }
+
+      if (cmjTests && cmjTests.length > 0) {
+        // Log all columns to find the right one
+        console.log('CMJ test columns:', Object.keys(cmjTests[0]));
+
+        // body_weight_trial_value is the VALD column name for bodyweight in kg
+        const test = cmjTests[0];
+        const currentWeight = test.body_weight_trial_value;
+
+        if (!currentWeight) {
+          console.log('No bodyweight found in CMJ test');
+          setBodyweightData(null);
+          return;
+        }
+
+        const previousTest = cmjTests.length > 1 ? cmjTests[1] : null;
+        const previousWeight = previousTest?.body_weight_trial_value || null;
+
+        // Convert kg to lbs (1 kg = 2.20462 lbs)
+        const currentLbs = currentWeight * 2.20462;
+        const previousLbs = previousWeight ? previousWeight * 2.20462 : null;
+
+        console.log('Bodyweight data:', { currentLbs, previousLbs, date: cmjTests[0].created_at });
+
+        setBodyweightData({
+          current: currentLbs,
+          previous: previousLbs,
+          date: cmjTests[0].created_at,
+        });
+      } else {
+        console.log('No CMJ tests found for athlete');
+        setBodyweightData(null);
+      }
+    } catch (err) {
+      console.error('Failed to fetch bodyweight:', err);
+      setBodyweightData(null);
+    }
+  }
+
   async function fetchArmCareData(athleteIdParam: string) {
     // Query ArmCare sessions for this athlete
     const { data: sessions, error } = await supabase
@@ -347,6 +697,182 @@ export default function DashboardScreen({ navigation }: any) {
     });
   }
 
+  async function fetchPitchingData(athleteIdParam: string) {
+    // Query TrackMan pitch data for velocity metrics
+    // Use JOIN to get Stuff+ data (matches web app pattern for RLS compatibility)
+    const { data: pitches } = await supabase
+      .from('trackman_pitch_data')
+      .select(`
+        *,
+        stuff_plus:pitch_stuff_plus(stuff_plus, pitch_type_group, graded_at)
+      `)
+      .eq('athlete_id', athleteIdParam);
+
+    console.log('📊 [Pitching] Pitches with Stuff+ join:', pitches?.length, 'First pitch stuff_plus:', pitches?.[0]?.stuff_plus);
+
+    if (!pitches || pitches.length === 0) {
+      setPitchingData(null);
+      return;
+    }
+
+    // Get unique session IDs and fetch those sessions
+    const uniqueSessionIds = [...new Set(pitches.map(p => p.session_id))];
+
+    const { data: sessions } = await supabase
+      .from('trackman_session')
+      .select('id, game_date_utc')
+      .in('id', uniqueSessionIds)
+      .order('game_date_utc', { ascending: false });
+
+    if (!sessions || sessions.length === 0) {
+      setPitchingData(null);
+      return;
+    }
+
+    // Calculate max velocity (all-time PR)
+    let maxVelo = { value: 0, date: '' };
+    for (const pitch of pitches) {
+      const velo = parseFloat(pitch.rel_speed || '0');
+      if (velo > maxVelo.value) {
+        const session = sessions.find(s => s.id === pitch.session_id);
+        maxVelo = { value: velo, date: session?.game_date_utc || pitch.created_at };
+      }
+    }
+
+    // Get most recent session
+    const mostRecentSession = sessions[0];
+    const recentPitches = pitches.filter(p => p.session_id === mostRecentSession.id);
+
+    // Calculate most recent max and average
+    let recentMax = 0;
+    let recentSum = 0;
+    for (const pitch of recentPitches) {
+      const velo = parseFloat(pitch.rel_speed || '0');
+      if (velo > recentMax) recentMax = velo;
+      recentSum += velo;
+    }
+    const recentAvg = recentPitches.length > 0 ? recentSum / recentPitches.length : 0;
+
+    // Calculate 30-day average
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const last30DaySessions = sessions.filter(s => new Date(s.game_date_utc) >= thirtyDaysAgo);
+    const last30DaySessionIds = last30DaySessions.map(s => s.id);
+    const last30DayPitches = pitches.filter(p => last30DaySessionIds.includes(p.session_id));
+
+    let sum30d = 0;
+    for (const pitch of last30DayPitches) {
+      sum30d += parseFloat(pitch.rel_speed || '0');
+    }
+    const avg30d = last30DayPitches.length > 0 ? sum30d / last30DayPitches.length : 0;
+
+    console.log('Pitching PR:', maxVelo);
+    console.log('Recent max:', recentMax, 'Recent avg:', recentAvg);
+    console.log('30d avg:', avg30d);
+
+    // Process Stuff+ data from the JOIN (no separate query needed)
+    let stuffPlusData: {
+      allTimeBest: StuffPlusByPitch[];
+      recentSession: StuffPlusByPitch[];
+      overallBest: number | null;
+      overallRecent: number | null;
+    } | null = null;
+
+    // Extract Stuff+ grades from joined data
+    // The stuff_plus field is an array (from the join) - get first element if exists
+    const pitchesWithStuffPlus = pitches
+      .filter(p => {
+        const sp = p.stuff_plus;
+        // Handle both array and object forms from Supabase join
+        if (Array.isArray(sp) && sp.length > 0 && sp[0]?.stuff_plus != null) return true;
+        if (sp && !Array.isArray(sp) && sp.stuff_plus != null) return true;
+        return false;
+      })
+      .map(p => {
+        const sp = Array.isArray(p.stuff_plus) ? p.stuff_plus[0] : p.stuff_plus;
+        const session = sessions.find(s => s.id === p.session_id);
+        return {
+          pitch_uid: p.pitch_uid,
+          stuff_plus: sp.stuff_plus as number,
+          pitch_type_group: (sp.pitch_type_group || p.tagged_pitch_type || 'Unknown') as string,
+          graded_at: sp.graded_at as string,
+          session_id: p.session_id,
+          session_date: session?.game_date_utc || p.created_at,
+        };
+      });
+
+    console.log('📊 [Pitching] Pitches with Stuff+ grades:', pitchesWithStuffPlus.length);
+    if (pitchesWithStuffPlus.length > 0) {
+      console.log('📊 [Pitching] Sample Stuff+ data:', pitchesWithStuffPlus.slice(0, 3));
+    }
+
+    if (pitchesWithStuffPlus.length > 0) {
+      // Get pitch_uids from the most recent session
+      const recentSessionPitchUids = new Set(recentPitches.map(p => p.pitch_uid).filter(Boolean));
+
+      // Group by pitch type and find best for each (all-time)
+      const bestByPitchType = new Map<string, { stuffPlus: number; date: string }>();
+      for (const grade of pitchesWithStuffPlus) {
+        const pitchType = grade.pitch_type_group;
+        const current = bestByPitchType.get(pitchType);
+        if (!current || grade.stuff_plus > current.stuffPlus) {
+          bestByPitchType.set(pitchType, { stuffPlus: grade.stuff_plus, date: grade.session_date });
+        }
+      }
+
+      // Get stuff+ for most recent session by pitch type
+      const recentByPitchType = new Map<string, { stuffPlus: number; date: string }>();
+      for (const grade of pitchesWithStuffPlus) {
+        if (recentSessionPitchUids.has(grade.pitch_uid)) {
+          const pitchType = grade.pitch_type_group;
+          const current = recentByPitchType.get(pitchType);
+          // Get the best stuff+ for this pitch type in the recent session
+          if (!current || grade.stuff_plus > current.stuffPlus) {
+            recentByPitchType.set(pitchType, { stuffPlus: grade.stuff_plus, date: mostRecentSession.game_date_utc });
+          }
+        }
+      }
+
+      const allTimeBest: StuffPlusByPitch[] = Array.from(bestByPitchType.entries()).map(([pitchType, data]) => ({
+        pitchType,
+        stuffPlus: data.stuffPlus,
+        date: data.date,
+      }));
+
+      const recentSession: StuffPlusByPitch[] = Array.from(recentByPitchType.entries()).map(([pitchType, data]) => ({
+        pitchType,
+        stuffPlus: data.stuffPlus,
+        date: data.date,
+      }));
+
+      const overallBest = allTimeBest.length > 0 ? Math.max(...allTimeBest.map(p => p.stuffPlus)) : null;
+      const overallRecent = recentSession.length > 0 ? Math.max(...recentSession.map(p => p.stuffPlus)) : null;
+
+      console.log('📊 [Pitching] Stuff+ All-Time Best:', allTimeBest);
+      console.log('📊 [Pitching] Stuff+ Recent Session:', recentSession);
+
+      stuffPlusData = {
+        allTimeBest,
+        recentSession,
+        overallBest,
+        overallRecent,
+      };
+    }
+
+    setPitchingData({
+      prs: {
+        max_velo: maxVelo.value > 0 ? maxVelo : null,
+      },
+      latest: {
+        max_velo: recentMax || null,
+        avg_velo_30d: avg30d || null,
+        avg_velo_recent: recentAvg || null,
+        timestamp: mostRecentSession.game_date_utc,
+      },
+      stuffPlus: stuffPlusData,
+    });
+  }
+
   async function loadDashboard() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -364,21 +890,86 @@ export default function DashboardScreen({ navigation }: any) {
       if (athlete) {
         console.log('Athlete loaded:', athlete);
         setAthleteId(athlete.id);
+        setUserId(user.id);
         setFirstName(athlete.first_name || '');
         setAthleteName(`${athlete.first_name || ''} ${athlete.last_name || ''}`);
         setValdProfileId(athlete.vald_profile_id);
 
-        // Load workout instances
+        // Check for pitching data (matching web app logic)
+        const [trackmanPitches, commandSessions] = await Promise.all([
+          supabase.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
+          supabase.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
+        ]);
+        setHasPitchingData((trackmanPitches.count || 0) > 0 || (commandSessions.count || 0) > 0);
+
+        // Check for resources data
+        const { count: resourcesCount } = await supabase
+          .from('resources')
+          .select('id', { count: 'exact', head: true })
+          .eq('athlete_id', user.id);
+        setHasResourcesData((resourcesCount || 0) > 0);
+
+        // Count NEW resources (created after last viewed)
+        const { data: athleteWithLastViewed } = await supabase
+          .from('athletes')
+          .select('last_viewed_resources_at')
+          .eq('id', athlete.id)
+          .single();
+
+        if (athleteWithLastViewed) {
+          const lastViewed = athleteWithLastViewed.last_viewed_resources_at || new Date(0).toISOString();
+          const { count: newCount } = await supabase
+            .from('resources')
+            .select('id', { count: 'exact', head: true })
+            .eq('athlete_id', user.id)
+            .gt('created_at', lastViewed);
+          setNewResourcesCount(newCount || 0);
+        }
+
+        // Fetch unread messages count
+        try {
+          const { count: unreadCount } = await supabase
+            .from('messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('recipient_id', user.id)
+            .eq('is_read', false);
+          setUnreadMessagesCount(unreadCount || 0);
+        } catch (msgError) {
+          console.log('Messages table may not exist or error fetching:', msgError);
+          setUnreadMessagesCount(0);
+        }
+
+        // Load workout instances with full routine details
         const { data: workouts } = await supabase
           .from('workout_instances')
           .select(`
             id,
             scheduled_date,
             status,
+            completed_at,
             workouts (
               name,
               category,
-              estimated_duration_minutes
+              estimated_duration_minutes,
+              notes,
+              routines (
+                id,
+                name,
+                scheme,
+                order_index,
+                notes,
+                text_info,
+                routine_exercises (
+                  id,
+                  order_index,
+                  sets,
+                  metric_targets,
+                  exercises (
+                    id,
+                    name
+                  )
+                )
+              )
             )
           `)
           .eq('athlete_id', athlete.id)
@@ -403,7 +994,7 @@ export default function DashboardScreen({ navigation }: any) {
 
         setBookings((bookingsData as any) || []);
 
-        // Load force profile (from athlete_percentile_history table, not vald_composite_scores)
+        // Load force profile (from force_plate_percentiles + composite_score_configs)
         await fetchForceProfile(athlete.id, athlete.vald_profile_id);
 
         // Load hitting data
@@ -411,6 +1002,15 @@ export default function DashboardScreen({ navigation }: any) {
 
         // Load armcare data
         await fetchArmCareData(athlete.id);
+
+        // Load pitching data
+        await fetchPitchingData(athlete.id);
+
+        // Load predictions
+        await fetchPredictions(athlete.id);
+
+        // Load bodyweight data from CMJ tests
+        await fetchBodyweightData(athlete.id);
       }
     } catch (error) {
       console.error('Error loading dashboard:', error);
@@ -477,6 +1077,44 @@ export default function DashboardScreen({ navigation }: any) {
   function handleBackToMonth() {
     setViewMode('month');
     setSelectedDate(null);
+    setExpandedWorkoutId(null);
+  }
+
+  // Get week dates (Sunday through Saturday) for a given date
+  function getWeekDates(centerDate: Date): Date[] {
+    const dates: Date[] = [];
+    const dayOfWeek = centerDate.getDay(); // 0 = Sunday, 6 = Saturday
+    const sunday = new Date(centerDate);
+    sunday.setDate(centerDate.getDate() - dayOfWeek);
+
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(sunday);
+      date.setDate(sunday.getDate() + i);
+      dates.push(date);
+    }
+
+    return dates;
+  }
+
+  // Navigate to previous week
+  function handlePrevDay() {
+    if (!selectedDate) return;
+    const newDate = new Date(selectedDate);
+    newDate.setDate(newDate.getDate() - 7);
+    setSelectedDate(newDate);
+  }
+
+  // Navigate to next week
+  function handleNextDay() {
+    if (!selectedDate) return;
+    const newDate = new Date(selectedDate);
+    newDate.setDate(newDate.getDate() + 7);
+    setSelectedDate(newDate);
+  }
+
+  // Toggle workout expansion
+  function toggleWorkoutExpanded(workoutId: string) {
+    setExpandedWorkoutId(expandedWorkoutId === workoutId ? null : workoutId);
   }
 
   function handlePrevMonth() {
@@ -510,6 +1148,7 @@ export default function DashboardScreen({ navigation }: any) {
   if (valdProfileId && forceProfile) snapshotSlides.push('force');
   if (armCareData) snapshotSlides.push('armcare');
   if (hittingData) snapshotSlides.push('hitting');
+  if (pitchingData) snapshotSlides.push('pitching');
 
   console.log('Has any data:', hasAnyData);
   console.log('Snapshot slides:', snapshotSlides);
@@ -524,17 +1163,58 @@ export default function DashboardScreen({ navigation }: any) {
             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
           </Text>
         </View>
-        <TouchableOpacity onPress={handleLogout} style={styles.settingsButton}>
+        <TouchableOpacity onPress={() => setSettingsOpen(true)} style={styles.settingsButton}>
           <Text style={styles.settingsIcon}>⚙️</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        style={styles.scrollView}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
-        }
+      {/* Settings Dropdown Modal */}
+      <Modal
+        visible={settingsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSettingsOpen(false)}
       >
+        <TouchableOpacity
+          style={styles.settingsOverlay}
+          activeOpacity={1}
+          onPress={() => setSettingsOpen(false)}
+        >
+          <View style={styles.settingsDropdown}>
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                navigation.navigate('Profile');
+              }}
+            >
+              <Ionicons name="person-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.settingsMenuLabel}>Profile Settings</Text>
+            </TouchableOpacity>
+
+            <View style={styles.settingsDivider} />
+
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                handleLogout();
+              }}
+            >
+              <Ionicons name="log-out-outline" size={20} color="#EF4444" />
+              <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {viewMode === 'month' ? (
+        <ScrollView
+          style={styles.scrollView}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+          }
+        >
         {/* Snapshot Cards */}
         {hasAnyData && viewMode === 'month' && (
           <View style={styles.snapshotContainer}>
@@ -555,354 +1235,81 @@ export default function DashboardScreen({ navigation }: any) {
               )}
               scrollEventThrottle={16}
             >
-              {/* Force Profile Card */}
-              {valdProfileId && forceProfile && (
-                <View style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                  <LinearGradient
-                    colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.cardGloss}
-                  />
-                  <Text style={styles.cardTitle}>Force Profile</Text>
+              {/* Cards rendered with proper index tracking for isActive */}
+              {(() => {
+                let cardIndex = 0;
+                const cards = [];
 
-                  <View style={styles.forceProfileContent}>
-                    <View style={styles.circleContainer}>
-                      <Svg width={160} height={160} style={{ transform: [{ rotate: '-90deg' }] }}>
-                        <Defs>
-                          <SvgLinearGradient id="forceGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                            <Stop offset="0%" stopColor="#000000" />
-                            <Stop offset="30%" stopColor={forceProfile.percentile_rank >= 75 ? "#10b981" : forceProfile.percentile_rank >= 50 ? "#7BC5F0" : forceProfile.percentile_rank >= 25 ? "#f59e0b" : "#dc2626"} />
-                            <Stop offset="60%" stopColor={forceProfile.percentile_rank >= 75 ? "#34d399" : forceProfile.percentile_rank >= 50 ? "#9BDDFF" : forceProfile.percentile_rank >= 25 ? "#fbbf24" : "#ef4444"} />
-                            <Stop offset="100%" stopColor={forceProfile.percentile_rank >= 75 ? "#6ee7b7" : forceProfile.percentile_rank >= 50 ? "#B0E5FF" : forceProfile.percentile_rank >= 25 ? "#fcd34d" : "#f87171"} />
-                          </SvgLinearGradient>
-                        </Defs>
-                        <Circle cx="80" cy="80" r="68" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="12" fill="none" />
-                        <Circle cx="80" cy="80" r="68" stroke="url(#forceGradient)" strokeWidth="12" fill="none" strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 68}`} strokeDashoffset={`${2 * Math.PI * 68 * (1 - forceProfile.percentile_rank / 100)}`} />
-                      </Svg>
-                      <View style={styles.circleText}>
-                        <Text style={styles.circleScore}>{forceProfile.composite_score.toFixed(1)}</Text>
-                        <Text style={styles.circleLabel}>Composite</Text>
-                      </View>
+                // Force Profile Card
+                if (valdProfileId && forceProfile) {
+                  const thisIndex = cardIndex++;
+                  cards.push(
+                    <View key="force-profile" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+                      <LinearGradient
+                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.cardGloss}
+                      />
+                      <Text style={styles.cardTitle}>Force Profile</Text>
+                      <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
                     </View>
-                    <View style={styles.forceMetrics}>
-                      <Text style={styles.metricLabel}>Percentile Rank</Text>
-                      <Text style={styles.metricValue}>{forceProfile.percentile_rank}%</Text>
+                  );
+                }
+
+                // ArmCare Card
+                if (armCareData) {
+                  const thisIndex = cardIndex++;
+                  cards.push(
+                    <View key="arm-care" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+                      <LinearGradient
+                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.cardGloss}
+                      />
+                      <Text style={styles.cardTitle}>🏋️ ArmCare</Text>
+                      <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
                     </View>
-                  </View>
-                </View>
-              )}
+                  );
+                }
 
-              {/* ArmCare Card */}
-              {armCareData && (
-                <View style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                  <LinearGradient
-                    colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.cardGloss}
-                  />
-                  <Text style={styles.cardTitle}>🏋️ ArmCare</Text>
-
-                  <View style={styles.armCareContent}>
-                    {/* LEFT: Circle */}
-                    <View style={styles.circleContainer}>
-                      <Svg width={176} height={176} style={{ transform: [{ rotate: '-90deg' }] }}>
-                        <Defs>
-                          <SvgLinearGradient id="armcareGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                            <Stop offset="0%" stopColor="#000000" />
-                            <Stop offset="30%" stopColor="#7BC5F0" />
-                            <Stop offset="60%" stopColor="#9BDDFF" />
-                            <Stop offset="100%" stopColor="#B0E5FF" />
-                          </SvgLinearGradient>
-                        </Defs>
-                        <Circle cx="88" cy="88" r="75" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="12" fill="none" />
-                        <Circle cx="88" cy="88" r="75" stroke="url(#armcareGradient)" strokeWidth="12" fill="none" strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 75}`} strokeDashoffset={`${2 * Math.PI * 75 * (1 - armCareData.latest.arm_score / 100)}`} />
-                      </Svg>
-                      <View style={styles.circleText}>
-                        <Text style={[styles.circleScore, { color: '#9BDDFF', fontSize: 32 }]}>{armCareData.latest.arm_score.toFixed(1)}</Text>
-                        <Text style={[styles.circleLabel, { fontSize: 11 }]}>Arm Score</Text>
-                      </View>
-                      <View style={styles.testsCount}>
-                        <Text style={styles.testsCountLabel}>Tests (30d)</Text>
-                        <Text style={[styles.testsCountValue, { fontSize: 18 }]}>{armCareData.latest.tests_30d}</Text>
-                      </View>
+                // Hitting Card
+                if (hittingData) {
+                  const thisIndex = cardIndex++;
+                  cards.push(
+                    <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+                      <LinearGradient
+                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.cardGloss}
+                      />
+                      <Text style={styles.cardTitle}>⚾ Hitting Performance</Text>
+                      <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
                     </View>
+                  );
+                }
 
-                    {/* RIGHT: PR Bars + Strength */}
-                    <View style={styles.armCareMetrics}>
-                      {/* Personal Record Section */}
-                      <View style={styles.armCareSection}>
-                        <Text style={styles.armCareSectionTitle}>PERSONAL RECORD</Text>
-
-                        {/* ALL-TIME BEST Bar */}
-                        <View style={styles.armCareBarRow}>
-                          <Text style={styles.armCareBarLabel}>BEST</Text>
-                          <View style={styles.armCareBarContainer}>
-                            <View style={styles.armCareBarBg}>
-                              <LinearGradient
-                                colors={['#000000', '#7BC5F0', '#9BDDFF', '#B0E5FF']}
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 1, y: 0 }}
-                                style={[
-                                  styles.armCareBarFill,
-                                  { width: `${Math.min(100, armCareData.pr.arm_score)}%` }
-                                ]}
-                              />
-                            </View>
-                          </View>
-                          <View style={styles.armCareBarValue}>
-                            <Text style={styles.armCareBarValueText}>{armCareData.pr.arm_score.toFixed(1)}</Text>
-                          </View>
-                        </View>
-
-                        {/* 90D AVERAGE Bar */}
-                        <View style={styles.armCareBarRow}>
-                          <Text style={styles.armCareBarLabel}>90D</Text>
-                          <View style={styles.armCareBarContainer}>
-                            <View style={styles.armCareBarBg}>
-                              <LinearGradient
-                                colors={
-                                  armCareData.latest.arm_score >= armCareData.pr.arm_score
-                                    ? ['#000000', '#065f46', '#059669', '#10b981']
-                                    : ['#000000', '#7f1d1d', '#991b1b', '#dc2626']
-                                }
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 1, y: 0 }}
-                                style={[
-                                  styles.armCareBarFill,
-                                  { width: `${Math.min(100, armCareData.latest.arm_score)}%` }
-                                ]}
-                              />
-                            </View>
-                          </View>
-                          <View style={styles.armCareBarValue}>
-                            <Text style={styles.armCareBarValueText}>{armCareData.latest.arm_score.toFixed(1)}</Text>
-                            {armCareData.pr.arm_score > 0 && (
-                              <Text style={[
-                                styles.armCareBarPercentage,
-                                { color: armCareData.latest.arm_score >= armCareData.pr.arm_score ? '#10b981' : '#dc2626' }
-                              ]}>
-                                {armCareData.latest.arm_score >= armCareData.pr.arm_score ? '+' : ''}
-                                {(((armCareData.latest.arm_score - armCareData.pr.arm_score) / armCareData.pr.arm_score) * 100).toFixed(1)}%
-                              </Text>
-                            )}
-                          </View>
-                        </View>
-                      </View>
-
-                      {/* Strength Section */}
-                      <Text style={styles.metricLabel}>Strength (90d Avg)</Text>
-                      <View style={styles.strengthBox}>
-                        <View style={styles.strengthRow}>
-                          <Text style={styles.strengthLabel}>Total</Text>
-                          <Text style={styles.strengthValue}>
-                            {armCareData.latest.total_strength.toFixed(0)}
-                            <Text style={styles.strengthUnit}> lbs</Text>
-                          </Text>
-                        </View>
-                        <View style={styles.strengthDivider} />
-                        <View style={styles.strengthRow}>
-                          <Text style={styles.strengthLabel}>Average</Text>
-                          <Text style={styles.strengthValue}>
-                            {armCareData.latest.avg_strength_30d.toFixed(0)}
-                            <Text style={styles.strengthUnit}> lbs</Text>
-                          </Text>
-                        </View>
-                      </View>
+                // Pitching Card
+                if (pitchingData) {
+                  const thisIndex = cardIndex++;
+                  cards.push(
+                    <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+                      <LinearGradient
+                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.cardGloss}
+                      />
+                      <Text style={styles.cardTitle}>⚾ Pitching Performance</Text>
+                      <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
                     </View>
-                  </View>
-                </View>
-              )}
+                  );
+                }
 
-              {/* Hitting Card */}
-              {hittingData && (
-                <View style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                  <LinearGradient
-                    colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.cardGloss}
-                  />
-                  <Text style={styles.cardTitle}>⚾ Hitting Performance</Text>
-
-                  <View style={styles.hittingContent}>
-                    {/* Bat Speed */}
-                    {hittingData.prs.bat_speed && (
-                      <View style={styles.hittingSection}>
-                        <Text style={styles.hittingSectionTitle}>Bat Speed</Text>
-
-                        {/* PR Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>ALL-TIME BEST</Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, (hittingData.prs.bat_speed.value / 100) * 100)}%`,
-                                backgroundColor: '#ef4444'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={[styles.progressValue, { color: '#fca5a5' }]}>
-                              {hittingData.prs.bat_speed.value.toFixed(1)}
-                              <Text style={styles.progressUnit}> mph</Text>
-                            </Text>
-                            <Text style={styles.progressDate}>
-                              {new Date(hittingData.prs.bat_speed.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </Text>
-                          </View>
-                        </View>
-
-                        {/* Recent Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>
-                            {hittingData.latest.timestamp ? new Date(hittingData.latest.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase() : 'MOST RECENT'}
-                          </Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, ((hittingData.latest.bat_speed || 0) / 100) * 100)}%`,
-                                backgroundColor: (hittingData.latest.bat_speed || 0) >= hittingData.prs.bat_speed.value ? '#10b981' : '#dc2626'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={styles.progressValue}>
-                              {(hittingData.latest.bat_speed || 0).toFixed(1)}
-                              <Text style={styles.progressUnit}> mph</Text>
-                            </Text>
-                            {hittingData.latest.bat_speed && hittingData.prs.bat_speed.value > 0 && (
-                              <Text style={[styles.progressPercentage, {
-                                color: hittingData.latest.bat_speed >= hittingData.prs.bat_speed.value ? '#6ee7b7' : '#fca5a5'
-                              }]}>
-                                {hittingData.latest.bat_speed >= hittingData.prs.bat_speed.value ? '+' : ''}
-                                {(((hittingData.latest.bat_speed - hittingData.prs.bat_speed.value) / hittingData.prs.bat_speed.value) * 100).toFixed(1)}%
-                              </Text>
-                            )}
-                          </View>
-                        </View>
-                      </View>
-                    )}
-
-                    {/* Exit Velocity */}
-                    {hittingData.prs.exit_velocity && (
-                      <View style={styles.hittingSection}>
-                        <Text style={styles.hittingSectionTitle}>Exit Velocity</Text>
-
-                        {/* PR Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>ALL-TIME BEST</Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, (hittingData.prs.exit_velocity.value / 130) * 100)}%`,
-                                backgroundColor: '#f97316'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={[styles.progressValue, { color: '#fb923c' }]}>
-                              {hittingData.prs.exit_velocity.value.toFixed(1)}
-                              <Text style={styles.progressUnit}> mph</Text>
-                            </Text>
-                            <Text style={styles.progressDate}>
-                              {new Date(hittingData.prs.exit_velocity.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </Text>
-                          </View>
-                        </View>
-
-                        {/* Recent Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>
-                            {hittingData.latest.timestamp ? new Date(hittingData.latest.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase() : 'MOST RECENT'}
-                          </Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, ((hittingData.latest.exit_velocity || 0) / 130) * 100)}%`,
-                                backgroundColor: (hittingData.latest.exit_velocity || 0) >= hittingData.prs.exit_velocity.value ? '#10b981' : '#dc2626'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={styles.progressValue}>
-                              {(hittingData.latest.exit_velocity || 0).toFixed(1)}
-                              <Text style={styles.progressUnit}> mph</Text>
-                            </Text>
-                            {hittingData.latest.exit_velocity && hittingData.prs.exit_velocity.value > 0 && (
-                              <Text style={[styles.progressPercentage, {
-                                color: hittingData.latest.exit_velocity >= hittingData.prs.exit_velocity.value ? '#6ee7b7' : '#fca5a5'
-                              }]}>
-                                {hittingData.latest.exit_velocity >= hittingData.prs.exit_velocity.value ? '+' : ''}
-                                {(((hittingData.latest.exit_velocity - hittingData.prs.exit_velocity.value) / hittingData.prs.exit_velocity.value) * 100).toFixed(1)}%
-                              </Text>
-                            )}
-                          </View>
-                        </View>
-                      </View>
-                    )}
-
-                    {/* Distance */}
-                    {hittingData.prs.distance && (
-                      <View style={styles.hittingSection}>
-                        <Text style={styles.hittingSectionTitle}>Distance</Text>
-
-                        {/* PR Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>ALL-TIME BEST</Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, (hittingData.prs.distance.value / 450) * 100)}%`,
-                                backgroundColor: '#eab308'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={[styles.progressValue, { color: '#facc15' }]}>
-                              {Math.round(hittingData.prs.distance.value)}
-                              <Text style={styles.progressUnit}> ft</Text>
-                            </Text>
-                            <Text style={styles.progressDate}>
-                              {new Date(hittingData.prs.distance.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </Text>
-                          </View>
-                        </View>
-
-                        {/* Recent Bar */}
-                        <View style={styles.progressBarRow}>
-                          <Text style={styles.progressLabel}>
-                            {hittingData.latest.timestamp ? new Date(hittingData.latest.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase() : 'MOST RECENT'}
-                          </Text>
-                          <View style={styles.progressBarContainer}>
-                            <View style={styles.progressBarBg}>
-                              <View style={[styles.progressBarFill, {
-                                width: `${Math.min(100, ((hittingData.latest.distance || 0) / 450) * 100)}%`,
-                                backgroundColor: (hittingData.latest.distance || 0) >= hittingData.prs.distance.value ? '#10b981' : '#dc2626'
-                              }]} />
-                            </View>
-                          </View>
-                          <View style={styles.progressValueContainer}>
-                            <Text style={styles.progressValue}>
-                              {Math.round(hittingData.latest.distance || 0)}
-                              <Text style={styles.progressUnit}> ft</Text>
-                            </Text>
-                            {hittingData.latest.distance && hittingData.prs.distance.value > 0 && (
-                              <Text style={[styles.progressPercentage, {
-                                color: hittingData.latest.distance >= hittingData.prs.distance.value ? '#6ee7b7' : '#fca5a5'
-                              }]}>
-                                {hittingData.latest.distance >= hittingData.prs.distance.value ? '+' : ''}
-                                {(((hittingData.latest.distance - hittingData.prs.distance.value) / hittingData.prs.distance.value) * 100).toFixed(1)}%
-                              </Text>
-                            )}
-                          </View>
-                        </View>
-                      </View>
-                    )}
-                  </View>
-                </View>
-              )}
+                return cards;
+              })()}
             </ScrollView>
 
           </View>
@@ -910,103 +1317,378 @@ export default function DashboardScreen({ navigation }: any) {
 
         {/* Calendar */}
         <View style={styles.calendarContainer}>
-          {viewMode === 'month' ? (
-            <>
-              <View style={styles.monthHeader}>
-                <TouchableOpacity onPress={handlePrevMonth} style={styles.monthButton}>
-                  <Text style={styles.monthButtonText}>‹</Text>
+          <View style={styles.monthHeader}>
+            <TouchableOpacity onPress={handlePrevMonth} style={styles.monthButton}>
+              <Text style={styles.monthButtonText}>‹</Text>
+            </TouchableOpacity>
+            <Text style={styles.monthTitle}>{monthName}</Text>
+            <TouchableOpacity onPress={handleNextMonth} style={styles.monthButton}>
+              <Text style={styles.monthButtonText}>›</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.dayHeaders}>
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+              <Text key={day} style={styles.dayHeader}>{day}</Text>
+            ))}
+          </View>
+
+          <View style={styles.calendarGrid}>
+            {days.map((date, index) => {
+              if (!date) {
+                return <View key={`empty-${index}`} style={styles.emptyDay} />;
+              }
+
+              const dayWorkouts = getWorkoutsForDate(date);
+              const dayBookings = getBookingsForDate(date);
+              const today = isToday(date);
+
+              return (
+                <TouchableOpacity
+                  key={date.toISOString()}
+                  onPress={() => handleDayClick(date)}
+                  style={[styles.calendarDay, today && styles.calendarDayToday]}
+                >
+                  <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
+                    {date.getDate()}
+                  </Text>
+                  {(dayWorkouts.length > 0 || dayBookings.length > 0) && (
+                    <View style={styles.dayDots}>
+                      {dayWorkouts.slice(0, 3).map((workout, i) => (
+                        <View
+                          key={`workout-${i}`}
+                          style={[styles.dayDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]}
+                        />
+                      ))}
+                    </View>
+                  )}
                 </TouchableOpacity>
-                <Text style={styles.monthTitle}>{monthName}</Text>
-                <TouchableOpacity onPress={handleNextMonth} style={styles.monthButton}>
-                  <Text style={styles.monthButtonText}>›</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.dayHeaders}>
-                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-                  <Text key={day} style={styles.dayHeader}>{day}</Text>
-                ))}
-              </View>
-
-              <View style={styles.calendarGrid}>
-                {days.map((date, index) => {
-                  if (!date) {
-                    return <View key={`empty-${index}`} style={styles.emptyDay} />;
-                  }
-
-                  const dayWorkouts = getWorkoutsForDate(date);
-                  const dayBookings = getBookingsForDate(date);
-                  const today = isToday(date);
-
-                  return (
-                    <TouchableOpacity
-                      key={date.toISOString()}
-                      onPress={() => handleDayClick(date)}
-                      style={[styles.calendarDay, today && styles.calendarDayToday]}
-                    >
-                      <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
-                        {date.getDate()}
-                      </Text>
-                      {(dayWorkouts.length > 0 || dayBookings.length > 0) && (
-                        <View style={styles.dayDots}>
-                          {dayWorkouts.slice(0, 3).map((workout, i) => (
-                            <View
-                              key={`workout-${i}`}
-                              style={[styles.dayDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]}
-                            />
-                          ))}
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </>
-          ) : (
+              );
+            })}
+          </View>
+        </View>
+        </ScrollView>
+      ) : (
+        <View style={styles.dayViewContainer}>
+          {selectedDate && (
             <>
+              {/* Back Button */}
               <View style={styles.dayViewHeader}>
                 <TouchableOpacity onPress={handleBackToMonth} style={styles.backButton}>
                   <Text style={styles.backButtonText}>‹ Back</Text>
                 </TouchableOpacity>
               </View>
 
-              <ScrollView style={styles.dayViewContent}>
-                {selectedDate && (
-                  <>
-                    <Text style={styles.dayViewDate}>
-                      {selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-                    </Text>
+              {/* Week Navigation Header - FIXED */}
+              <View style={styles.weekNavHeader}>
+                <TouchableOpacity onPress={handlePrevDay} style={styles.weekNavButton}>
+                  <Text style={styles.weekNavButtonText}>‹</Text>
+                </TouchableOpacity>
+                <Text style={styles.weekNavTitle}>
+                  {selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                </Text>
+                <TouchableOpacity onPress={handleNextDay} style={styles.weekNavButton}>
+                  <Text style={styles.weekNavButtonText}>›</Text>
+                </TouchableOpacity>
+              </View>
 
-                    {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 ? (
-                      <View style={styles.emptyDayView}>
-                        <Text style={styles.emptyDayIcon}>📅</Text>
-                        <Text style={styles.emptyDayText}>No activities scheduled</Text>
-                      </View>
-                    ) : (
-                      <>
-                        {selectedDateWorkouts.map(workout => (
-                          <View key={workout.id} style={styles.workoutCard}>
-                            <View style={[styles.workoutDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]} />
-                            <View style={styles.workoutInfo}>
-                              <Text style={styles.workoutName}>{workout.workouts.name}</Text>
-                              <Text style={styles.workoutCategory}>
-                                {CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].label}
+              {/* Week View Grid - FIXED */}
+              <View style={styles.weekViewContainer}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
+                  <View style={styles.weekGrid}>
+                    {getWeekDates(selectedDate).map((date) => {
+                      const isSelected = date.toDateString() === selectedDate.toDateString();
+                      const today = isToday(date);
+                      const dayWorkouts = getWorkoutsForDate(date);
+                      const dayBookings = getBookingsForDate(date);
+
+                      return (
+                        <TouchableOpacity
+                          key={date.toISOString()}
+                          onPress={() => setSelectedDate(date)}
+                          style={[
+                            styles.weekDay,
+                            isSelected && styles.weekDaySelected,
+                            today && !isSelected && styles.weekDayToday
+                          ]}
+                        >
+                          <Text style={[
+                            styles.weekDayName,
+                            isSelected && styles.weekDayNameSelected
+                          ]}>
+                            {date.toLocaleString('default', { weekday: 'short' })}
+                          </Text>
+                          <Text style={[
+                            styles.weekDayNumber,
+                            isSelected && styles.weekDayNumberSelected,
+                            today && !isSelected && styles.weekDayNumberToday
+                          ]}>
+                            {date.getDate()}
+                          </Text>
+                          {/* Activity Dots */}
+                          {(dayWorkouts.length > 0 || dayBookings.length > 0) && (
+                            <View style={styles.weekDayDots}>
+                              {dayWorkouts.slice(0, 3).map((workout, i) => (
+                                <View
+                                  key={`workout-${i}`}
+                                  style={[
+                                    styles.weekDayDot,
+                                    { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }
+                                  ]}
+                                />
+                              ))}
+                              {dayBookings.length > 0 && (
+                                <View style={[styles.weekDayDot, { backgroundColor: '#a855f7' }]} />
+                              )}
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </View>
+
+              {/* Workouts for Selected Date - SCROLLABLE */}
+              <ScrollView style={styles.workoutsScrollView} contentContainerStyle={styles.workoutsContainer}>
+                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 ? (
+                  <View style={styles.emptyDayView}>
+                    <Text style={styles.emptyDayIcon}>📅</Text>
+                    <Text style={styles.emptyDayText}>No activities scheduled</Text>
+                  </View>
+                ) : (
+                  <>
+                    {selectedDateWorkouts.map(workout => {
+                      const categoryInfo = CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'];
+                      const isCompleted = workout.status === 'completed';
+                      const isExpanded = expandedWorkoutId === workout.id;
+
+                      return (
+                        <View key={workout.id} style={styles.workoutCard}>
+                          {/* Category Badge + Start Button */}
+                          <View style={styles.workoutCardTopRow}>
+                            <View style={[styles.categoryBadge, { backgroundColor: categoryInfo.bg }]}>
+                              <Text style={[styles.categoryBadgeText, { color: categoryInfo.text }]}>
+                                {categoryInfo.label}
                               </Text>
                             </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.workoutActionButton,
+                                isCompleted && styles.workoutActionButtonCompleted
+                              ]}
+                              onPress={async () => {
+                                if (!isCompleted) {
+                                  // Check if workout is in progress and show modal if needed
+                                  const showedModal = await checkAndShowResumeModal(workout);
+                                  // Only navigate directly if modal wasn't shown
+                                  if (!showedModal) {
+                                    navigation.navigate('WorkoutLogger', { workoutInstanceId: workout.id, athleteId });
+                                  }
+                                }
+                              }}
+                            >
+                              <Text style={styles.workoutActionButtonText}>
+                                {isCompleted ? 'View' : 'Start'}
+                              </Text>
+                            </TouchableOpacity>
                           </View>
-                        ))}
-                      </>
-                    )}
+
+                          {/* Workout Name + Duration + Accordion Toggle */}
+                          <TouchableOpacity
+                            style={styles.workoutCardHeader}
+                            onPress={() => toggleWorkoutExpanded(workout.id)}
+                            activeOpacity={0.7}
+                          >
+                            <View style={styles.workoutCardHeaderLeft}>
+                              <Text style={styles.workoutCardName}>{workout.workouts.name}</Text>
+                              {workout.workouts.estimated_duration_minutes && (
+                                <Text style={styles.workoutCardDuration}>
+                                  {workout.workouts.estimated_duration_minutes} min
+                                </Text>
+                              )}
+                            </View>
+                            <View style={styles.expandButton}>
+                              <Text style={[
+                                styles.expandButtonText,
+                                isExpanded && styles.expandButtonTextExpanded
+                              ]}>
+                                ›
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+
+                          {/* Workout Content - Accordion Dropdown */}
+                          {isExpanded && (
+                            <View style={styles.workoutPreview}>
+                              {/* Workout Notes */}
+                              {workout.workouts.notes && (
+                                <View style={styles.workoutPreviewNotes}>
+                                  <Text style={styles.workoutPreviewNotesText}>{workout.workouts.notes}</Text>
+                                </View>
+                              )}
+
+                              {/* Routines */}
+                              {workout.workouts.routines && workout.workouts.routines.length > 0 && (
+                                <View style={styles.routinesList}>
+                                  {workout.workouts.routines
+                                    .sort((a, b) => a.order_index - b.order_index)
+                                    .map((routine, routineIdx) => (
+                                      <View key={routine.id} style={styles.routinePreview}>
+                                        <View style={styles.routinePreviewHeader}>
+                                          <Text style={styles.routinePreviewName}>{routine.name}</Text>
+                                          {routine.scheme && (
+                                            <Text style={styles.routinePreviewScheme}>{routine.scheme}</Text>
+                                          )}
+                                        </View>
+
+                                        {/* Routine Notes/Info */}
+                                        {(routine.notes || routine.text_info) && (
+                                          <Text style={styles.routinePreviewInfo}>
+                                            {routine.notes || routine.text_info}
+                                          </Text>
+                                        )}
+
+                                        {/* Exercises - Show ALL */}
+                                        {routine.routine_exercises && routine.routine_exercises.length > 0 && (
+                                          <View style={styles.exercisesList}>
+                                            {routine.routine_exercises
+                                              .sort((a, b) => a.order_index - b.order_index)
+                                              .map((routineExercise, exerciseIdx) => (
+                                                <View key={routineExercise.id} style={styles.exercisePreview}>
+                                                  <Text style={styles.exercisePreviewCode}>
+                                                    {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
+                                                  </Text>
+                                                  <Text style={styles.exercisePreviewName}>
+                                                    {routineExercise.exercises.name}
+                                                  </Text>
+                                                  <Text style={styles.exercisePreviewSets}>
+                                                    {routineExercise.sets} sets
+                                                  </Text>
+                                                </View>
+                                              ))}
+                                          </View>
+                                        )}
+                                      </View>
+                                    ))}
+                                </View>
+                              )}
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+
+                    {/* Bookings */}
+                    {selectedDateBookings.map((booking, idx) => (
+                      <View key={idx} style={styles.bookingCard}>
+                        <Ionicons name="calendar" size={24} color="#3B82F6" style={{ marginRight: 12 }} />
+                        <Text style={styles.bookingInfo}>
+                          Class Booking - {new Date(booking.event.start_time).toLocaleTimeString('en-US', {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true
+                          })}
+                        </Text>
+                      </View>
+                    ))}
                   </>
                 )}
               </ScrollView>
             </>
           )}
         </View>
-      </ScrollView>
+      )}
 
-      {/* FAB Button */}
+      {/* Resume Workout Modal */}
+      {showResumeModal && resumeWorkoutData && (
+        <Modal
+          visible={showResumeModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowResumeModal(false)}
+        >
+          {/* Backdrop */}
+          <TouchableOpacity
+            style={styles.resumeModalBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowResumeModal(false)}
+          >
+            {/* Modal Content */}
+            <View style={styles.resumeModalContainer}>
+              {/* Icon */}
+              <View style={styles.resumeModalIconContainer}>
+                <View style={styles.resumeModalIconBadge}>
+                  <Text style={styles.resumeModalIconText}>⚡</Text>
+                </View>
+              </View>
+
+              {/* Title */}
+              <Text style={styles.resumeModalTitle}>Workout In Progress</Text>
+
+              {/* Description */}
+              <Text style={styles.resumeModalWorkoutName}>{resumeWorkoutData.workoutName}</Text>
+              <Text style={styles.resumeModalTime}>
+                Started {formatElapsedTime(resumeWorkoutData.elapsedTime)}
+              </Text>
+
+              {/* Info Box */}
+              <View style={styles.resumeModalInfoBox}>
+                <Text style={styles.resumeModalInfoTitle}>Your progress is saved</Text>
+                <Text style={styles.resumeModalInfoText}>
+                  Resume right where you left off or start fresh
+                </Text>
+              </View>
+
+              {/* Action Buttons */}
+              <View style={styles.resumeModalActions}>
+                {/* Resume Button */}
+                <TouchableOpacity
+                  style={styles.resumeModalPrimaryButton}
+                  onPress={handleResumeWorkout}
+                  activeOpacity={0.8}
+                >
+                  <LinearGradient
+                    colors={['#9BDDFF', '#7BC5F0']}
+                    style={styles.resumeModalPrimaryButtonGradient}
+                  >
+                    <Text style={styles.resumeModalPrimaryButtonText}>Resume Workout</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Restart Button */}
+                <TouchableOpacity
+                  style={styles.resumeModalSecondaryButton}
+                  onPress={handleRestartWorkout}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.resumeModalSecondaryButtonText}>Restart from Beginning</Text>
+                </TouchableOpacity>
+
+                {/* Discard Button */}
+                <TouchableOpacity
+                  style={styles.resumeModalTertiaryButton}
+                  onPress={handleDiscardWorkout}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.resumeModalTertiaryButtonText}>Discard Progress</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* FAB Button - Dynamic based on athlete data (matching web app) */}
       <View style={styles.fabContainer}>
+        {/* Notification Badge on FAB */}
+        {(unreadMessagesCount + newResourcesCount) > 0 && !fabOpen && (
+          <View style={styles.fabNotificationBadge}>
+            <Text style={styles.fabNotificationBadgeText}>
+              {(unreadMessagesCount + newResourcesCount) > 99 ? '99+' : unreadMessagesCount + newResourcesCount}
+            </Text>
+          </View>
+        )}
         <TouchableOpacity
           onPress={() => setFabOpen(!fabOpen)}
           style={styles.fab}
@@ -1019,7 +1701,7 @@ export default function DashboardScreen({ navigation }: any) {
           </LinearGradient>
         </TouchableOpacity>
 
-        {/* FAB Menu */}
+        {/* FAB Menu - Dynamic items based on athlete data */}
         <Modal
           visible={fabOpen}
           transparent
@@ -1031,18 +1713,139 @@ export default function DashboardScreen({ navigation }: any) {
             activeOpacity={1}
             onPress={() => setFabOpen(false)}
           >
-            <View style={styles.fabMenu}>
-              <TouchableOpacity style={styles.fabMenuItem}>
-                <Text style={styles.fabMenuIcon}>🏠</Text>
-                <Text style={styles.fabMenuLabel}>Home</Text>
+            <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
+              {/* ALWAYS SHOWN: Home */}
+              <TouchableOpacity
+                style={[styles.fabMenuItem, styles.fabMenuItemActive]}
+                onPress={() => {
+                  setFabOpen(false);
+                  // Already on home/dashboard
+                }}
+              >
+                <Ionicons name="home" size={20} color="#9BDDFF" />
+                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Home</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.fabMenuItem}>
-                <Text style={styles.fabMenuIcon}>💬</Text>
+
+              {/* ALWAYS SHOWN: Messages with badge */}
+              <TouchableOpacity
+                style={styles.fabMenuItem}
+                onPress={() => {
+                  setFabOpen(false);
+                  navigation.navigate('Messages');
+                }}
+              >
+                <View style={styles.fabMenuIconContainer}>
+                  <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
+                  {unreadMessagesCount > 0 && (
+                    <View style={styles.fabMenuItemBadge}>
+                      <Text style={styles.fabMenuItemBadgeText}>
+                        {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
+                      </Text>
+                    </View>
+                  )}
+                </View>
                 <Text style={styles.fabMenuLabel}>Messages</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.fabMenuItem}>
-                <Text style={styles.fabMenuIcon}>📊</Text>
+
+              {/* ALWAYS SHOWN: Performance */}
+              <TouchableOpacity
+                style={styles.fabMenuItem}
+                onPress={() => {
+                  setFabOpen(false);
+                  navigation.navigate('Performance', { athleteId });
+                }}
+              >
+                <Ionicons name="stats-chart" size={20} color="#FFFFFF" />
                 <Text style={styles.fabMenuLabel}>Performance</Text>
+              </TouchableOpacity>
+
+              {/* ALWAYS SHOWN: Leaderboard */}
+              <TouchableOpacity
+                style={styles.fabMenuItem}
+                onPress={() => {
+                  setFabOpen(false);
+                  navigation.navigate('Leaderboard');
+                }}
+              >
+                <Ionicons name="trophy" size={20} color="#FFFFFF" />
+                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
+              </TouchableOpacity>
+
+              {/* CONDITIONAL: Hitting - only if hittingData */}
+              {!!hittingData && (
+                <TouchableOpacity
+                  style={styles.fabMenuItem}
+                  onPress={() => {
+                    setFabOpen(false);
+                    navigation.navigate('HittingPerformance');
+                  }}
+                >
+                  <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
+                  <Text style={styles.fabMenuLabel}>Hitting</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* CONDITIONAL: Pitching - only if hasPitchingData */}
+              {hasPitchingData && (
+                <TouchableOpacity
+                  style={styles.fabMenuItem}
+                  onPress={() => {
+                    setFabOpen(false);
+                    navigation.navigate('PitchingPerformance', { athleteId });
+                  }}
+                >
+                  <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
+                  <Text style={styles.fabMenuLabel}>Pitching</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* CONDITIONAL: Arm Care - only if hasArmCareData */}
+              {!!armCareData && (
+                <TouchableOpacity
+                  style={styles.fabMenuItem}
+                  onPress={() => {
+                    setFabOpen(false);
+                    navigation.navigate('ArmCare', { athleteId });
+                  }}
+                >
+                  <MaterialCommunityIcons name="arm-flex" size={20} color="#10B981" />
+                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* CONDITIONAL: Force Profile - only if hasForceData */}
+              {!!(forceProfile && valdProfileId) && (
+                <TouchableOpacity
+                  style={styles.fabMenuItem}
+                  onPress={() => {
+                    setFabOpen(false);
+                    navigation.navigate('ForceProfile', { athleteId });
+                  }}
+                >
+                  <Ionicons name="trending-up" size={20} color="#A855F7" />
+                  <Text style={styles.fabMenuLabel}>Force Profile</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Notes/Resources - always visible, with badge for new items */}
+              <TouchableOpacity
+                style={styles.fabMenuItem}
+                onPress={() => {
+                  setFabOpen(false);
+                  navigation.navigate('Resources', { athleteId, userId });
+                }}
+              >
+                <View style={styles.fabMenuIconContainer}>
+                  <Ionicons name="document-text" size={20} color="#F59E0B" />
+                  {newResourcesCount > 0 && (
+                    <View style={styles.fabMenuItemBadge}>
+                      <Text style={styles.fabMenuItemBadgeText}>
+                        {newResourcesCount > 9 ? '9+' : newResourcesCount}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
@@ -1127,223 +1930,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     zIndex: 10,
   },
-  forceProfileContent: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 24,
-  },
-  circleContainer: {
-    position: 'relative',
-    width: 176,
-    height: 176,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  circleText: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingBottom: 20,
-  },
-  circleScore: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  circleLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    marginTop: 4,
-  },
-  testsCount: {
-    marginTop: 8,
-    alignItems: 'center',
-  },
-  testsCountLabel: {
-    fontSize: 10,
-    color: '#9CA3AF',
-  },
-  testsCountValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  forceMetrics: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  metricLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    marginBottom: 8,
-  },
-  metricValue: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  armCareContent: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 24,
-  },
-  armCareMetrics: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  armCareSection: {
-    marginBottom: 8,
-  },
-  armCareSectionTitle: {
-    fontSize: 10,
-    color: '#9CA3AF',
-    fontWeight: '500',
-    marginBottom: 6,
-  },
-  armCareBarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-    gap: 4,
-  },
-  armCareBarLabel: {
-    fontSize: 7,
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    width: 55,
-  },
-  armCareBarContainer: {
-    flex: 1,
-  },
-  armCareBarBg: {
-    height: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  armCareBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  armCareBarValue: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    minWidth: 45,
-  },
-  armCareBarValueText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  armCareBarDate: {
-    fontSize: 7,
-    color: '#6B7280',
-  },
-  armCareBarPercentage: {
-    fontSize: 8,
-    fontWeight: '600',
-  },
-  strengthBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  strengthRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  strengthDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginVertical: 8,
-  },
-  strengthLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  strengthValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  strengthUnit: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  hittingContent: {
-    flex: 1,
-    gap: 12,
-  },
-  hittingSection: {
-    marginBottom: 8,
-  },
-  hittingSectionTitle: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    fontWeight: '500',
-    marginBottom: 6,
-  },
-  progressBarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-    gap: 6,
-  },
-  progressLabel: {
-    fontSize: 8,
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    width: 65,
-  },
-  progressBarContainer: {
-    flex: 1,
-  },
-  progressBarBg: {
-    height: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  progressValueContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    minWidth: 70,
-    justifyContent: 'flex-end',
-  },
-  progressValue: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  progressUnit: {
-    fontSize: 9,
-    color: '#9CA3AF',
-  },
-  progressDate: {
-    fontSize: 8,
-    color: '#6B7280',
-  },
-  progressPercentage: {
-    fontSize: 9,
-    fontWeight: '600',
-  },
   calendarContainer: {
     height: CALENDAR_HEIGHT,
     paddingHorizontal: 16,
@@ -1424,6 +2010,9 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
   },
+  dayViewContainer: {
+    flex: 1,
+  },
   dayViewHeader: {
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
@@ -1463,16 +2052,6 @@ const styles = StyleSheet.create({
   emptyDayText: {
     fontSize: 16,
     color: '#9CA3AF',
-  },
-  workoutCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   workoutDot: {
     width: 12,
@@ -1551,5 +2130,650 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
     fontWeight: '500',
+  },
+  // FAB Dynamic styles (matching web app)
+  fabNotificationBadge: {
+    position: 'absolute',
+    top: -4,
+    left: -4,
+    minWidth: 24,
+    height: 24,
+    backgroundColor: '#EF4444',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#000000',
+    zIndex: 20,
+  },
+  fabNotificationBadgeText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    paddingHorizontal: 4,
+  },
+  fabMenuItemActive: {
+    backgroundColor: 'rgba(155, 221, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(155, 221, 255, 0.3)',
+  },
+  fabMenuLabelActive: {
+    color: '#9BDDFF',
+  },
+  fabMenuIconContainer: {
+    position: 'relative',
+  },
+  fabMenuItemBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    minWidth: 18,
+    height: 18,
+    backgroundColor: '#EF4444',
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#000000',
+  },
+  fabMenuItemBadgeText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    paddingHorizontal: 3,
+  },
+  // Enhanced Day View Styles
+  workoutDetailCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#9BDDFF',
+  },
+  workoutDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  workoutDetailHeaderInfo: {
+    flex: 1,
+  },
+  workoutDetailName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  workoutDetailMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  workoutDetailCategory: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  workoutDetailDuration: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  workoutDetailStatus: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  workoutNotes: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#3b82f6',
+  },
+  workoutNotesLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#9BDDFF',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  workoutNotesText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.9)',
+    lineHeight: 18,
+  },
+  routinesContainer: {
+    gap: 12,
+  },
+  routineCard: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  routineHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  routineName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    flex: 1,
+  },
+  routineScheme: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '600',
+  },
+  routineNotesBox: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: '#3b82f6',
+  },
+  routineNotesText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.9)',
+    lineHeight: 16,
+  },
+  routineTextInfoBox: {
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: '#fbbf24',
+  },
+  routineTextInfoText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.9)',
+    lineHeight: 16,
+  },
+  exercisesContainer: {
+    gap: 8,
+  },
+  exerciseRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  exerciseCode: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#9BDDFF',
+    width: 32,
+  },
+  exerciseInfo: {
+    flex: 1,
+  },
+  exerciseName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  exerciseDetails: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  workoutActions: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  startWorkoutButton: {
+    backgroundColor: '#22c55e',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  startWorkoutButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  resumeWorkoutButton: {
+    backgroundColor: '#f59e0b',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  resumeWorkoutButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  viewWorkoutButton: {
+    backgroundColor: 'rgba(155, 221, 255, 0.2)',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#9BDDFF',
+  },
+  viewWorkoutButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#9BDDFF',
+  },
+  bookingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#3b82f6',
+  },
+  bookingInfo: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  // Week View Styles
+  weekNavHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  weekNavButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+  },
+  weekNavButtonText: {
+    fontSize: 24,
+    color: '#9BDDFF',
+    fontWeight: '700',
+  },
+  weekNavTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  weekViewContainer: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 12,
+  },
+  weekScroll: {
+    paddingHorizontal: 8,
+  },
+  weekGrid: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  weekDay: {
+    width: 50,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  weekDaySelected: {
+    backgroundColor: '#9BDDFF',
+  },
+  weekDayToday: {
+    borderWidth: 1,
+    borderColor: '#9BDDFF',
+  },
+  weekDayName: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginBottom: 4,
+  },
+  weekDayNameSelected: {
+    color: '#0A0A0A',
+    fontWeight: '600',
+  },
+  weekDayNumber: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  weekDayNumberSelected: {
+    color: '#0A0A0A',
+  },
+  weekDayNumberToday: {
+    color: '#9BDDFF',
+  },
+  weekDayDots: {
+    flexDirection: 'row',
+    gap: 3,
+    marginTop: 4,
+  },
+  weekDayDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+  },
+  workoutsScrollView: {
+    flex: 1,
+  },
+  workoutsContainer: {
+    padding: 16,
+    paddingBottom: 100, // Extra space for FAB and content visibility
+  },
+  workoutCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    marginBottom: 12,
+    padding: 16,
+  },
+  workoutCardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  categoryBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  categoryBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  workoutActionButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#9BDDFF',
+  },
+  workoutActionButtonCompleted: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  workoutActionButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0A0A0A',
+  },
+  workoutCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  workoutCardHeaderSimple: {
+    marginBottom: 8,
+  },
+  workoutCardHeaderLeft: {
+    flex: 1,
+    marginRight: 12,
+  },
+  workoutCardName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  workoutCardDuration: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  expandButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 16,
+  },
+  expandButtonText: {
+    fontSize: 20,
+    color: '#9BDDFF',
+    fontWeight: '700',
+    transform: [{ rotate: '90deg' }],
+  },
+  expandButtonTextExpanded: {
+    transform: [{ rotate: '-90deg' }],
+  },
+  workoutPreview: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  workoutPreviewNotes: {
+    marginBottom: 12,
+    padding: 12,
+    backgroundColor: 'rgba(155, 221, 255, 0.05)',
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#9BDDFF',
+  },
+  workoutPreviewNotesText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.8)',
+    lineHeight: 18,
+  },
+  routinesList: {
+    gap: 12,
+  },
+  routinePreview: {
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    borderRadius: 8,
+    padding: 12,
+  },
+  routinePreviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  routinePreviewName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  routinePreviewScheme: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '600',
+  },
+  routinePreviewInfo: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
+  exercisesList: {
+    gap: 6,
+  },
+  exercisePreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  exercisePreviewCode: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#9BDDFF',
+    width: 28,
+  },
+  exercisePreviewName: {
+    flex: 1,
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.9)',
+  },
+  exercisePreviewSets: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.5)',
+  },
+  exercisePreviewMore: {
+    fontSize: 12,
+    color: 'rgba(155, 221, 255, 0.7)',
+    fontStyle: 'italic',
+    marginTop: 4,
+    paddingLeft: 36,
+  },
+  // Resume Workout Modal Styles
+  resumeModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  resumeModalContainer: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 24,
+    padding: 24,
+    maxWidth: 400,
+    width: '100%',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  resumeModalIconContainer: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  resumeModalIconBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  resumeModalIconText: {
+    fontSize: 32,
+  },
+  resumeModalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  resumeModalWorkoutName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.8)',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  resumeModalTime: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.5)',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  resumeModalInfoBox: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+    padding: 16,
+    marginBottom: 24,
+  },
+  resumeModalInfoTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#60A5FA',
+    marginBottom: 4,
+  },
+  resumeModalInfoText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.5)',
+  },
+  resumeModalActions: {
+    gap: 12,
+  },
+  resumeModalPrimaryButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  resumeModalPrimaryButtonGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  resumeModalPrimaryButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  resumeModalSecondaryButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  resumeModalSecondaryButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  resumeModalTertiaryButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  resumeModalTertiaryButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.5)',
+  },
+  // Settings dropdown styles
+  settingsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  settingsDropdown: {
+    position: 'absolute',
+    top: 100,
+    right: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    minWidth: 200,
+    padding: 8,
+  },
+  settingsMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  settingsMenuLabel: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  settingsDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginVertical: 4,
   },
 });
