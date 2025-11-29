@@ -198,11 +198,11 @@ function getYouTubeVideoId(url: string | null): string | null {
 }
 
 // Helper: Get keyboard type for metric
-function getKeyboardType(metricType?: string): 'default' | 'numeric' | 'decimal-pad' {
-  if (!metricType) return 'default';
-  if (metricType === 'integer') return 'numeric';
+function getKeyboardType(metricType?: string): 'default' | 'number-pad' | 'decimal-pad' {
+  if (!metricType) return 'number-pad';
+  if (metricType === 'integer') return 'number-pad';
   if (metricType === 'decimal') return 'decimal-pad';
-  return 'default';
+  return 'number-pad';
 }
 
 // Helper: Get metric label
