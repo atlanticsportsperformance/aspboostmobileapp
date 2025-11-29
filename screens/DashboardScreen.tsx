@@ -24,7 +24,8 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
 const CARD_HEIGHT = SCREEN_HEIGHT * 0.34;
-const CALENDAR_HEIGHT = SCREEN_HEIGHT * 0.54;
+// Calculate calendar day size based on screen width (7 columns + gaps + padding)
+const CALENDAR_DAY_SIZE = Math.floor((SCREEN_WIDTH - 32 - 48) / 7);
 
 interface WorkoutInstance {
   id: string;
@@ -1931,9 +1932,8 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   calendarContainer: {
-    height: CALENDAR_HEIGHT,
     paddingHorizontal: 16,
-    paddingBottom: 80,
+    paddingBottom: 24,
   },
   monthHeader: {
     flexDirection: 'row',
@@ -1972,19 +1972,19 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyDay: {
-    width: (SCREEN_WIDTH - 32 - 48) / 7,
-    height: 56,
+    width: CALENDAR_DAY_SIZE,
+    height: CALENDAR_DAY_SIZE,
   },
   calendarDay: {
-    width: (SCREEN_WIDTH - 32 - 48) / 7,
-    height: 56,
+    width: CALENDAR_DAY_SIZE,
+    height: CALENDAR_DAY_SIZE,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 4,
+    padding: 2,
   },
   calendarDayToday: {
     borderColor: '#9BDDFF',

@@ -1579,7 +1579,7 @@ export default function WorkoutExecutionScreen() {
                                                 style={[styles.primaryInput, isPRTracked && styles.inputPR]}
                                                 value={(setData[primaryMetricId] || primaryTarget)?.toString() || ''}
                                                 onChangeText={(val) => handleInputChange(setIndex, primaryMetricId, val)}
-                                                keyboardType="numeric"
+                                                keyboardType="decimal-pad"
                                                 placeholder="0"
                                                 placeholderTextColor="rgba(255,255,255,0.3)"
                                                 textAlign="center"
@@ -1631,7 +1631,7 @@ export default function WorkoutExecutionScreen() {
                                                 style={[styles.primaryInput, isPRTracked && styles.inputPR]}
                                                 value={(setData[primaryMetricId] || primaryTarget)?.toString() || ''}
                                                 onChangeText={(val) => handleInputChange(setIndex, primaryMetricId, val)}
-                                                keyboardType="numeric"
+                                                keyboardType="decimal-pad"
                                                 placeholder="0"
                                                 placeholderTextColor="rgba(255,255,255,0.3)"
                                                 textAlign="center"
@@ -1657,7 +1657,7 @@ export default function WorkoutExecutionScreen() {
                                               style={[styles.secondaryInput, isPRTracked && styles.inputPR]}
                                               value={(setData[secondaryMetricId] || secondaryTarget)?.toString() || ''}
                                               onChangeText={(val) => handleInputChange(setIndex, secondaryMetricId, val)}
-                                              keyboardType="numeric"
+                                              keyboardType="decimal-pad"
                                               placeholder={secondaryTarget?.toString() || '0'}
                                               placeholderTextColor="rgba(255,255,255,0.3)"
                                               textAlign="center"
