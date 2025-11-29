@@ -78,6 +78,8 @@ export default function ResourcesScreen({ navigation, route }: any) {
   const [refreshing, setRefreshing] = useState(false);
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [expandedDescriptions, setExpandedDescriptions] = useState<Set<string>>(new Set());
+  const [imageModalVisible, setImageModalVisible] = useState(false);
+  const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
 
   // FAB state and data presence
   const [fabOpen, setFabOpen] = useState(false);
@@ -459,13 +461,24 @@ export default function ResourcesScreen({ navigation, route }: any) {
     return (
       <View key={resource.id} style={styles.fileCard}>
         {/* Preview */}
-        <View style={styles.filePreview}>
+        <TouchableOpacity
+          style={styles.filePreview}
+          onPress={() => {
+            if (resource.file_type === 'image' && resource.file_url) {
+              setSelectedImageUrl(resource.file_url);
+              setImageModalVisible(true);
+            } else if (resource.file_url) {
+              openFile(resource.file_url);
+            }
+          }}
+          activeOpacity={0.8}
+        >
           {resource.file_type === 'image' && resource.file_url ? (
             <Image source={{ uri: resource.file_url }} style={styles.fileImage} resizeMode="cover" />
           ) : resource.file_type === 'video' && resource.file_url ? (
-            <TouchableOpacity style={styles.fileVideoPreview} onPress={() => openFile(resource.file_url!)}>
+            <View style={styles.fileVideoPreview}>
               <Ionicons name="play-circle" size={40} color={COLORS.white} />
-            </TouchableOpacity>
+            </View>
           ) : (
             <View style={styles.fileIconPreview}>
               <Ionicons name={getFileIcon(resource.file_type) as any} size={32} color={COLORS.gray400} />
@@ -476,7 +489,7 @@ export default function ResourcesScreen({ navigation, route }: any) {
               <Ionicons name="pin" size={10} color={COLORS.primary} />
             </View>
           )}
-        </View>
+        </TouchableOpacity>
 
         {/* Info */}
         <View style={styles.fileInfo}>
@@ -499,10 +512,17 @@ export default function ResourcesScreen({ navigation, route }: any) {
           <View style={styles.fileActions}>
             <TouchableOpacity
               style={styles.fileActionButton}
-              onPress={() => resource.file_url && openFile(resource.file_url)}
+              onPress={() => {
+                if (resource.file_type === 'image' && resource.file_url) {
+                  setSelectedImageUrl(resource.file_url);
+                  setImageModalVisible(true);
+                } else if (resource.file_url) {
+                  openFile(resource.file_url);
+                }
+              }}
             >
-              <Ionicons name="open-outline" size={16} color={COLORS.primary} />
-              <Text style={styles.fileActionText}>View</Text>
+              <Ionicons name={resource.file_type === 'image' ? 'expand-outline' : 'open-outline'} size={16} color={COLORS.primary} />
+              <Text style={styles.fileActionText}>{resource.file_type === 'image' ? 'View Full' : 'View'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -766,6 +786,30 @@ export default function ResourcesScreen({ navigation, route }: any) {
           </TouchableOpacity>
         </Modal>
       </View>
+
+      {/* Image Viewer Modal */}
+      <Modal
+        visible={imageModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImageModalVisible(false)}
+      >
+        <View style={styles.imageModalOverlay}>
+          <TouchableOpacity
+            style={styles.imageModalCloseButton}
+            onPress={() => setImageModalVisible(false)}
+          >
+            <Ionicons name="close" size={28} color={COLORS.white} />
+          </TouchableOpacity>
+          {selectedImageUrl && (
+            <Image
+              source={{ uri: selectedImageUrl }}
+              style={styles.imageModalImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -948,5 +992,29 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFFFFF',
     paddingHorizontal: 3,
+  },
+
+  // Image Modal
+  imageModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalCloseButton: {
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  imageModalImage: {
+    width: SCREEN_WIDTH - 32,
+    height: '80%',
   },
 });

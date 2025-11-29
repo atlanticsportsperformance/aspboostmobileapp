@@ -184,6 +184,13 @@ export default function WorkoutLoggerScreen() {
       workoutData.routines.sort((a: Routine, b: Routine) => a.order_index - b.order_index);
       workoutData.routines.forEach((routine: Routine) => {
         routine.routine_exercises.sort((a, b) => a.order_index - b.order_index);
+
+        // Log any exercises with missing joined data
+        routine.routine_exercises.forEach((re: RoutineExercise) => {
+          if (!re.exercises) {
+            console.warn(`[WorkoutLogger] Missing exercise data for routine_exercise ${re.id}, exercise_id: ${re.exercise_id}, sets: ${re.sets}, reps: ${re.reps}`);
+          }
+        });
       });
 
       setWorkout(workoutData);

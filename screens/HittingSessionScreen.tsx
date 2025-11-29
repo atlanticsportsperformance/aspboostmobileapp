@@ -356,10 +356,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
   }
 
   function getColorByEV(ev: number): string {
-    if (ev >= 100) return '#10b981';
-    if (ev >= 90) return '#3b82f6';
-    if (ev >= 80) return '#f59e0b';
-    return '#ef4444';
+    if (ev >= 100) return '#9BDDFF';
+    if (ev >= 90) return '#6BB8DB';
+    if (ev >= 80) return '#4A8FAD';
+    return '#3d4f5f';
   }
 
   if (loading) {
@@ -450,19 +450,19 @@ export default function HittingSessionScreen({ route, navigation }: any) {
             {/* Legend */}
             <View style={styles.legendRow}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#3d4f5f' }]} />
                 <Text style={styles.legendText}>&lt;80</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#f59e0b' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
                 <Text style={styles.legendText}>80-89</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#3b82f6' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
                 <Text style={styles.legendText}>90-99</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
                 <Text style={styles.legendText}>100+</Text>
               </View>
             </View>
@@ -519,15 +519,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 <Text style={styles.statLabel}>Swings</Text>
               </View>
               <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#F97316' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
+                <Text style={[styles.statValue, { color: '#9BDDFF' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
                 <Text style={styles.statLabel}>Max EV</Text>
               </View>
               <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#F97316' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
+                <Text style={[styles.statValue, { color: '#6BB8DB' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
                 <Text style={styles.statLabel}>Avg EV</Text>
               </View>
               <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#FBBF24' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
+                <Text style={[styles.statValue, { color: '#4A8FAD' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
                 <Text style={styles.statLabel}>Max Distance</Text>
               </View>
             </View>
@@ -540,15 +540,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               <Text style={styles.sourceLabel}>HITTRAX</Text>
               <View style={styles.statsRow}>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#F97316' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
+                  <Text style={[styles.statValue, { color: '#9BDDFF' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
                   <Text style={styles.statLabel}>Max EV</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#F97316' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
+                  <Text style={[styles.statValue, { color: '#6BB8DB' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
                   <Text style={styles.statLabel}>Avg EV</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#FBBF24' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
+                  <Text style={[styles.statValue, { color: '#4A8FAD' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
                   <Text style={styles.statLabel}>Max Dist</Text>
                 </View>
                 <View style={styles.statItem}>
@@ -628,7 +628,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <Svg viewBox="0 0 360 360" style={styles.scatterChart}>
                       <Rect width="360" height="360" fill="#000000" />
 
-                      {/* Ideal Range Zone (green box) */}
+                      {/* Ideal Range Zone (gray box) */}
                       {(() => {
                         const x1 = 30 + ((7 + 10) / 60) * 320;
                         const x2 = 30 + ((22 + 10) / 60) * 320;
@@ -640,8 +640,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             y={y1}
                             width={x2 - x1}
                             height={y2 - y1}
-                            fill="#10b981"
-                            opacity={0.15}
+                            fill="#6b7280"
+                            opacity={0.2}
                           />
                         );
                       })()}
@@ -673,7 +673,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="5"
-                            fill={inZone ? '#10b981' : '#3b82f6'}
+                            fill={inZone ? '#9BDDFF' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -685,7 +685,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="15" width="105" height="45" fill="#000000" opacity={0.8} rx="4" />
-                      <SvgText x="292" y="35" fill="#10b981" fontSize="18" textAnchor="middle" fontWeight="700">
+                      <SvgText x="292" y="35" fill="#9BDDFF" fontSize="18" textAnchor="middle" fontWeight="700">
                         {percentageInZone.toFixed(0)}%
                       </SvgText>
                       <SvgText x="292" y="52" fill="#9ca3af" fontSize="9" textAnchor="middle">
@@ -697,11 +697,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                   {/* Legend */}
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>Ideal Range</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#3b82f6' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#6b7280' }]} />
                       <Text style={styles.legendText}>Other</Text>
                     </View>
                   </View>
@@ -779,8 +779,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const actualBarY = 250 - actualBarHeight;
 
                         let color = '#ef4444';
-                        if (data.squaredUpRate >= 80) color = '#10b981';
-                        else if (data.squaredUpRate >= 65) color = '#f59e0b';
+                        if (data.squaredUpRate >= 80) color = '#9BDDFF';
+                        else if (data.squaredUpRate >= 65) color = '#6b7280';
 
                         return (
                           <G key={idx}>
@@ -792,7 +792,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="5" width="110" height="45" fill="#000000" opacity={0.8} rx="4" />
-                      <SvgText x="295" y="28" fill="#10b981" fontSize="20" textAnchor="middle" fontWeight="700">
+                      <SvgText x="295" y="28" fill="#9BDDFF" fontSize="20" textAnchor="middle" fontWeight="700">
                         {wellSquaredPercentage.toFixed(0)}%
                       </SvgText>
                       <SvgText x="295" y="42" fill="#9ca3af" fontSize="9" textAnchor="middle">
@@ -809,11 +809,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10b981', borderRadius: 2 }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF', borderRadius: 2 }]} />
                       <Text style={styles.legendText}>≥80% (Squared-Up)</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#f59e0b', borderRadius: 2 }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#6b7280', borderRadius: 2 }]} />
                       <Text style={styles.legendText}>65-79%</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -858,7 +858,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {(() => {
                         const yMin = 330 - ((20 + 20) / 60) * 320;
                         const yMax = 330 - ((5 + 20) / 60) * 320;
-                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#10b981" opacity={0.1} />;
+                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#6b7280" opacity={0.15} />;
                       })()}
 
                       {/* Grid lines */}
@@ -887,7 +887,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="4"
-                            fill={inIdealRange ? '#10b981' : '#3b82f6'}
+                            fill={inIdealRange ? '#9BDDFF' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -899,7 +899,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgBatSpeed - 30) / 70) * 320}
                         y2="330"
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -909,7 +909,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - ((avgAttackAngle + 20) / 60) * 320}
                         x2="350"
                         y2={330 - ((avgAttackAngle + 20) / 60) * 320}
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -917,7 +917,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="15" width="105" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="292" y="32" fill="#f59e0b" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="292" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="245" y="47" fill="#9ca3af" fontSize="9">Bat Speed:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgBatSpeed.toFixed(1)} mph</SvgText>
                       <SvgText x="245" y="62" fill="#9ca3af" fontSize="9">Attack Angle:</SvgText>
@@ -930,15 +930,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>Ideal Range (5-20°)</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#3b82f6' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#6b7280' }]} />
                       <Text style={styles.legendText}>Other</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDash, { backgroundColor: '#f59e0b' }]} />
+                      <View style={[styles.legendDash, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>Average</Text>
                     </View>
                   </View>
@@ -979,7 +979,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {(() => {
                         const yMin = 330 - ((30 + 20) / 100) * 320;
                         const yMax = 330 - ((10 + 20) / 100) * 320;
-                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#10b981" opacity={0.1} />;
+                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#6b7280" opacity={0.15} />;
                       })()}
 
                       {/* Grid lines */}
@@ -1008,7 +1008,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="4"
-                            fill={inIdealRange ? '#10b981' : '#ef4444'}
+                            fill={inIdealRange ? '#9BDDFF' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -1020,7 +1020,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgExitVelo - 40) / 80) * 320}
                         y2="330"
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1030,7 +1030,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - ((avgLaunchAngle + 20) / 100) * 320}
                         x2="350"
                         y2={330 - ((avgLaunchAngle + 20) / 100) * 320}
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1038,7 +1038,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="235" y="15" width="110" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="290" y="32" fill="#f59e0b" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="290" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="240" y="47" fill="#9ca3af" fontSize="9">Exit Velo:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgExitVelo.toFixed(1)} mph</SvgText>
                       <SvgText x="240" y="62" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
@@ -1051,15 +1051,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>Ideal Range (10-30°)</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#6b7280' }]} />
                       <Text style={styles.legendText}>Other</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDash, { backgroundColor: '#f59e0b' }]} />
+                      <View style={[styles.legendDash, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>Average</Text>
                     </View>
                   </View>
@@ -1084,10 +1084,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               }
 
               const levels = [
-                { name: 'Pro', threshold: 87, color: '#10b981' },
-                { name: 'College', threshold: 80, color: '#3b82f6' },
-                { name: 'High School', threshold: 75, color: '#f59e0b' },
-                { name: 'Youth', threshold: 60, color: '#6b7280' },
+                { name: 'Pro', threshold: 87, color: '#9BDDFF' },
+                { name: 'College', threshold: 80, color: '#6BB8DB' },
+                { name: 'High School', threshold: 75, color: '#4A8FAD' },
+                { name: 'Youth', threshold: 60, color: '#3d4f5f' },
               ];
 
               const avgExitVelo = validSwings.reduce((sum, s) => sum + s.exit_velocity, 0) / validSwings.length;
@@ -1105,10 +1105,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               const pctYouth = (swingsAtYouth / totalSwings) * 100;
 
               let grade = 'Youth';
-              let gradeColor = '#6b7280';
-              if (avgExitVelo >= 87) { grade = 'Pro'; gradeColor = '#10b981'; }
-              else if (avgExitVelo >= 80) { grade = 'College'; gradeColor = '#3b82f6'; }
-              else if (avgExitVelo >= 75) { grade = 'High School'; gradeColor = '#f59e0b'; }
+              let gradeColor = '#3d4f5f';
+              if (avgExitVelo >= 87) { grade = 'Pro'; gradeColor = '#9BDDFF'; }
+              else if (avgExitVelo >= 80) { grade = 'College'; gradeColor = '#6BB8DB'; }
+              else if (avgExitVelo >= 75) { grade = 'High School'; gradeColor = '#4A8FAD'; }
 
               const yScale = 250 / 120;
 
@@ -1142,10 +1142,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const barHeight = swing.exit_velocity * yScale;
                         const barY = 270 - barHeight;
 
-                        let barColor = '#6b7280';
-                        if (swing.exit_velocity >= 87) barColor = '#10b981';
-                        else if (swing.exit_velocity >= 80) barColor = '#3b82f6';
-                        else if (swing.exit_velocity >= 75) barColor = '#f59e0b';
+                        let barColor = '#3d4f5f';
+                        if (swing.exit_velocity >= 87) barColor = '#9BDDFF';
+                        else if (swing.exit_velocity >= 80) barColor = '#6BB8DB';
+                        else if (swing.exit_velocity >= 75) barColor = '#4A8FAD';
 
                         return <Rect key={idx} x={x} y={barY} width={barWidth} height={barHeight} fill={barColor} opacity={0.9} />;
                       })}
@@ -1170,31 +1170,31 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   {/* Level Distribution */}
                   <View style={styles.levelGrid}>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(155,221,255,0.3)', backgroundColor: 'rgba(155,221,255,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#10b981' }]}>Pro (87+)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#10b981' }]}>{pctPro.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#9BDDFF' }]}>Pro (87+)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#9BDDFF' }]}>{pctPro.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtPro} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(59,130,246,0.3)', backgroundColor: 'rgba(59,130,246,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(107,184,219,0.3)', backgroundColor: 'rgba(107,184,219,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#3b82f6' }]}>College (80-86)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#3b82f6' }]}>{pctCollege.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#6BB8DB' }]}>College (80-86)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#6BB8DB' }]}>{pctCollege.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtCollege} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(245,158,11,0.3)', backgroundColor: 'rgba(245,158,11,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(74,143,173,0.3)', backgroundColor: 'rgba(74,143,173,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#f59e0b' }]}>High School (75-79)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#f59e0b' }]}>{pctHS.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#4A8FAD' }]}>High School (75-79)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#4A8FAD' }]}>{pctHS.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtHS} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(107,114,128,0.3)', backgroundColor: 'rgba(107,114,128,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(61,79,95,0.3)', backgroundColor: 'rgba(61,79,95,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#9CA3AF' }]}>Youth (60-74)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#9CA3AF' }]}>{pctYouth.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#6b7280' }]}>Youth (60-74)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#6b7280' }]}>{pctYouth.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtYouth} of {totalSwings} swings</Text>
                     </View>
@@ -1220,10 +1220,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               }
 
               const levels = [
-                { name: 'Pro', threshold: 70, color: '#10b981' },
-                { name: 'College', threshold: 67, color: '#3b82f6' },
-                { name: 'High School', threshold: 62, color: '#f59e0b' },
-                { name: 'Youth', threshold: 49, color: '#6b7280' },
+                { name: 'Pro', threshold: 70, color: '#9BDDFF' },
+                { name: 'College', threshold: 67, color: '#6BB8DB' },
+                { name: 'High School', threshold: 62, color: '#4A8FAD' },
+                { name: 'Youth', threshold: 49, color: '#3d4f5f' },
               ];
 
               const avgBatSpeed = validSwings.reduce((sum, s) => sum + (s.bat_speed || 0), 0) / validSwings.length;
@@ -1241,10 +1241,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               const pctYouth = (swingsAtYouth / totalSwings) * 100;
 
               let grade = 'Youth';
-              let gradeColor = '#6b7280';
-              if (avgBatSpeed >= 70) { grade = 'Pro'; gradeColor = '#10b981'; }
-              else if (avgBatSpeed >= 67) { grade = 'College'; gradeColor = '#3b82f6'; }
-              else if (avgBatSpeed >= 62) { grade = 'High School'; gradeColor = '#f59e0b'; }
+              let gradeColor = '#3d4f5f';
+              if (avgBatSpeed >= 70) { grade = 'Pro'; gradeColor = '#9BDDFF'; }
+              else if (avgBatSpeed >= 67) { grade = 'College'; gradeColor = '#6BB8DB'; }
+              else if (avgBatSpeed >= 62) { grade = 'High School'; gradeColor = '#4A8FAD'; }
 
               const yScale = 250 / 100;
 
@@ -1278,10 +1278,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const barHeight = swing.bat_speed! * yScale;
                         const barY = 270 - barHeight;
 
-                        let barColor = '#6b7280';
-                        if (swing.bat_speed! >= 70) barColor = '#10b981';
-                        else if (swing.bat_speed! >= 67) barColor = '#3b82f6';
-                        else if (swing.bat_speed! >= 62) barColor = '#f59e0b';
+                        let barColor = '#3d4f5f';
+                        if (swing.bat_speed! >= 70) barColor = '#9BDDFF';
+                        else if (swing.bat_speed! >= 67) barColor = '#6BB8DB';
+                        else if (swing.bat_speed! >= 62) barColor = '#4A8FAD';
 
                         return <Rect key={idx} x={x} y={barY} width={barWidth} height={barHeight} fill={barColor} opacity={0.9} />;
                       })}
@@ -1306,31 +1306,31 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   {/* Level Distribution */}
                   <View style={styles.levelGrid}>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(155,221,255,0.3)', backgroundColor: 'rgba(155,221,255,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#10b981' }]}>Pro (70+)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#10b981' }]}>{pctPro.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#9BDDFF' }]}>Pro (70+)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#9BDDFF' }]}>{pctPro.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtPro} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(59,130,246,0.3)', backgroundColor: 'rgba(59,130,246,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(107,184,219,0.3)', backgroundColor: 'rgba(107,184,219,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#3b82f6' }]}>College (67-69)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#3b82f6' }]}>{pctCollege.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#6BB8DB' }]}>College (67-69)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#6BB8DB' }]}>{pctCollege.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtCollege} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(245,158,11,0.3)', backgroundColor: 'rgba(245,158,11,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(74,143,173,0.3)', backgroundColor: 'rgba(74,143,173,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#f59e0b' }]}>High School (62-66)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#f59e0b' }]}>{pctHS.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#4A8FAD' }]}>High School (62-66)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#4A8FAD' }]}>{pctHS.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtHS} of {totalSwings} swings</Text>
                     </View>
-                    <View style={[styles.levelCard, { borderColor: 'rgba(107,114,128,0.3)', backgroundColor: 'rgba(107,114,128,0.1)' }]}>
+                    <View style={[styles.levelCard, { borderColor: 'rgba(61,79,95,0.3)', backgroundColor: 'rgba(61,79,95,0.1)' }]}>
                       <View style={styles.levelCardHeader}>
-                        <Text style={[styles.levelCardLabel, { color: '#9CA3AF' }]}>Youth (49-61)</Text>
-                        <Text style={[styles.levelCardPct, { color: '#9CA3AF' }]}>{pctYouth.toFixed(0)}%</Text>
+                        <Text style={[styles.levelCardLabel, { color: '#6b7280' }]}>Youth (49-61)</Text>
+                        <Text style={[styles.levelCardPct, { color: '#6b7280' }]}>{pctYouth.toFixed(0)}%</Text>
                       </View>
                       <Text style={styles.levelCardCount}>{swingsAtYouth} of {totalSwings} swings</Text>
                     </View>
@@ -1372,7 +1372,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {(() => {
                         const xMin = 30 + ((10 + 20) / 100) * 320;
                         const xMax = 30 + ((30 + 20) / 100) * 320;
-                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#10b981" opacity={0.1} />;
+                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#6b7280" opacity={0.15} />;
                       })()}
 
                       {/* Grid lines */}
@@ -1394,10 +1394,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const x = 30 + ((point.launchAngle + 20) / 100) * 320;
                         const y = 330 - (point.distance / 400) * 320;
 
-                        let color = '#ef4444';
-                        if (point.distance >= 350) color = '#10b981';
-                        else if (point.distance >= 300) color = '#3b82f6';
-                        else if (point.distance >= 250) color = '#f59e0b';
+                        let color = '#3d4f5f';
+                        if (point.distance >= 350) color = '#9BDDFF';
+                        else if (point.distance >= 300) color = '#6BB8DB';
+                        else if (point.distance >= 250) color = '#4A8FAD';
 
                         return (
                           <Circle
@@ -1417,7 +1417,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgLaunchAngle + 20) / 100) * 320}
                         y2="330"
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1427,7 +1427,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - (avgDistance / 400) * 320}
                         x2="350"
                         y2={330 - (avgDistance / 400) * 320}
-                        stroke="#f59e0b"
+                        stroke="#9BDDFF"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1435,7 +1435,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="230" y="15" width="115" height="75" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="287" y="32" fill="#f59e0b" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="287" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="235" y="47" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgLaunchAngle.toFixed(1)}°</SvgText>
                       <SvgText x="235" y="62" fill="#9ca3af" fontSize="9">Distance:</SvgText>
@@ -1450,19 +1450,19 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
                       <Text style={styles.legendText}>350+ ft</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#3b82f6' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
                       <Text style={styles.legendText}>300-349 ft</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#f59e0b' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
                       <Text style={styles.legendText}>250-299 ft</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#3d4f5f' }]} />
                       <Text style={styles.legendText}>&lt;250 ft</Text>
                     </View>
                   </View>

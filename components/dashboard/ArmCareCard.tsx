@@ -5,6 +5,47 @@ import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from 're
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
+// Dynamic color based on arm score
+// < 70: Red (danger)
+// 70-77: Orange (caution)
+// 77-85: Yellow-Green (improving)
+// 85+: Green (optimal)
+function getScoreColors(score: number): { primary: string; secondary: string; tertiary: string; glow: string } {
+  if (score < 70) {
+    // Red zone - danger
+    return {
+      primary: '#dc2626',
+      secondary: '#ef4444',
+      tertiary: '#f87171',
+      glow: '#ef4444',
+    };
+  } else if (score < 77) {
+    // Orange zone - caution
+    return {
+      primary: '#ea580c',
+      secondary: '#f97316',
+      tertiary: '#fb923c',
+      glow: '#f97316',
+    };
+  } else if (score < 85) {
+    // Yellow-Green zone - good/improving
+    return {
+      primary: '#ca8a04',
+      secondary: '#eab308',
+      tertiary: '#facc15',
+      glow: '#eab308',
+    };
+  } else {
+    // Green zone - optimal
+    return {
+      primary: '#16a34a',
+      secondary: '#22c55e',
+      tertiary: '#4ade80',
+      glow: '#22c55e',
+    };
+  }
+}
+
 interface ArmCareData {
   latest: {
     arm_score: number;
@@ -24,6 +65,9 @@ interface ArmCareCardProps {
 
 export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps & { isActive?: boolean }) {
   const { latest, pr } = data;
+
+  // Get dynamic colors based on score
+  const scoreColors = getScoreColors(latest.arm_score);
 
   // Animation values
   const circleAnim = useRef(new Animated.Value(0)).current;
@@ -141,19 +185,23 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
     outputRange: [circumference, strokeDashoffset],
   });
 
-  // Animated score text component
+  // Animated score text component with dynamic color
   const AnimatedScore = () => {
     const [displayValue, setDisplayValue] = React.useState(0);
+    const [currentColor, setCurrentColor] = React.useState(scoreColors.secondary);
 
     useEffect(() => {
       const listener = scoreAnim.addListener(({ value }) => {
         setDisplayValue(value);
+        // Update color dynamically as score animates
+        const colors = getScoreColors(value);
+        setCurrentColor(colors.secondary);
       });
       return () => scoreAnim.removeListener(listener);
     }, []);
 
     return (
-      <Text style={[styles.circleScore, { color: '#9BDDFF', fontSize: 48 }]}>
+      <Text style={[styles.circleScore, { color: currentColor }]}>
         {displayValue.toFixed(1)}
       </Text>
     );
@@ -166,21 +214,21 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
         <Animated.View style={[styles.armCareCircleContainer, {
           transform: [{ scale: scaleAnim }],
         }]}>
-          {/* Glow effect behind circle */}
+          {/* Glow effect behind circle - dynamic color */}
           <Animated.View style={[styles.circleGlow, {
             opacity: glowAnim.interpolate({
               inputRange: [0, 1],
               outputRange: [0, 0.6],
             }),
-            backgroundColor: '#9BDDFF',
+            backgroundColor: scoreColors.glow,
           }]} />
           <Svg width={176} height={176} style={{ transform: [{ rotate: '-90deg' }] }}>
             <Defs>
               <SvgLinearGradient id="armcareGradient" x1="0%" y1="0%" x2="0%" y2="100%">
                 <Stop offset="0%" stopColor="#000000" />
-                <Stop offset="30%" stopColor="#7BC5F0" />
-                <Stop offset="60%" stopColor="#9BDDFF" />
-                <Stop offset="100%" stopColor="#B0E5FF" />
+                <Stop offset="30%" stopColor={scoreColors.primary} />
+                <Stop offset="60%" stopColor={scoreColors.secondary} />
+                <Stop offset="100%" stopColor={scoreColors.tertiary} />
               </SvgLinearGradient>
             </Defs>
             <Circle cx="88" cy="88" r="75" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="12" fill="none" />
@@ -198,7 +246,7 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
           </Svg>
           <View style={styles.circleText}>
             <AnimatedScore />
-            <Text style={[styles.circleLabel, { fontSize: 12, marginTop: 4 }]}>Arm Score</Text>
+            <Text style={styles.circleLabel}>ARM SCORE</Text>
           </View>
         </Animated.View>
 
@@ -396,10 +444,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   circleScore: {
-    fontWeight: '700',
+    fontSize: 44,
+    fontWeight: '500',
+    letterSpacing: 0,
   },
   circleLabel: {
-    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 10,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.6)',
+    letterSpacing: 1.5,
+    marginTop: 2,
   },
   testsCount: {
     alignItems: 'center',

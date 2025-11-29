@@ -9,9 +9,12 @@ import {
   Platform,
   ScrollView,
   Animated,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Svg, Path, Circle } from 'react-native-svg';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 
 export default function LoginScreen({ navigation }: any) {
@@ -20,6 +23,9 @@ export default function LoginScreen({ navigation }: any) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
+  const [enableFaceId, setEnableFaceId] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [hasSavedCredentials, setHasSavedCredentials] = useState(false);
 
   // Animation values
   const pulse1 = useRef(new Animated.Value(0.3)).current;
@@ -27,6 +33,10 @@ export default function LoginScreen({ navigation }: any) {
   const shakeAnimation = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // Check biometric availability and saved credentials
+    checkBiometricSupport();
+    checkSavedCredentials();
+
     // Animated gradient pulses
     Animated.loop(
       Animated.sequence([
@@ -59,6 +69,101 @@ export default function LoginScreen({ navigation }: any) {
     ).start();
   }, []);
 
+  async function checkBiometricSupport() {
+    const compatible = await LocalAuthentication.hasHardwareAsync();
+    const enrolled = await LocalAuthentication.isEnrolledAsync();
+    setBiometricAvailable(compatible && enrolled);
+  }
+
+  async function checkSavedCredentials() {
+    try {
+      const savedEmail = await SecureStore.getItemAsync('userEmail');
+      const savedPassword = await SecureStore.getItemAsync('userPassword');
+      const faceIdEnabled = await SecureStore.getItemAsync('faceIdEnabled');
+
+      if (savedEmail && savedPassword && faceIdEnabled === 'true') {
+        setHasSavedCredentials(true);
+        setEmail(savedEmail);
+        setEnableFaceId(true);
+
+        // Auto-trigger Face ID if biometrics are available
+        const compatible = await LocalAuthentication.hasHardwareAsync();
+        const enrolled = await LocalAuthentication.isEnrolledAsync();
+        if (compatible && enrolled) {
+          // Small delay to let the UI render first
+          setTimeout(() => {
+            triggerBiometricLogin(savedEmail, savedPassword);
+          }, 500);
+        }
+      }
+    } catch (err) {
+      console.error('Error checking saved credentials:', err);
+    }
+  }
+
+  async function triggerBiometricLogin(savedEmail: string, savedPassword: string) {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Sign in to ASP Boost',
+        fallbackLabel: 'Use password',
+        disableDeviceFallback: false,
+      });
+
+      if (result.success) {
+        setLoading(true);
+        const { data, error: authError } = await supabase.auth.signInWithPassword({
+          email: savedEmail,
+          password: savedPassword,
+        });
+
+        if (authError) {
+          setError('Biometric login failed. Please use your password.');
+          setLoading(false);
+          return;
+        }
+
+        navigation.replace('Dashboard');
+      }
+    } catch (err) {
+      console.error('Auto biometric auth error:', err);
+    }
+  }
+
+  async function handleBiometricLogin() {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Sign in with Face ID',
+        fallbackLabel: 'Use password',
+        disableDeviceFallback: false,
+      });
+
+      if (result.success) {
+        // Get saved credentials and login
+        const savedEmail = await SecureStore.getItemAsync('userEmail');
+        const savedPassword = await SecureStore.getItemAsync('userPassword');
+
+        if (savedEmail && savedPassword) {
+          setLoading(true);
+          const { data, error: authError } = await supabase.auth.signInWithPassword({
+            email: savedEmail,
+            password: savedPassword,
+          });
+
+          if (authError) {
+            setError('Biometric login failed. Please use your password.');
+            setLoading(false);
+            return;
+          }
+
+          navigation.replace('Dashboard');
+        }
+      }
+    } catch (err) {
+      console.error('Biometric auth error:', err);
+      setError('Biometric authentication failed');
+    }
+  }
+
   useEffect(() => {
     if (error) {
       // Shake animation on error
@@ -88,6 +193,15 @@ export default function LoginScreen({ navigation }: any) {
       });
 
       if (authError) throw authError;
+
+      // Save credentials and Face ID preference
+      if (rememberMe || enableFaceId) {
+        await SecureStore.setItemAsync('userEmail', email.trim());
+        await SecureStore.setItemAsync('userPassword', password);
+      }
+      if (enableFaceId) {
+        await SecureStore.setItemAsync('faceIdEnabled', 'true');
+      }
 
       navigation.replace('Dashboard');
     } catch (error: any) {
@@ -204,6 +318,19 @@ export default function LoginScreen({ navigation }: any) {
                   textContentType="password"
                   editable={!loading}
                 />
+                {/* Face ID button inside password field */}
+                {biometricAvailable && hasSavedCredentials && (
+                  <TouchableOpacity
+                    onPress={handleBiometricLogin}
+                    disabled={loading}
+                    style={styles.faceIdInlineButton}
+                    activeOpacity={0.7}
+                  >
+                    <Svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9BDDFF" strokeWidth="1.5">
+                      <Path strokeLinecap="round" strokeLinejoin="round" d="M9 12h.01M15 12h.01M9 16c.5 1 1.5 2 3 2s2.5-1 3-2M5 8V6a2 2 0 012-2h2M5 16v2a2 2 0 002 2h2M17 8V6a2 2 0 00-2-2h-2M17 16v2a2 2 0 01-2 2h-2" />
+                    </Svg>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
@@ -221,6 +348,25 @@ export default function LoginScreen({ navigation }: any) {
               </View>
               <Text style={styles.rememberMeText}>Remember me for 30 days</Text>
             </TouchableOpacity>
+
+            {/* Enable Face ID - only show if device supports it and no saved credentials yet */}
+            {biometricAvailable && !hasSavedCredentials && (
+              <TouchableOpacity
+                onPress={() => setEnableFaceId(!enableFaceId)}
+                style={styles.rememberMeContainer}
+                activeOpacity={0.7}
+                disabled={loading}
+              >
+                <View style={[styles.checkbox, enableFaceId && styles.checkboxChecked]}>
+                  {enableFaceId && (
+                    <Text style={styles.checkmark}>✓</Text>
+                  )}
+                </View>
+                <Text style={styles.rememberMeText}>
+                  Enable {Platform.OS === 'ios' ? 'Face ID' : 'Biometric'} sign in
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {/* Sign In Button */}
             <TouchableOpacity
@@ -429,6 +575,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     paddingVertical: 12,
+  },
+  faceIdInlineButton: {
+    padding: 8,
+    marginLeft: 8,
   },
   rememberMeContainer: {
     flexDirection: 'row',

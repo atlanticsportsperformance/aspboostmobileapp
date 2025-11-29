@@ -203,7 +203,7 @@ export default function ContactPoint3D({ hittraxSwings }: ContactPoint3DProps) {
       const extrudeSettings = { steps: 1, depth: zoneHeight, bevelEnabled: false };
       const zoneGeo = new THREE.ExtrudeGeometry(zoneShape, extrudeSettings);
       const zoneMat = new THREE.MeshBasicMaterial({
-        color: 0x10b981,
+        color: 0x6b7280,
         transparent: true,
         opacity: 0.15,
         side: THREE.DoubleSide,
@@ -223,9 +223,9 @@ export default function ContactPoint3D({ hittraxSwings }: ContactPoint3DProps) {
 
     // Contact points
     contactPoints.forEach(point => {
-      const color = point.exitVelocity >= 100 ? 0x10b981 :
-                    point.exitVelocity >= 90 ? 0x3b82f6 :
-                    point.exitVelocity >= 80 ? 0xf59e0b : 0xef4444;
+      const color = point.exitVelocity >= 100 ? 0x9BDDFF :
+                    point.exitVelocity >= 90 ? 0x6BB8DB :
+                    point.exitVelocity >= 80 ? 0x4A8FAD : 0x3d4f5f;
 
       const sphereGeo = new THREE.SphereGeometry(0.03, 16, 16);
       const sphereMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 });
@@ -299,19 +299,19 @@ export default function ContactPoint3D({ hittraxSwings }: ContactPoint3DProps) {
       {/* Legend */}
       <View style={styles.legend}>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+          <View style={[styles.legendDot, { backgroundColor: '#3d4f5f' }]} />
           <Text style={styles.legendText}>&lt;80</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: '#f59e0b' }]} />
+          <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
           <Text style={styles.legendText}>80-89</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: '#3b82f6' }]} />
+          <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
           <Text style={styles.legendText}>90-99</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+          <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
           <Text style={styles.legendText}>100+</Text>
         </View>
       </View>
@@ -398,21 +398,21 @@ export default function ContactPoint3D({ hittraxSwings }: ContactPoint3DProps) {
 
                   if (ev !== null) {
                     if (ev >= 100) {
-                      bgColor = 'rgba(16,185,129,0.3)';
-                      borderColor = 'rgba(16,185,129,0.5)';
-                      textColor = '#4ade80';
+                      bgColor = 'rgba(155,221,255,0.3)';
+                      borderColor = 'rgba(155,221,255,0.5)';
+                      textColor = '#9BDDFF';
                     } else if (ev >= 90) {
-                      bgColor = 'rgba(59,130,246,0.3)';
-                      borderColor = 'rgba(59,130,246,0.5)';
-                      textColor = '#60a5fa';
+                      bgColor = 'rgba(107,184,219,0.3)';
+                      borderColor = 'rgba(107,184,219,0.5)';
+                      textColor = '#6BB8DB';
                     } else if (ev >= 80) {
-                      bgColor = 'rgba(245,158,11,0.3)';
-                      borderColor = 'rgba(245,158,11,0.5)';
-                      textColor = '#fbbf24';
+                      bgColor = 'rgba(74,143,173,0.3)';
+                      borderColor = 'rgba(74,143,173,0.5)';
+                      textColor = '#4A8FAD';
                     } else {
-                      bgColor = 'rgba(239,68,68,0.3)';
-                      borderColor = 'rgba(239,68,68,0.5)';
-                      textColor = '#f87171';
+                      bgColor = 'rgba(61,79,95,0.3)';
+                      borderColor = 'rgba(61,79,95,0.5)';
+                      textColor = '#6b7280';
                     }
                   }
 

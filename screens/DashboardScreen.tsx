@@ -129,24 +129,27 @@ interface PitchingData {
   } | null;
 }
 
-const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; label: string } } = {
+const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; button: string; label: string } } = {
   hitting: {
     bg: '#7f1d1d',
     text: '#fca5a5',
     dot: '#ef4444',
+    button: '#dc2626',
     label: 'Hitting',
   },
   throwing: {
     bg: '#1e3a8a',
     text: '#93c5fd',
     dot: '#3b82f6',
+    button: '#2563eb',
     label: 'Throwing',
   },
   strength_conditioning: {
-    bg: '#065f46',
-    text: '#6ee7b7',
-    dot: '#10b981',
-    label: 'Strength',
+    bg: '#0a1f0d',
+    text: '#FFFFFF',
+    dot: '#00ff55',
+    button: '#10b981',
+    label: 'Strength & Conditioning',
   },
 };
 
@@ -913,54 +916,27 @@ export default function DashboardScreen({ navigation }: any) {
         setAthleteName(`${athlete.first_name || ''} ${athlete.last_name || ''}`);
         setValdProfileId(athlete.vald_profile_id);
 
-        // Check for pitching data (matching web app logic)
-        const [trackmanPitches, commandSessions] = await Promise.all([
+        // Fetch all initial data in parallel for faster loading
+        const [
+          trackmanPitchesResult,
+          commandSessionsResult,
+          resourcesResult,
+          athleteLastViewedResult,
+          messagesResult,
+          workoutsResult,
+          bookingsResult,
+        ] = await Promise.all([
+          // Check for pitching data
           supabase.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
           supabase.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
-        ]);
-        setHasPitchingData((trackmanPitches.count || 0) > 0 || (commandSessions.count || 0) > 0);
-
-        // Check for resources data
-        const { count: resourcesCount } = await supabase
-          .from('resources')
-          .select('id', { count: 'exact', head: true })
-          .eq('athlete_id', user.id);
-        setHasResourcesData((resourcesCount || 0) > 0);
-
-        // Count NEW resources (created after last viewed)
-        const { data: athleteWithLastViewed } = await supabase
-          .from('athletes')
-          .select('last_viewed_resources_at')
-          .eq('id', athlete.id)
-          .single();
-
-        if (athleteWithLastViewed) {
-          const lastViewed = athleteWithLastViewed.last_viewed_resources_at || new Date(0).toISOString();
-          const { count: newCount } = await supabase
-            .from('resources')
-            .select('id', { count: 'exact', head: true })
-            .eq('athlete_id', user.id)
-            .gt('created_at', lastViewed);
-          setNewResourcesCount(newCount || 0);
-        }
-
-        // Fetch unread messages count
-        try {
-          const { count: unreadCount } = await supabase
-            .from('messages')
-            .select('id', { count: 'exact', head: true })
-            .eq('recipient_id', user.id)
-            .eq('is_read', false);
-          setUnreadMessagesCount(unreadCount || 0);
-        } catch (msgError) {
-          console.log('Messages table may not exist or error fetching:', msgError);
-          setUnreadMessagesCount(0);
-        }
-
-        // Load workout instances with full routine details
-        const { data: workouts } = await supabase
-          .from('workout_instances')
-          .select(`
+          // Check for resources data
+          supabase.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
+          // Get last viewed resources timestamp
+          supabase.from('athletes').select('last_viewed_resources_at').eq('id', athlete.id).single(),
+          // Fetch unread messages count
+          supabase.from('messages').select('id', { count: 'exact', head: true }).eq('recipient_id', user.id).eq('is_read', false),
+          // Load workout instances with full routine details
+          supabase.from('workout_instances').select(`
             id,
             scheduled_date,
             status,
@@ -989,16 +965,9 @@ export default function DashboardScreen({ navigation }: any) {
                 )
               )
             )
-          `)
-          .eq('athlete_id', athlete.id)
-          .order('scheduled_date');
-
-        setWorkoutInstances((workouts as any) || []);
-
-        // Load bookings
-        const { data: bookingsData } = await supabase
-          .from('scheduling_bookings')
-          .select(`
+          `).eq('athlete_id', athlete.id).order('scheduled_date'),
+          // Load bookings
+          supabase.from('scheduling_bookings').select(`
             event:scheduling_events (
               start_time,
               scheduling_templates (
@@ -1007,28 +976,36 @@ export default function DashboardScreen({ navigation }: any) {
                 )
               )
             )
-          `)
-          .eq('athlete_id', athlete.id);
+          `).eq('athlete_id', athlete.id),
+        ]);
 
-        setBookings((bookingsData as any) || []);
+        // Process results
+        setHasPitchingData((trackmanPitchesResult.count || 0) > 0 || (commandSessionsResult.count || 0) > 0);
+        setHasResourcesData((resourcesResult.count || 0) > 0);
+        setUnreadMessagesCount(messagesResult.error ? 0 : (messagesResult.count || 0));
+        setWorkoutInstances((workoutsResult.data as any) || []);
+        setBookings((bookingsResult.data as any) || []);
 
-        // Load force profile (from force_plate_percentiles + composite_score_configs)
-        await fetchForceProfile(athlete.id, athlete.vald_profile_id);
+        // Count NEW resources if we have last viewed timestamp
+        if (athleteLastViewedResult.data) {
+          const lastViewed = athleteLastViewedResult.data.last_viewed_resources_at || new Date(0).toISOString();
+          const { count: newCount } = await supabase
+            .from('resources')
+            .select('id', { count: 'exact', head: true })
+            .eq('athlete_id', user.id)
+            .gt('created_at', lastViewed);
+          setNewResourcesCount(newCount || 0);
+        }
 
-        // Load hitting data
-        await fetchHittingData(athlete.id);
-
-        // Load armcare data
-        await fetchArmCareData(athlete.id);
-
-        // Load pitching data
-        await fetchPitchingData(athlete.id);
-
-        // Load predictions
-        await fetchPredictions(athlete.id);
-
-        // Load bodyweight data from CMJ tests
-        await fetchBodyweightData(athlete.id);
+        // Load all performance data in parallel for faster loading
+        await Promise.all([
+          fetchForceProfile(athlete.id, athlete.vald_profile_id),
+          fetchHittingData(athlete.id),
+          fetchArmCareData(athlete.id),
+          fetchPitchingData(athlete.id),
+          fetchPredictions(athlete.id),
+          fetchBodyweightData(athlete.id),
+        ]);
       }
     } catch (error) {
       console.error('Error loading dashboard:', error);
@@ -1483,9 +1460,16 @@ export default function DashboardScreen({ navigation }: any) {
 
                       return (
                         <View key={workout.id} style={styles.workoutCard}>
+                          <LinearGradient
+                            colors={[categoryInfo.bg, categoryInfo.bg, '#050505', '#000000']}
+                            locations={[0, 0.3, 0.7, 1]}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.workoutCardGradient}
+                          >
                           {/* Category Badge + Start Button */}
                           <View style={styles.workoutCardTopRow}>
-                            <View style={[styles.categoryBadge, { backgroundColor: categoryInfo.bg }]}>
+                            <View style={[styles.categoryBadge, { backgroundColor: 'rgba(0, 0, 0, 0.3)' }]}>
                               <Text style={[styles.categoryBadgeText, { color: categoryInfo.text }]}>
                                 {categoryInfo.label}
                               </Text>
@@ -1493,6 +1477,7 @@ export default function DashboardScreen({ navigation }: any) {
                             <TouchableOpacity
                               style={[
                                 styles.workoutActionButton,
+                                !isCompleted && { backgroundColor: categoryInfo.button },
                                 isCompleted && styles.workoutActionButtonCompleted
                               ]}
                               onPress={async () => {
@@ -1506,7 +1491,7 @@ export default function DashboardScreen({ navigation }: any) {
                                 }
                               }}
                             >
-                              <Text style={styles.workoutActionButtonText}>
+                              <Text style={[styles.workoutActionButtonText, !isCompleted && { color: '#FFFFFF' }]}>
                                 {isCompleted ? 'View' : 'Start'}
                               </Text>
                             </TouchableOpacity>
@@ -1593,6 +1578,7 @@ export default function DashboardScreen({ navigation }: any) {
                               )}
                             </View>
                           )}
+                          </LinearGradient>
                         </View>
                       );
                     })}
@@ -2491,12 +2477,20 @@ const styles = StyleSheet.create({
     paddingBottom: 100, // Extra space for FAB and content visibility
   },
   workoutCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
     marginBottom: 12,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: 'rgba(180, 180, 180, 0.15)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  workoutCardGradient: {
     padding: 16,
+    borderRadius: 11,
   },
   workoutCardTopRow: {
     flexDirection: 'row',

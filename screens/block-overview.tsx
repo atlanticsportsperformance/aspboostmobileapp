@@ -253,6 +253,11 @@ export default function BlockOverview({
             {isExpanded && (
               <View style={styles.exerciseList}>
                 {routine.routine_exercises.map((exercise, exerciseIndex) => {
+                  // Skip exercises where the join to exercises table failed
+                  if (!exercise.exercises) {
+                    console.warn(`Missing exercise data for routine_exercise ${exercise.id}`);
+                    return null;
+                  }
                   const exerciseCode = getExerciseCode(routineIndex, exerciseIndex);
                   const videoId = getYouTubeVideoId(exercise.exercises.video_url || null);
                   const isCompleted = isExerciseCompleted(exercise.id, completedSets);

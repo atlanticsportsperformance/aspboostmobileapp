@@ -57,81 +57,81 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
     section2Anim.setValue(0);
     section3Anim.setValue(0);
 
-    // Section fade-in animations (staggered)
-    Animated.stagger(150, [
+    // Section fade-in animations (staggered, slower)
+    Animated.stagger(200, [
       Animated.timing(section1Anim, {
         toValue: 1,
-        duration: 400,
+        duration: 600,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(section2Anim, {
         toValue: 1,
-        duration: 400,
+        duration: 600,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(section3Anim, {
         toValue: 1,
-        duration: 400,
+        duration: 600,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start();
 
-    // Bat Speed bars with spring
+    // Bat Speed bars with spring (slower, more dramatic)
     if (prs.bat_speed) {
       Animated.spring(batSpeedPrAnim, {
         toValue: batSpeedPrWidth,
-        delay: 200,
-        friction: 6,
-        tension: 40,
+        delay: 300,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
 
       Animated.spring(batSpeedRecentAnim, {
         toValue: batSpeedRecentWidth,
-        delay: 350,
-        friction: 6,
-        tension: 40,
+        delay: 550,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
     }
 
-    // Exit Velocity bars with spring
+    // Exit Velocity bars with spring (slower)
     if (prs.exit_velocity) {
       Animated.spring(exitVeloPrAnim, {
         toValue: exitVeloPrWidth,
-        delay: 400,
-        friction: 6,
-        tension: 40,
+        delay: 700,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
 
       Animated.spring(exitVeloRecentAnim, {
         toValue: exitVeloRecentWidth,
-        delay: 550,
-        friction: 6,
-        tension: 40,
+        delay: 950,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
     }
 
-    // Distance bars with spring
+    // Distance bars with spring (slower)
     if (prs.distance) {
       Animated.spring(distancePrAnim, {
         toValue: distancePrWidth,
-        delay: 600,
-        friction: 6,
-        tension: 40,
+        delay: 1100,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
 
       Animated.spring(distanceRecentAnim, {
         toValue: distanceRecentWidth,
-        delay: 750,
-        friction: 6,
-        tension: 40,
+        delay: 1350,
+        friction: 8,
+        tension: 25,
         useNativeDriver: false,
       }).start();
     }
@@ -386,20 +386,20 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
-    width: 65,
+    width: 58,
   },
   progressBarContainer: {
     flex: 1,
   },
   progressBarBg: {
-    height: 4,
+    height: 6,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    borderRadius: 2,
+    borderRadius: 3,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    borderRadius: 2,
+    borderRadius: 3,
   },
   progressValueContainer: {
     flexDirection: 'row',
