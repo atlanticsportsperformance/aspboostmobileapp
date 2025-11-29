@@ -249,17 +249,29 @@ export default function DashboardScreen({ navigation }: any) {
 
   async function handleDiscardWorkout() {
     if (resumeWorkoutData) {
-      // Clear saved state
-      await AsyncStorage.removeItem(`workout_${resumeWorkoutData.instanceId}`);
+      const instanceId = resumeWorkoutData.instanceId;
+
+      // Close modal first
+      setShowResumeModal(false);
+      setResumeWorkoutData(null);
+
+      // Clear saved state from AsyncStorage
+      await AsyncStorage.removeItem(`workout_${instanceId}`);
+
+      // Delete all exercise logs for this workout instance
+      await supabase
+        .from('exercise_logs')
+        .delete()
+        .eq('workout_instance_id', instanceId);
 
       // Update workout instance status to 'not_started'
       await supabase
         .from('workout_instances')
         .update({ status: 'not_started' })
-        .eq('id', resumeWorkoutData.instanceId);
+        .eq('id', instanceId);
 
-      setShowResumeModal(false);
-      setResumeWorkoutData(null);
+      // Refresh the dashboard to show updated state
+      await loadDashboard();
     }
   }
 

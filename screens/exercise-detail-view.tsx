@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   useWindowDimensions,
   Linking,
   Image,
+  PanResponder,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -554,6 +555,48 @@ export default function ExerciseDetailView({
     }
   };
 
+  // Handle Next button press - two-phase: first tap checks set, second tap advances
+  const handleNextButtonPress = () => {
+    const currentSetCompleted = isSetCompleted(currentSetIndex);
+
+    if (!currentSetCompleted) {
+      // First tap: mark the current set as complete (don't advance)
+      handleCheckboxToggle(currentSetIndex);
+    } else {
+      // Second tap: set is already complete, advance to next
+      onNextSet();
+    }
+  };
+
+  // Swipe gesture handler for exercise navigation
+  const SWIPE_THRESHOLD = 100; // Minimum distance for a "hard" swipe
+  const SWIPE_VELOCITY_THRESHOLD = 0.3; // Minimum velocity for swipe
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_, gestureState) => {
+      // Only capture horizontal swipes that are more horizontal than vertical
+      const { dx, dy } = gestureState;
+      return Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 20;
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      const { dx, vx } = gestureState;
+
+      // Check for a hard swipe (either by distance or velocity)
+      const isHardSwipe = Math.abs(dx) > SWIPE_THRESHOLD || Math.abs(vx) > SWIPE_VELOCITY_THRESHOLD;
+
+      if (isHardSwipe) {
+        if (dx > 0 && hasPrev) {
+          // Swipe right → previous exercise
+          onPrevExercise();
+        } else if (dx < 0 && hasNext) {
+          // Swipe left → next exercise
+          onNextExercise();
+        }
+      }
+    },
+  }), [hasPrev, hasNext, onPrevExercise, onNextExercise]);
+
   // Render set cards
   const renderSetCards = () => {
     const sets = [];
@@ -766,6 +809,7 @@ export default function ExerciseDetailView({
         style={styles.keyboardAvoidingContainer}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
+        {...panResponder.panHandlers}
       >
         {/* Header Section */}
         <View style={styles.header}>
@@ -806,16 +850,14 @@ export default function ExerciseDetailView({
 
         {/* Exercise Title Row */}
         <View style={styles.titleRow}>
-          {/* Previous Exercise Button */}
-          {hasPrev && (
-            <TouchableOpacity
-              style={styles.prevButton}
-              onPress={onPrevExercise}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.prevButtonIcon}>‹</Text>
-            </TouchableOpacity>
-          )}
+          {/* Back to Overview Button */}
+          <TouchableOpacity
+            style={styles.backToOverviewButton}
+            onPress={onBackToOverview}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.backToOverviewIcon}>←</Text>
+          </TouchableOpacity>
 
           {/* Block Label Badge */}
           {blockLabel && (
@@ -833,17 +875,6 @@ export default function ExerciseDetailView({
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exercise.exercises.name}
           </Text>
-
-          {/* Next Exercise Button */}
-          {hasNext && (
-            <TouchableOpacity
-              style={styles.nextButton}
-              onPress={onNextExercise}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.nextButtonIcon}>›</Text>
-            </TouchableOpacity>
-          )}
         </View>
 
         {/* Exercise Details - Compact inline display */}
@@ -862,8 +893,8 @@ export default function ExerciseDetailView({
         )}
       </View>
 
-      {/* Video Section - YouTube Player with fallback */}
-      {videoId && (
+      {/* Video Section - YouTube Player with fallback (hidden when keyboard is active) */}
+      {videoId && !activeInput && (
         videoError ? (
           // Fallback: Thumbnail that opens YouTube app
           <TouchableOpacity
@@ -985,20 +1016,6 @@ export default function ExerciseDetailView({
       <View style={styles.bottomNav}>
         <View style={styles.bottomNavGradient}>
           <View style={styles.bottomNavContainer}>
-            {/* Previous Exercise Button */}
-            {(hasPrev || isSuperset) ? (
-              <TouchableOpacity
-                style={styles.prevExerciseButton}
-                onPress={onPrevExercise}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.prevExerciseButtonIcon}>‹</Text>
-                <Text style={styles.prevExerciseButtonText}>← Prev</Text>
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.emptyButton} />
-            )}
-
             {/* History Button */}
             <TouchableOpacity
               style={[styles.historyButton, showHistory && styles.historyButtonActive]}
@@ -1020,31 +1037,43 @@ export default function ExerciseDetailView({
             </TouchableOpacity>
 
             {/* Next Set / Next Exercise / DONE Button */}
-            <TouchableOpacity
-              style={[
-                styles.nextSetButton,
-                getNextButtonText() === 'DONE' && styles.doneButton,
-              ]}
-              onPress={onNextSet}
-              activeOpacity={0.7}
-            >
-              {getNextButtonText() === 'DONE' ? (
-                <LinearGradient
-                  colors={['#10B981', '#059669']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.doneButtonGradient}
+            {(() => {
+              const currentSetCompleted = isSetCompleted(currentSetIndex);
+              const nextText = getNextButtonText();
+
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.nextSetButton,
+                    nextText === 'DONE' && currentSetCompleted && styles.doneButton,
+                  ]}
+                  onPress={handleNextButtonPress}
+                  activeOpacity={0.7}
                 >
-                  <Text style={styles.doneButtonIcon}>✓</Text>
-                  <Text style={styles.doneButtonText}>DONE</Text>
-                </LinearGradient>
-              ) : (
-                <>
-                  <Text style={styles.nextSetButtonIcon}>›</Text>
-                  <Text style={styles.nextSetButtonText}>{getNextButtonText()}</Text>
-                </>
-              )}
-            </TouchableOpacity>
+                  {nextText === 'DONE' && currentSetCompleted ? (
+                    <LinearGradient
+                      colors={['#10B981', '#059669']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.doneButtonGradient}
+                    >
+                      <Text style={styles.doneButtonIcon}>✓</Text>
+                      <Text style={styles.doneButtonText}>DONE</Text>
+                    </LinearGradient>
+                  ) : !currentSetCompleted ? (
+                    <>
+                      <Text style={styles.nextSetButtonIcon}>✓</Text>
+                      <Text style={styles.nextSetButtonText}>Log Set</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.nextSetButtonIcon}>›</Text>
+                      <Text style={styles.nextSetButtonText}>{nextText}</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              );
+            })()}
           </View>
         </View>
       </View>
@@ -1056,7 +1085,7 @@ export default function ExerciseDetailView({
           onKeyPress={handleKeypadPress}
           onBackspace={handleKeypadBackspace}
           onDone={handleKeypadDone}
-          showDecimal={activeInput.isDecimal}
+          showDecimal={true}
           hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
         />
       )}
@@ -1107,6 +1136,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  backToOverviewButton: {
+    width: 28,
+    height: 28,
+    backgroundColor: 'rgba(115, 115, 115, 0.2)',
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backToOverviewIcon: {
+    fontSize: 14,
+    color: '#A3A3A3',
   },
   prevButton: {
     width: 32,
