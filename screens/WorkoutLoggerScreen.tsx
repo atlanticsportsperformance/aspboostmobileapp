@@ -414,14 +414,12 @@ export default function WorkoutLoggerScreen() {
         .from('workout_instances')
         .update({
           status: 'in_progress',
-          started_at: new Date().toISOString(),
         })
         .eq('id', workoutInstanceId);
 
       setWorkoutInstance(prev => prev ? {
         ...prev,
         status: 'in_progress',
-        started_at: new Date().toISOString(),
       } : null);
 
       setTimer(0);
@@ -451,6 +449,17 @@ export default function WorkoutLoggerScreen() {
       console.error('Error completing workout:', error);
       Alert.alert('Error', 'Failed to complete workout');
     }
+  };
+
+  const handleExitWorkout = () => {
+    Alert.alert(
+      'Exit Workout',
+      'Are you sure you want to exit? Your progress has been saved and you can resume later.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Exit', style: 'destructive', onPress: () => navigation.goBack() },
+      ]
+    );
   };
 
   // Save set data to database (debounced)
@@ -840,7 +849,7 @@ export default function WorkoutLoggerScreen() {
         timer={timer}
         onExercisePress={handleExercisePress}
         onCompleteWorkout={handleCompleteWorkout}
-        onBack={() => navigation.goBack()}
+        onBack={handleExitWorkout}
       />
     );
   }

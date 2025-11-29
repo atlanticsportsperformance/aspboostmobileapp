@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
@@ -15,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
@@ -197,9 +199,12 @@ export default function DashboardScreen({ navigation }: any) {
 
   const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
 
-  useEffect(() => {
-    loadDashboard();
-  }, []);
+  // Refetch dashboard data when screen gains focus (e.g., after returning from workout)
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboard();
+    }, [])
+  );
 
   // Check if workout is in progress and show resume modal
   async function checkAndShowResumeModal(workout: WorkoutInstance) {
@@ -1610,13 +1615,12 @@ export default function DashboardScreen({ navigation }: any) {
           onRequestClose={() => setShowResumeModal(false)}
         >
           {/* Backdrop */}
-          <TouchableOpacity
+          <Pressable
             style={styles.resumeModalBackdrop}
-            activeOpacity={1}
             onPress={() => setShowResumeModal(false)}
           >
-            {/* Modal Content */}
-            <View style={styles.resumeModalContainer}>
+            {/* Modal Content - Pressable stops propagation */}
+            <Pressable style={styles.resumeModalContainer} onPress={() => {}}>
               {/* Icon */}
               <View style={styles.resumeModalIconContainer}>
                 <View style={styles.resumeModalIconBadge}>
@@ -1675,8 +1679,8 @@ export default function DashboardScreen({ navigation }: any) {
                   <Text style={styles.resumeModalTertiaryButtonText}>Discard Progress</Text>
                 </TouchableOpacity>
               </View>
-            </View>
-          </TouchableOpacity>
+            </Pressable>
+          </Pressable>
         </Modal>
       )}
 
