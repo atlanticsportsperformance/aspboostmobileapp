@@ -150,9 +150,7 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
     const allSame = primaryValues.every(v => v === primaryValues[0]);
     const primaryDisplay = allSame ? String(primaryValues[0]) : primaryValues.join(', ');
 
-    // Check if tracked as PR
-    const isTrackedPR = secondary && exercise.tracked_max_metrics?.includes(secondary);
-    const prEmoji = isTrackedPR ? ' 🏆' : '';
+    // PR tracking is now shown separately next to exercise name, not in metrics string
 
     // Check for intensity - try secondary metric first, then primary, then any metric in this measurement
     let intensityDisplay = '';
@@ -208,17 +206,17 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
       const alreadyHasAMRAP = String(primaryDisplay).includes('AMRAP');
 
       if (primaryValues.length === 0) {
-        displayText = `${measurementName} (AMRAP)${intensityDisplay}${prEmoji}${secondaryDisplay}`;
+        displayText = `${measurementName} (AMRAP)${intensityDisplay}${secondaryDisplay}`;
       } else if (alreadyHasAMRAP) {
         const repsLabel = hasSetConfigurations ? '' : ' Reps';
-        displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${prEmoji}${secondaryDisplay}`;
+        displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${secondaryDisplay}`;
       } else {
         const repsLabel = hasSetConfigurations ? '' : ' Reps';
-        displayText = `${measurementName} (${primaryDisplay}${repsLabel} AMRAP)${intensityDisplay}${prEmoji}${secondaryDisplay}`;
+        displayText = `${measurementName} (${primaryDisplay}${repsLabel} AMRAP)${intensityDisplay}${secondaryDisplay}`;
       }
     } else {
       const repsLabel = hasSetConfigurations ? '' : ' Reps';
-      displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${prEmoji}${secondaryDisplay}`;
+      displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${secondaryDisplay}`;
     }
     summaries.push(displayText);
   });

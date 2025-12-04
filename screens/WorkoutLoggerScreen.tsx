@@ -841,7 +841,7 @@ export default function WorkoutLoggerScreen() {
     return (
       <WorkoutPreStartScreen
         workout={workout}
-        scheduledDate={workoutInstance?.scheduled_date}
+        customMeasurements={customMeasurements}
         onStart={handleStartWorkout}
       />
     );

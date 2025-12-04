@@ -15,6 +15,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Line, Path, Text as SvgText, G, Polygon, Polyline, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -36,6 +37,7 @@ interface ArmCareSession {
 }
 
 export default function ArmCareScreen({ navigation, route }: any) {
+  const { isParent } = useAthlete();
   const athleteId = route?.params?.athleteId;
   const [sessions, setSessions] = useState<ArmCareSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -766,7 +768,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Dashboard');
+                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
                 }}
               >
                 <Ionicons name="home" size={20} color="#FFFFFF" />
@@ -812,7 +814,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
                   style={styles.fabMenuItem}
                   onPress={() => {
                     setFabOpen(false);
-                    navigation.navigate('HittingPerformance');
+                    navigation.navigate('HittingPerformance', { athleteId: currentAthleteId });
                   }}
                 >
                   <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
@@ -826,7 +828,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
                   style={styles.fabMenuItem}
                   onPress={() => {
                     setFabOpen(false);
-                    navigation.navigate('PitchingPerformance');
+                    navigation.navigate('PitchingPerformance', { athleteId: currentAthleteId });
                   }}
                 >
                   <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
@@ -849,7 +851,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
                   style={styles.fabMenuItem}
                   onPress={() => {
                     setFabOpen(false);
-                    navigation.navigate('ForceProfile');
+                    navigation.navigate('ForceProfile', { athleteId: currentAthleteId });
                   }}
                 >
                   <Ionicons name="trending-up" size={20} color="#A855F7" />
@@ -862,7 +864,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Resources', { athleteId });
+                  navigation.navigate('Resources', { athleteId: currentAthleteId });
                 }}
               >
                 <View style={styles.fabMenuIconContainer}>

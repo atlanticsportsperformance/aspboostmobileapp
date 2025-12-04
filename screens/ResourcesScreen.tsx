@@ -18,6 +18,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -69,10 +70,12 @@ interface Resource {
 type FilterType = 'all' | 'bulletins' | 'images' | 'videos' | 'documents';
 
 export default function ResourcesScreen({ navigation, route }: any) {
-  const { athleteId: routeAthleteId } = route.params || {};
+  const { isParent } = useAthlete();
+  const { athleteId: routeAthleteId, userId: routeUserId } = route.params || {};
 
   const [athleteId, setAthleteId] = useState<string | null>(routeAthleteId || null);
-  const [userId, setUserId] = useState<string | null>(null);
+  // userId here represents the athlete's profile ID (for resource queries), not the logged-in user
+  const [userId, setUserId] = useState<string | null>(routeUserId || null);
   const [resources, setResources] = useState<Resource[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -100,9 +103,12 @@ export default function ResourcesScreen({ navigation, route }: any) {
         navigation.replace('Login');
         return;
       }
-      setUserId(user.id);
 
+      // Use passed userId (athlete's profile ID) or fallback to logged-in user
+      let currentUserId = userId || user.id;
       let currentAthleteId = athleteId;
+
+      // If no athleteId passed, look up by user_id
       if (!currentAthleteId) {
         const { data: athlete } = await supabase
           .from('athletes')
@@ -114,11 +120,16 @@ export default function ResourcesScreen({ navigation, route }: any) {
           currentAthleteId = athlete.id;
           setAthleteId(athlete.id);
         }
+        // Also set userId if not passed
+        if (!userId) {
+          currentUserId = user.id;
+          setUserId(user.id);
+        }
       }
 
-      if (currentAthleteId) {
+      if (currentAthleteId && currentUserId) {
         await Promise.all([
-          fetchResources(user.id, currentAthleteId),
+          fetchResources(currentUserId, currentAthleteId),
           fetchFabData(currentAthleteId, user.id),
           markResourcesAsViewed(currentAthleteId),
         ]);
@@ -666,7 +677,7 @@ export default function ResourcesScreen({ navigation, route }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Dashboard');
+                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
                 }}
               >
                 <Ionicons name="home" size={20} color="#FFFFFF" />

@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 
 // Types
 interface Exercise {
@@ -19,6 +20,16 @@ interface Exercise {
   tags?: string[];
 }
 
+interface SetConfiguration {
+  metric_values?: Record<string, number>;
+  is_amrap?: boolean;
+  notes?: string;
+  intensity_targets?: Array<{
+    metric: string;
+    percent: number;
+  }>;
+}
+
 interface RoutineExercise {
   id: string;
   exercise_id: string;
@@ -28,7 +39,25 @@ interface RoutineExercise {
   tempo?: string;
   notes?: string;
   order_index: number;
+  tracked_max_metrics?: string[];
+  metric_targets?: Record<string, number>;
+  intensity_targets?: Array<{ metric: string; percent: number }>;
+  enabled_measurements?: string[];
+  is_amrap?: boolean;
+  set_configurations?: SetConfiguration[];
   exercises: Exercise;
+}
+
+interface CustomMeasurement {
+  id: string;
+  name: string;
+  category: 'single' | 'paired';
+  primary_metric_id?: string;
+  primary_metric_name?: string;
+  primary_metric_type?: string;
+  secondary_metric_id?: string;
+  secondary_metric_name?: string;
+  secondary_metric_type?: string;
 }
 
 interface Routine {
@@ -54,6 +83,7 @@ interface Workout {
 
 interface WorkoutPreStartScreenProps {
   workout: Workout;
+  customMeasurements: CustomMeasurement[];
   scheduledDate?: string;
   onStart: () => void;
 }
@@ -66,7 +96,7 @@ function formatRx(ex: RoutineExercise): string {
 
 export default function WorkoutPreStartScreen({
   workout,
-  scheduledDate,
+  customMeasurements,
   onStart,
 }: WorkoutPreStartScreenProps) {
   const totalExercises = workout.routines.reduce(
@@ -105,17 +135,29 @@ export default function WorkoutPreStartScreen({
               {blockNotes && <Text style={styles.blockNotes}>{blockNotes}</Text>}
 
               <View style={styles.exerciseList}>
-                {routine.routine_exercises.map((ex) => (
-                  <View key={ex.id} style={styles.exercise}>
-                    <Text style={styles.exName}>{ex.exercises.name}</Text>
-                    <Text style={styles.exRx}>
-                      {formatRx(ex)}
-                      {ex.weight ? ` @ ${ex.weight}` : ''}
-                      {ex.tempo ? ` (${ex.tempo})` : ''}
-                    </Text>
-                    {ex.notes && <Text style={styles.exNotes}>{ex.notes}</Text>}
-                  </View>
-                ))}
+                {routine.routine_exercises.map((ex) => {
+                  const hasPRTracking = ex.tracked_max_metrics && ex.tracked_max_metrics.length > 0;
+                  const metrics = formatExerciseMetrics({
+                    exercise: ex,
+                    customMeasurements,
+                    separator: ' • ',
+                  });
+
+                  return (
+                    <View key={ex.id} style={styles.exercise}>
+                      <View style={styles.exNameRow}>
+                        <Text style={styles.exName}>{ex.exercises.name}</Text>
+                        {hasPRTracking && <Text style={styles.prTrophy}>🏆</Text>}
+                      </View>
+                      <Text style={styles.exRx}>
+                        {metrics || formatRx(ex)}
+                        {!metrics && ex.weight ? ` @ ${ex.weight}` : ''}
+                        {ex.tempo ? ` • ${ex.tempo}` : ''}
+                      </Text>
+                      {ex.notes && <Text style={styles.exNotes}>{ex.notes}</Text>}
+                    </View>
+                  );
+                })}
               </View>
             </View>
           );
@@ -194,7 +236,7 @@ const styles = StyleSheet.create({
   },
   blockNotes: {
     fontSize: 12,
-    color: '#525252',
+    color: '#FFFFFF',
     paddingHorizontal: 12,
     paddingTop: 8,
     fontStyle: 'italic',
@@ -208,10 +250,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.03)',
   },
+  exNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   exName: {
     fontSize: 15,
     fontWeight: '500',
     color: '#FFF',
+    flex: 1,
+  },
+  prTrophy: {
+    fontSize: 14,
   },
   exRx: {
     fontSize: 13,

@@ -173,7 +173,7 @@ function getPitchSpeedCohorts(level: LevelFilter): number[] {
   }
 }
 
-export default function PairedDataTrendsScreen({ navigation }: any) {
+export default function PairedDataTrendsScreen({ navigation, route }: any) {
   const [athleteData, setAthleteData] = useState<AthleteData | null>(null);
   const [loading, setLoading] = useState(true);
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('highschool');
@@ -181,7 +181,7 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
   const [selectedPitchSpeed, setSelectedPitchSpeed] = useState<number | null>(null);
   const [squaredUpData, setSquaredUpData] = useState<SquaredUpDataPoint[]>([]);
   const [squaredUpLoading, setSquaredUpLoading] = useState(true);
-  const [athleteId, setAthleteId] = useState<string | null>(null);
+  const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
 
   useEffect(() => {
     loadAthleteAndData();
@@ -202,22 +202,37 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
         return;
       }
 
-      const { data: athlete } = await supabase
-        .from('athletes')
-        .select('id, play_level')
-        .eq('user_id', user.id)
-        .single();
+      // Use passed athleteId or fallback to looking up by user_id
+      let currentAthleteId = athleteId;
+      let playLevel: string | null = null;
 
-      if (!athlete) {
-        setLoading(false);
-        return;
+      if (!currentAthleteId) {
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('id, play_level')
+          .eq('user_id', user.id)
+          .single();
+
+        if (!athlete) {
+          setLoading(false);
+          return;
+        }
+        currentAthleteId = athlete.id;
+        setAthleteId(athlete.id);
+        playLevel = athlete.play_level;
+      } else {
+        // If athleteId passed, fetch play_level
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('play_level')
+          .eq('id', currentAthleteId)
+          .single();
+        playLevel = athlete?.play_level || null;
       }
 
-      setAthleteId(athlete.id);
-
       // Set level filter based on athlete's play level
-      if (athlete.play_level) {
-        const l = athlete.play_level.toLowerCase();
+      if (playLevel) {
+        const l = playLevel.toLowerCase();
         if (l === 'youth' || l.includes('12u') || l.includes('14u') || l.includes('middle')) {
           setLevelFilter('youth');
         } else if (l === 'high school' || l.includes('high') || l.includes('varsity')) {
@@ -331,28 +346,54 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
     setLoading(false);
   }
 
+  // Parse HitTrax timestamp (handles multiple formats)
+  function parseHitTraxTimestamp(timestamp: string): number {
+    if (!timestamp) return 0;
+    if (timestamp.includes('T') || timestamp.includes('Z')) {
+      return new Date(timestamp).getTime();
+    }
+    const [datePart, timePart] = timestamp.split(' ');
+    if (!datePart || !timePart) return new Date(timestamp).getTime();
+    const [month, day, year] = datePart.split('/').map(Number);
+    const [hours, minutes, secondsWithMs] = timePart.split(':');
+    const seconds = parseFloat(secondsWithMs) || 0;
+    const dateObj = new Date(year, month - 1, day, Number(hours), Number(minutes), Math.floor(seconds));
+    dateObj.setMilliseconds((seconds % 1) * 1000);
+    return dateObj.getTime();
+  }
+
+  // Parse Blast timestamp - prefer UTC, fallback to local
+  function parseBlastTimestamp(blast: { created_at_utc?: string; recorded_date: string; recorded_time?: string }): number {
+    if (blast.created_at_utc) {
+      return new Date(blast.created_at_utc).getTime();
+    }
+    const [year, month, day] = blast.recorded_date.split('-').map(Number);
+    const [hours, minutes, seconds] = (blast.recorded_time || '00:00:00').split(':').map(Number);
+    return new Date(year, month - 1, day, hours, minutes, seconds).getTime();
+  }
+
   async function fetchSquaredUpData(id: string) {
     setSquaredUpLoading(true);
     try {
       const startDateObj = getDateRange();
       const startDate = startDateObj ? startDateObj.toISOString().split('T')[0] : null;
 
-      // Fetch blast swings with timestamps
+      // Fetch blast swings with ALL timestamp fields needed for proper parsing
       const { data: blastSwings } = await supabase
         .from('blast_swings')
-        .select('bat_speed, recorded_date, created_at')
+        .select('id, bat_speed, recorded_date, recorded_time, created_at_utc')
         .eq('athlete_id', id)
         .not('bat_speed', 'is', null)
         .gt('bat_speed', 0)
         .order('recorded_date', { ascending: true });
 
-      // Fetch hittrax sessions
+      // Fetch hittrax sessions with session_date for proper date matching
       const { data: hittraxSessions } = await supabase
         .from('hittrax_sessions')
-        .select('id, created_at')
+        .select('id, session_date')
         .eq('athlete_id', id);
 
-      if (!blastSwings || !hittraxSessions || hittraxSessions.length === 0) {
+      if (!blastSwings || blastSwings.length === 0 || !hittraxSessions || hittraxSessions.length === 0) {
         setSquaredUpData([]);
         setSquaredUpLoading(false);
         return;
@@ -360,10 +401,10 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
 
       const sessionIds = hittraxSessions.map(s => s.id);
 
-      // Fetch hittrax swings
+      // Fetch hittrax swings with all needed fields
       const { data: hittraxSwings } = await supabase
         .from('hittrax_swings')
-        .select('exit_velocity, pitch_velocity, session_id, created_at')
+        .select('id, exit_velocity, pitch_velocity, session_id, swing_timestamp')
         .in('session_id', sessionIds)
         .not('exit_velocity', 'is', null)
         .gt('exit_velocity', 0);
@@ -374,34 +415,31 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
         return;
       }
 
-      // Group blast swings by date
-      const blastByDate: { [key: string]: { bat_speed: number; timestamp: Date }[] } = {};
-      for (const swing of blastSwings) {
-        const date = swing.recorded_date.split('T')[0];
-        if (!blastByDate[date]) blastByDate[date] = [];
-        blastByDate[date].push({
-          bat_speed: swing.bat_speed,
-          timestamp: new Date(swing.created_at || swing.recorded_date),
-        });
-      }
-
-      // Create session date map
+      // Create session date map using LOCAL date from session_date
       const sessionDateMap: { [key: string]: string } = {};
       for (const session of hittraxSessions) {
-        sessionDateMap[session.id] = session.created_at.split('T')[0];
+        const sessionTimestamp = new Date(session.session_date);
+        const localYear = sessionTimestamp.getFullYear();
+        const localMonth = String(sessionTimestamp.getMonth() + 1).padStart(2, '0');
+        const localDay = String(sessionTimestamp.getDate()).padStart(2, '0');
+        sessionDateMap[session.id] = `${localYear}-${localMonth}-${localDay}`;
       }
 
-      // Group hittrax swings by date
-      const hittraxByDate: { [key: string]: { exit_velocity: number; pitch_velocity: number | null; timestamp: Date }[] } = {};
+      // Group blast swings by recorded_date
+      const blastByDate: { [key: string]: typeof blastSwings } = {};
+      for (const swing of blastSwings) {
+        const date = swing.recorded_date;
+        if (!blastByDate[date]) blastByDate[date] = [];
+        blastByDate[date].push(swing);
+      }
+
+      // Group hittrax swings by session date
+      const hittraxByDate: { [key: string]: typeof hittraxSwings } = {};
       for (const swing of hittraxSwings) {
         const date = sessionDateMap[swing.session_id];
         if (!date) continue;
         if (!hittraxByDate[date]) hittraxByDate[date] = [];
-        hittraxByDate[date].push({
-          exit_velocity: swing.exit_velocity,
-          pitch_velocity: swing.pitch_velocity,
-          timestamp: new Date(swing.created_at),
-        });
+        hittraxByDate[date].push(swing);
       }
 
       // Calculate squared up rate for each date with paired data
@@ -416,33 +454,36 @@ export default function PairedDataTrendsScreen({ navigation }: any) {
 
         if (blastOnDate.length === 0 || hittraxOnDate.length === 0) continue;
 
-        // Match swings using 7-second window
+        // Match swings using 7-second window (same as HittingSessionScreen)
+        const maxTimeDiff = 7; // seconds
         let totalPairedSwings = 0;
         let squaredUpCount = 0;
-        const usedHittrax = new Set<number>();
+        const matchedHittraxIds = new Set<string>();
 
         for (const blast of blastOnDate) {
-          // Find matching hittrax swing within 7 seconds
-          let bestMatch: { exit_velocity: number; pitch_velocity: number | null } | null = null;
-          let bestMatchIdx = -1;
-          let bestTimeDiff = 7000;
+          const blastTime = parseBlastTimestamp(blast);
+          let closestHittrax: typeof hittraxOnDate[0] | null = null;
+          let minDiff = Infinity;
 
-          for (let i = 0; i < hittraxOnDate.length; i++) {
-            if (usedHittrax.has(i)) continue;
-            const timeDiff = Math.abs(blast.timestamp.getTime() - hittraxOnDate[i].timestamp.getTime());
-            if (timeDiff < bestTimeDiff) {
-              bestTimeDiff = timeDiff;
-              bestMatch = hittraxOnDate[i];
-              bestMatchIdx = i;
+          for (const hittrax of hittraxOnDate) {
+            if (matchedHittraxIds.has(hittrax.id)) continue;
+            const hittraxTime = parseHitTraxTimestamp(hittrax.swing_timestamp);
+            const diff = Math.abs(blastTime - hittraxTime) / 1000; // convert to seconds
+
+            if (diff <= maxTimeDiff && diff < minDiff) {
+              minDiff = diff;
+              closestHittrax = hittrax;
             }
           }
 
-          if (bestMatch && bestMatchIdx >= 0) {
-            usedHittrax.add(bestMatchIdx);
+          if (closestHittrax) {
+            matchedHittraxIds.add(closestHittrax.id);
 
             const batSpeed = blast.bat_speed;
-            const actualExitVelo = bestMatch.exit_velocity;
-            const pitchSpeed = bestMatch.pitch_velocity && bestMatch.pitch_velocity > 0 ? bestMatch.pitch_velocity : 75;
+            const actualExitVelo = closestHittrax.exit_velocity;
+            const pitchSpeed = closestHittrax.pitch_velocity && closestHittrax.pitch_velocity > 0
+              ? closestHittrax.pitch_velocity
+              : 75;
 
             const maxPotentialEV = calculateExitVelocity(batSpeed, pitchSpeed);
             const efficiency = (actualExitVelo / maxPotentialEV) * 100;

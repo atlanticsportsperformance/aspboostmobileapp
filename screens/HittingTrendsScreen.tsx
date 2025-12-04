@@ -60,12 +60,12 @@ interface SessionData {
 
 type TimeFilter = '1month' | '3months' | '6months' | 'all';
 
-export default function HittingTrendsScreen({ navigation }: any) {
+export default function HittingTrendsScreen({ navigation, route }: any) {
   const [allSessionData, setAllSessionData] = useState<SessionData[]>([]);
   const [filteredData, setFilteredData] = useState<SessionData[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
-  const [athleteId, setAthleteId] = useState<string | null>(null);
+  const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
 
   useEffect(() => {
     loadAthleteAndData();
@@ -83,19 +83,24 @@ export default function HittingTrendsScreen({ navigation }: any) {
         return;
       }
 
-      const { data: athlete } = await supabase
-        .from('athletes')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      // Use passed athleteId or fallback to looking up by user_id
+      let currentAthleteId = athleteId;
+      if (!currentAthleteId) {
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('id')
+          .eq('user_id', user.id)
+          .single();
 
-      if (!athlete) {
-        setLoading(false);
-        return;
+        if (!athlete) {
+          setLoading(false);
+          return;
+        }
+        currentAthleteId = athlete.id;
+        setAthleteId(athlete.id);
       }
 
-      setAthleteId(athlete.id);
-      await fetchTrendsData(athlete.id);
+      await fetchTrendsData(currentAthleteId!);
     } catch (error) {
       console.error('Error loading athlete:', error);
       setLoading(false);

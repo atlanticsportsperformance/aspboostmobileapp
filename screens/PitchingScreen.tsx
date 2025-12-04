@@ -13,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 // Color theme matching HittingPerformanceScreen
 const COLORS = {
@@ -66,6 +67,7 @@ interface CommandSession {
 type Session = TrackManSession | CommandSession;
 
 export default function PitchingScreen({ navigation, route }: any) {
+  const { isParent } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -552,7 +554,7 @@ export default function PitchingScreen({ navigation, route }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Dashboard');
+                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
                 }}
               >
                 <Ionicons name="home" size={20} color="#FFFFFF" />

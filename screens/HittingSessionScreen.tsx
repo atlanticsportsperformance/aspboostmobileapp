@@ -14,6 +14,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Rect, Circle, Line, Path, Text as SvgText, G } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 import ContactPoint3D from '../components/ContactPoint3D';
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -61,6 +62,7 @@ interface PairedSwingData {
 type SessionType = 'hittrax' | 'blast' | 'paired';
 
 export default function HittingSessionScreen({ route, navigation }: any) {
+  const { isParent } = useAthlete();
   const { sessionId, date, athleteId: passedAthleteId } = route.params;
 
   const [hittraxSwings, setHittraxSwings] = useState<HitTraxSwing[]>([]);
@@ -1555,7 +1557,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         >
           <TouchableOpacity style={styles.fabOverlay} activeOpacity={1} onPress={() => setFabOpen(false)}>
             <View style={styles.fabMenu}>
-              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('Dashboard'); }}>
+              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard'); }}>
                 <Ionicons name="home" size={20} color="#FFFFFF" />
                 <Text style={styles.fabMenuLabel}>Home</Text>
               </TouchableOpacity>

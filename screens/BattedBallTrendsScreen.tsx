@@ -71,7 +71,7 @@ interface HitTraxSwing {
 
 type TimeFilter = '1month' | '3months' | '6months' | 'all';
 
-export default function BattedBallTrendsScreen({ navigation }: any) {
+export default function BattedBallTrendsScreen({ navigation, route }: any) {
   const [allSessionData, setAllSessionData] = useState<SessionData[]>([]);
   const [filteredData, setFilteredData] = useState<SessionData[]>([]);
   const [allSwings, setAllSwings] = useState<HitTraxSwing[]>([]);
@@ -79,7 +79,7 @@ export default function BattedBallTrendsScreen({ navigation }: any) {
   const [playingLevel, setPlayingLevel] = useState<string>('high-school');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
-  const [athleteId, setAthleteId] = useState<string | null>(null);
+  const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [fieldViewIndex, setFieldViewIndex] = useState(0);
 
   useEffect(() => {
@@ -98,30 +98,45 @@ export default function BattedBallTrendsScreen({ navigation }: any) {
         return;
       }
 
-      const { data: athlete } = await supabase
-        .from('athletes')
-        .select('id, play_level')
-        .eq('user_id', user.id)
-        .single();
+      // Use passed athleteId or fallback to looking up by user_id
+      let currentAthleteId = athleteId;
+      let playLevel: string | null = null;
 
-      if (!athlete) {
-        setLoading(false);
-        return;
+      if (!currentAthleteId) {
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('id, play_level')
+          .eq('user_id', user.id)
+          .single();
+
+        if (!athlete) {
+          setLoading(false);
+          return;
+        }
+        currentAthleteId = athlete.id;
+        setAthleteId(athlete.id);
+        playLevel = athlete.play_level;
+      } else {
+        // If athleteId passed, fetch play_level
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('play_level')
+          .eq('id', currentAthleteId)
+          .single();
+        playLevel = athlete?.play_level || null;
       }
 
-      setAthleteId(athlete.id);
-
-      if (athlete.play_level) {
+      if (playLevel) {
         const levelMap: { [key: string]: string } = {
           'Youth': 'youth',
           'High School': 'high-school',
           'College': 'college',
           'Pro': 'professional'
         };
-        setPlayingLevel(levelMap[athlete.play_level] || 'high-school');
+        setPlayingLevel(levelMap[playLevel] || 'high-school');
       }
 
-      await fetchBattedBallData(athlete.id);
+      await fetchBattedBallData(currentAthleteId!);
     } catch (error) {
       console.error('Error loading athlete:', error);
       setLoading(false);

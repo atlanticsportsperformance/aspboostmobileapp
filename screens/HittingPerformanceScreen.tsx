@@ -12,6 +12,7 @@ import {
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 interface OverviewStats {
   totalSwingsAllTime: number;
@@ -48,8 +49,9 @@ interface Session {
   avg_on_plane_efficiency?: number;
 }
 
-export default function HittingPerformanceScreen({ navigation }: any) {
-  const [athleteId, setAthleteId] = useState<string | null>(null);
+export default function HittingPerformanceScreen({ navigation, route }: any) {
+  const { isParent } = useAthlete();
+  const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,21 +80,26 @@ export default function HittingPerformanceScreen({ navigation }: any) {
       }
       setUserId(user.id);
 
-      const { data: athlete } = await supabase
-        .from('athletes')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      // Use passed athleteId or fallback to looking up by user_id
+      let currentAthleteId = athleteId;
+      if (!currentAthleteId) {
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('id')
+          .eq('user_id', user.id)
+          .single();
 
-      if (!athlete) {
-        navigation.goBack();
-        return;
+        if (!athlete) {
+          navigation.goBack();
+          return;
+        }
+        currentAthleteId = athlete.id;
+        setAthleteId(athlete.id);
       }
 
-      setAthleteId(athlete.id);
       await Promise.all([
-        fetchData(athlete.id),
-        fetchFabData(athlete.id, user.id),
+        fetchData(currentAthleteId!),
+        fetchFabData(currentAthleteId!, user.id),
       ]);
     } catch (error) {
       console.error('Error loading athlete:', error);
@@ -668,7 +675,7 @@ export default function HittingPerformanceScreen({ navigation }: any) {
             <View style={styles.analysisButtons}>
               <TouchableOpacity
                 style={styles.analysisButton}
-                onPress={() => navigation.navigate('HittingTrends')}
+                onPress={() => navigation.navigate('HittingTrends', { athleteId })}
               >
                 <View style={styles.analysisButtonInner}>
                   <Ionicons name="trending-up" size={16} color="#9BDDFF" />
@@ -679,7 +686,7 @@ export default function HittingPerformanceScreen({ navigation }: any) {
 
               <TouchableOpacity
                 style={styles.analysisButton}
-                onPress={() => navigation.navigate('BattedBallTrends')}
+                onPress={() => navigation.navigate('BattedBallTrends', { athleteId })}
               >
                 <View style={styles.analysisButtonInner}>
                   <MaterialCommunityIcons name="baseball" size={16} color="#9BDDFF" />
@@ -690,7 +697,7 @@ export default function HittingPerformanceScreen({ navigation }: any) {
 
               <TouchableOpacity
                 style={styles.analysisButton}
-                onPress={() => navigation.navigate('PairedData')}
+                onPress={() => navigation.navigate('PairedDataTrends', { athleteId })}
               >
                 <View style={styles.analysisButtonInner}>
                   <Ionicons name="link" size={16} color="#9BDDFF" />
@@ -710,7 +717,7 @@ export default function HittingPerformanceScreen({ navigation }: any) {
               <TouchableOpacity
                 key={session.id}
                 style={styles.sessionCard}
-                onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date })}
+                onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId })}
               >
                 <View style={styles.sessionHeader}>
                   <View style={styles.sessionHeaderLeft}>
@@ -842,7 +849,7 @@ export default function HittingPerformanceScreen({ navigation }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Dashboard');
+                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
                 }}
               >
                 <Ionicons name="home" size={20} color="#FFFFFF" />

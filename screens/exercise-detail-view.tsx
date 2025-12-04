@@ -481,7 +481,7 @@ export default function ExerciseDetailView({
   // Supports cross-exercise intensity (e.g., DB Bench at 50% of Barbell Bench max)
   const getIntensityTarget = (setIndex: number, metricId: string): {
     percent: number;
-    calculatedValue: number;
+    calculatedValue?: number;
     sourceExerciseName?: string | null;
   } | null => {
     const setConfig = getSetConfig(setIndex);
@@ -506,6 +506,11 @@ export default function ExerciseDetailView({
             sourceExerciseName: target.source_exercise_name,
           };
         }
+        // Return intensity even without a max value (so we show the percentage)
+        return {
+          percent: target.percent,
+          sourceExerciseName: target.source_exercise_name,
+        };
       }
     }
     return null;
@@ -646,9 +651,11 @@ export default function ExerciseDetailView({
             if (!intensityTarget) return null;
 
             return (
-              <Text style={styles.intensityIndicator}>
-                @ {intensityTarget.percent}%{intensityTarget.sourceExerciseName ? ` ${intensityTarget.sourceExerciseName}` : ''}
-              </Text>
+              <View style={styles.intensityTag}>
+                <Text style={styles.intensityTagText}>
+                  @{intensityTarget.percent}%{intensityTarget.sourceExerciseName ? ` ${intensityTarget.sourceExerciseName}` : ''}
+                </Text>
+              </View>
             );
           })()}
 
@@ -698,18 +705,10 @@ export default function ExerciseDetailView({
             })}
           </View>
 
-          {/* Notes Field */}
-          {(setConfig?.notes || setData.notes != null) && (
-            <View style={styles.notesField}>
-              <Text style={styles.metricLabel}>Notes</Text>
-              <TextInput
-                style={styles.notesInput}
-                value={setData.notes || ''}
-                onChangeText={(text) => onInputChange(i, 'notes', text)}
-                placeholder={setConfig?.notes || 'Add notes...'}
-                placeholderTextColor="#737373"
-                multiline
-              />
+          {/* Per-set notes from coach (read-only display) */}
+          {setConfig?.notes && (
+            <View style={styles.setNotesDisplay}>
+              <Text style={styles.setNotesText}>{setConfig.notes}</Text>
             </View>
           )}
         </View>
@@ -875,6 +874,11 @@ export default function ExerciseDetailView({
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exercise.exercises.name}
           </Text>
+
+          {/* PR Trophy */}
+          {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
+            <Text style={styles.headerPrTrophy}>🏆</Text>
+          )}
         </View>
 
         {/* Exercise Details - Compact inline display */}
@@ -1184,6 +1188,10 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     color: '#FFFFFF',
+  },
+  headerPrTrophy: {
+    fontSize: 18,
+    marginLeft: 4,
   },
   nextButton: {
     width: 32,
@@ -1503,10 +1511,20 @@ const styles = StyleSheet.create({
   checkmarkIconEmpty: {
     color: 'transparent',
   },
-  intensityIndicator: {
-    fontSize: 11,
+  intensityTag: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(96, 165, 250, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.3)',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 8,
+  },
+  intensityTagText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: '#60A5FA',
-    marginBottom: 6,
   },
   // Unused legacy styles kept for reference
   _targetIcon: {
@@ -1555,6 +1573,21 @@ const styles = StyleSheet.create({
   inputFilled: {
     backgroundColor: 'rgba(155, 221, 255, 0.1)',
     borderColor: 'rgba(155, 221, 255, 0.3)',
+  },
+  setNotesDisplay: {
+    width: '100%',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.3)',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  setNotesText: {
+    fontSize: 13,
+    color: '#FCD34D',
+    fontStyle: 'italic',
   },
   notesField: {
     width: '100%',

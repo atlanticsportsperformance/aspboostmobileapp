@@ -21,7 +21,6 @@ import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
-
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
@@ -1780,7 +1779,7 @@ export default function DashboardScreen({ navigation }: any) {
                   style={styles.fabMenuItem}
                   onPress={() => {
                     setFabOpen(false);
-                    navigation.navigate('HittingPerformance');
+                    navigation.navigate('HittingPerformance', { athleteId });
                   }}
                 >
                   <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />

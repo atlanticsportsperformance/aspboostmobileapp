@@ -14,6 +14,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Line, Polygon, Text as SvgText, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -85,6 +86,7 @@ const getZoneBgColor = (percentile: number) => {
 };
 
 export default function ForceProfileScreen({ route, navigation }: any) {
+  const { isParent } = useAthlete();
   const { athleteId } = route.params;
   const [loading, setLoading] = useState(true);
   const [radarData, setRadarData] = useState<RadarDataPoint[]>([]);
@@ -517,7 +519,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
                 style={styles.fabMenuItem}
                 onPress={() => {
                   setFabOpen(false);
-                  navigation.navigate('Dashboard');
+                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
                 }}
               >
                 <Ionicons name="home" size={20} color="#FFFFFF" />
