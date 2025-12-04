@@ -982,18 +982,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Home</Text>
               </TouchableOpacity>
 
-              {/* Messages */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Messages');
-                }}
-              >
-                <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Messages</Text>
-              </TouchableOpacity>
-
               {/* Leaderboard */}
               <TouchableOpacity
                 style={styles.fabMenuItem}
