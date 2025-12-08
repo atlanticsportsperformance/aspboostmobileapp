@@ -144,12 +144,9 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
     }
   }, [isActive]);
 
-  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
-  useEffect(() => {
-    if (!isActive) {
-      hasAnimated.current = false;
-    }
-  }, [isActive]);
+  // NOTE: We no longer reset hasAnimated when inactive, because parent re-renders
+  // (like opening/closing settings modal) would cause animations to replay.
+  // The animation only runs once per component mount.
 
   return (
     <View style={styles.hittingContent}>

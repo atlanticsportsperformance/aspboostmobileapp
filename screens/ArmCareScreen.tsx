@@ -743,6 +743,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
           { id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },
           ...(hasForceData ? [{ id: 'force', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId: currentAthleteId }) }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId: currentAthleteId }) },
+          { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
         ]}
       />
     </View>

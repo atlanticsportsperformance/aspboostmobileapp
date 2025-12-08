@@ -555,6 +555,7 @@ export default function PitchingScreen({ navigation, route }: any) {
           ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           ...(forceProfileData ? [{ id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
+          { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
         ]}
       />
     </SafeAreaView>

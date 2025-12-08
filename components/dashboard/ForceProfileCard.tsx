@@ -58,14 +58,9 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
     if (hasAnimated.current) return;
     hasAnimated.current = true;
 
-    // Reset all animations to start fresh
-    circleAnim.setValue(0);
-    scoreAnim.setValue(0);
-    bestSliderAnim.setValue(0);
-    worstSliderAnim.setValue(0);
-    scaleAnim.setValue(0.8);
-    glowAnim.setValue(0);
-    predictionAnim.setValue(0);
+    // NOTE: We no longer reset animation values to 0 here because if the component
+    // remounts (e.g., when a modal opens/closes), we want to preserve the current values.
+    // The animation values are initialized to 0 in useRef above, so first render will animate.
 
     // Scale in with bounce
     Animated.spring(scaleAnim, {
@@ -141,12 +136,9 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
     }
   }, [isActive]);
 
-  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
-  useEffect(() => {
-    if (!isActive) {
-      hasAnimated.current = false;
-    }
-  }, [isActive]);
+  // NOTE: We no longer reset hasAnimated when inactive, because parent re-renders
+  // (like opening/closing settings modal) would cause animations to replay.
+  // The animation only runs once per component mount.
 
   // Interpolate circle stroke
   const animatedStrokeDashoffset = circleAnim.interpolate({

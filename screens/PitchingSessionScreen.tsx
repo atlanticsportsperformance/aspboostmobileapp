@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ import Svg, {
   Stop,
   Path,
 } from 'react-native-svg';
+import { Video, ResizeMode } from 'expo-av';
 import { supabase } from '../lib/supabase';
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -77,6 +78,9 @@ interface TrackManPitch {
   vert_break: number | null;
   induced_vert_break: number | null;
   horz_break: number | null;
+  vert_appr_angle: number | null;
+  spin_axis_3d_spin_efficiency: number | null;
+  video_url: string | null;
   stuff_plus?: {
     stuff_plus: number;
     whiff_probability: number;
@@ -107,6 +111,10 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
   const [selectedVeloPitch, setSelectedVeloPitch] = useState<TrackManPitch | null>(null);
   const [selectedMovementPitch, setSelectedMovementPitch] = useState<TrackManPitch | null>(null);
   const [selectedReleasePitch, setSelectedReleasePitch] = useState<TrackManPitch | null>(null);
+
+  // Video modal state
+  const [selectedVideoUrl, setSelectedVideoUrl] = useState<string | null>(null);
+  const videoRef = useRef<Video>(null);
 
   // Strike zone dimensions (feet)
   const STRIKE_ZONE_BOTTOM_INSIDE = 1.5;
@@ -183,7 +191,7 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
         id, pitch_uid, rel_speed, spin_rate, plate_loc_height, plate_loc_side, created_at,
         tagged_pitch_type, pitch_no,
         rel_height, rel_side, extension, spin_axis, tilt, measured_tilt, vert_break, induced_vert_break,
-        horz_break,
+        horz_break, vert_appr_angle, spin_axis_3d_spin_efficiency, video_url,
         stuff_plus:pitch_stuff_plus(stuff_plus, whiff_probability, pitch_type_group)
       `)
       .eq('session_id', sessionId)
@@ -215,6 +223,9 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
           vert_break: p.vert_break ? parseFloat(p.vert_break.toString()) : null,
           induced_vert_break: p.induced_vert_break ? parseFloat(p.induced_vert_break.toString()) : null,
           horz_break: p.horz_break ? parseFloat(p.horz_break.toString()) : null,
+          vert_appr_angle: p.vert_appr_angle ? parseFloat(p.vert_appr_angle.toString()) : null,
+          spin_axis_3d_spin_efficiency: p.spin_axis_3d_spin_efficiency ? parseFloat(p.spin_axis_3d_spin_efficiency.toString()) : null,
+          video_url: p.video_url || null,
           stuff_plus: (Array.isArray(p.stuff_plus) && p.stuff_plus.length > 0
             ? p.stuff_plus[0]
             : (p.stuff_plus || null)) as { stuff_plus: number; whiff_probability: number; pitch_type_group: string; } | null,
@@ -498,6 +509,20 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
                 </>
               )}
             </View>
+
+            {/* Video Button */}
+            {pitch.video_url && (
+              <TouchableOpacity
+                style={styles.tooltipVideoButton}
+                onPress={() => {
+                  onClose();
+                  setSelectedVideoUrl(pitch.video_url);
+                }}
+              >
+                <Ionicons name="videocam" size={18} color={COLORS.black} />
+                <Text style={styles.tooltipVideoButtonText}>Watch Video</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </Pressable>
       </Modal>
@@ -1306,6 +1331,159 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
           </View>
         )}
 
+        {/* Raw Pitch Data Table */}
+        {pitches.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.chartTitle}>Raw Pitch Data</Text>
+            <Text style={styles.chartDescription}>Complete pitch-by-pitch data • Scroll horizontally for all metrics</Text>
+
+            <View style={styles.rawDataTableContainer}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.rawDataScrollView}>
+                <View>
+                  {/* Header Row */}
+                  <View style={styles.rawDataHeaderRow}>
+                    <View style={[styles.rawDataCell, styles.rawDataCellSticky, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>#</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellVid, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Vid</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellType, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Type</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Velo</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Spin</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Tilt</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Ext</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>IVB</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>HB</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>VAA</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Spin Eff</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Stuff+</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Rel Ht</Text>
+                    </View>
+                    <View style={[styles.rawDataCell, styles.rawDataCellNum, styles.rawDataHeaderCell]}>
+                      <Text style={styles.rawDataHeaderText}>Rel Side</Text>
+                    </View>
+                  </View>
+
+                  {/* Data Rows */}
+                  {pitches.map((pitch, index) => (
+                    <View key={pitch.id} style={[styles.rawDataRow, index % 2 === 1 && styles.rawDataRowAlt]}>
+                      <View style={[styles.rawDataCell, styles.rawDataCellSticky]}>
+                        <Text style={styles.rawDataCellText}>{pitch.pitch_no ?? index + 1}</Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellVid]}>
+                        {pitch.video_url ? (
+                          <TouchableOpacity onPress={() => setSelectedVideoUrl(pitch.video_url)}>
+                            <Ionicons name="videocam" size={18} color={COLORS.green500} />
+                          </TouchableOpacity>
+                        ) : (
+                          <Text style={[styles.rawDataCellText, { color: 'rgba(156,163,175,0.5)' }]}>--</Text>
+                        )}
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellType]}>
+                        <View style={styles.rawDataTypeCell}>
+                          <View style={[styles.rawDataTypeDot, { backgroundColor: getPitchTypeColor(pitch.tagged_pitch_type) }]} />
+                          <Text style={styles.rawDataCellText} numberOfLines={1}>
+                            {pitch.tagged_pitch_type || '--'}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.cyan400 }]}>
+                          {pitch.rel_speed ? pitch.rel_speed.toFixed(1) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.purple500 }]}>
+                          {pitch.spin_rate ? Math.round(pitch.spin_rate) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.measured_tilt || pitch.tilt || '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.extension ? pitch.extension.toFixed(1) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.green500 }]}>
+                          {pitch.induced_vert_break ? pitch.induced_vert_break.toFixed(1) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.amber500 }]}>
+                          {pitch.horz_break ? pitch.horz_break.toFixed(1) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.vert_appr_angle ? pitch.vert_appr_angle.toFixed(1) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.spin_axis_3d_spin_efficiency != null
+                            ? `${Math.round(pitch.spin_axis_3d_spin_efficiency <= 1 ? pitch.spin_axis_3d_spin_efficiency * 100 : pitch.spin_axis_3d_spin_efficiency)}%`
+                            : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: pitch.stuff_plus?.stuff_plus ? getStuffPlusColor(pitch.stuff_plus.stuff_plus) : COLORS.gray400 }]}>
+                          {pitch.stuff_plus?.stuff_plus ? Math.round(pitch.stuff_plus.stuff_plus) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.rel_height ? pitch.rel_height.toFixed(2) : '--'}
+                        </Text>
+                      </View>
+                      <View style={[styles.rawDataCell, styles.rawDataCellNum]}>
+                        <Text style={[styles.rawDataCellText, { color: COLORS.gray400 }]}>
+                          {pitch.rel_side ? pitch.rel_side.toFixed(2) : '--'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+
+            {/* Legend */}
+            <View style={styles.rawDataLegend}>
+              <Text style={styles.rawDataLegendText}>
+                Velo = Velocity (mph) • Ext = Extension (ft) • IVB = Induced Vertical Break (in) • HB = Horizontal Break (in)
+              </Text>
+              <Text style={styles.rawDataLegendText}>
+                VAA = Vertical Approach Angle (°) • Rel Ht/Side = Release Height/Side (ft)
+              </Text>
+            </View>
+          </View>
+        )}
+
         <View style={{ height: 100 }} />
       </ScrollView>
 
@@ -1315,6 +1493,47 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
           <Ionicons name="chevron-back" size={24} color={COLORS.black} />
         </LinearGradient>
       </TouchableOpacity>
+
+      {/* Video Player Modal */}
+      <Modal
+        visible={selectedVideoUrl !== null}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setSelectedVideoUrl(null)}
+      >
+        <Pressable style={styles.videoModalOverlay} onPress={() => setSelectedVideoUrl(null)}>
+          <Pressable style={styles.videoModalContainer} onPress={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <View style={styles.videoModalHeader}>
+              <View style={styles.videoModalHeaderLeft}>
+                <Ionicons name="videocam" size={20} color={COLORS.green500} />
+                <Text style={styles.videoModalTitle}>Pitch Video</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.videoModalCloseButton}
+                onPress={() => setSelectedVideoUrl(null)}
+              >
+                <Ionicons name="close" size={20} color={COLORS.gray400} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Video Player */}
+            <View style={styles.videoPlayerContainer}>
+              {selectedVideoUrl && (
+                <Video
+                  ref={videoRef}
+                  source={{ uri: selectedVideoUrl }}
+                  style={styles.videoPlayer}
+                  useNativeControls
+                  resizeMode={ResizeMode.CONTAIN}
+                  shouldPlay={true}
+                  isLooping={false}
+                />
+              )}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1394,7 +1613,36 @@ const styles = StyleSheet.create({
   tooltipStatItem: { width: '45%', marginBottom: 8 },
   tooltipStatLabel: { fontSize: 10, color: COLORS.gray400, textTransform: 'uppercase', marginBottom: 2 },
   tooltipStatValue: { fontSize: 16, fontWeight: 'bold', color: COLORS.white },
+  tooltipVideoButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: COLORS.green500, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 10, marginTop: 16 },
+  tooltipVideoButtonText: { fontSize: 14, fontWeight: '600', color: COLORS.black },
   // FAB Styles
   fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 },
   fabGradient: { width: '100%', height: '100%', borderRadius: 28, justifyContent: 'center', alignItems: 'center' },
+  // Raw Pitch Data Table Styles
+  rawDataTableContainer: { marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.gray800, overflow: 'hidden', backgroundColor: COLORS.black },
+  rawDataScrollView: { flexGrow: 0 },
+  rawDataHeaderRow: { flexDirection: 'row', backgroundColor: '#1a1a1a' },
+  rawDataRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: COLORS.gray800 },
+  rawDataRowAlt: { backgroundColor: 'rgba(255,255,255,0.02)' },
+  rawDataCell: { paddingVertical: 10, paddingHorizontal: 8, justifyContent: 'center' },
+  rawDataHeaderCell: { paddingVertical: 12 },
+  rawDataCellSticky: { width: 40, backgroundColor: '#1a1a1a' },
+  rawDataCellVid: { width: 40, alignItems: 'center' },
+  rawDataCellType: { width: 90 },
+  rawDataCellNum: { width: 60, alignItems: 'flex-end' },
+  rawDataHeaderText: { fontSize: 11, fontWeight: '600', color: COLORS.gray400, textTransform: 'uppercase' },
+  rawDataCellText: { fontSize: 12, color: COLORS.white },
+  rawDataTypeCell: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  rawDataTypeDot: { width: 8, height: 8, borderRadius: 4 },
+  rawDataLegend: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
+  rawDataLegendText: { fontSize: 10, color: COLORS.gray500, textAlign: 'center', lineHeight: 16 },
+  // Video Modal Styles
+  videoModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  videoModalContainer: { width: '100%', maxWidth: 500, backgroundColor: '#111827', borderRadius: 12, overflow: 'hidden' },
+  videoModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: COLORS.gray800 },
+  videoModalHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  videoModalTitle: { fontSize: 16, fontWeight: '600', color: COLORS.white },
+  videoModalCloseButton: { padding: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
+  videoPlayerContainer: { width: '100%', aspectRatio: 16 / 9, backgroundColor: COLORS.black },
+  videoPlayer: { width: '100%', height: '100%' },
 });

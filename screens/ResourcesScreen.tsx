@@ -46,7 +46,7 @@ interface Resource {
   id: string;
   athlete_id: string | null;
   uploaded_by: string;
-  resource_type: 'file' | 'bulletin' | 'note';
+  resource_type: 'file' | 'bulletin' | 'note' | 'report_link';
   file_name: string | null;
   file_type: 'image' | 'video' | 'document' | 'other' | null;
   file_url: string | null;
@@ -67,7 +67,14 @@ interface Resource {
   } | null;
 }
 
-type FilterType = 'all' | 'bulletins' | 'images' | 'videos' | 'documents';
+interface ReportMetadata {
+  reportId?: string;
+  reportDate?: string;
+  sectionTypes?: string[];
+  athleteName?: string;
+}
+
+type FilterType = 'all' | 'bulletins' | 'reports' | 'images' | 'videos' | 'documents';
 
 export default function ResourcesScreen({ navigation, route }: any) {
   const { isParent } = useAthlete();
@@ -177,6 +184,9 @@ export default function ResourcesScreen({ navigation, route }: any) {
         return;
       }
 
+      // Debug: Log resource types to see what we're getting
+      console.log('Resources loaded:', data?.length, 'items');
+      console.log('Resource types:', data?.map(r => ({ id: r.id, type: r.resource_type, title: r.title, file_url: r.file_url })));
       setResources(data || []);
     } catch (error) {
       console.error('Error in fetchResources:', error);
@@ -248,6 +258,7 @@ export default function ResourcesScreen({ navigation, route }: any) {
   const filteredResources = resources.filter(resource => {
     if (filterType === 'all') return true;
     if (filterType === 'bulletins') return resource.resource_type === 'bulletin';
+    if (filterType === 'reports') return resource.resource_type === 'report_link';
     if (filterType === 'images') return resource.file_type === 'image';
     if (filterType === 'videos') return resource.file_type === 'video';
     if (filterType === 'documents') return resource.file_type === 'document';
@@ -293,6 +304,21 @@ export default function ResourcesScreen({ navigation, route }: any) {
   function getVimeoVideoId(url: string): string | null {
     const match = url.match(/(?:vimeo\.com\/)(\d+)/);
     return match ? match[1] : null;
+  }
+
+  function getRegularUrl(text: string): string | null {
+    // Check if text contains a URL that's not YouTube or Vimeo
+    const urlPattern = /(https?:\/\/[^\s]+)/g;
+    const match = text.match(urlPattern);
+    if (match && match[0]) {
+      const url = match[0];
+      // Exclude YouTube and Vimeo URLs
+      if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('vimeo.com')) {
+        return null;
+      }
+      return url;
+    }
+    return null;
   }
 
   function getUploaderName(resource: Resource): string {
@@ -349,9 +375,11 @@ export default function ResourcesScreen({ navigation, route }: any) {
   // Render Resource Card
   function renderResourceCard(resource: Resource) {
     const isBulletin = resource.resource_type === 'bulletin';
+    const isReportLink = resource.resource_type === 'report_link';
     const isExpanded = expandedDescriptions.has(resource.id);
     const youtubeVideoId = resource.notes ? getYouTubeVideoId(resource.notes) : null;
     const vimeoVideoId = resource.notes ? getVimeoVideoId(resource.notes) : null;
+    const regularUrl = resource.notes ? getRegularUrl(resource.notes) : null;
     const hasVideo = youtubeVideoId || vimeoVideoId;
 
     if (isBulletin) {
@@ -449,6 +477,34 @@ export default function ResourcesScreen({ navigation, route }: any) {
               </View>
             )}
 
+            {/* Open Link button - for URLs that aren't YouTube/Vimeo */}
+            {regularUrl && !hasVideo && (
+              <TouchableOpacity
+                style={styles.openLinkButton}
+                onPress={() => Linking.openURL(regularUrl)}
+              >
+                <Ionicons name="open-outline" size={16} color={COLORS.black} />
+                <Text style={styles.openLinkButtonText}>Open Link</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Also check file_url for report links */}
+            {resource.file_url && !regularUrl && !hasVideo && (
+              <TouchableOpacity
+                style={styles.openLinkButton}
+                onPress={() => {
+                  let url = resource.file_url!;
+                  if (url.startsWith('/reports/public/')) {
+                    url = `https://aspboostapp.vercel.app${url}`;
+                  }
+                  Linking.openURL(url);
+                }}
+              >
+                <Ionicons name="open-outline" size={16} color={COLORS.black} />
+                <Text style={styles.openLinkButtonText}>View Report</Text>
+              </TouchableOpacity>
+            )}
+
             {/* Group resource badge */}
             {resource.is_group_resource && (
               <View style={styles.groupBadge}>
@@ -458,6 +514,132 @@ export default function ResourcesScreen({ navigation, route }: any) {
             )}
           </View>
         </View>
+      );
+    }
+
+    // Report Link card
+    if (resource.resource_type === 'report_link') {
+      // Parse notes field for metadata
+      let metadata: ReportMetadata = {};
+      try {
+        if (resource.notes) {
+          metadata = JSON.parse(resource.notes);
+        }
+      } catch (e) {
+        // Notes field is not JSON, that's okay
+      }
+
+      const sectionTypes = metadata.sectionTypes || [];
+      const reportDate = metadata.reportDate || formatDate(resource.created_at);
+
+      // Get display name for section types - matching web app exactly
+      const getSectionDisplayName = (section: string): string => {
+        const sectionLabels: Record<string, string> = {
+          blast_motion: 'Blast Motion',
+          hittrax: 'HitTrax',
+          trackman: 'TrackMan',
+          command_training: 'Command',
+          force_plate: 'Force Plate',
+          force_profile: 'Force Profile',
+          force_metrics_history: 'Force History',
+          cmj: 'CMJ',
+          sj: 'Squat Jump',
+          hj: 'Hop Jump',
+          ppu: 'Push Up',
+          imtp: 'IMTP',
+          armcare: 'ArmCare',
+          custom_notes: 'Notes',
+        };
+        return sectionLabels[section] || section;
+      };
+
+      // Handle opening report URL
+      const handleOpenReport = () => {
+        let url = resource.file_url;
+        if (url) {
+          // If URL starts with /reports/public/, prepend base URL
+          if (url.startsWith('/reports/public/')) {
+            url = `https://aspboostapp.vercel.app${url}`;
+          }
+          Linking.openURL(url);
+        }
+      };
+
+      return (
+        <TouchableOpacity
+          key={resource.id}
+          style={styles.reportCard}
+          onPress={handleOpenReport}
+          activeOpacity={0.8}
+        >
+          {/* Sky blue gradient left border */}
+          <LinearGradient
+            colors={[COLORS.primary, COLORS.primaryDark]}
+            style={styles.reportBorder}
+          />
+
+          <View style={styles.reportContent}>
+            {/* Header */}
+            <View style={styles.reportHeader}>
+              <LinearGradient
+                colors={[COLORS.primary, COLORS.primaryDark]}
+                style={styles.reportIconBox}
+              >
+                <Ionicons name="bar-chart" size={24} color={COLORS.black} />
+              </LinearGradient>
+              <View style={styles.reportHeaderText}>
+                <View style={styles.reportTitleRow}>
+                  <Text style={styles.reportTitle}>
+                    {metadata.athleteName ? `Performance Report: ${metadata.athleteName}` : (resource.title || 'Performance Report')}
+                  </Text>
+                  <View style={styles.reportBadge}>
+                    <Text style={styles.reportBadgeText}>Report</Text>
+                  </View>
+                </View>
+                {resource.description && (
+                  <Text style={styles.reportDescription} numberOfLines={1}>
+                    {resource.description}
+                  </Text>
+                )}
+                <View style={styles.reportMeta}>
+                  {reportDate && (
+                    <>
+                      <Ionicons name="calendar-outline" size={12} color={COLORS.gray500} />
+                      <Text style={styles.reportMetaText}>{reportDate}</Text>
+                    </>
+                  )}
+                  {resource.uploaded_by_profile && (
+                    <>
+                      <Text style={styles.reportMetaDot}>•</Text>
+                      <Text style={styles.reportMetaText}>
+                        Added by {getUploaderName(resource)}
+                      </Text>
+                    </>
+                  )}
+                </View>
+              </View>
+            </View>
+
+            {/* Section type pills */}
+            {sectionTypes.length > 0 && (
+              <View style={styles.sectionPillsContainer}>
+                {sectionTypes.map((section, index) => (
+                  <View key={index} style={styles.sectionPill}>
+                    <Text style={styles.sectionPillText}>{getSectionDisplayName(section)}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* View Report button */}
+            <View style={styles.reportButtonContainer}>
+              <View style={styles.reportButton}>
+                <Ionicons name="open-outline" size={14} color={COLORS.black} />
+                <Text style={styles.reportButtonText}>View Report</Text>
+              </View>
+            </View>
+          </View>
+        </TouchableOpacity>
       );
     }
 
@@ -569,7 +751,7 @@ export default function ResourcesScreen({ navigation, route }: any) {
           style={styles.filterContainer}
           contentContainerStyle={styles.filterContent}
         >
-          {(['all', 'bulletins', 'images', 'videos', 'documents'] as FilterType[]).map((type) => (
+          {(['all', 'bulletins', 'reports', 'images', 'videos', 'documents'] as FilterType[]).map((type) => (
             <TouchableOpacity
               key={type}
               style={[styles.filterTab, filterType === type && styles.filterTabActive]}
@@ -786,6 +968,18 @@ export default function ResourcesScreen({ navigation, route }: any) {
                 <Ionicons name="document-text" size={20} color="#9BDDFF" />
                 <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Notes/Resources</Text>
               </TouchableOpacity>
+
+              {/* Book a Class - always visible */}
+              <TouchableOpacity
+                style={styles.fabMenuItemBook}
+                onPress={() => {
+                  setFabOpen(false);
+                  navigation.navigate('Booking');
+                }}
+              >
+                <Ionicons name="calendar" size={20} color="#000000" />
+                <Text style={styles.fabMenuLabelBook}>Book a Class</Text>
+              </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </Modal>
@@ -834,11 +1028,11 @@ const styles = StyleSheet.create({
   // Filter Tabs
   filterContainer: { marginBottom: 20 },
   filterContent: { gap: 8 },
-  filterTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  filterTab: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center' },
   filterTabActive: { padding: 0, borderWidth: 0, overflow: 'hidden' },
-  filterTabGradient: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-  filterTabText: { fontSize: 14, color: COLORS.gray400 },
-  filterTabTextActive: { fontSize: 14, color: COLORS.black, fontWeight: '600' },
+  filterTabGradient: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+  filterTabText: { fontSize: 13, color: COLORS.gray400, textAlign: 'center' },
+  filterTabTextActive: { fontSize: 13, color: COLORS.black, fontWeight: '600', textAlign: 'center' },
 
   // Empty State
   emptyState: { alignItems: 'center', paddingVertical: 60, paddingHorizontal: 32 },
@@ -870,8 +1064,32 @@ const styles = StyleSheet.create({
   // Video Container (matching WorkoutExecutionScreen exactly)
   videoContainer: { width: '100%', height: 200, marginTop: 12, borderRadius: 8, overflow: 'hidden', backgroundColor: '#000' },
   video: { width: '100%', height: '100%' },
+  openLinkButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: COLORS.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, marginTop: 12, alignSelf: 'flex-start' },
+  openLinkButtonText: { fontSize: 14, fontWeight: '600', color: COLORS.black },
   groupBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
   groupBadgeText: { fontSize: 11, color: COLORS.blue500 },
+
+  // Report Link Card
+  reportCard: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, marginBottom: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(155,221,255,0.3)' },
+  reportBorder: { width: 4 },
+  reportContent: { flex: 1, padding: 12 },
+  reportHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
+  reportIconBox: { width: 48, height: 48, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12, shadowColor: '#9BDDFF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  reportHeaderText: { flex: 1 },
+  reportTitleRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  reportTitle: { fontSize: 17, fontWeight: '700', color: COLORS.white, flex: 1 },
+  reportBadge: { backgroundColor: 'rgba(155,221,255,0.2)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  reportBadgeText: { fontSize: 11, color: COLORS.primary, fontWeight: '500' },
+  reportDescription: { fontSize: 13, color: COLORS.gray400, marginTop: 2 },
+  reportMeta: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 10 },
+  reportMetaText: { fontSize: 11, color: COLORS.gray500 },
+  reportMetaDot: { fontSize: 11, color: COLORS.gray600 },
+  sectionPillsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
+  sectionPill: { backgroundColor: 'rgba(155,221,255,0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(155,221,255,0.3)' },
+  sectionPillText: { fontSize: 11, color: COLORS.primary, fontWeight: '500' },
+  reportButtonContainer: { flexDirection: 'row' },
+  reportButton: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
+  reportButtonText: { fontSize: 13, fontWeight: '600', color: COLORS.black },
 
   // File Card
   fileCard: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, marginBottom: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
@@ -996,6 +1214,22 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFFFFF',
     paddingHorizontal: 3,
+  },
+  fabMenuItemBook: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#9BDDFF',
+    marginTop: 8,
+  },
+  fabMenuLabelBook: {
+    fontSize: 16,
+    color: '#000000',
+    fontWeight: '600',
   },
 
   // Image Modal

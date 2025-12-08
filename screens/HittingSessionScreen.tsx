@@ -1617,6 +1617,12 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 </View>
                 <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
               </TouchableOpacity>
+
+              {/* Book a Class - always visible */}
+              <TouchableOpacity style={styles.fabMenuItemBook} onPress={() => { setFabOpen(false); navigation.navigate('Booking'); }}>
+                <Ionicons name="calendar" size={20} color="#000000" />
+                <Text style={styles.fabMenuLabelBook}>Book a Class</Text>
+              </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </Modal>
@@ -2026,5 +2032,21 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFFFFF',
     paddingHorizontal: 3,
+  },
+  fabMenuItemBook: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#9BDDFF',
+    marginTop: 8,
+  },
+  fabMenuLabelBook: {
+    fontSize: 16,
+    color: '#000000',
+    fontWeight: '600',
   },
 });

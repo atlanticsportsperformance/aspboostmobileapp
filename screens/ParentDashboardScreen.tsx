@@ -538,12 +538,11 @@ export default function ParentDashboardScreen({ navigation }: any) {
         animationType="fade"
         onRequestClose={() => setSettingsOpen(false)}
       >
-        <TouchableOpacity
+        <Pressable
           style={styles.settingsOverlay}
-          activeOpacity={1}
           onPress={() => setSettingsOpen(false)}
         >
-          <View style={styles.settingsDropdown}>
+          <Pressable style={styles.settingsDropdown} onPress={(e) => e.stopPropagation()}>
             {/* Header */}
             <View style={styles.settingsDropdownHeader}>
               <Text style={styles.settingsDropdownTitle}>Settings</Text>
@@ -612,8 +611,8 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 <Text style={styles.settingsMenuDescription}>Log out of your account</Text>
               </View>
             </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {viewMode === 'month' ? (

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -152,6 +152,124 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
     label: 'Strength & Conditioning',
   },
 };
+
+// Memoized Snapshot Carousel component to prevent remounting when parent state changes
+const SnapshotCarousel = React.memo(function SnapshotCarousel({
+  scrollX,
+  snapshotIndex,
+  setSnapshotIndex,
+  valdProfileId,
+  forceProfile,
+  latestPrediction,
+  bodyweightData,
+  armCareData,
+  hittingData,
+  pitchingData,
+}: {
+  scrollX: Animated.Value;
+  snapshotIndex: number;
+  setSnapshotIndex: (index: number) => void;
+  valdProfileId: string | null;
+  forceProfile: any;
+  latestPrediction: any;
+  bodyweightData: any;
+  armCareData: any;
+  hittingData: any;
+  pitchingData: any;
+}) {
+  let cardIndex = 0;
+  const cards = [];
+
+  // Force Profile Card
+  if (valdProfileId && forceProfile) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="force-profile" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Force Profile</Text>
+        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // ArmCare Card
+  if (armCareData) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="arm-care" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>🏋️ ArmCare</Text>
+        <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // Hitting Card
+  if (hittingData) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>⚾ Hitting Performance</Text>
+        <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // Pitching Card
+  if (pitchingData) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>⚾ Pitching Performance</Text>
+        <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      horizontal
+      pagingEnabled
+      showsHorizontalScrollIndicator={false}
+      onScroll={Animated.event(
+        [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+        {
+          useNativeDriver: false,
+          listener: (event: any) => {
+            const offsetX = event.nativeEvent.contentOffset.x;
+            const index = Math.round(offsetX / CARD_WIDTH);
+            setSnapshotIndex(index);
+          }
+        }
+      )}
+      scrollEventThrottle={16}
+    >
+      {cards}
+    </ScrollView>
+  );
+});
 
 export default function DashboardScreen({ navigation }: any) {
   const [athleteId, setAthleteId] = useState('');
@@ -1106,12 +1224,11 @@ export default function DashboardScreen({ navigation }: any) {
         animationType="fade"
         onRequestClose={() => setSettingsOpen(false)}
       >
-        <TouchableOpacity
+        <Pressable
           style={styles.settingsOverlay}
-          activeOpacity={1}
           onPress={() => setSettingsOpen(false)}
         >
-          <View style={styles.settingsDropdown}>
+          <Pressable style={styles.settingsDropdown} onPress={(e) => e.stopPropagation()}>
             {/* Header */}
             <View style={styles.settingsDropdownHeader}>
               <Text style={styles.settingsDropdownTitle}>Settings</Text>
@@ -1174,8 +1291,8 @@ export default function DashboardScreen({ navigation }: any) {
                 <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
               </View>
             </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {viewMode === 'month' ? (
@@ -1188,99 +1305,18 @@ export default function DashboardScreen({ navigation }: any) {
         {/* Snapshot Cards */}
         {hasAnyData && viewMode === 'month' && (
           <View style={styles.snapshotContainer}>
-            <ScrollView
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              onScroll={Animated.event(
-                [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-                {
-                  useNativeDriver: false,
-                  listener: (event: any) => {
-                    const offsetX = event.nativeEvent.contentOffset.x;
-                    const index = Math.round(offsetX / CARD_WIDTH);
-                    setSnapshotIndex(index);
-                  }
-                }
-              )}
-              scrollEventThrottle={16}
-            >
-              {/* Cards rendered with proper index tracking for isActive */}
-              {(() => {
-                let cardIndex = 0;
-                const cards = [];
-
-                // Force Profile Card
-                if (valdProfileId && forceProfile) {
-                  const thisIndex = cardIndex++;
-                  cards.push(
-                    <View key="force-profile" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                      <LinearGradient
-                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.cardGloss}
-                      />
-                      <Text style={styles.cardTitle}>Force Profile</Text>
-                      <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
-                    </View>
-                  );
-                }
-
-                // ArmCare Card
-                if (armCareData) {
-                  const thisIndex = cardIndex++;
-                  cards.push(
-                    <View key="arm-care" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                      <LinearGradient
-                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.cardGloss}
-                      />
-                      <Text style={styles.cardTitle}>🏋️ ArmCare</Text>
-                      <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
-                    </View>
-                  );
-                }
-
-                // Hitting Card
-                if (hittingData) {
-                  const thisIndex = cardIndex++;
-                  cards.push(
-                    <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                      <LinearGradient
-                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.cardGloss}
-                      />
-                      <Text style={styles.cardTitle}>⚾ Hitting Performance</Text>
-                      <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
-                    </View>
-                  );
-                }
-
-                // Pitching Card
-                if (pitchingData) {
-                  const thisIndex = cardIndex++;
-                  cards.push(
-                    <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                      <LinearGradient
-                        colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.cardGloss}
-                      />
-                      <Text style={styles.cardTitle}>⚾ Pitching Performance</Text>
-                      <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
-                    </View>
-                  );
-                }
-
-                return cards;
-              })()}
-            </ScrollView>
+            <SnapshotCarousel
+              scrollX={scrollX}
+              snapshotIndex={snapshotIndex}
+              setSnapshotIndex={setSnapshotIndex}
+              valdProfileId={valdProfileId}
+              forceProfile={forceProfile}
+              latestPrediction={latestPrediction}
+              bodyweightData={bodyweightData}
+              armCareData={armCareData}
+              hittingData={hittingData}
+              pitchingData={pitchingData}
+            />
 
           </View>
         )}
