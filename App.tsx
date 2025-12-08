@@ -5,6 +5,8 @@ import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+// TODO: Uncomment when Stripe is configured
+// import { StripeProvider } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
 import { AthleteProvider } from './contexts/AthleteContext';
 import LoginScreen from './screens/LoginScreen';
@@ -29,6 +31,9 @@ import TestDetailScreen from './screens/TestDetailScreen';
 import ResourcesScreen from './screens/ResourcesScreen';
 import PerformanceScreen from './screens/PerformanceScreen';
 import ProfileScreen from './screens/ProfileScreen';
+import NotificationSettingsScreen from './screens/NotificationSettingsScreen';
+import BookingScreen from './screens/BookingScreen';
+import MembershipsPackagesScreen from './screens/MembershipsPackagesScreen';
 import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
@@ -99,6 +104,8 @@ export default function App() {
     return isParentAccount ? 'ParentDashboard' : 'Dashboard';
   };
 
+  // TODO: Wrap with StripeProvider when Stripe is configured
+  // <StripeProvider publishableKey={...} merchantIdentifier="merchant.com.aspboost">
   return (
     <AthleteProvider>
       <SafeAreaProvider>
@@ -135,6 +142,9 @@ export default function App() {
             <Stack.Screen name="Resources" component={ResourcesScreen} />
             <Stack.Screen name="Performance" component={PerformanceScreen} />
             <Stack.Screen name="Profile" component={ProfileScreen} />
+            <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+            <Stack.Screen name="Booking" component={BookingScreen} />
+            <Stack.Screen name="MembershipsPackages" component={MembershipsPackagesScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>

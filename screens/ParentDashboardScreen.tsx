@@ -19,6 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAthlete } from '../contexts/AthleteContext';
 import AthletePickerModal from '../components/AthletePickerModal';
+import FABMenu from '../components/FABMenu';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
@@ -543,6 +544,13 @@ export default function ParentDashboardScreen({ navigation }: any) {
           onPress={() => setSettingsOpen(false)}
         >
           <View style={styles.settingsDropdown}>
+            {/* Header */}
+            <View style={styles.settingsDropdownHeader}>
+              <Text style={styles.settingsDropdownTitle}>Settings</Text>
+              <Text style={styles.settingsDropdownSubtitle}>Manage your account and preferences</Text>
+            </View>
+
+            {/* Profile */}
             <TouchableOpacity
               style={styles.settingsMenuItem}
               onPress={() => {
@@ -550,12 +558,47 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 navigation.navigate('Profile');
               }}
             >
-              <Ionicons name="person-outline" size={20} color="#FFFFFF" />
-              <Text style={styles.settingsMenuLabel}>Profile Settings</Text>
+              <Ionicons name="person-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Profile</Text>
+                <Text style={styles.settingsMenuDescription}>View and edit your profile</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Memberships & Packages */}
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                // For parent accounts, navigate without athleteId - they can select an athlete
+                navigation.navigate('MembershipsPackages', {});
+              }}
+            >
+              <Ionicons name="card-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Memberships & Packages</Text>
+                <Text style={styles.settingsMenuDescription}>Manage subscriptions and credits</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Notifications */}
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                navigation.navigate('NotificationSettings');
+              }}
+            >
+              <Ionicons name="notifications-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Notifications</Text>
+                <Text style={styles.settingsMenuDescription}>Configure notification preferences</Text>
+              </View>
             </TouchableOpacity>
 
             <View style={styles.settingsDivider} />
 
+            {/* Sign Out */}
             <TouchableOpacity
               style={styles.settingsMenuItem}
               onPress={() => {
@@ -564,7 +607,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
               }}
             >
               <Ionicons name="log-out-outline" size={20} color="#EF4444" />
-              <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
+                <Text style={styles.settingsMenuDescription}>Log out of your account</Text>
+              </View>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -946,110 +992,21 @@ export default function ParentDashboardScreen({ navigation }: any) {
         </Modal>
       )}
 
-      {/* FAB Button */}
-      <View style={styles.fabContainer}>
-        <TouchableOpacity
-          onPress={() => setFabOpen(!fabOpen)}
-          style={styles.fab}
-        >
-          <LinearGradient
-            colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']}
-            style={styles.fabGradient}
-          >
-            <Text style={styles.fabIcon}>{fabOpen ? '✕' : '☰'}</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        {/* FAB Menu */}
-        <Modal
-          visible={fabOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setFabOpen(false)}
-        >
-          <TouchableOpacity
-            style={styles.fabOverlay}
-            activeOpacity={1}
-            onPress={() => setFabOpen(false)}
-          >
-            <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-              {/* Home - Active */}
-              <TouchableOpacity
-                style={[styles.fabMenuItem, styles.fabMenuItemActive]}
-                onPress={() => setFabOpen(false)}
-              >
-                <Ionicons name="home" size={20} color="#9BDDFF" />
-                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Home</Text>
-              </TouchableOpacity>
-
-              {/* Leaderboard */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Leaderboard');
-                }}
-              >
-                <Ionicons name="trophy" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
-              </TouchableOpacity>
-
-              {/* Hitting - with athlete picker (only show if data exists) */}
-              {hasHittingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => handleFabNavigate('HittingPerformance')}
-                >
-                  <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
-                  <Text style={styles.fabMenuLabel}>Hitting</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Pitching - with athlete picker (only show if data exists) */}
-              {hasPitchingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => handleFabNavigate('PitchingPerformance')}
-                >
-                  <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
-                  <Text style={styles.fabMenuLabel}>Pitching</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Arm Care - with athlete picker (only show if data exists) */}
-              {hasArmCareData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => handleFabNavigate('ArmCare')}
-                >
-                  <MaterialCommunityIcons name="arm-flex" size={20} color="#10B981" />
-                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Force Profile - with athlete picker (only show if data exists) */}
-              {hasForceData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => handleFabNavigate('ForceProfile')}
-                >
-                  <Ionicons name="trending-up" size={20} color="#A855F7" />
-                  <Text style={styles.fabMenuLabel}>Force Profile</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Resources - always show, with athlete picker */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => handleFabNavigate('Resources')}
-              >
-                <Ionicons name="document-text" size={20} color="#F59E0B" />
-                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      </View>
+      {/* FAB Menu */}
+      <FABMenu
+        isOpen={fabOpen}
+        onToggle={() => setFabOpen(!fabOpen)}
+        items={[
+          { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => setFabOpen(false) },
+          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
+          ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('HittingPerformance') }] : []),
+          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
+          ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('ArmCare') }] : []),
+          ...(hasForceData ? [{ id: 'force', label: 'Force Profile', icon: 'trending-up', onPress: () => handleFabNavigate('ForceProfile') }] : []),
+          { id: 'resources', label: 'Notes/Resources', icon: 'document-text', onPress: () => handleFabNavigate('Resources') },
+          { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
+        ]}
+      />
 
       {/* Athlete Picker Modal */}
       <AthletePickerModal
@@ -1531,94 +1488,62 @@ const styles = StyleSheet.create({
     paddingRight: 16,
   },
   settingsDropdown: {
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
+    position: 'absolute',
+    top: 100,
+    right: 16,
+    backgroundColor: '#0A0A0A',
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 200,
-    padding: 8,
+    minWidth: 280,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  settingsDropdownHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  settingsDropdownTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  settingsDropdownSubtitle: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 2,
   },
   settingsMenuItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 8,
+  },
+  settingsMenuItemContent: {
+    flex: 1,
   },
   settingsMenuLabel: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#FFFFFF',
     fontWeight: '500',
+  },
+  settingsMenuDescription: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 2,
   },
   settingsDivider: {
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     marginVertical: 4,
-  },
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-  },
-  fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: 'bold',
-  },
-  fabOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 24,
-    paddingBottom: 100,
-  },
-  fabMenu: {
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 220,
-    padding: 8,
-  },
-  fabMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  fabMenuItemActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  fabMenuLabel: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-  fabMenuLabelActive: {
-    color: '#9BDDFF',
+    marginHorizontal: 16,
   },
   resumeModalBackdrop: {
     flex: 1,

@@ -35,6 +35,9 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
   const section2Anim = useRef(new Animated.Value(0)).current;
   const section3Anim = useRef(new Animated.Value(0)).current;
 
+  // Track if animation has already run to prevent re-triggering on parent re-renders
+  const hasAnimated = useRef(false);
+
   // Calculate target widths
   const batSpeedPrWidth = prs.bat_speed ? Math.min(100, (prs.bat_speed.value / 100) * 100) : 0;
   const batSpeedRecentWidth = Math.min(100, ((latest.bat_speed || 0) / 100) * 100);
@@ -45,6 +48,10 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
 
   useEffect(() => {
     if (!isActive) return;
+
+    // Only animate once per active cycle - prevents re-triggering on parent re-renders
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
 
     // Reset all animations
     batSpeedPrAnim.setValue(0);
@@ -134,6 +141,13 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
         tension: 25,
         useNativeDriver: false,
       }).start();
+    }
+  }, [isActive]);
+
+  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
     }
   }, [isActive]);
 

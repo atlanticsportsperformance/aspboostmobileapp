@@ -86,6 +86,9 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
   // Animation for each hash mark
   const hashMarkAnims = useRef<Animated.Value[]>([]).current;
 
+  // Track if animation has already run to prevent re-triggering on parent re-renders
+  const hasAnimated = useRef(false);
+
   // Calculate target widths
   const maxVeloPrWidth = prs.max_velo ? Math.min(100, (prs.max_velo.value / 110) * 100) : 0;
   const maxVeloRecentWidth = latest.max_velo !== null ? Math.min(100, (latest.max_velo / 110) * 100) : 0;
@@ -100,6 +103,10 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
 
   useEffect(() => {
     if (!isActive) return;
+
+    // Only animate once per active cycle - prevents re-triggering on parent re-renders
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
 
     // Reset all animations
     section1Anim.setValue(0);
@@ -186,6 +193,13 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
           useNativeDriver: true,
         }).start();
       });
+    }
+  }, [isActive]);
+
+  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
     }
   }, [isActive]);
 

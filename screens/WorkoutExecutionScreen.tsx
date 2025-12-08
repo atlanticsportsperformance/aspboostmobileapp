@@ -524,8 +524,6 @@ export default function WorkoutExecutionScreen() {
       if (inst.status === 'in_progress') {
         setTimerActive(true);
       }
-
-      console.log('✅ Restored workout state');
     } catch (err) {
       console.error('Error restoring state:', err);
     }

@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Line, Polygon, Text as SvgText, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
+import FABMenu from '../components/FABMenu';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -479,161 +479,22 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         )}
       </ScrollView>
 
-      {/* FAB Button - Dynamic based on athlete data (matching DashboardScreen exactly) */}
-      <View style={styles.fabContainer}>
-        {/* Notification Badge on FAB */}
-        {unreadMessagesCount > 0 && !fabOpen && (
-          <View style={styles.fabNotificationBadge}>
-            <Text style={styles.fabNotificationBadgeText}>
-              {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
-            </Text>
-          </View>
-        )}
-        <TouchableOpacity
-          onPress={() => setFabOpen(!fabOpen)}
-          style={styles.fab}
-        >
-          <LinearGradient
-            colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']}
-            style={styles.fabGradient}
-          >
-            <Text style={styles.fabIcon}>{fabOpen ? '✕' : '☰'}</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        {/* FAB Menu - Dynamic items based on athlete data */}
-        <Modal
-          visible={fabOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setFabOpen(false)}
-        >
-          <TouchableOpacity
-            style={styles.fabOverlay}
-            activeOpacity={1}
-            onPress={() => setFabOpen(false)}
-          >
-            <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-              {/* Home */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
-                }}
-              >
-                <Ionicons name="home" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Home</Text>
-              </TouchableOpacity>
-
-              {/* Messages with badge */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Messages');
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
-                  {unreadMessagesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Messages</Text>
-              </TouchableOpacity>
-
-              {/* Leaderboard */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Leaderboard');
-                }}
-              >
-                <Ionicons name="trophy" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
-              </TouchableOpacity>
-
-              {/* CONDITIONAL: Hitting - only if hasHittingData */}
-              {hasHittingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('HittingPerformance', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
-                  <Text style={styles.fabMenuLabel}>Hitting</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Pitching - only if hasPitchingData */}
-              {hasPitchingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('PitchingPerformance', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="baseball" size={20} color="#9BDDFF" />
-                  <Text style={styles.fabMenuLabel}>Pitching</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Arm Care - only if hasArmCareData */}
-              {hasArmCareData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('ArmCare', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="arm-flex" size={20} color="#22C55E" />
-                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Force Profile - Active (current page) */}
-              <TouchableOpacity
-                style={[styles.fabMenuItem, styles.fabMenuItemActive]}
-                onPress={() => setFabOpen(false)}
-              >
-                <MaterialCommunityIcons name="lightning-bolt" size={20} color="#9BDDFF" />
-                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Force Profile</Text>
-              </TouchableOpacity>
-
-              {/* Notes/Resources - always visible, with badge for new items */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Resources', { athleteId });
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="document-text" size={20} color="#F59E0B" />
-                  {newResourcesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {newResourcesCount > 9 ? '9+' : newResourcesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      </View>
+      {/* FAB Menu */}
+      <FABMenu
+        isOpen={fabOpen}
+        onToggle={() => setFabOpen(!fabOpen)}
+        totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        items={[
+          { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
+          { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
+          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
+          ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
+          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
+          { id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },
+          { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId }) },
+        ]}
+      />
     </SafeAreaView>
   );
 }
@@ -1423,112 +1284,5 @@ const styles = StyleSheet.create({
   tapIndicatorText: {
     fontSize: 10,
     color: 'rgba(255,255,255,0.4)',
-  },
-  // FAB Styles (matching DashboardScreen exactly)
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-  },
-  fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: 'bold',
-  },
-  fabOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 24,
-    paddingBottom: 100,
-  },
-  fabMenu: {
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 220,
-    padding: 8,
-  },
-  fabMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  fabMenuLabel: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-  fabNotificationBadge: {
-    position: 'absolute',
-    top: -4,
-    left: -4,
-    minWidth: 24,
-    height: 24,
-    backgroundColor: '#EF4444',
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#000000',
-    zIndex: 20,
-  },
-  fabNotificationBadgeText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 4,
-  },
-  fabMenuItemActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  fabMenuLabelActive: {
-    color: '#9BDDFF',
-  },
-  fabMenuIconContainer: {
-    position: 'relative',
-  },
-  fabMenuItemBadge: {
-    position: 'absolute',
-    top: -6,
-    right: -8,
-    minWidth: 18,
-    height: 18,
-    backgroundColor: '#EF4444',
-    borderRadius: 9,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#000000',
-  },
-  fabMenuItemBadgeText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 3,
   },
 });

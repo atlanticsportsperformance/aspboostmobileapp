@@ -79,6 +79,9 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
   const strengthAnim = useRef(new Animated.Value(0)).current;
   const testsAnim = useRef(new Animated.Value(0)).current;
 
+  // Track if animation has already run to prevent re-triggering on parent re-renders
+  const hasAnimated = useRef(false);
+
   // Circle circumference
   const radius = 75;
   const circumference = 2 * Math.PI * radius;
@@ -87,6 +90,10 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
   // Animate when card becomes active
   useEffect(() => {
     if (!isActive) return;
+
+    // Only animate once per active cycle - prevents re-triggering on parent re-renders
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
 
     // Reset all animations to start fresh
     circleAnim.setValue(0);
@@ -177,6 +184,13 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
       tension: 60,
       useNativeDriver: true,
     }).start();
+  }, [isActive]);
+
+  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
+    }
   }, [isActive]);
 
   // Interpolate circle stroke

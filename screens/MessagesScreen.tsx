@@ -48,17 +48,26 @@ interface Conversation {
   last_message?: {
     content: string;
     created_at: string;
-    sender_id: string;
+    sender_id: string | null;
+    is_system_message?: boolean;
   };
   unread_count: number;
+}
+
+// Check if conversation is the Notifications channel
+function isNotificationsConversation(conversation: Conversation): boolean {
+  return conversation.title === 'Notifications' &&
+    (conversation.type === 'announcement' || conversation.type === 'notifications');
 }
 
 interface Message {
   id: string;
   content: string;
-  sender_id: string;
+  sender_id: string | null;
   created_at: string;
-  sender: Profile;
+  sender: Profile | null;
+  is_system_message?: boolean;
+  system_message_type?: string;
   attachments?: Array<{
     file_url: string;
     file_name: string;
@@ -240,6 +249,8 @@ export default function MessagesScreen({ navigation }: any) {
           sender_id,
           created_at,
           attachments,
+          is_system_message,
+          system_message_type,
           sender:sender_id (
             id,
             first_name,
@@ -314,6 +325,8 @@ export default function MessagesScreen({ navigation }: any) {
               sender_id,
               created_at,
               attachments,
+              is_system_message,
+              system_message_type,
               sender:sender_id (
                 id,
                 first_name,
@@ -541,18 +554,6 @@ export default function MessagesScreen({ navigation }: any) {
 
       const coachIds = assignedCoaches?.map(ac => ac.coach_id) || [];
 
-      console.log('🔍 Current org_id:', currentProfile.org_id);
-      console.log('🔍 Current user id:', currentUser?.id);
-      console.log('🔍 Athlete ID:', athleteId);
-
-      // Debug: First check what profiles exist in this org
-      const { data: allOrgProfiles } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, email, app_role, org_id')
-        .eq('org_id', currentProfile.org_id);
-
-      console.log('🔍 ALL profiles in org:', allOrgProfiles);
-
       // Query 1: Get admins and super_admins in the same org
       const { data: adminProfiles, error: adminError } = await supabase
         .from('profiles')
@@ -560,8 +561,6 @@ export default function MessagesScreen({ navigation }: any) {
         .eq('org_id', currentProfile.org_id)
         .neq('id', currentUser?.id)
         .in('app_role', ['admin', 'super_admin']);
-
-      console.log('🔍 Admin profiles query result:', adminProfiles, 'Error:', adminError);
 
       // Query 2: Get assigned coaches (if any)
       let coachProfiles: Profile[] = [];
@@ -572,7 +571,6 @@ export default function MessagesScreen({ navigation }: any) {
           .eq('org_id', currentProfile.org_id)
           .in('id', coachIds);
 
-        console.log('Coach profiles query result:', coaches, 'Error:', coachError);
         coachProfiles = coaches || [];
       }
 
@@ -588,7 +586,6 @@ export default function MessagesScreen({ navigation }: any) {
       // Sort by first name
       uniqueProfiles.sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));
 
-      console.log('Final available users:', uniqueProfiles);
       setAvailableUsers(uniqueProfiles);
     } catch (error) {
       console.error('Error fetching available users:', error);
@@ -739,19 +736,14 @@ export default function MessagesScreen({ navigation }: any) {
   async function pickImage() {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      console.log('Permission status:', status);
       if (status !== 'granted') {
         Alert.alert('Permission Required', 'Please allow access to your photo library to send images.');
         return;
       }
 
-      console.log('Launching picker now...');
-
       const result = await ImagePicker.launchImageLibraryAsync({
         quality: 0.8,
       });
-
-      console.log('Picker result:', result.canceled);
 
       if (!result.canceled && result.assets) {
         const newAttachments = result.assets.map(asset => {
@@ -782,17 +774,14 @@ export default function MessagesScreen({ navigation }: any) {
   async function takePhoto() {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      console.log('Camera permission status:', status);
       if (status !== 'granted') {
         Alert.alert('Permission Required', 'Please allow camera access to take photos.');
         return;
       }
 
-      console.log('Launching camera now...');
       const result = await ImagePicker.launchCameraAsync({
         quality: 0.8,
       });
-      console.log('Camera result:', result.canceled);
 
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
@@ -1010,6 +999,7 @@ export default function MessagesScreen({ navigation }: any) {
               const otherParticipant = conversation.participants.find(
                 p => p.user_id !== currentUser?.id
               );
+              const isNotifications = isNotificationsConversation(conversation);
 
               return (
                 <TouchableOpacity
@@ -1018,22 +1008,34 @@ export default function MessagesScreen({ navigation }: any) {
                     selectedConversation?.id === conversation.id && styles.conversationItemSelected,
                   ]}
                   onPress={() => selectConversation(conversation)}
-                  onLongPress={() => deleteConversation(conversation.id)}
+                  onLongPress={() => !isNotifications && deleteConversation(conversation.id)}
                 >
                   {/* Avatar */}
-                  <LinearGradient
-                    colors={['#9BDDFF', '#7BC5F0']}
-                    style={styles.avatar}
-                  >
-                    <Text style={styles.avatarText}>
-                      {otherParticipant?.profiles ? getInitials(otherParticipant.profiles) : '?'}
-                    </Text>
-                  </LinearGradient>
+                  {isNotifications ? (
+                    <LinearGradient
+                      colors={['#A855F7', '#6366F1']}
+                      style={styles.avatar}
+                    >
+                      <Text style={styles.avatarEmoji}>🤖</Text>
+                    </LinearGradient>
+                  ) : (
+                    <LinearGradient
+                      colors={['#9BDDFF', '#7BC5F0']}
+                      style={styles.avatar}
+                    >
+                      <Text style={styles.avatarText}>
+                        {otherParticipant?.profiles ? getInitials(otherParticipant.profiles) : '?'}
+                      </Text>
+                    </LinearGradient>
+                  )}
 
                   {/* Content */}
                   <View style={styles.conversationContent}>
                     <View style={styles.conversationHeader}>
-                      <Text style={styles.conversationName} numberOfLines={1}>
+                      <Text style={[
+                        styles.conversationName,
+                        isNotifications && styles.conversationNamePurple
+                      ]} numberOfLines={1}>
                         {getConversationTitle(conversation)}
                       </Text>
                       {conversation.last_message && (
@@ -1053,7 +1055,10 @@ export default function MessagesScreen({ navigation }: any) {
 
                   {/* Unread Badge */}
                   {conversation.unread_count > 0 && (
-                    <View style={styles.unreadBadge}>
+                    <View style={[
+                      styles.unreadBadge,
+                      isNotifications && styles.unreadBadgePurple
+                    ]}>
                       <Text style={styles.unreadBadgeText}>
                         {conversation.unread_count}
                       </Text>
@@ -1199,6 +1204,8 @@ export default function MessagesScreen({ navigation }: any) {
   }
 
   // Conversation View
+  const isNotificationsChat = selectedConversation ? isNotificationsConversation(selectedConversation) : false;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
@@ -1207,7 +1214,10 @@ export default function MessagesScreen({ navigation }: any) {
         keyboardVerticalOffset={0}
       >
         {/* Chat Header */}
-        <View style={styles.chatHeader}>
+        <View style={[
+          styles.chatHeader,
+          isNotificationsChat && styles.chatHeaderPurple
+        ]}>
           <TouchableOpacity
             onPress={() => {
               setSelectedConversation(null);
@@ -1215,24 +1225,47 @@ export default function MessagesScreen({ navigation }: any) {
             }}
             style={styles.chatBackButton}
           >
-            <Text style={styles.chatBackButtonText}>‹</Text>
+            <Text style={[
+              styles.chatBackButtonText,
+              isNotificationsChat && styles.chatBackButtonTextPurple
+            ]}>‹</Text>
           </TouchableOpacity>
 
           <View style={styles.chatHeaderInfo}>
-            <Text style={styles.chatHeaderTitle} numberOfLines={1}>
-              {getConversationTitle(selectedConversation)}
-            </Text>
-            <Text style={styles.chatHeaderSubtitle}>
-              {selectedConversation.type === 'direct' ? 'Direct Message' : 'Group'}
-            </Text>
+            {isNotificationsChat && (
+              <View style={styles.chatHeaderAvatarContainer}>
+                <LinearGradient
+                  colors={['#A855F7', '#6366F1']}
+                  style={styles.chatHeaderAvatar}
+                >
+                  <Text style={styles.chatHeaderAvatarEmoji}>🤖</Text>
+                </LinearGradient>
+              </View>
+            )}
+            <View>
+              <Text style={[
+                styles.chatHeaderTitle,
+                isNotificationsChat && styles.chatHeaderTitlePurple
+              ]} numberOfLines={1}>
+                {getConversationTitle(selectedConversation)}
+              </Text>
+              <Text style={styles.chatHeaderSubtitle}>
+                {isNotificationsChat
+                  ? 'Automated notifications from the system'
+                  : selectedConversation.type === 'direct' ? 'Direct Message' : 'Group'}
+              </Text>
+            </View>
           </View>
 
-          <TouchableOpacity
-            onPress={() => deleteConversation(selectedConversation.id)}
-            style={styles.chatDeleteButton}
-          >
-            <Text style={styles.chatDeleteButtonText}>🗑️</Text>
-          </TouchableOpacity>
+          {!isNotificationsChat && (
+            <TouchableOpacity
+              onPress={() => deleteConversation(selectedConversation.id)}
+              style={styles.chatDeleteButton}
+            >
+              <Text style={styles.chatDeleteButtonText}>🗑️</Text>
+            </TouchableOpacity>
+          )}
+          {isNotificationsChat && <View style={styles.chatDeleteButton} />}
         </View>
 
         {/* Messages */}
@@ -1244,7 +1277,30 @@ export default function MessagesScreen({ navigation }: any) {
         >
           {messages.map((message) => {
             const isOwn = message.sender_id === currentUser?.id;
+            const isSystemMessage = message.is_system_message === true;
             const youtubeVideoId = getYouTubeVideoId(message.content);
+
+            // System message rendering
+            if (isSystemMessage) {
+              return (
+                <View key={message.id} style={styles.messageRow}>
+                  <LinearGradient
+                    colors={['#A855F7', '#6366F1']}
+                    style={styles.messageAvatar}
+                  >
+                    <Text style={styles.systemMessageAvatarEmoji}>🤖</Text>
+                  </LinearGradient>
+
+                  <View style={styles.systemMessageBubble}>
+                    <Text style={styles.systemMessageSender}>Automation</Text>
+                    <Text style={styles.systemMessageText}>{message.content}</Text>
+                    <Text style={styles.systemMessageTime}>
+                      {formatMessageTime(message.created_at)}
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
 
             return (
               <TouchableOpacity
@@ -1259,7 +1315,7 @@ export default function MessagesScreen({ navigation }: any) {
                     style={styles.messageAvatar}
                   >
                     <Text style={styles.messageAvatarText}>
-                      {getInitials(message.sender)}
+                      {message.sender ? getInitials(message.sender) : '?'}
                     </Text>
                   </LinearGradient>
                 )}
@@ -1413,8 +1469,8 @@ export default function MessagesScreen({ navigation }: any) {
           })}
         </ScrollView>
 
-        {/* Attachment Preview */}
-        {attachments.length > 0 && (
+        {/* Attachment Preview - only show if not notifications channel */}
+        {!isNotificationsChat && attachments.length > 0 && (
           <View style={styles.attachmentPreviewContainer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {attachments.map((attachment, index) => (
@@ -1449,45 +1505,53 @@ export default function MessagesScreen({ navigation }: any) {
           </View>
         )}
 
-        {/* Message Input */}
-        <View style={styles.inputContainer}>
-          {/* Attachment Button */}
-          <TouchableOpacity
-            style={styles.attachmentButton}
-            onPress={showAttachmentOptions}
-          >
-            <Text style={styles.attachmentButtonText}>+</Text>
-          </TouchableOpacity>
-
-          <TextInput
-            style={styles.messageInput}
-            placeholder="Type a message..."
-            placeholderTextColor="rgba(255,255,255,0.4)"
-            value={newMessage}
-            onChangeText={setNewMessage}
-            multiline
-            maxLength={2000}
-          />
-          <TouchableOpacity
-            style={[
-              styles.sendButton,
-              (!newMessage.trim() && attachments.length === 0 || sending) && styles.sendButtonDisabled,
-            ]}
-            onPress={sendMessage}
-            disabled={(!newMessage.trim() && attachments.length === 0) || sending}
-          >
-            <LinearGradient
-              colors={['#9BDDFF', '#7BC5F0']}
-              style={styles.sendButtonGradient}
+        {/* Message Input - show read-only message for notifications channel */}
+        {isNotificationsChat ? (
+          <View style={styles.notificationsInputContainer}>
+            <Text style={styles.notificationsInputText}>
+              This is an automated notification channel. You cannot reply to these messages.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.inputContainer}>
+            {/* Attachment Button */}
+            <TouchableOpacity
+              style={styles.attachmentButton}
+              onPress={showAttachmentOptions}
             >
-              {sending || uploading ? (
-                <ActivityIndicator size="small" color="#000" />
-              ) : (
-                <Text style={styles.sendButtonText}>➤</Text>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
+              <Text style={styles.attachmentButtonText}>+</Text>
+            </TouchableOpacity>
+
+            <TextInput
+              style={styles.messageInput}
+              placeholder="Type a message..."
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              value={newMessage}
+              onChangeText={setNewMessage}
+              multiline
+              maxLength={2000}
+            />
+            <TouchableOpacity
+              style={[
+                styles.sendButton,
+                (!newMessage.trim() && attachments.length === 0 || sending) && styles.sendButtonDisabled,
+              ]}
+              onPress={sendMessage}
+              disabled={(!newMessage.trim() && attachments.length === 0) || sending}
+            >
+              <LinearGradient
+                colors={['#9BDDFF', '#7BC5F0']}
+                style={styles.sendButtonGradient}
+              >
+                {sending || uploading ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <Text style={styles.sendButtonText}>➤</Text>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Attachment Menu Popup - positioned above the + button */}
         {showAttachmentMenu && (
@@ -1691,6 +1755,12 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 8,
   },
+  conversationNamePurple: {
+    color: '#A855F7',
+  },
+  avatarEmoji: {
+    fontSize: 20,
+  },
   conversationTime: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.4)',
@@ -1707,6 +1777,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 8,
+  },
+  unreadBadgePurple: {
+    backgroundColor: '#A855F7',
   },
   unreadBadgeText: {
     fontSize: 12,
@@ -1725,6 +1798,10 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.05)',
   },
+  chatHeaderPurple: {
+    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    borderBottomColor: 'rgba(168, 85, 247, 0.2)',
+  },
   chatBackButton: {
     width: 40,
     height: 40,
@@ -1736,14 +1813,35 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
     fontWeight: '300',
   },
+  chatBackButtonTextPurple: {
+    color: '#A855F7',
+  },
   chatHeaderInfo: {
     flex: 1,
     marginLeft: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chatHeaderAvatarContainer: {
+    marginRight: 10,
+  },
+  chatHeaderAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatHeaderAvatarEmoji: {
+    fontSize: 18,
   },
   chatHeaderTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  chatHeaderTitlePurple: {
+    color: '#A855F7',
   },
   chatHeaderSubtitle: {
     fontSize: 12,
@@ -1786,6 +1884,35 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#000000',
   },
+  // System message styles
+  systemMessageAvatarEmoji: {
+    fontSize: 16,
+  },
+  systemMessageBubble: {
+    maxWidth: '75%',
+    borderRadius: 16,
+    borderBottomLeftRadius: 4,
+    padding: 12,
+    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.3)',
+  },
+  systemMessageSender: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#A855F7',
+    marginBottom: 4,
+  },
+  systemMessageText: {
+    fontSize: 15,
+    color: '#FFFFFF',
+    lineHeight: 22,
+  },
+  systemMessageTime: {
+    fontSize: 11,
+    color: 'rgba(168, 85, 247, 0.7)',
+    marginTop: 6,
+  },
   messageBubble: {
     maxWidth: '75%',
     borderRadius: 16,
@@ -1825,6 +1952,19 @@ const styles = StyleSheet.create({
     borderTopColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems: 'flex-end',
+  },
+  notificationsInputContainer: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(168, 85, 247, 0.2)',
+    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    alignItems: 'center',
+  },
+  notificationsInputText: {
+    fontSize: 13,
+    color: 'rgba(168, 85, 247, 0.8)',
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
   messageInput: {
     flex: 1,

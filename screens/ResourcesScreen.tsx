@@ -354,13 +354,6 @@ export default function ResourcesScreen({ navigation, route }: any) {
     const vimeoVideoId = resource.notes ? getVimeoVideoId(resource.notes) : null;
     const hasVideo = youtubeVideoId || vimeoVideoId;
 
-    // Debug logging
-    if (resource.notes && (resource.notes.includes('youtube') || resource.notes.includes('youtu.be'))) {
-      console.log('Resource notes:', resource.notes);
-      console.log('Extracted YouTube ID:', youtubeVideoId);
-      console.log('Full embed URL:', youtubeVideoId ? `https://www.youtube.com/embed/${youtubeVideoId}` : 'none');
-    }
-
     if (isBulletin) {
       return (
         <View key={resource.id} style={styles.bulletinCard}>

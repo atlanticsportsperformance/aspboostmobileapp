@@ -42,6 +42,9 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
   const glowAnim = useRef(new Animated.Value(0)).current;
   const predictionAnim = useRef(new Animated.Value(0)).current;
 
+  // Track if animation has already run to prevent re-triggering on parent re-renders
+  const hasAnimated = useRef(false);
+
   // Circle circumference
   const radius = 68;
   const circumference = 2 * Math.PI * radius;
@@ -50,6 +53,10 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
   // Animate when card becomes active
   useEffect(() => {
     if (!isActive) return;
+
+    // Only animate once per active cycle - prevents re-triggering on parent re-renders
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
 
     // Reset all animations to start fresh
     circleAnim.setValue(0);
@@ -131,6 +138,13 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start();
+    }
+  }, [isActive]);
+
+  // Reset hasAnimated when card becomes inactive so animation replays when scrolling back
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
     }
   }, [isActive]);
 

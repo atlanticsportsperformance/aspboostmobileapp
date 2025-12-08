@@ -289,7 +289,6 @@ export default function ExerciseDetailView({
 
   // Handle video errors
   const onVideoError = useCallback((error: string) => {
-    console.log('YouTube Player Error:', error);
     setVideoError(true);
   }, []);
 

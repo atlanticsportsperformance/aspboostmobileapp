@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -14,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
+import FABMenu from '../components/FABMenu';
 
 // Color theme matching HittingPerformanceScreen
 const COLORS = {
@@ -82,6 +82,10 @@ export default function PitchingScreen({ navigation, route }: any) {
   const [unreadMessagesCount, setUnreadMessagesCount] = useState<number>(0);
   const [newResourcesCount, setNewResourcesCount] = useState<number>(0);
   const [userId, setUserId] = useState<string | null>(null);
+
+  // Pagination
+  const [displayedSessions, setDisplayedSessions] = useState(20);
+  const [allSessions, setAllSessions] = useState<Session[]>([]);
 
   useEffect(() => {
     loadAthleteAndData();
@@ -267,7 +271,7 @@ export default function PitchingScreen({ navigation, route }: any) {
   }
 
   async function fetchSessions(id: string) {
-    const allSessions: Session[] = [];
+    const fetchedSessions: Session[] = [];
 
     const { data: pitchSessionIds } = await supabase
       .from('trackman_pitch_data')
@@ -281,8 +285,7 @@ export default function PitchingScreen({ navigation, route }: any) {
         .from('trackman_session')
         .select('*')
         .in('id', uniqueSessionIds)
-        .order('game_date_utc', { ascending: false })
-        .limit(10);
+        .order('game_date_utc', { ascending: false });
 
       if (trackmanSessions) {
         for (const session of trackmanSessions) {
@@ -295,7 +298,7 @@ export default function PitchingScreen({ navigation, route }: any) {
           const velocities = pitches?.map(p => parseFloat(p.rel_speed || '0')).filter(v => v > 0) || [];
           const spinRates = pitches?.map(p => p.spin_rate ? parseFloat(p.spin_rate.toString()) : null).filter((s): s is number => s !== null) || [];
 
-          allSessions.push({
+          fetchedSessions.push({
             ...session,
             pitch_count: count || 0,
             max_velo: velocities.length > 0 ? Math.max(...velocities) : null,
@@ -311,22 +314,29 @@ export default function PitchingScreen({ navigation, route }: any) {
       .from('command_training_sessions')
       .select('*')
       .eq('athlete_id', id)
-      .order('session_date', { ascending: false })
-      .limit(10);
+      .order('session_date', { ascending: false });
 
     if (commandSessions) {
       commandSessions.forEach(session => {
-        allSessions.push({ ...session, source: 'command' as const });
+        fetchedSessions.push({ ...session, source: 'command' as const });
       });
     }
 
-    allSessions.sort((a, b) => {
+    fetchedSessions.sort((a, b) => {
       const dateA = 'game_date_utc' in a ? new Date(a.game_date_utc) : new Date(a.session_date);
       const dateB = 'game_date_utc' in b ? new Date(b.game_date_utc) : new Date(b.session_date);
       return dateB.getTime() - dateA.getTime();
     });
 
-    setSessions(allSessions.slice(0, 15));
+    setAllSessions(fetchedSessions);
+    setSessions(fetchedSessions.slice(0, 20));
+    setDisplayedSessions(20);
+  }
+
+  function loadMoreSessions() {
+    const newCount = displayedSessions + 20;
+    setSessions(allSessions.slice(0, newCount));
+    setDisplayedSessions(newCount);
   }
 
   function formatMetric(value: number | null, decimals: number = 1): string {
@@ -517,158 +527,36 @@ export default function PitchingScreen({ navigation, route }: any) {
               <Text style={styles.emptyText}>No pitching sessions found</Text>
             </View>
           )}
+
+          {/* Load More Button */}
+          {sessions.length > 0 && displayedSessions < allSessions.length && (
+            <TouchableOpacity style={styles.loadMoreButton} onPress={loadMoreSessions}>
+              <Text style={styles.loadMoreText}>
+                Load More ({allSessions.length - displayedSessions} remaining)
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* FAB Button - Matching DashboardScreen exactly */}
-      <View style={styles.fabContainer}>
-        <TouchableOpacity
-          onPress={() => setFabOpen(!fabOpen)}
-          style={styles.fab}
-        >
-          <LinearGradient
-            colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']}
-            style={styles.fabGradient}
-          >
-            <Text style={styles.fabIcon}>{fabOpen ? '✕' : '☰'}</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        {/* FAB Menu - Matching DashboardScreen exactly with dynamic items */}
-        <Modal
-          visible={fabOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setFabOpen(false)}
-        >
-          <TouchableOpacity
-            style={styles.fabOverlay}
-            activeOpacity={1}
-            onPress={() => setFabOpen(false)}
-          >
-            <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-              {/* Home */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard');
-                }}
-              >
-                <Ionicons name="home" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Home</Text>
-              </TouchableOpacity>
-
-              {/* Messages - with badge */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Messages');
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
-                  {unreadMessagesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Messages</Text>
-              </TouchableOpacity>
-
-              {/* Leaderboard */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Leaderboard');
-                }}
-              >
-                <Ionicons name="trophy" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
-              </TouchableOpacity>
-
-              {/* CONDITIONAL: Hitting - only if hittingData */}
-              {hittingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('HittingPerformance', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
-                  <Text style={styles.fabMenuLabel}>Hitting</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Pitching - Active (current page) */}
-              <TouchableOpacity
-                style={[styles.fabMenuItem, styles.fabMenuItemActive]}
-                onPress={() => setFabOpen(false)}
-              >
-                <MaterialCommunityIcons name="baseball" size={20} color="#9BDDFF" />
-                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Pitching</Text>
-              </TouchableOpacity>
-
-              {/* CONDITIONAL: Arm Care - only if armCareData */}
-              {armCareData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('ArmCare', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="arm-flex" size={20} color="#22C55E" />
-                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Force Profile - only if forceProfileData */}
-              {forceProfileData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('ForceProfile', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="lightning-bolt" size={20} color="#A855F7" />
-                  <Text style={styles.fabMenuLabel}>Force Profile</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Notes/Resources - always visible, with badge for new items */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Resources', { athleteId });
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="document-text" size={20} color="#F59E0B" />
-                  {newResourcesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {newResourcesCount > 9 ? '9+' : newResourcesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      </View>
+      {/* FAB Menu */}
+      <FABMenu
+        isOpen={fabOpen}
+        onToggle={() => setFabOpen(!fabOpen)}
+        totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        items={[
+          { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
+          { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
+          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
+          ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
+          { id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },
+          ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
+          ...(forceProfileData ? [{ id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
+          { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
+        ]}
+      />
     </SafeAreaView>
   );
 }
@@ -727,89 +615,19 @@ const styles = StyleSheet.create({
   sessionStatLabel: { fontSize: 7, color: COLORS.gray500, textTransform: 'uppercase', marginTop: 2 },
   emptyState: { padding: 32, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 12, marginTop: 12 },
   emptyText: { color: COLORS.gray400, fontSize: 14 },
-  // FAB Styles - Matching DashboardScreen exactly
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-  },
-  fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: 'bold',
-  },
-  fabOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 24,
-    paddingBottom: 100,
-  },
-  fabMenu: {
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 220,
-    padding: 8,
-  },
-  fabMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  loadMoreButton: {
+    marginTop: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
     borderRadius: 12,
-  },
-  fabMenuItemActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
     borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  fabMenuLabel: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-  fabMenuLabelActive: {
-    color: '#9BDDFF',
-  },
-  fabMenuIconContainer: {
-    position: 'relative',
-  },
-  fabMenuItemBadge: {
-    position: 'absolute',
-    top: -6,
-    right: -8,
-    backgroundColor: '#EF4444',
-    borderRadius: 10,
-    minWidth: 18,
-    height: 18,
-    justifyContent: 'center',
+    borderColor: 'rgba(155, 221, 255, 0.2)',
     alignItems: 'center',
-    paddingHorizontal: 4,
   },
-  fabMenuItemBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: 'bold',
+  loadMoreText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#9BDDFF',
   },
 });

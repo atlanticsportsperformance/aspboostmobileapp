@@ -21,6 +21,7 @@ import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
+import FABMenu, { FABMenuItem } from '../components/FABMenu';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
@@ -288,8 +289,6 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   async function fetchForceProfile(athleteIdParam: string, valdProfileIdParam: string | null) {
-    console.log('📊 [Force Profile] Starting fetch for athlete:', athleteIdParam);
-
     // Get athlete's org_id for composite config
     const { data: athlete, error: athleteError } = await supabase
       .from('athletes')
@@ -297,10 +296,7 @@ export default function DashboardScreen({ navigation }: any) {
       .eq('id', athleteIdParam)
       .single();
 
-    console.log('📊 [Force Profile] Athlete org_id:', athlete?.org_id, 'Error:', athleteError?.message);
-
     if (!athlete?.org_id) {
-      console.log('📊 [Force Profile] No org_id, exiting');
       setValdProfileId(null);
       setForceProfile(null);
       return;
@@ -316,8 +312,6 @@ export default function DashboardScreen({ navigation }: any) {
       .limit(1)
       .maybeSingle();
 
-    console.log('📊 [Force Profile] Default config:', compositeConfig?.name, 'Error:', configError?.message);
-
     // If no default, try any config for this org
     if (!compositeConfig) {
       const { data: anyConfig, error: anyErr } = await supabase
@@ -326,14 +320,12 @@ export default function DashboardScreen({ navigation }: any) {
         .eq('org_id', athlete.org_id)
         .limit(1)
         .maybeSingle();
-      console.log('📊 [Force Profile] Fallback config:', anyConfig?.name, 'Error:', anyErr?.message);
       compositeConfig = anyConfig;
       configError = anyErr;
     }
 
     // If still no config, use hardcoded default (same as seed script)
     if (!compositeConfig) {
-      console.log('📊 [Force Profile] Using hardcoded default config');
       compositeConfig = {
         name: 'Overall Athleticism',
         metrics: [
@@ -347,15 +339,11 @@ export default function DashboardScreen({ navigation }: any) {
       };
     }
 
-    console.log('📊 [Force Profile] Config has', compositeConfig.metrics?.length, 'metrics:', JSON.stringify(compositeConfig.metrics));
-
     // Calculate composite score from force_plate_percentiles (matches web app calculateCompositeScore)
     const metrics = compositeConfig.metrics || [];
     const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
 
     for (const metricSpec of metrics) {
-      console.log('📊 [Force Profile] Querying for', metricSpec.test_type, metricSpec.metric);
-
       const { data: percentileData, error } = await supabase
         .from('force_plate_percentiles')
         .select('test_id, test_date, percentiles')
@@ -365,11 +353,8 @@ export default function DashboardScreen({ navigation }: any) {
         .limit(1)
         .single();
 
-      console.log('📊 [Force Profile] Result for', metricSpec.test_type, ':', percentileData ? 'found' : 'not found', 'Error:', error?.message);
-
       if (!error && percentileData?.percentiles) {
         const metricPercentile = percentileData.percentiles[metricSpec.metric];
-        console.log('📊 [Force Profile] Metric percentile for', metricSpec.metric, ':', metricPercentile);
         if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
           // Fetch the actual raw value from the test table
           let rawValue = 0;
@@ -382,7 +367,6 @@ export default function DashboardScreen({ navigation }: any) {
           if (testData && testData[metricSpec.metric] !== undefined) {
             rawValue = Number(testData[metricSpec.metric]) || 0;
           }
-          console.log('📊 [Force Profile] Raw value for', metricSpec.metric, ':', rawValue);
 
           // Get display name for the metric
           const displayName = getMetricDisplayName(metricSpec.test_type, metricSpec.metric);
@@ -397,10 +381,7 @@ export default function DashboardScreen({ navigation }: any) {
       }
     }
 
-    console.log('📊 [Force Profile] Collected percentiles:', percentiles.length, 'from', metrics.length, 'metrics');
-
     if (percentiles.length === 0) {
-      console.log('📊 [Force Profile] No percentiles found, exiting');
       setValdProfileId(null);
       setForceProfile(null);
       return;
@@ -457,16 +438,12 @@ export default function DashboardScreen({ navigation }: any) {
       .order('recorded_date', { ascending: false })
       .order('recorded_time', { ascending: false });
 
-    console.log('Blast swings:', blastSwings);
-
     // Query HitTrax sessions to get session IDs linked to this athlete
     const { data: hittraxSessions } = await supabase
       .from('hittrax_sessions')
       .select('id, session_date')
       .eq('athlete_id', athleteIdParam)
       .order('session_date', { ascending: false });
-
-    console.log('HitTrax sessions:', hittraxSessions);
 
     // Query HitTrax swings for exit velocity and distance
     const hittraxSessionIds = hittraxSessions?.map((s) => s.id) || [];
@@ -477,8 +454,6 @@ export default function DashboardScreen({ navigation }: any) {
           .in('session_id', hittraxSessionIds)
           .order('swing_timestamp', { ascending: false })
       : { data: null };
-
-    console.log('HitTrax swings:', hittraxSwings);
 
     // Calculate PRs for bat speed (from Blast), exit velocity and distance (from HitTrax)
     let maxBatSpeed = { value: 0, date: '' };
@@ -533,11 +508,6 @@ export default function DashboardScreen({ navigation }: any) {
     // Only set hitting data if there's at least one valid value
     const hasAnyHittingData = maxBatSpeed.value > 0 || maxExitVelo.value > 0 || maxDistance.value > 0;
 
-    console.log('Has hitting data:', hasAnyHittingData);
-    console.log('Bat speed PR:', maxBatSpeed);
-    console.log('Exit velo PR:', maxExitVelo);
-    console.log('Distance PR:', maxDistance);
-
     if (hasAnyHittingData) {
       setHittingData({
         prs: {
@@ -575,7 +545,6 @@ export default function DashboardScreen({ navigation }: any) {
       }
 
       if (data) {
-        console.log('Latest prediction:', data);
         setLatestPrediction({
           predicted_value: data.predicted_value,
           predicted_value_low: data.predicted_value_low,
@@ -608,15 +577,11 @@ export default function DashboardScreen({ navigation }: any) {
       }
 
       if (cmjTests && cmjTests.length > 0) {
-        // Log all columns to find the right one
-        console.log('CMJ test columns:', Object.keys(cmjTests[0]));
-
         // body_weight_trial_value is the VALD column name for bodyweight in kg
         const test = cmjTests[0];
         const currentWeight = test.body_weight_trial_value;
 
         if (!currentWeight) {
-          console.log('No bodyweight found in CMJ test');
           setBodyweightData(null);
           return;
         }
@@ -628,15 +593,12 @@ export default function DashboardScreen({ navigation }: any) {
         const currentLbs = currentWeight * 2.20462;
         const previousLbs = previousWeight ? previousWeight * 2.20462 : null;
 
-        console.log('Bodyweight data:', { currentLbs, previousLbs, date: cmjTests[0].created_at });
-
         setBodyweightData({
           current: currentLbs,
           previous: previousLbs,
           date: cmjTests[0].created_at,
         });
       } else {
-        console.log('No CMJ tests found for athlete');
         setBodyweightData(null);
       }
     } catch (err) {
@@ -653,8 +615,6 @@ export default function DashboardScreen({ navigation }: any) {
       .eq('athlete_id', athleteIdParam)
       .order('exam_date', { ascending: false })
       .order('exam_time', { ascending: false });
-
-    console.log('ArmCare sessions:', sessions, 'Error:', error);
 
     if (!sessions || sessions.length === 0) {
       setArmCareData(null);
@@ -701,11 +661,6 @@ export default function DashboardScreen({ navigation }: any) {
       return sessionDate >= thirtyDaysAgo;
     }).length;
 
-    console.log('ArmCare PR:', maxArmScore);
-    console.log('90d avg arm score:', avg90DayArmScore);
-    console.log('90d avg total strength:', avg90DayTotalStrength);
-    console.log('Tests in 30d:', tests30d);
-
     setArmCareData({
       pr: maxArmScore.value > 0 ? { arm_score: maxArmScore.value, date: maxArmScore.date } : { arm_score: 0, date: '' },
       latest: {
@@ -727,8 +682,6 @@ export default function DashboardScreen({ navigation }: any) {
         stuff_plus:pitch_stuff_plus(stuff_plus, pitch_type_group, graded_at)
       `)
       .eq('athlete_id', athleteIdParam);
-
-    console.log('📊 [Pitching] Pitches with Stuff+ join:', pitches?.length, 'First pitch stuff_plus:', pitches?.[0]?.stuff_plus);
 
     if (!pitches || pitches.length === 0) {
       setPitchingData(null);
@@ -786,10 +739,6 @@ export default function DashboardScreen({ navigation }: any) {
     }
     const avg30d = last30DayPitches.length > 0 ? sum30d / last30DayPitches.length : 0;
 
-    console.log('Pitching PR:', maxVelo);
-    console.log('Recent max:', recentMax, 'Recent avg:', recentAvg);
-    console.log('30d avg:', avg30d);
-
     // Process Stuff+ data from the JOIN (no separate query needed)
     let stuffPlusData: {
       allTimeBest: StuffPlusByPitch[];
@@ -820,11 +769,6 @@ export default function DashboardScreen({ navigation }: any) {
           session_date: session?.game_date_utc || p.created_at,
         };
       });
-
-    console.log('📊 [Pitching] Pitches with Stuff+ grades:', pitchesWithStuffPlus.length);
-    if (pitchesWithStuffPlus.length > 0) {
-      console.log('📊 [Pitching] Sample Stuff+ data:', pitchesWithStuffPlus.slice(0, 3));
-    }
 
     if (pitchesWithStuffPlus.length > 0) {
       // Get pitch_uids from the most recent session
@@ -868,9 +812,6 @@ export default function DashboardScreen({ navigation }: any) {
       const overallBest = allTimeBest.length > 0 ? Math.max(...allTimeBest.map(p => p.stuffPlus)) : null;
       const overallRecent = recentSession.length > 0 ? Math.max(...recentSession.map(p => p.stuffPlus)) : null;
 
-      console.log('📊 [Pitching] Stuff+ All-Time Best:', allTimeBest);
-      console.log('📊 [Pitching] Stuff+ Recent Session:', recentSession);
-
       stuffPlusData = {
         allTimeBest,
         recentSession,
@@ -908,7 +849,6 @@ export default function DashboardScreen({ navigation }: any) {
         .single();
 
       if (athlete) {
-        console.log('Athlete loaded:', athlete);
         setAthleteId(athlete.id);
         setUserId(user.id);
         setFirstName(athlete.first_name || '');
@@ -1144,9 +1084,6 @@ export default function DashboardScreen({ navigation }: any) {
   if (hittingData) snapshotSlides.push('hitting');
   if (pitchingData) snapshotSlides.push('pitching');
 
-  console.log('Has any data:', hasAnyData);
-  console.log('Snapshot slides:', snapshotSlides);
-
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -1175,6 +1112,12 @@ export default function DashboardScreen({ navigation }: any) {
           onPress={() => setSettingsOpen(false)}
         >
           <View style={styles.settingsDropdown}>
+            {/* Header */}
+            <View style={styles.settingsDropdownHeader}>
+              <Text style={styles.settingsDropdownTitle}>Settings</Text>
+              <Text style={styles.settingsDropdownSubtitle}>Manage your account and preferences</Text>
+            </View>
+
             <TouchableOpacity
               style={styles.settingsMenuItem}
               onPress={() => {
@@ -1182,8 +1125,39 @@ export default function DashboardScreen({ navigation }: any) {
                 navigation.navigate('Profile');
               }}
             >
-              <Ionicons name="person-outline" size={20} color="#FFFFFF" />
-              <Text style={styles.settingsMenuLabel}>Profile Settings</Text>
+              <Ionicons name="person-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Profile</Text>
+                <Text style={styles.settingsMenuDescription}>View and edit your profile</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                navigation.navigate('MembershipsPackages', { athleteId });
+              }}
+            >
+              <Ionicons name="card-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Memberships & Packages</Text>
+                <Text style={styles.settingsMenuDescription}>Manage subscriptions and credits</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                navigation.navigate('NotificationSettings');
+              }}
+            >
+              <Ionicons name="notifications-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Notifications</Text>
+                <Text style={styles.settingsMenuDescription}>Email and reminder preferences</Text>
+              </View>
             </TouchableOpacity>
 
             <View style={styles.settingsDivider} />
@@ -1195,8 +1169,10 @@ export default function DashboardScreen({ navigation }: any) {
                 handleLogout();
               }}
             >
-              <Ionicons name="log-out-outline" size={20} color="#EF4444" />
-              <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
+              <Ionicons name="log-out-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={[styles.settingsMenuLabel, { color: '#EF4444' }]}>Sign Out</Text>
+              </View>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1585,7 +1561,7 @@ export default function DashboardScreen({ navigation }: any) {
                     {/* Bookings */}
                     {selectedDateBookings.map((booking, idx) => (
                       <View key={idx} style={styles.bookingCard}>
-                        <Ionicons name="calendar" size={24} color="#3B82F6" style={{ marginRight: 12 }} />
+                        <Ionicons name="calendar" size={24} color="#FFFFFF" style={{ marginRight: 12 }} />
                         <Text style={styles.bookingInfo}>
                           Class Booking - {new Date(booking.event.start_time).toLocaleTimeString('en-US', {
                             hour: 'numeric',
@@ -1681,178 +1657,28 @@ export default function DashboardScreen({ navigation }: any) {
         </Modal>
       )}
 
-      {/* FAB Button - Dynamic based on athlete data (matching web app) */}
-      <View style={styles.fabContainer}>
-        {/* Notification Badge on FAB */}
-        {(unreadMessagesCount + newResourcesCount) > 0 && !fabOpen && (
-          <View style={styles.fabNotificationBadge}>
-            <Text style={styles.fabNotificationBadgeText}>
-              {(unreadMessagesCount + newResourcesCount) > 99 ? '99+' : unreadMessagesCount + newResourcesCount}
-            </Text>
-          </View>
-        )}
-        <TouchableOpacity
-          onPress={() => setFabOpen(!fabOpen)}
-          style={styles.fab}
-        >
-          <LinearGradient
-            colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']}
-            style={styles.fabGradient}
-          >
-            <Text style={styles.fabIcon}>{fabOpen ? '✕' : '☰'}</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        {/* FAB Menu - Dynamic items based on athlete data */}
-        <Modal
-          visible={fabOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setFabOpen(false)}
-        >
-          <TouchableOpacity
-            style={styles.fabOverlay}
-            activeOpacity={1}
-            onPress={() => setFabOpen(false)}
-          >
-            <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-              {/* ALWAYS SHOWN: Home */}
-              <TouchableOpacity
-                style={[styles.fabMenuItem, styles.fabMenuItemActive]}
-                onPress={() => {
-                  setFabOpen(false);
-                  // Already on home/dashboard
-                }}
-              >
-                <Ionicons name="home" size={20} color="#9BDDFF" />
-                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Home</Text>
-              </TouchableOpacity>
-
-              {/* ALWAYS SHOWN: Messages with badge */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Messages');
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
-                  {unreadMessagesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Messages</Text>
-              </TouchableOpacity>
-
-              {/* ALWAYS SHOWN: Performance */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Performance', { athleteId });
-                }}
-              >
-                <Ionicons name="stats-chart" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Performance</Text>
-              </TouchableOpacity>
-
-              {/* ALWAYS SHOWN: Leaderboard */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Leaderboard');
-                }}
-              >
-                <Ionicons name="trophy" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
-              </TouchableOpacity>
-
-              {/* CONDITIONAL: Hitting - only if hittingData */}
-              {!!hittingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('HittingPerformance', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="baseball-bat" size={20} color="#EF4444" />
-                  <Text style={styles.fabMenuLabel}>Hitting</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Pitching - only if hasPitchingData */}
-              {hasPitchingData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('PitchingPerformance', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
-                  <Text style={styles.fabMenuLabel}>Pitching</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Arm Care - only if hasArmCareData */}
-              {!!armCareData && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('ArmCare', { athleteId });
-                  }}
-                >
-                  <MaterialCommunityIcons name="arm-flex" size={20} color="#10B981" />
-                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* CONDITIONAL: Force Profile - only if hasForceData */}
-              {!!(forceProfile && valdProfileId) && (
-                <TouchableOpacity
-                  style={styles.fabMenuItem}
-                  onPress={() => {
-                    setFabOpen(false);
-                    navigation.navigate('ForceProfile', { athleteId });
-                  }}
-                >
-                  <Ionicons name="trending-up" size={20} color="#A855F7" />
-                  <Text style={styles.fabMenuLabel}>Force Profile</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Notes/Resources - always visible, with badge for new items */}
-              <TouchableOpacity
-                style={styles.fabMenuItem}
-                onPress={() => {
-                  setFabOpen(false);
-                  navigation.navigate('Resources', { athleteId, userId });
-                }}
-              >
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="document-text" size={20} color="#F59E0B" />
-                  {newResourcesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>
-                        {newResourcesCount > 9 ? '9+' : newResourcesCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      </View>
+      {/* FAB Menu */}
+      <FABMenu
+        isOpen={fabOpen}
+        onToggle={() => setFabOpen(!fabOpen)}
+        totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        items={[
+          // ALWAYS SHOWN items
+          { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => {} },
+          { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
+          { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
+          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
+          // CONDITIONAL items
+          ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
+          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
+          ...(forceProfile && valdProfileId ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
+          // Notes/Resources with badge
+          { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
+          // Book a Class button
+          { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
+        ]}
+      />
     </View>
   );
 }
@@ -2072,116 +1898,6 @@ const styles = StyleSheet.create({
   workoutCategory: {
     fontSize: 14,
     color: '#9CA3AF',
-  },
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-  },
-  fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: 'bold',
-  },
-  fabOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 24,
-    paddingBottom: 100,
-  },
-  fabMenu: {
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 220,
-    padding: 8,
-  },
-  fabMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  fabMenuIcon: {
-    fontSize: 20,
-  },
-  fabMenuLabel: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-  // FAB Dynamic styles (matching web app)
-  fabNotificationBadge: {
-    position: 'absolute',
-    top: -4,
-    left: -4,
-    minWidth: 24,
-    height: 24,
-    backgroundColor: '#EF4444',
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#000000',
-    zIndex: 20,
-  },
-  fabNotificationBadgeText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 4,
-  },
-  fabMenuItemActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  fabMenuLabelActive: {
-    color: '#9BDDFF',
-  },
-  fabMenuIconContainer: {
-    position: 'relative',
-  },
-  fabMenuItemBadge: {
-    position: 'absolute',
-    top: -6,
-    right: -8,
-    minWidth: 18,
-    height: 18,
-    backgroundColor: '#EF4444',
-    borderRadius: 9,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#000000',
-  },
-  fabMenuItemBadgeText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 3,
   },
   // Enhanced Day View Styles
   workoutDetailCard: {
@@ -2760,25 +2476,53 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 100,
     right: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 12,
+    backgroundColor: '#0A0A0A',
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 200,
-    padding: 8,
+    minWidth: 280,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  settingsDropdownHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  settingsDropdownTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  settingsDropdownSubtitle: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 2,
   },
   settingsMenuItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 8,
+  },
+  settingsMenuItemContent: {
+    flex: 1,
   },
   settingsMenuLabel: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#FFFFFF',
     fontWeight: '500',
+  },
+  settingsMenuDescription: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 2,
   },
   settingsDivider: {
     height: 1,
