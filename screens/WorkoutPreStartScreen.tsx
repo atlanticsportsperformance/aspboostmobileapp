@@ -18,6 +18,7 @@ interface Exercise {
   description?: string;
   category?: string;
   tags?: string[];
+  is_placeholder?: boolean;
 }
 
 interface SetConfiguration {
@@ -100,10 +101,12 @@ export default function WorkoutPreStartScreen({
   onStart,
 }: WorkoutPreStartScreenProps) {
   const totalExercises = workout.routines.reduce(
-    (sum, r) => sum + r.routine_exercises.length, 0
+    (sum, r) => sum + r.routine_exercises.filter(ex => !ex.exercises?.is_placeholder).length, 0
   );
   const totalSets = workout.routines.reduce(
-    (sum, r) => sum + r.routine_exercises.reduce((s, ex) => s + ex.sets, 0), 0
+    (sum, r) => sum + r.routine_exercises
+      .filter(ex => !ex.exercises?.is_placeholder)
+      .reduce((s, ex) => s + ex.sets, 0), 0
   );
 
   return (
@@ -135,7 +138,9 @@ export default function WorkoutPreStartScreen({
               {blockNotes && <Text style={styles.blockNotes}>{blockNotes}</Text>}
 
               <View style={styles.exerciseList}>
-                {routine.routine_exercises.map((ex) => {
+                {routine.routine_exercises
+                  .filter(ex => !ex.exercises?.is_placeholder)
+                  .map((ex) => {
                   const hasPRTracking = ex.tracked_max_metrics && ex.tracked_max_metrics.length > 0;
                   const metrics = formatExerciseMetrics({
                     exercise: ex,

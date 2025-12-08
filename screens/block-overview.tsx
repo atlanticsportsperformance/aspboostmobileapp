@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -31,6 +33,7 @@ interface Exercise {
   description?: string;
   category?: string;
   tags?: string[];
+  is_placeholder?: boolean;
 }
 
 interface SetConfiguration {
@@ -89,6 +92,7 @@ interface BlockOverviewProps {
   timer: number; // seconds elapsed
   onExercisePress: (exerciseId: string) => void;
   onCompleteWorkout: () => void;
+  onToggleExerciseComplete: (exerciseId: string, sets: number) => void;
   onBack: () => void;
 }
 
@@ -128,9 +132,11 @@ export default function BlockOverview({
   timer,
   onExercisePress,
   onCompleteWorkout,
+  onToggleExerciseComplete,
   onBack,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
+  const [showIncompleteModal, setShowIncompleteModal] = useState(false);
 
   const toggleBlock = (routineId: string) => {
     setExpandedBlocks(prev => ({
@@ -139,10 +145,12 @@ export default function BlockOverview({
     }));
   };
 
-  // Calculate progress
+  // Calculate progress (excluding placeholder exercises)
   const totalSets = workout.routines.reduce(
     (sum, routine) =>
-      sum + routine.routine_exercises.reduce((s, ex) => s + ex.sets, 0),
+      sum + routine.routine_exercises
+        .filter(ex => !ex.exercises?.is_placeholder)
+        .reduce((s, ex) => s + ex.sets, 0),
     0
   );
 
@@ -252,7 +260,9 @@ export default function BlockOverview({
             {/* Exercise List */}
             {isExpanded && (
               <View style={styles.exerciseList}>
-                {routine.routine_exercises.map((exercise, exerciseIndex) => {
+                {routine.routine_exercises
+                  .filter(ex => !ex.exercises?.is_placeholder)
+                  .map((exercise, exerciseIndex) => {
                   // Skip exercises where the join to exercises table failed
                   if (!exercise.exercises) {
                     console.warn(`Missing exercise data for routine_exercise ${exercise.id}`);
@@ -305,11 +315,6 @@ export default function BlockOverview({
                             {exercise.exercises.name}
                           </Text>
                           {hasPRTracking && <Text style={styles.prTrophy}>🏆</Text>}
-                          {isCompleted && (
-                            <View style={styles.completionCheckmark}>
-                              <Text style={styles.checkmarkIcon}>✓</Text>
-                            </View>
-                          )}
                         </View>
 
                         {/* Metrics Display */}
@@ -332,10 +337,43 @@ export default function BlockOverview({
                         )}
                       </View>
 
-                      {/* Right Section */}
-                      <View style={styles.exerciseRight}>
-                        <Text style={styles.arrowIcon}>›</Text>
-                      </View>
+                      {/* Right Section - Quick Complete or Arrow */}
+                      {(() => {
+                        // Check if exercise only has reps (no weight to log)
+                        const enabledMeasurementIds = exercise.enabled_measurements || [];
+
+                        // Reps-only = only "reps" in enabled_measurements, no "weight"
+                        const hasWeight = enabledMeasurementIds.includes('weight');
+                        const hasIntensityTargets = exercise.intensity_targets && exercise.intensity_targets.length > 0;
+
+                        const isRepsOnly = !hasWeight && !hasIntensityTargets;
+
+                        return isRepsOnly ? (
+                          // Reps-only exercises can be quick-completed
+                          <TouchableOpacity
+                            style={styles.exerciseRight}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              onToggleExerciseComplete(exercise.id, exercise.sets);
+                            }}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                          >
+                            <View style={[
+                              styles.quickCompleteCheckbox,
+                              isCompleted && styles.quickCompleteCheckboxChecked
+                            ]}>
+                              {isCompleted && (
+                                <Text style={styles.quickCompleteCheckmark}>✓</Text>
+                              )}
+                            </View>
+                          </TouchableOpacity>
+                        ) : (
+                          // Exercises with weight/metrics show arrow (must log properly)
+                          <View style={styles.exerciseRight}>
+                            <Text style={styles.arrowIcon}>›</Text>
+                          </View>
+                        );
+                      })()}
                     </TouchableOpacity>
                   );
                 })}
@@ -353,13 +391,15 @@ export default function BlockOverview({
           style={styles.completeButtonGradient}
         >
           <TouchableOpacity
-            style={[
-              styles.completeButton,
-              !allSetsCompleted && styles.completeButtonDisabled,
-            ]}
-            onPress={onCompleteWorkout}
-            disabled={!allSetsCompleted}
-            activeOpacity={allSetsCompleted ? 0.8 : 1}
+            style={styles.completeButton}
+            onPress={() => {
+              if (allSetsCompleted) {
+                onCompleteWorkout();
+              } else {
+                setShowIncompleteModal(true);
+              }
+            }}
+            activeOpacity={0.8}
           >
             {allSetsCompleted ? (
               <LinearGradient
@@ -372,16 +412,82 @@ export default function BlockOverview({
                 <Text style={styles.completeButtonText}>COMPLETE WORKOUT</Text>
               </LinearGradient>
             ) : (
-              <View style={styles.completeButtonInactive}>
-                <Text style={styles.lockIcon}>🔒</Text>
-                <Text style={styles.completeButtonTextDisabled}>
-                  Complete all sets to finish
-                </Text>
-              </View>
+              <LinearGradient
+                colors={['#F59E0B', '#D97706']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.completeButtonActive}
+              >
+                <Text style={styles.completeButtonIcon}>⚡</Text>
+                <Text style={styles.completeButtonText}>FINISH EARLY</Text>
+              </LinearGradient>
             )}
           </TouchableOpacity>
         </LinearGradient>
       </View>
+
+      {/* Incomplete Workout Warning Modal */}
+      <Modal
+        visible={showIncompleteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowIncompleteModal(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setShowIncompleteModal(false)}
+        >
+          <Pressable style={styles.modalContainer} onPress={() => {}}>
+            <View style={styles.modalIconContainer}>
+              <Text style={styles.modalIcon}>⚠️</Text>
+            </View>
+
+            <Text style={styles.modalTitle}>Finish Early?</Text>
+            <Text style={styles.modalSubtitle}>
+              You've completed {completedSetsCount} of {totalSets} sets
+            </Text>
+
+            <View style={styles.modalProgressBar}>
+              <View
+                style={[
+                  styles.modalProgressFill,
+                  { width: `${progressPercent}%` }
+                ]}
+              />
+            </View>
+
+            <Text style={styles.modalDescription}>
+              Unlogged exercises won't be saved.
+            </Text>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalPrimaryButton}
+                onPress={() => {
+                  setShowIncompleteModal(false);
+                  onCompleteWorkout();
+                }}
+                activeOpacity={0.8}
+              >
+                <LinearGradient
+                  colors={['#F59E0B', '#D97706']}
+                  style={styles.modalPrimaryButtonGradient}
+                >
+                  <Text style={styles.modalPrimaryButtonText}>Complete Anyway</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalSecondaryButton}
+                onPress={() => setShowIncompleteModal(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalSecondaryButtonText}>Keep Logging</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -699,5 +805,116 @@ const styles = StyleSheet.create({
   completeButtonTextDisabled: {
     fontSize: 14,
     color: '#A3A3A3',
+  },
+  // Quick Complete Checkbox Styles
+  quickCompleteCheckbox: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickCompleteCheckboxChecked: {
+    backgroundColor: '#10B981',
+    borderColor: '#10B981',
+  },
+  quickCompleteCheckmark: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  // Modal Styles
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContainer: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 24,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalIconContainer: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalIcon: {
+    fontSize: 32,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: '#9CA3AF',
+    marginBottom: 16,
+  },
+  modalProgressBar: {
+    width: '100%',
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 4,
+    marginBottom: 16,
+    overflow: 'hidden',
+  },
+  modalProgressFill: {
+    height: '100%',
+    backgroundColor: '#F59E0B',
+    borderRadius: 4,
+  },
+  modalDescription: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  modalActions: {
+    width: '100%',
+    gap: 12,
+  },
+  modalPrimaryButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalPrimaryButtonGradient: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  modalPrimaryButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  modalSecondaryButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  modalSecondaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

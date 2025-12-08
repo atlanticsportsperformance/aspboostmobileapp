@@ -53,6 +53,7 @@ interface WorkoutInstance {
         exercises: {
           id: string;
           name: string;
+          is_placeholder?: boolean;
         };
       }>;
     }>;
@@ -136,14 +137,19 @@ export default function ParentDashboardScreen({ navigation }: any) {
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
 
+  // Use JSON stringified athlete IDs as dependency to properly trigger when athletes load/change
+  const athleteIdsKey = linkedAthletes.map(a => a.athlete_id).join(',');
+
   useFocusEffect(
     useCallback(() => {
+      console.log('[ParentDashboard] useFocusEffect triggered, linkedAthletes:', linkedAthletes.map(a => `${a.first_name} (${a.athlete_id})`));
       if (linkedAthletes.length > 0) {
-        loadDashboard();
+        // Pass current linkedAthletes to avoid stale closure issues
+        loadDashboard(linkedAthletes);
       } else if (!contextLoading) {
         setLoading(false);
       }
-    }, [linkedAthletes, contextLoading])
+    }, [athleteIdsKey, contextLoading, linkedAthletes])
   );
 
   async function checkAndShowResumeModal(workout: WorkoutInstance) {
@@ -211,11 +217,13 @@ export default function ParentDashboardScreen({ navigation }: any) {
     }
   }
 
-  async function loadDashboard() {
+  async function loadDashboard(athletes = linkedAthletes) {
     try {
-      const athleteIds = linkedAthletes.map(a => a.athlete_id);
+      const athleteIds = athletes.map(a => a.athlete_id);
+      console.log('[ParentDashboard] loadDashboard called with athleteIds:', athleteIds);
 
       if (athleteIds.length === 0) {
+        console.log('[ParentDashboard] No athlete IDs, returning early');
         setLoading(false);
         return;
       }
@@ -248,7 +256,8 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 metric_targets,
                 exercises (
                   id,
-                  name
+                  name,
+                  is_placeholder
                 )
               )
             )
@@ -259,7 +268,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       // Map workouts with athlete info
       const workoutsWithAthleteInfo = (workoutsData || []).map((w: any) => {
-        const athlete = linkedAthletes.find(a => a.athlete_id === w.athlete_id);
+        const athlete = athletes.find(a => a.athlete_id === w.athlete_id);
         return {
           ...w,
           athlete_name: athlete ? `${athlete.first_name} ${athlete.last_name}` : 'Unknown',
@@ -288,7 +297,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       // Map bookings with athlete info
       const bookingsWithAthleteInfo = (bookingsData || []).map((b: any) => {
-        const athlete = linkedAthletes.find(a => a.athlete_id === b.athlete_id);
+        const athlete = athletes.find(a => a.athlete_id === b.athlete_id);
         return {
           id: b.id,
           athlete_id: b.athlete_id,
@@ -356,7 +365,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadDashboard();
+    loadDashboard(linkedAthletes);
   };
 
   function getGreeting() {
@@ -800,7 +809,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
                                   isCompleted && styles.workoutActionButtonCompleted
                                 ]}
                                 onPress={async () => {
-                                  if (!isCompleted) {
+                                  if (isCompleted) {
+                                    // Navigate to read-only completed workout view
+                                    navigation.navigate('CompletedWorkout', { workoutInstanceId: workout.id });
+                                  } else {
                                     const showedModal = await checkAndShowResumeModal(workout);
                                     if (!showedModal) {
                                       navigation.navigate('WorkoutLogger', {
@@ -869,9 +881,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
                                             </Text>
                                           )}
 
-                                          {routine.routine_exercises && routine.routine_exercises.length > 0 && (
+                                          {routine.routine_exercises && routine.routine_exercises.filter(re => !re.exercises?.is_placeholder).length > 0 && (
                                             <View style={styles.exercisesList}>
                                               {routine.routine_exercises
+                                                .filter(re => !re.exercises?.is_placeholder)
                                                 .sort((a, b) => a.order_index - b.order_index)
                                                 .map((routineExercise, exerciseIdx) => (
                                                   <View key={routineExercise.id} style={styles.exercisePreview}>

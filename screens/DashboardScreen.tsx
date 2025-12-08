@@ -54,6 +54,7 @@ interface WorkoutInstance {
         exercises: {
           id: string;
           name: string;
+          is_placeholder?: boolean;
         };
       }>;
     }>;
@@ -1017,7 +1018,8 @@ export default function DashboardScreen({ navigation }: any) {
                   metric_targets,
                   exercises (
                     id,
-                    name
+                    name,
+                    is_placeholder
                   )
                 )
               )
@@ -1492,7 +1494,10 @@ export default function DashboardScreen({ navigation }: any) {
                                 isCompleted && styles.workoutActionButtonCompleted
                               ]}
                               onPress={async () => {
-                                if (!isCompleted) {
+                                if (isCompleted) {
+                                  // Navigate to read-only completed workout view
+                                  navigation.navigate('CompletedWorkout', { workoutInstanceId: workout.id });
+                                } else {
                                   // Check if workout is in progress and show modal if needed
                                   const showedModal = await checkAndShowResumeModal(workout);
                                   // Only navigate directly if modal wasn't shown
@@ -1563,10 +1568,11 @@ export default function DashboardScreen({ navigation }: any) {
                                           </Text>
                                         )}
 
-                                        {/* Exercises - Show ALL */}
-                                        {routine.routine_exercises && routine.routine_exercises.length > 0 && (
+                                        {/* Exercises - Filter out placeholders */}
+                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.exercises?.is_placeholder).length > 0 && (
                                           <View style={styles.exercisesList}>
                                             {routine.routine_exercises
+                                              .filter(re => !re.exercises?.is_placeholder)
                                               .sort((a, b) => a.order_index - b.order_index)
                                               .map((routineExercise, exerciseIdx) => (
                                                 <View key={routineExercise.id} style={styles.exercisePreview}>

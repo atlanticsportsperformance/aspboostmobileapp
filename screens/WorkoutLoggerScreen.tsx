@@ -89,6 +89,7 @@ interface Exercise {
   description?: string;
   categories?: string[];
   tags?: string[];
+  is_placeholder?: boolean;
 }
 
 interface RoutineExercise {
@@ -170,7 +171,8 @@ export default function WorkoutLoggerScreen() {
                 video_url,
                 description,
                 categories,
-                tags
+                tags,
+                is_placeholder
               )
             )
           )
@@ -180,9 +182,13 @@ export default function WorkoutLoggerScreen() {
 
       if (workoutError) throw workoutError;
 
-      // Sort routines and exercises by order_index
+      // Sort routines and exercises by order_index, filter out placeholders
       workoutData.routines.sort((a: Routine, b: Routine) => a.order_index - b.order_index);
       workoutData.routines.forEach((routine: Routine) => {
+        // Filter out placeholder exercises
+        routine.routine_exercises = routine.routine_exercises.filter(
+          (re: RoutineExercise) => !re.exercises?.is_placeholder
+        );
         routine.routine_exercises.sort((a, b) => a.order_index - b.order_index);
 
         // Log any exercises with missing joined data
@@ -195,7 +201,7 @@ export default function WorkoutLoggerScreen() {
 
       setWorkout(workoutData);
 
-      // Flatten all exercises into single array
+      // Flatten all exercises into single array (placeholders already filtered above)
       const exercises = workoutData.routines.flatMap((r: Routine) => r.routine_exercises);
       setAllExercises(exercises);
 
@@ -467,6 +473,58 @@ export default function WorkoutLoggerScreen() {
         { text: 'Exit', style: 'destructive', onPress: () => navigation.goBack() },
       ]
     );
+  };
+
+  // Quick-complete: Toggle all sets for an exercise
+  const handleToggleExerciseComplete = async (exerciseId: string, totalSets: number) => {
+    const currentSets = completedSets[exerciseId] || Array(totalSets).fill(false);
+    const allCompleted = currentSets.every(s => s === true);
+
+    // Toggle: if all complete, uncomplete all; otherwise complete all
+    const newStatus = !allCompleted;
+    const newSetsArray = Array(totalSets).fill(newStatus);
+
+    // Update local state immediately for responsiveness
+    setCompletedSets(prev => ({
+      ...prev,
+      [exerciseId]: newSetsArray,
+    }));
+
+    // If marking as complete, save empty logs to database for each set
+    if (newStatus) {
+      try {
+        for (let setIndex = 0; setIndex < totalSets; setIndex++) {
+          // Check if log already exists
+          const { data: existingLog } = await supabase
+            .from('exercise_logs')
+            .select('id')
+            .eq('workout_instance_id', workoutInstanceId)
+            .eq('routine_exercise_id', exerciseId)
+            .eq('set_number', setIndex + 1)
+            .maybeSingle();
+
+          if (!existingLog) {
+            // Create a minimal log entry to mark as completed
+            await supabase
+              .from('exercise_logs')
+              .insert({
+                workout_instance_id: workoutInstanceId,
+                routine_exercise_id: exerciseId,
+                set_number: setIndex + 1,
+                completed: true,
+              });
+          } else {
+            // Update existing to mark completed
+            await supabase
+              .from('exercise_logs')
+              .update({ completed: true })
+              .eq('id', existingLog.id);
+          }
+        }
+      } catch (error) {
+        console.error('Error quick-completing exercise:', error);
+      }
+    }
   };
 
   // Save set data to database (debounced)
@@ -856,6 +914,7 @@ export default function WorkoutLoggerScreen() {
         timer={timer}
         onExercisePress={handleExercisePress}
         onCompleteWorkout={handleCompleteWorkout}
+        onToggleExerciseComplete={handleToggleExerciseComplete}
         onBack={handleExitWorkout}
       />
     );
