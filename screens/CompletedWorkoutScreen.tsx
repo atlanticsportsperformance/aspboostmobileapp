@@ -43,6 +43,9 @@ interface Routine {
   id: string;
   name: string;
   order_index: number;
+  notes?: string;
+  description?: string;
+  text_info?: string;
   routine_exercises: RoutineExercise[];
 }
 
@@ -92,6 +95,9 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
               id,
               name,
               order_index,
+              notes,
+              description,
+              text_info,
               routine_exercises (
                 id,
                 exercise_id,
@@ -308,7 +314,10 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
 
         {workout.workouts.routines
           .sort((a, b) => a.order_index - b.order_index)
-          .map((routine, routineIndex) => (
+          .map((routine, routineIndex) => {
+            const routineNotes = routine.notes || routine.description || routine.text_info;
+
+            return (
             <View key={routine.id} style={styles.routineSection}>
               <View style={styles.routineHeader}>
                 <Text style={styles.routineLetter}>
@@ -316,6 +325,13 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
                 </Text>
                 <Text style={styles.routineName}>{routine.name}</Text>
               </View>
+
+              {/* Block Notes */}
+              {routineNotes && (
+                <View style={styles.routineNotesContainer}>
+                  <Text style={styles.routineNotes}>{routineNotes}</Text>
+                </View>
+              )}
 
               {routine.routine_exercises
                 .sort((a, b) => a.order_index - b.order_index)
@@ -361,7 +377,9 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
                   );
                 })}
             </View>
-          ))}
+          );
+          })}
+
 
         {/* Reset Button */}
         <TouchableOpacity
@@ -571,6 +589,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  routineNotesContainer: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  routineNotes: {
+    fontSize: 14,
+    color: '#93C5FD',
+    lineHeight: 20,
   },
   exerciseCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',

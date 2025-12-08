@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { useAthlete } from '../contexts/AthleteContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -104,14 +105,27 @@ interface Package {
 
 type TabType = 'memberships' | 'packages';
 
+// Per-athlete data structure for parent view
+interface AthleteData {
+  athleteId: string;
+  athleteName: string;
+  color: string;
+  memberships: Membership[];
+  packages: Package[];
+}
+
 export default function MembershipsPackagesScreen({ navigation, route }: any) {
+  const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
   const [loading, setLoading] = useState(true);
 
-  // Active items
+  // Active items (for regular athletes)
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
+
+  // Per-athlete data (for parent view)
+  const [athleteDataList, setAthleteDataList] = useState<AthleteData[]>([]);
 
   // Available for purchase
   const [availableMembershipTypes, setAvailableMembershipTypes] = useState<MembershipType[]>([]);
@@ -124,10 +138,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [selectedItem, setSelectedItem] = useState<MembershipType | PackageType | null>(null);
   const [selectedItemType, setSelectedItemType] = useState<'membership' | 'package'>('membership');
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [purchaseForAthleteId, setPurchaseForAthleteId] = useState<string | null>(null);
 
   useEffect(() => {
     loadAthleteAndData();
-  }, []);
+  }, [isParent, linkedAthletes]);
 
   async function loadAthleteAndData() {
     try {
@@ -137,6 +152,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         return;
       }
 
+      // Handle parent accounts - load data for all linked athletes
+      if (isParent && linkedAthletes.length > 0) {
+        await fetchDataForAllAthletes();
+        return;
+      }
+
+      // Regular athlete flow
       let currentAthleteId = athleteId;
       if (!currentAthleteId) {
         const { data: athlete } = await supabase
@@ -158,6 +180,99 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       }
     } catch (error) {
       console.error('Error loading data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchDataForAllAthletes() {
+    try {
+      const athleteDataPromises = linkedAthletes.map(async (athlete) => {
+        // Fetch memberships for this athlete
+        const { data: membershipsData } = await supabase
+          .from('memberships')
+          .select(`
+            *,
+            membership_type:membership_types!membership_type_id(*),
+            membership_usage_counters(
+              id,
+              scope_type,
+              scope_id,
+              scope_name,
+              visits_allocated,
+              visits_used,
+              period_start,
+              period_end
+            )
+          `)
+          .eq('athlete_id', athlete.athlete_id)
+          .eq('status', 'active');
+
+        // Fetch packages for this athlete
+        const { data: packagesData } = await supabase
+          .from('packages')
+          .select(`
+            *,
+            package_type:package_types!package_type_id(
+              *,
+              entitlement_rules(
+                id,
+                scope,
+                category_id,
+                template_id,
+                visits_allocated,
+                category:scheduling_categories(id, name),
+                template:scheduling_templates(id, name)
+              )
+            )
+          `)
+          .eq('athlete_id', athlete.athlete_id)
+          .eq('status', 'active');
+
+        return {
+          athleteId: athlete.athlete_id,
+          athleteName: `${athlete.first_name} ${athlete.last_name}`,
+          color: athlete.color,
+          memberships: membershipsData || [],
+          packages: packagesData || [],
+        };
+      });
+
+      const allAthleteData = await Promise.all(athleteDataPromises);
+      setAthleteDataList(allAthleteData);
+
+      // Also fetch available types (same for all athletes)
+      const { data: membershipTypesData } = await supabase
+        .from('membership_types')
+        .select('*')
+        .eq('is_active', true)
+        .eq('is_purchasable', true)
+        .order('price_amount', { ascending: true });
+
+      setAvailableMembershipTypes(membershipTypesData || []);
+
+      const { data: packageTypesData } = await supabase
+        .from('package_types')
+        .select(`
+          *,
+          entitlement_rules(
+            id,
+            package_type_id,
+            scope,
+            category_id,
+            template_id,
+            visits_allocated,
+            category:scheduling_categories(id, name),
+            template:scheduling_templates(id, name)
+          )
+        `)
+        .eq('is_active', true)
+        .eq('is_purchasable', true)
+        .order('price_amount', { ascending: true });
+
+      setAvailablePackageTypes(packageTypesData || []);
+    } catch (error) {
+      console.error('Error fetching data for all athletes:', error);
     } finally {
       setLoading(false);
     }
@@ -535,117 +650,309 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {activeTab === 'memberships' ? (
           <>
-            {/* Active Memberships */}
-            {memberships.length > 0 && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>YOUR MEMBERSHIP</Text>
-                {memberships.map((membership) => {
-                  const usageCounters = membership.membership_usage_counters || [];
-                  return (
-                    <View key={membership.id} style={styles.activeMembershipCard}>
-                      {/* Header Row */}
-                      <View style={styles.activeMembershipHeader}>
-                        <View style={styles.activeMembershipIcon}>
-                          <LinearGradient
-                            colors={['#9BDDFF', '#7BC5F0']}
-                            style={styles.iconGradient}
-                          >
-                            <Ionicons name="checkmark-circle" size={16} color="#000" />
-                          </LinearGradient>
-                        </View>
-                        <View style={styles.activeMembershipInfo}>
-                          <Text style={styles.activeMembershipName} numberOfLines={1}>
-                            {membership.membership_type.name}
-                          </Text>
-                          <Text style={styles.activeMembershipRenewal}>
-                            Renews {formatDate(membership.current_period_end)}
-                          </Text>
-                        </View>
-                        <TouchableOpacity
-                          style={styles.manageButton}
-                          onPress={() => setShowManageMenu(showManageMenu === membership.id ? null : membership.id)}
-                        >
-                          <Text style={styles.manageButtonText}>Manage</Text>
-                        </TouchableOpacity>
-                      </View>
-
-                      {/* Usage Counters */}
-                      {usageCounters.length > 0 && (
-                        <View style={styles.usageCountersContainer}>
-                          {usageCounters.map((counter) => {
-                            const isUnlimited = counter.visits_allocated === -1;
-                            const remaining = isUnlimited ? '∞' : (counter.visits_allocated - counter.visits_used);
-                            const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.visits_used / counter.visits_allocated) * 100);
-                            return (
-                              <View key={counter.id} style={styles.usageCounterRow}>
-                                <View style={styles.usageCounterInfo}>
-                                  <Text style={styles.usageCounterName} numberOfLines={1}>
-                                    {counter.scope_name || 'All Classes'}
-                                  </Text>
-                                  <Text style={styles.usageCounterStats}>
-                                    {isUnlimited ? (
-                                      <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> used</Text>
-                                    ) : (
-                                      <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> / {counter.visits_allocated} used</Text>
-                                    )}
-                                  </Text>
-                                </View>
-                                <View style={styles.usageCounterRight}>
-                                  {isUnlimited ? (
-                                    <Text style={styles.usageUnlimited}>∞</Text>
-                                  ) : (
-                                    <>
-                                      <Text style={styles.usageRemaining}>{remaining}</Text>
-                                      <Text style={styles.usageRemainingLabel}>left</Text>
-                                    </>
-                                  )}
-                                </View>
-                                {/* Progress bar for limited */}
-                                {!isUnlimited && (
-                                  <View style={styles.usageProgressBar}>
-                                    <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
-                                  </View>
-                                )}
-                              </View>
-                            );
-                          })}
-                        </View>
-                      )}
-
-                      {/* Manage Menu */}
-                      {showManageMenu === membership.id && (
-                        <View style={styles.manageMenu}>
-                          <TouchableOpacity
-                            style={styles.manageMenuItem}
-                            onPress={() => handleManageAction('pause')}
-                          >
-                            <Text style={styles.manageMenuText}>Pause Membership</Text>
-                          </TouchableOpacity>
-                          <View style={styles.manageMenuDivider} />
-                          <TouchableOpacity
-                            style={styles.manageMenuItem}
-                            onPress={() => handleManageAction('cancel')}
-                          >
-                            <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
-                              Cancel Membership
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
+            {/* PARENT VIEW: Per-athlete memberships */}
+            {isParent && athleteDataList.length > 0 ? (
+              <>
+                {athleteDataList.map((athleteData) => (
+                  <View key={athleteData.athleteId} style={styles.section}>
+                    {/* Athlete Header */}
+                    <View style={styles.athleteSectionHeader}>
+                      <View style={[styles.athleteColorDot, { backgroundColor: athleteData.color }]} />
+                      <Text style={styles.athleteSectionTitle}>
+                        {athleteData.athleteName.toUpperCase()}'S MEMBERSHIPS
+                      </Text>
                     </View>
-                  );
-                })}
-              </View>
-            )}
 
-            {/* Available Memberships */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>MEMBERSHIPS</Text>
-              {availableMembershipTypes.length === 0 ? (
-                <Text style={styles.emptyText}>No memberships available at this time.</Text>
-              ) : (
-                availableMembershipTypes.map((type) => {
-                  const hasActive = memberships.some(m => m.membership_type_id === type.id);
+                    {athleteData.memberships.length > 0 ? (
+                      athleteData.memberships.map((membership) => {
+                        const usageCounters = membership.membership_usage_counters || [];
+                        return (
+                          <View key={membership.id} style={[styles.activeMembershipCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3 }]}>
+                            {/* Header Row */}
+                            <View style={styles.activeMembershipHeader}>
+                              <View style={styles.activeMembershipIcon}>
+                                <LinearGradient
+                                  colors={['#9BDDFF', '#7BC5F0']}
+                                  style={styles.iconGradient}
+                                >
+                                  <Ionicons name="checkmark-circle" size={16} color="#000" />
+                                </LinearGradient>
+                              </View>
+                              <View style={styles.activeMembershipInfo}>
+                                <Text style={styles.activeMembershipName} numberOfLines={1}>
+                                  {membership.membership_type.name}
+                                </Text>
+                                <Text style={styles.activeMembershipRenewal}>
+                                  Renews {formatDate(membership.current_period_end)}
+                                </Text>
+                              </View>
+                              <TouchableOpacity
+                                style={styles.manageButton}
+                                onPress={() => setShowManageMenu(showManageMenu === membership.id ? null : membership.id)}
+                              >
+                                <Text style={styles.manageButtonText}>Manage</Text>
+                              </TouchableOpacity>
+                            </View>
+
+                            {/* Usage Counters */}
+                            {usageCounters.length > 0 && (
+                              <View style={styles.usageCountersContainer}>
+                                {usageCounters.map((counter) => {
+                                  const isUnlimited = counter.visits_allocated === -1;
+                                  const remaining = isUnlimited ? '∞' : (counter.visits_allocated - counter.visits_used);
+                                  const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.visits_used / counter.visits_allocated) * 100);
+                                  return (
+                                    <View key={counter.id} style={styles.usageCounterRow}>
+                                      <View style={styles.usageCounterInfo}>
+                                        <Text style={styles.usageCounterName} numberOfLines={1}>
+                                          {counter.scope_name || 'All Classes'}
+                                        </Text>
+                                        <Text style={styles.usageCounterStats}>
+                                          {isUnlimited ? (
+                                            <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> used</Text>
+                                          ) : (
+                                            <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> / {counter.visits_allocated} used</Text>
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.usageCounterRight}>
+                                        {isUnlimited ? (
+                                          <Text style={styles.usageUnlimited}>∞</Text>
+                                        ) : (
+                                          <>
+                                            <Text style={styles.usageRemaining}>{remaining}</Text>
+                                            <Text style={styles.usageRemainingLabel}>left</Text>
+                                          </>
+                                        )}
+                                      </View>
+                                      {/* Progress bar for limited */}
+                                      {!isUnlimited && (
+                                        <View style={styles.usageProgressBar}>
+                                          <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                                        </View>
+                                      )}
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            )}
+
+                            {/* Manage Menu */}
+                            {showManageMenu === membership.id && (
+                              <View style={styles.manageMenu}>
+                                <TouchableOpacity
+                                  style={styles.manageMenuItem}
+                                  onPress={() => handleManageAction('pause')}
+                                >
+                                  <Text style={styles.manageMenuText}>Pause Membership</Text>
+                                </TouchableOpacity>
+                                <View style={styles.manageMenuDivider} />
+                                <TouchableOpacity
+                                  style={styles.manageMenuItem}
+                                  onPress={() => handleManageAction('cancel')}
+                                >
+                                  <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
+                                    Cancel Membership
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })
+                    ) : (
+                      <Text style={styles.noItemsText}>No active memberships</Text>
+                    )}
+                  </View>
+                ))}
+
+                {/* Available Memberships for Purchase (parent view) */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>AVAILABLE MEMBERSHIPS</Text>
+                  {availableMembershipTypes.length === 0 ? (
+                    <Text style={styles.emptyText}>No memberships available at this time.</Text>
+                  ) : (
+                    availableMembershipTypes.map((type) => {
+                      // Check if ANY linked athlete has this membership active
+                      const athleteWithActive = athleteDataList.find(ad =>
+                        ad.memberships.some(m => m.membership_type_id === type.id)
+                      );
+                      const allocations = getMembershipServiceAllocations(type);
+                      return (
+                        <TouchableOpacity
+                          key={type.id}
+                          style={styles.membershipTypeCard}
+                          onPress={() => {
+                            setSelectedItem(type);
+                            setSelectedItemType('membership');
+                            setShowPurchaseModal(true);
+                          }}
+                        >
+                          <View style={styles.membershipCardContent}>
+                            {/* Price at top */}
+                            <View style={styles.membershipPriceTop}>
+                              <Text style={styles.membershipPriceValue}>
+                                {formatPrice(type.price_amount)}
+                              </Text>
+                              <Text style={styles.membershipPricePeriod}>
+                                {getBillingPeriodShort(type.billing_period)}
+                              </Text>
+                            </View>
+
+                            {/* Name */}
+                            <Text style={styles.membershipCardName} numberOfLines={2}>
+                              {type.name}
+                            </Text>
+
+                            {/* Billing period label */}
+                            <Text style={styles.membershipBillingLabel}>
+                              {getBillingPeriodLabel(type.billing_period)}
+                            </Text>
+
+                            {/* Service allocations */}
+                            <View style={styles.membershipAllocations}>
+                              {allocations.map((alloc, index) => (
+                                <View key={index} style={styles.membershipAllocationRow}>
+                                  <Text style={styles.membershipAllocationName} numberOfLines={1}>
+                                    {alloc.name}
+                                  </Text>
+                                  <Text style={[
+                                    styles.membershipAllocationVisits,
+                                    alloc.isUnlimited && styles.membershipAllocationUnlimited
+                                  ]}>
+                                    {alloc.visits}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </View>
+                          {athleteWithActive && (
+                            <View style={styles.activeBadgeOverlay}>
+                              <Text style={styles.activeBadgeText}>
+                                Active: {athleteWithActive.athleteName.split(' ')[0]}
+                              </Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+              </>
+            ) : (
+              <>
+                {/* REGULAR ATHLETE VIEW: Original memberships display */}
+                {/* Active Memberships */}
+                {memberships.length > 0 && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>YOUR MEMBERSHIP</Text>
+                    {memberships.map((membership) => {
+                      const usageCounters = membership.membership_usage_counters || [];
+                      return (
+                        <View key={membership.id} style={styles.activeMembershipCard}>
+                          {/* Header Row */}
+                          <View style={styles.activeMembershipHeader}>
+                            <View style={styles.activeMembershipIcon}>
+                              <LinearGradient
+                                colors={['#9BDDFF', '#7BC5F0']}
+                                style={styles.iconGradient}
+                              >
+                                <Ionicons name="checkmark-circle" size={16} color="#000" />
+                              </LinearGradient>
+                            </View>
+                            <View style={styles.activeMembershipInfo}>
+                              <Text style={styles.activeMembershipName} numberOfLines={1}>
+                                {membership.membership_type.name}
+                              </Text>
+                              <Text style={styles.activeMembershipRenewal}>
+                                Renews {formatDate(membership.current_period_end)}
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.manageButton}
+                              onPress={() => setShowManageMenu(showManageMenu === membership.id ? null : membership.id)}
+                            >
+                              <Text style={styles.manageButtonText}>Manage</Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          {/* Usage Counters */}
+                          {usageCounters.length > 0 && (
+                            <View style={styles.usageCountersContainer}>
+                              {usageCounters.map((counter) => {
+                                const isUnlimited = counter.visits_allocated === -1;
+                                const remaining = isUnlimited ? '∞' : (counter.visits_allocated - counter.visits_used);
+                                const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.visits_used / counter.visits_allocated) * 100);
+                                return (
+                                  <View key={counter.id} style={styles.usageCounterRow}>
+                                    <View style={styles.usageCounterInfo}>
+                                      <Text style={styles.usageCounterName} numberOfLines={1}>
+                                        {counter.scope_name || 'All Classes'}
+                                      </Text>
+                                      <Text style={styles.usageCounterStats}>
+                                        {isUnlimited ? (
+                                          <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> used</Text>
+                                        ) : (
+                                          <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> / {counter.visits_allocated} used</Text>
+                                        )}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.usageCounterRight}>
+                                      {isUnlimited ? (
+                                        <Text style={styles.usageUnlimited}>∞</Text>
+                                      ) : (
+                                        <>
+                                          <Text style={styles.usageRemaining}>{remaining}</Text>
+                                          <Text style={styles.usageRemainingLabel}>left</Text>
+                                        </>
+                                      )}
+                                    </View>
+                                    {/* Progress bar for limited */}
+                                    {!isUnlimited && (
+                                      <View style={styles.usageProgressBar}>
+                                        <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
+
+                          {/* Manage Menu */}
+                          {showManageMenu === membership.id && (
+                            <View style={styles.manageMenu}>
+                              <TouchableOpacity
+                                style={styles.manageMenuItem}
+                                onPress={() => handleManageAction('pause')}
+                              >
+                                <Text style={styles.manageMenuText}>Pause Membership</Text>
+                              </TouchableOpacity>
+                              <View style={styles.manageMenuDivider} />
+                              <TouchableOpacity
+                                style={styles.manageMenuItem}
+                                onPress={() => handleManageAction('cancel')}
+                              >
+                                <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
+                                  Cancel Membership
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Available Memberships */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>MEMBERSHIPS</Text>
+                  {availableMembershipTypes.length === 0 ? (
+                    <Text style={styles.emptyText}>No memberships available at this time.</Text>
+                  ) : (
+                    availableMembershipTypes.map((type) => {
+                      const hasActive = memberships.some(m => m.membership_type_id === type.id);
                   const allocations = getMembershipServiceAllocations(type);
                   return (
                     <TouchableOpacity
@@ -708,165 +1015,341 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 })
               )}
             </View>
+              </>
+            )}
           </>
         ) : (
           <>
-            {/* Active Packages */}
-            {packages.length > 0 && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>YOUR PACKAGES</Text>
-                {packages.map((pkg) => {
-                  const totalUses = pkg.package_type.uses ?? pkg.package_type.sessions_included;
-                  const isUnlimited = pkg.package_type.is_unlimited || totalUses === null;
-                  const allocations = getPackageServiceAllocations(pkg.package_type);
-                  const progressPercent = isUnlimited ? 0 : Math.min(100, ((totalUses - pkg.uses_remaining) / totalUses) * 100);
+            {/* PACKAGES TAB */}
+            {isParent && athleteDataList.length > 0 ? (
+              <>
+                {athleteDataList.map((athleteData) => (
+                  <View key={athleteData.athleteId} style={styles.section}>
+                    {/* Athlete Header */}
+                    <View style={styles.athleteSectionHeader}>
+                      <View style={[styles.athleteColorDot, { backgroundColor: athleteData.color }]} />
+                      <Text style={styles.athleteSectionTitle}>
+                        {athleteData.athleteName.toUpperCase()}'S PACKAGES
+                      </Text>
+                    </View>
 
-                  return (
-                    <View key={pkg.id} style={styles.activePackageCard}>
-                      {/* Header Row */}
-                      <View style={styles.activePackageHeader}>
-                        <View style={styles.activePackageIcon}>
-                          <LinearGradient
-                            colors={['#9BDDFF', '#7BC5F0']}
-                            style={styles.iconGradient}
-                          >
-                            <Ionicons name="card" size={14} color="#000" />
-                          </LinearGradient>
-                        </View>
-                        <View style={styles.activePackageInfo}>
-                          <Text style={styles.activePackageName} numberOfLines={1}>
-                            {pkg.package_type.name}
-                          </Text>
-                          <Text style={styles.activePackageExpiry}>
-                            Expires {formatDate(pkg.expiry_date)}
-                          </Text>
-                        </View>
-                        <View style={styles.activePackageUsageRight}>
-                          {isUnlimited ? (
-                            <Text style={styles.usageUnlimited}>∞</Text>
-                          ) : (
-                            <>
-                              <Text style={styles.activePackageUsesRemaining}>{pkg.uses_remaining}</Text>
-                              <Text style={styles.activePackageUsesLabel}>left</Text>
-                            </>
-                          )}
-                        </View>
-                      </View>
+                    {athleteData.packages.length > 0 ? (
+                      athleteData.packages.map((pkg) => {
+                        const totalUses = pkg.package_type.uses ?? pkg.package_type.sessions_included;
+                        const isUnlimited = pkg.package_type.is_unlimited || totalUses === null;
+                        const allocations = getPackageServiceAllocations(pkg.package_type);
+                        const progressPercent = isUnlimited ? 0 : Math.min(100, ((totalUses - pkg.uses_remaining) / totalUses) * 100);
 
-                      {/* Progress bar for limited packages */}
-                      {!isUnlimited && totalUses && (
-                        <View style={styles.activePackageProgress}>
-                          <View style={styles.usageProgressBar}>
-                            <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
-                          </View>
-                          <Text style={styles.activePackageProgressText}>
-                            {totalUses - pkg.uses_remaining} / {totalUses} used
-                          </Text>
-                        </View>
-                      )}
-
-                      {/* What this package is valid for */}
-                      {allocations.length > 0 && (
-                        <View style={styles.activePackageValidFor}>
-                          <Text style={styles.activePackageValidForLabel}>Valid for:</Text>
-                          <View style={styles.activePackageValidForList}>
-                            {allocations.map((alloc, index) => (
-                              <View key={index} style={styles.activePackageValidForItem}>
-                                <Text style={styles.activePackageValidForName}>{alloc.name}</Text>
-                                {!alloc.isUnlimited && alloc.visits !== '∞' && (
-                                  <Text style={styles.activePackageValidForVisits}>({alloc.visits} visits)</Text>
+                        return (
+                          <View key={pkg.id} style={[styles.activePackageCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3 }]}>
+                            {/* Header Row */}
+                            <View style={styles.activePackageHeader}>
+                              <View style={styles.activePackageIcon}>
+                                <LinearGradient
+                                  colors={['#9BDDFF', '#7BC5F0']}
+                                  style={styles.iconGradient}
+                                >
+                                  <Ionicons name="card" size={14} color="#000" />
+                                </LinearGradient>
+                              </View>
+                              <View style={styles.activePackageInfo}>
+                                <Text style={styles.activePackageName} numberOfLines={1}>
+                                  {pkg.package_type.name}
+                                </Text>
+                                <Text style={styles.activePackageExpiry}>
+                                  Expires {formatDate(pkg.expiry_date)}
+                                </Text>
+                              </View>
+                              <View style={styles.activePackageUsageRight}>
+                                {isUnlimited ? (
+                                  <Text style={styles.usageUnlimited}>∞</Text>
+                                ) : (
+                                  <>
+                                    <Text style={styles.activePackageUsesRemaining}>{pkg.uses_remaining}</Text>
+                                    <Text style={styles.activePackageUsesLabel}>left</Text>
+                                  </>
                                 )}
                               </View>
-                            ))}
-                          </View>
-                        </View>
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-            )}
+                            </View>
 
-            {/* Available Packages */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>PACKAGES</Text>
-              {availablePackageTypes.length === 0 ? (
-                <Text style={styles.emptyText}>No packages available at this time.</Text>
-              ) : (
-                availablePackageTypes.map((type) => {
-                  // Use 'uses' column (null = unlimited), fallback to sessions_included
-                  const classCount = type.uses ?? type.sessions_included;
-                  const isUnlimitedPackage = type.is_unlimited || classCount === null;
-                  const pricePerClass = type.price_amount && classCount && classCount > 0
-                    ? (type.price_amount / 100) / classCount
-                    : null;
-                  const allocations = getPackageServiceAllocations(type);
-                  return (
-                    <TouchableOpacity
-                      key={type.id}
-                      style={styles.packageTypeCard}
-                      onPress={() => {
-                        setSelectedItem(type);
-                        setSelectedItemType('package');
-                        setShowPurchaseModal(true);
-                      }}
-                    >
-                      <View style={styles.packageCardContent}>
-                        {/* Top row: Price and class count */}
-                        <View style={styles.packageTopRow}>
-                          <View style={styles.packagePriceLeft}>
-                            <Text style={styles.packagePriceValue}>
-                              {formatPrice(type.price_amount)}
-                            </Text>
-                            {!isUnlimitedPackage && pricePerClass && pricePerClass > 0 && (
-                              <Text style={styles.packagePricePerClass}>
-                                ${pricePerClass.toFixed(0)}/class
-                              </Text>
+                            {/* Progress bar for limited packages */}
+                            {!isUnlimited && totalUses && (
+                              <View style={styles.activePackageProgress}>
+                                <View style={styles.usageProgressBar}>
+                                  <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                                </View>
+                                <Text style={styles.activePackageProgressText}>
+                                  {totalUses - pkg.uses_remaining} / {totalUses} used
+                                </Text>
+                              </View>
+                            )}
+
+                            {/* What this package is valid for */}
+                            {allocations.length > 0 && (
+                              <View style={styles.activePackageValidFor}>
+                                <Text style={styles.activePackageValidForLabel}>Valid for:</Text>
+                                <View style={styles.activePackageValidForList}>
+                                  {allocations.map((alloc, index) => (
+                                    <View key={index} style={styles.activePackageValidForItem}>
+                                      <Text style={styles.activePackageValidForName}>{alloc.name}</Text>
+                                      {!alloc.isUnlimited && alloc.visits !== '∞' && (
+                                        <Text style={styles.activePackageValidForVisits}>({alloc.visits} visits)</Text>
+                                      )}
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
                             )}
                           </View>
-                          <View style={styles.packageClassBadge}>
-                            <Text style={styles.packageClassBadgeText}>
-                              {isUnlimitedPackage ? '∞ classes' : `${classCount} ${classCount === 1 ? 'class' : 'classes'}`}
+                        );
+                      })
+                    ) : (
+                      <Text style={styles.noItemsText}>No active packages</Text>
+                    )}
+                  </View>
+                ))}
+
+                {/* Available Packages for Purchase (parent view) */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>AVAILABLE PACKAGES</Text>
+                  {availablePackageTypes.length === 0 ? (
+                    <Text style={styles.emptyText}>No packages available at this time.</Text>
+                  ) : (
+                    availablePackageTypes.map((type) => {
+                      const classCount = type.uses ?? type.sessions_included;
+                      const isUnlimitedPackage = type.is_unlimited || classCount === null;
+                      const pricePerClass = type.price_amount && classCount && classCount > 0
+                        ? (type.price_amount / 100) / classCount
+                        : null;
+                      const allocations = getPackageServiceAllocations(type);
+                      return (
+                        <TouchableOpacity
+                          key={type.id}
+                          style={styles.packageTypeCard}
+                          onPress={() => {
+                            setSelectedItem(type);
+                            setSelectedItemType('package');
+                            setShowPurchaseModal(true);
+                          }}
+                        >
+                          <View style={styles.packageCardContent}>
+                            {/* Top row: Price and class count */}
+                            <View style={styles.packageTopRow}>
+                              <View style={styles.packagePriceLeft}>
+                                <Text style={styles.packagePriceValue}>
+                                  {formatPrice(type.price_amount)}
+                                </Text>
+                                {!isUnlimitedPackage && pricePerClass && pricePerClass > 0 && (
+                                  <Text style={styles.packagePricePerClass}>
+                                    ${pricePerClass.toFixed(0)}/class
+                                  </Text>
+                                )}
+                              </View>
+                              <View style={styles.packageClassBadge}>
+                                <Text style={styles.packageClassBadgeText}>
+                                  {isUnlimitedPackage ? '∞ classes' : `${classCount} ${classCount === 1 ? 'class' : 'classes'}`}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {/* Package name */}
+                            <Text style={styles.packageCardName} numberOfLines={2}>
+                              {type.name}
                             </Text>
-                          </View>
-                        </View>
 
-                        {/* Package name */}
-                        <Text style={styles.packageCardName} numberOfLines={2}>
-                          {type.name}
-                        </Text>
-
-                        {/* Description */}
-                        {type.description ? (
-                          <Text style={styles.packageCardDescription} numberOfLines={2}>
-                            {type.description}
-                          </Text>
-                        ) : (
-                          <View style={{ marginBottom: 8 }} />
-                        )}
-
-                        {/* Service allocations */}
-                        <View style={styles.packageAllocations}>
-                          {allocations.map((alloc, index) => (
-                            <View key={index} style={styles.packageAllocationRow}>
-                              <Text style={styles.packageAllocationName} numberOfLines={1}>
-                                {alloc.name}
+                            {/* Description */}
+                            {type.description ? (
+                              <Text style={styles.packageCardDescription} numberOfLines={2}>
+                                {type.description}
                               </Text>
-                              <Text style={[
-                                styles.packageAllocationVisits,
-                                alloc.isUnlimited && styles.packageAllocationUnlimited
-                              ]}>
-                                {alloc.visits}
+                            ) : (
+                              <View style={{ marginBottom: 8 }} />
+                            )}
+
+                            {/* Service allocations */}
+                            <View style={styles.packageAllocations}>
+                              {allocations.map((alloc, index) => (
+                                <View key={index} style={styles.packageAllocationRow}>
+                                  <Text style={styles.packageAllocationName} numberOfLines={1}>
+                                    {alloc.name}
+                                  </Text>
+                                  <Text style={[
+                                    styles.packageAllocationVisits,
+                                    alloc.isUnlimited && styles.packageAllocationUnlimited
+                                  ]}>
+                                    {alloc.visits}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+              </>
+            ) : (
+              <>
+                {/* REGULAR ATHLETE VIEW: Original packages display */}
+                {/* Active Packages */}
+                {packages.length > 0 && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>YOUR PACKAGES</Text>
+                    {packages.map((pkg) => {
+                      const totalUses = pkg.package_type.uses ?? pkg.package_type.sessions_included;
+                      const isUnlimited = pkg.package_type.is_unlimited || totalUses === null;
+                      const allocations = getPackageServiceAllocations(pkg.package_type);
+                      const progressPercent = isUnlimited ? 0 : Math.min(100, ((totalUses - pkg.uses_remaining) / totalUses) * 100);
+
+                      return (
+                        <View key={pkg.id} style={styles.activePackageCard}>
+                          {/* Header Row */}
+                          <View style={styles.activePackageHeader}>
+                            <View style={styles.activePackageIcon}>
+                              <LinearGradient
+                                colors={['#9BDDFF', '#7BC5F0']}
+                                style={styles.iconGradient}
+                              >
+                                <Ionicons name="card" size={14} color="#000" />
+                              </LinearGradient>
+                            </View>
+                            <View style={styles.activePackageInfo}>
+                              <Text style={styles.activePackageName} numberOfLines={1}>
+                                {pkg.package_type.name}
+                              </Text>
+                              <Text style={styles.activePackageExpiry}>
+                                Expires {formatDate(pkg.expiry_date)}
                               </Text>
                             </View>
-                          ))}
+                            <View style={styles.activePackageUsageRight}>
+                              {isUnlimited ? (
+                                <Text style={styles.usageUnlimited}>∞</Text>
+                              ) : (
+                                <>
+                                  <Text style={styles.activePackageUsesRemaining}>{pkg.uses_remaining}</Text>
+                                  <Text style={styles.activePackageUsesLabel}>left</Text>
+                                </>
+                              )}
+                            </View>
+                          </View>
+
+                          {/* Progress bar for limited packages */}
+                          {!isUnlimited && totalUses && (
+                            <View style={styles.activePackageProgress}>
+                              <View style={styles.usageProgressBar}>
+                                <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                              </View>
+                              <Text style={styles.activePackageProgressText}>
+                                {totalUses - pkg.uses_remaining} / {totalUses} used
+                              </Text>
+                            </View>
+                          )}
+
+                          {/* What this package is valid for */}
+                          {allocations.length > 0 && (
+                            <View style={styles.activePackageValidFor}>
+                              <Text style={styles.activePackageValidForLabel}>Valid for:</Text>
+                              <View style={styles.activePackageValidForList}>
+                                {allocations.map((alloc, index) => (
+                                  <View key={index} style={styles.activePackageValidForItem}>
+                                    <Text style={styles.activePackageValidForName}>{alloc.name}</Text>
+                                    {!alloc.isUnlimited && alloc.visits !== '∞' && (
+                                      <Text style={styles.activePackageValidForVisits}>({alloc.visits} visits)</Text>
+                                    )}
+                                  </View>
+                                ))}
+                              </View>
+                            </View>
+                          )}
                         </View>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
-            </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Available Packages */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>PACKAGES</Text>
+                  {availablePackageTypes.length === 0 ? (
+                    <Text style={styles.emptyText}>No packages available at this time.</Text>
+                  ) : (
+                    availablePackageTypes.map((type) => {
+                      // Use 'uses' column (null = unlimited), fallback to sessions_included
+                      const classCount = type.uses ?? type.sessions_included;
+                      const isUnlimitedPackage = type.is_unlimited || classCount === null;
+                      const pricePerClass = type.price_amount && classCount && classCount > 0
+                        ? (type.price_amount / 100) / classCount
+                        : null;
+                      const allocations = getPackageServiceAllocations(type);
+                      return (
+                        <TouchableOpacity
+                          key={type.id}
+                          style={styles.packageTypeCard}
+                          onPress={() => {
+                            setSelectedItem(type);
+                            setSelectedItemType('package');
+                            setShowPurchaseModal(true);
+                          }}
+                        >
+                          <View style={styles.packageCardContent}>
+                            {/* Top row: Price and class count */}
+                            <View style={styles.packageTopRow}>
+                              <View style={styles.packagePriceLeft}>
+                                <Text style={styles.packagePriceValue}>
+                                  {formatPrice(type.price_amount)}
+                                </Text>
+                                {!isUnlimitedPackage && pricePerClass && pricePerClass > 0 && (
+                                  <Text style={styles.packagePricePerClass}>
+                                    ${pricePerClass.toFixed(0)}/class
+                                  </Text>
+                                )}
+                              </View>
+                              <View style={styles.packageClassBadge}>
+                                <Text style={styles.packageClassBadgeText}>
+                                  {isUnlimitedPackage ? '∞ classes' : `${classCount} ${classCount === 1 ? 'class' : 'classes'}`}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {/* Package name */}
+                            <Text style={styles.packageCardName} numberOfLines={2}>
+                              {type.name}
+                            </Text>
+
+                            {/* Description */}
+                            {type.description ? (
+                              <Text style={styles.packageCardDescription} numberOfLines={2}>
+                                {type.description}
+                              </Text>
+                            ) : (
+                              <View style={{ marginBottom: 8 }} />
+                            )}
+
+                            {/* Service allocations */}
+                            <View style={styles.packageAllocations}>
+                              {allocations.map((alloc, index) => (
+                                <View key={index} style={styles.packageAllocationRow}>
+                                  <Text style={styles.packageAllocationName} numberOfLines={1}>
+                                    {alloc.name}
+                                  </Text>
+                                  <Text style={[
+                                    styles.packageAllocationVisits,
+                                    alloc.isUnlimited && styles.packageAllocationUnlimited
+                                  ]}>
+                                    {alloc.visits}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+              </>
+            )}
           </>
         )}
       </ScrollView>
@@ -1116,6 +1599,31 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     letterSpacing: 0.5,
     marginBottom: 12,
+  },
+  // Parent View - Athlete Section Styles
+  athleteSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  athleteColorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  athleteSectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9CA3AF',
+    letterSpacing: 0.5,
+  },
+  noItemsText: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontStyle: 'italic',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
   },
   emptyText: {
     fontSize: 14,
