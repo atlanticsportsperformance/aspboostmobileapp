@@ -402,6 +402,17 @@ export default function LoginScreen({ navigation }: any) {
               <LockIcon />
               <Text style={styles.securityText}>Secured with industry-standard encryption</Text>
             </View>
+
+            {/* New here link */}
+            <View style={styles.newHereContainer}>
+              <Text style={styles.newHereText}>New here? </Text>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('PublicBooking')}
+                disabled={loading}
+              >
+                <Text style={styles.newHereLink}>Book a session</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Footer */}
@@ -656,5 +667,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.3)',
     marginTop: 24,
+  },
+  newHereContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  newHereText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  newHereLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#9BDDFF',
   },
 });

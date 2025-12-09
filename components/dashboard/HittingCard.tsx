@@ -46,6 +46,14 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
   const distancePrWidth = prs.distance ? Math.min(100, (prs.distance.value / 450) * 100) : 0;
   const distanceRecentWidth = Math.min(100, ((latest.distance || 0) / 450) * 100);
 
+  // Reset hasAnimated when card becomes inactive (swiped away)
+  // This allows animation to replay when user swipes back to this card
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
+    }
+  }, [isActive]);
+
   useEffect(() => {
     if (!isActive) return;
 
@@ -143,10 +151,6 @@ export default function HittingCard({ data, isActive = true }: HittingCardProps 
       }).start();
     }
   }, [isActive]);
-
-  // NOTE: We no longer reset hasAnimated when inactive, because parent re-renders
-  // (like opening/closing settings modal) would cause animations to replay.
-  // The animation only runs once per component mount.
 
   return (
     <View style={styles.hittingContent}>

@@ -101,6 +101,14 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
     hashMarkAnims.push(new Animated.Value(0));
   }
 
+  // Reset hasAnimated when card becomes inactive (swiped away)
+  // This allows animation to replay when user swipes back to this card
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
+    }
+  }, [isActive]);
+
   useEffect(() => {
     if (!isActive) return;
 
@@ -195,10 +203,6 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
       });
     }
   }, [isActive]);
-
-  // NOTE: We no longer reset hasAnimated when inactive, because parent re-renders
-  // (like opening/closing settings modal) would cause animations to replay.
-  // The animation only runs once per component mount.
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);

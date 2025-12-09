@@ -87,6 +87,14 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - latest.arm_score / 100);
 
+  // Reset hasAnimated when card becomes inactive (swiped away)
+  // This allows animation to replay when user swipes back to this card
+  useEffect(() => {
+    if (!isActive) {
+      hasAnimated.current = false;
+    }
+  }, [isActive]);
+
   // Animate when card becomes active
   useEffect(() => {
     if (!isActive) return;
@@ -185,10 +193,6 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
       useNativeDriver: true,
     }).start();
   }, [isActive]);
-
-  // NOTE: We no longer reset hasAnimated when inactive, because parent re-renders
-  // (like opening/closing settings modal) would cause animations to replay.
-  // The animation only runs once per component mount.
 
   // Interpolate circle stroke
   const animatedStrokeDashoffset = circleAnim.interpolate({
