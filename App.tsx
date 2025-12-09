@@ -1,14 +1,19 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, ActivityIndicator } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 // TODO: Uncomment when Stripe is configured
 // import { StripeProvider } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
 import { AthleteProvider } from './contexts/AthleteContext';
+import {
+  setupNotificationListeners,
+  getLastNotificationResponse,
+  parseNotificationData,
+} from './lib/pushNotifications';
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
@@ -44,6 +49,39 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isParentAccount, setIsParentAccount] = useState(false);
+  const navigationRef = useRef<NavigationContainerRef<any>>(null);
+
+  // Handle notification tap navigation
+  const handleNotificationNavigation = (data: { type?: string; id?: string; screen?: string }) => {
+    if (!navigationRef.current || !isAuthenticated) return;
+
+    const nav = navigationRef.current as any;
+
+    // Navigate based on notification type
+    if (data.screen) {
+      // Direct screen navigation if specified
+      nav.navigate(data.screen, data.id ? { id: data.id } : undefined);
+    } else if (data.type) {
+      // Type-based navigation
+      switch (data.type) {
+        case 'workout':
+          nav.navigate('WorkoutExecution', { workoutId: data.id });
+          break;
+        case 'message':
+          nav.navigate('Messages');
+          break;
+        case 'booking':
+          nav.navigate('Booking');
+          break;
+        case 'leaderboard':
+          nav.navigate('Leaderboard');
+          break;
+        default:
+          // Default to dashboard
+          nav.navigate(isParentAccount ? 'ParentDashboard' : 'Dashboard');
+      }
+    }
+  };
 
   useEffect(() => {
     // Check for existing session on app launch
@@ -62,6 +100,33 @@ export default function App() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // Set up notification listeners
+  useEffect(() => {
+    // Handle notifications while app is running
+    const cleanup = setupNotificationListeners(
+      // Notification received while app is in foreground
+      (notification) => {
+        console.log('Notification received in foreground:', notification.request.content.title);
+      },
+      // User tapped on notification
+      (response) => {
+        const data = parseNotificationData(response.notification);
+        handleNotificationNavigation(data);
+      }
+    );
+
+    // Check if app was opened from a notification (cold start)
+    getLastNotificationResponse().then((response) => {
+      if (response) {
+        const data = parseNotificationData(response.notification);
+        // Delay navigation to ensure navigator is ready
+        setTimeout(() => handleNotificationNavigation(data), 500);
+      }
+    });
+
+    return cleanup;
+  }, [isAuthenticated, isParentAccount]);
 
   async function checkSession() {
     try {
@@ -111,7 +176,7 @@ export default function App() {
   return (
     <AthleteProvider>
       <SafeAreaProvider>
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef}>
           <StatusBar style="light" />
           <Stack.Navigator
             screenOptions={{

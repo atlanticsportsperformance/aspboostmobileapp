@@ -19,6 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
+import { calculateThrowingTarget, isThrowingVelocityMetric } from '../lib/throwingConversions';
 
 // Types
 interface Measurement {
@@ -115,6 +116,8 @@ interface ExerciseDetailViewProps {
   customMeasurements: Measurement[];
   // athleteMaxes keyed by exercise_id -> metric_id -> value
   athleteMaxes: Record<string, Record<string, number>>;
+  // Global mound velocity (5oz baseball PR) for throwing velocity fallback
+  moundVelocity?: number | null;
   exerciseInputs: Record<string, any[]>;
   completedSets: Record<string, boolean[]>;
   currentSetIndex: number;
@@ -221,21 +224,257 @@ function getMetricLabel(
   // Check custom measurements
   for (const measurement of customMeasurements) {
     if (measurement.primary_metric_id === metricId) {
-      return measurement.primary_metric_name || metricId;
+      // For ball metrics, include the measurement name (e.g., "Red Ball Reps")
+      const metricName = measurement.primary_metric_name || 'Reps';
+      return `${measurement.name} ${metricName}`;
     }
     if (measurement.secondary_metric_id === metricId) {
-      return measurement.secondary_metric_name || metricId;
+      // For ball metrics, include the measurement name (e.g., "Red Ball Velo")
+      const metricName = measurement.secondary_metric_name || 'Velo';
+      return `${measurement.name} ${metricName}`;
     }
   }
 
   return metricId;
 }
 
+// Ball weight order for sorting (heaviest to lightest)
+const ballWeightOrder: Record<string, number> = {
+  '7oz': 1,
+  '7_oz': 1,
+  '6oz': 2,
+  '6_oz': 2,
+  '5oz': 3,
+  '5_oz': 3,
+  'baseball': 3,
+  '4oz': 4,
+  '4_oz': 4,
+  '3oz': 5,
+  '3_oz': 5,
+  'blue': 6,
+  'blue_ball': 6,
+  'red': 7,
+  'red_ball': 7,
+  'yellow': 8,
+  'yellow_ball': 8,
+  'gray': 9,
+  'gray_ball': 9,
+  'grey': 9,
+  'grey_ball': 9,
+  'green': 10,
+  'green_ball': 10,
+};
+
+// Helper: Get ball weight for sorting
+function getBallWeight(metricId: string): number {
+  const lowerMetric = metricId.toLowerCase();
+  for (const [key, weight] of Object.entries(ballWeightOrder)) {
+    if (lowerMetric.includes(key)) {
+      return weight;
+    }
+  }
+  return 999; // Non-ball metrics go last
+}
+
+// Helper: Check if metric is a ball-related metric
+function isBallMetric(metricId: string): boolean {
+  const lowerMetric = metricId.toLowerCase();
+  const ballKeywords = ['oz', 'ball', 'blue', 'red', 'yellow', 'gray', 'grey', 'green', 'baseball'];
+  return ballKeywords.some(keyword => lowerMetric.includes(keyword));
+}
+
+// Helper: Get ball type from metric ID for grouping
+function getBallType(metricId: string): string | null {
+  const lowerMetric = metricId.toLowerCase();
+  if (lowerMetric.includes('7oz') || lowerMetric.includes('7_oz')) return '7oz';
+  if (lowerMetric.includes('6oz') || lowerMetric.includes('6_oz')) return '6oz';
+  if (lowerMetric.includes('5oz') || lowerMetric.includes('5_oz') || lowerMetric.includes('baseball')) return '5oz';
+  if (lowerMetric.includes('4oz') || lowerMetric.includes('4_oz')) return '4oz';
+  if (lowerMetric.includes('3oz') || lowerMetric.includes('3_oz')) return '3oz';
+  if (lowerMetric.includes('blue')) return 'blue';
+  if (lowerMetric.includes('red') && !lowerMetric.includes('oz')) return 'red';
+  if (lowerMetric.includes('yellow')) return 'yellow';
+  if (lowerMetric.includes('gray') || lowerMetric.includes('grey')) return 'gray';
+  if (lowerMetric.includes('green')) return 'green';
+  return null;
+}
+
+// Helper: Group metrics into paired ball groups
+interface MetricGroup {
+  ballType: string | null;
+  metrics: string[];
+}
+
+function groupMetricsForDisplay(metricFields: string[]): MetricGroup[] {
+  const groups: MetricGroup[] = [];
+  const processedMetrics = new Set<string>();
+
+  // First, handle non-ball metrics
+  metricFields.forEach(metricId => {
+    if (!isBallMetric(metricId)) {
+      groups.push({ ballType: null, metrics: [metricId] });
+      processedMetrics.add(metricId);
+    }
+  });
+
+  // Group ball metrics by ball type
+  const ballMetrics = metricFields.filter(m => isBallMetric(m) && !processedMetrics.has(m));
+  const ballGroups = new Map<string, string[]>();
+
+  ballMetrics.forEach(metricId => {
+    const ballType = getBallType(metricId);
+    if (ballType) {
+      if (!ballGroups.has(ballType)) {
+        ballGroups.set(ballType, []);
+      }
+      ballGroups.get(ballType)!.push(metricId);
+    }
+  });
+
+  // Convert map to groups, maintaining sort order
+  const sortedBallTypes = Array.from(ballGroups.keys()).sort((a, b) => {
+    const weightA = ballWeightOrder[a] || 999;
+    const weightB = ballWeightOrder[b] || 999;
+    return weightA - weightB;
+  });
+
+  sortedBallTypes.forEach(ballType => {
+    const metrics = ballGroups.get(ballType)!;
+    // Sort within group: primary (reps) first, then secondary (velo)
+    metrics.sort((a, b) => {
+      const aIsPrimary = a.toLowerCase().includes('reps');
+      const bIsPrimary = b.toLowerCase().includes('reps');
+      if (aIsPrimary && !bIsPrimary) return -1;
+      if (!aIsPrimary && bIsPrimary) return 1;
+      return 0;
+    });
+    groups.push({ ballType, metrics });
+  });
+
+  return groups;
+}
+
+// Ball icon component for plyo balls and weighted balls
+interface BallIconProps {
+  metricId: string;
+}
+
+function BallIcon({ metricId }: BallIconProps): React.ReactElement | null {
+  const lowerMetric = metricId.toLowerCase();
+
+  // Plyo balls - colored circles
+  if (lowerMetric.includes('blue')) {
+    return (
+      <View style={ballIconStyles.plyoBall}>
+        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#3B82F6', borderColor: '#2563EB' }]} />
+      </View>
+    );
+  }
+  if (lowerMetric.includes('red') && !lowerMetric.includes('oz')) {
+    return (
+      <View style={ballIconStyles.plyoBall}>
+        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EF4444', borderColor: '#DC2626' }]} />
+      </View>
+    );
+  }
+  if (lowerMetric.includes('yellow')) {
+    return (
+      <View style={ballIconStyles.plyoBall}>
+        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EAB308', borderColor: '#CA8A04' }]} />
+      </View>
+    );
+  }
+  if (lowerMetric.includes('gray') || lowerMetric.includes('grey')) {
+    return (
+      <View style={ballIconStyles.plyoBall}>
+        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#6B7280', borderColor: '#4B5563' }]} />
+      </View>
+    );
+  }
+  if (lowerMetric.includes('green')) {
+    return (
+      <View style={ballIconStyles.plyoBall}>
+        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#22C55E', borderColor: '#16A34A' }]} />
+      </View>
+    );
+  }
+
+  // Weighted balls - white circles with number
+  if (lowerMetric.includes('7oz') || lowerMetric.includes('7_oz')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#EA580C' }]}>7</Text>
+      </View>
+    );
+  }
+  if (lowerMetric.includes('6oz') || lowerMetric.includes('6_oz')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#7C3AED' }]}>6</Text>
+      </View>
+    );
+  }
+  if (lowerMetric.includes('5oz') || lowerMetric.includes('5_oz') || lowerMetric.includes('baseball')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#DC2626' }]}>5</Text>
+      </View>
+    );
+  }
+  if (lowerMetric.includes('4oz') || lowerMetric.includes('4_oz')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#2563EB' }]}>4</Text>
+      </View>
+    );
+  }
+  if (lowerMetric.includes('3oz') || lowerMetric.includes('3_oz')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#16A34A' }]}>3</Text>
+      </View>
+    );
+  }
+
+  return null;
+}
+
+// Ball icon styles
+const ballIconStyles = StyleSheet.create({
+  plyoBall: {
+    width: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  plyoBallInner: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+  },
+  weightedBall: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  weightedBallText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+});
+
 export default function ExerciseDetailView({
   exercise,
   routine,
   customMeasurements,
   athleteMaxes,
+  moundVelocity,
   exerciseInputs,
   completedSets,
   currentSetIndex,
@@ -423,11 +662,12 @@ export default function ExerciseDetailView({
     }
   }, [prAlert]);
 
-  // Get metric fields to display
+  // Get metric fields to display (sorted by ball weight for throwing exercises)
   const getMetricFields = (): string[] => {
+    let fields: string[] = [];
+
     if (exercise.enabled_measurements && exercise.enabled_measurements.length > 0) {
       // Use custom measurements
-      const fields: string[] = [];
       exercise.enabled_measurements.forEach(measurementId => {
         const measurement = customMeasurements.find(m => m.id === measurementId);
         if (measurement) {
@@ -435,17 +675,39 @@ export default function ExerciseDetailView({
           if (measurement.secondary_metric_id) fields.push(measurement.secondary_metric_id);
         }
       });
-      return fields;
+    } else if (exercise.metric_targets) {
+      // Fallback to legacy or metric_targets
+      fields = Object.keys(exercise.metric_targets);
+    } else {
+      // Legacy fallback
+      fields = ['reps'];
+      if (exercise.weight) fields.push('weight');
     }
 
-    // Fallback to legacy or metric_targets
-    if (exercise.metric_targets) {
-      return Object.keys(exercise.metric_targets);
+    // Sort ball metrics by weight (heaviest to lightest)
+    // Group primary metrics (reps) and secondary metrics (velo) together per ball type
+    const hasBallMetrics = fields.some(f => isBallMetric(f));
+    if (hasBallMetrics) {
+      // Separate ball and non-ball metrics
+      const ballMetrics = fields.filter(f => isBallMetric(f));
+      const nonBallMetrics = fields.filter(f => !isBallMetric(f));
+
+      // Sort ball metrics by weight, keeping primary (reps) before secondary (velo) for same ball
+      ballMetrics.sort((a, b) => {
+        const weightA = getBallWeight(a);
+        const weightB = getBallWeight(b);
+        if (weightA !== weightB) return weightA - weightB;
+        // Same ball type - primary (reps) comes before secondary (velo)
+        const isAPrimary = a.toLowerCase().includes('reps');
+        const isBPrimary = b.toLowerCase().includes('reps');
+        if (isAPrimary && !isBPrimary) return -1;
+        if (!isAPrimary && isBPrimary) return 1;
+        return 0;
+      });
+
+      fields = [...nonBallMetrics, ...ballMetrics];
     }
 
-    // Legacy fallback
-    const fields = ['reps'];
-    if (exercise.weight) fields.push('weight');
     return fields;
   };
 
@@ -478,6 +740,7 @@ export default function ExerciseDetailView({
 
   // Get intensity target for a metric in a specific set
   // Supports cross-exercise intensity (e.g., DB Bench at 50% of Barbell Bench max)
+  // For throwing velocity metrics, falls back to mound velocity conversion if no specific PR
   const getIntensityTarget = (setIndex: number, metricId: string): {
     percent: number;
     calculatedValue?: number;
@@ -497,6 +760,32 @@ export default function ExerciseDetailView({
 
         const maxValue = getMaxValue(sourceExerciseId, sourceMetricId);
 
+        // For throwing velocity metrics, use calculateThrowingTarget which handles:
+        // 1. Using athlete's specific max if available
+        // 2. Falling back to mound velocity conversion if not
+        if (isThrowingVelocityMetric(metricId)) {
+          const calculatedValue = calculateThrowingTarget(
+            maxValue,
+            moundVelocity ?? null,
+            metricId,
+            target.percent
+          );
+
+          if (calculatedValue !== null) {
+            return {
+              percent: target.percent,
+              calculatedValue,
+              sourceExerciseName: target.source_exercise_name,
+            };
+          }
+          // Return intensity even without calculated value
+          return {
+            percent: target.percent,
+            sourceExerciseName: target.source_exercise_name,
+          };
+        }
+
+        // Non-throwing metrics: simple percentage calculation
         if (maxValue) {
           const calculatedValue = Math.round(maxValue * (target.percent / 100));
           return {
@@ -658,50 +947,112 @@ export default function ExerciseDetailView({
             );
           })()}
 
-          {/* Metric Inputs Grid */}
+          {/* Metric Inputs Grid - with grouped ball metrics */}
           <View style={styles.metricsGrid}>
-            {metricFields.map(metricId => {
-              const label = getMetricLabel(metricId, customMeasurements);
-              const targetValue = getTargetValue(i, metricId);
-              const intensityTarget = getIntensityTarget(i, metricId);
-              const currentValue = setData[metricId];
-              const measurement = customMeasurements.find(
-                m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
-              );
-              const metricType =
-                measurement?.primary_metric_id === metricId
-                  ? measurement?.primary_metric_type
-                  : measurement?.secondary_metric_type;
+            {(() => {
+              const metricGroups = groupMetricsForDisplay(metricFields);
 
-              // Use intensity-calculated value if available, otherwise use target value
-              const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-              const isDecimal = metricType === 'decimal';
-              const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
+              return metricGroups.map((group, groupIndex) => {
+                // For ball metric groups, show a grouped container with shared ball icon
+                if (group.ballType && group.metrics.length > 0) {
+                  return (
+                    <View key={`group-${group.ballType}`} style={styles.ballMetricGroup}>
+                      {/* Ball icon header for the group */}
+                      <View style={styles.ballGroupHeader}>
+                        <BallIcon metricId={group.metrics[0]} />
+                      </View>
+                      {/* Individual metrics in the group */}
+                      <View style={styles.ballGroupInputs}>
+                        {group.metrics.map(metricId => {
+                          const label = getMetricLabel(metricId, customMeasurements);
+                          const targetValue = getTargetValue(i, metricId);
+                          const intensityTarget = getIntensityTarget(i, metricId);
+                          const currentValue = setData[metricId];
+                          const measurement = customMeasurements.find(
+                            m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
+                          );
+                          const metricType =
+                            measurement?.primary_metric_id === metricId
+                              ? measurement?.primary_metric_type
+                              : measurement?.secondary_metric_type;
+                          const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
+                          const isDecimal = metricType === 'decimal';
+                          const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
-              return (
-                <View key={metricId} style={styles.metricInput}>
-                  <Text style={styles.metricLabel}>{label}</Text>
-                  <TouchableOpacity
-                    style={[
-                      styles.input,
-                      currentValue != null && currentValue !== '' && styles.inputFilled,
-                      isActive && styles.inputActive,
-                    ]}
-                    onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[
-                      styles.inputText,
-                      (currentValue == null || currentValue === '') && styles.inputPlaceholder,
-                    ]}>
-                      {currentValue != null && currentValue !== ''
-                        ? String(currentValue)
-                        : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
+                          return (
+                            <View key={metricId} style={styles.ballGroupMetricInput}>
+                              <Text style={styles.ballGroupMetricLabel}>{label}</Text>
+                              <TouchableOpacity
+                                style={[
+                                  styles.ballGroupInput,
+                                  currentValue != null && currentValue !== '' && styles.inputFilled,
+                                  isActive && styles.inputActive,
+                                ]}
+                                onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={[
+                                  styles.inputText,
+                                  (currentValue == null || currentValue === '') && styles.inputPlaceholder,
+                                ]}>
+                                  {currentValue != null && currentValue !== ''
+                                    ? String(currentValue)
+                                    : placeholderValue ? String(placeholderValue) : '-'}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                }
+
+                // For non-ball metrics, render normally
+                return group.metrics.map(metricId => {
+                  const label = getMetricLabel(metricId, customMeasurements);
+                  const targetValue = getTargetValue(i, metricId);
+                  const intensityTarget = getIntensityTarget(i, metricId);
+                  const currentValue = setData[metricId];
+                  const measurement = customMeasurements.find(
+                    m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
+                  );
+                  const metricType =
+                    measurement?.primary_metric_id === metricId
+                      ? measurement?.primary_metric_type
+                      : measurement?.secondary_metric_type;
+                  const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
+                  const isDecimal = metricType === 'decimal';
+                  const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
+
+                  return (
+                    <View key={metricId} style={styles.metricInput}>
+                      <View style={styles.metricLabelRow}>
+                        <Text style={styles.metricLabel}>{label}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.input,
+                          currentValue != null && currentValue !== '' && styles.inputFilled,
+                          isActive && styles.inputActive,
+                        ]}
+                        onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[
+                          styles.inputText,
+                          (currentValue == null || currentValue === '') && styles.inputPlaceholder,
+                        ]}>
+                          {currentValue != null && currentValue !== ''
+                            ? String(currentValue)
+                            : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                });
+              });
+            })()}
           </View>
 
           {/* Per-set notes from coach (read-only display) */}
@@ -1544,10 +1895,18 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: '45%',
   },
+  metricLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+    gap: 6,
+  },
   metricLabel: {
     fontSize: 11,
     color: '#A3A3A3',
-    marginBottom: 4,
+  },
+  metricLabelWithIcon: {
+    marginLeft: 0,
   },
   input: {
     height: 44,
@@ -1572,6 +1931,46 @@ const styles = StyleSheet.create({
   inputFilled: {
     backgroundColor: 'rgba(155, 221, 255, 0.1)',
     borderColor: 'rgba(155, 221, 255, 0.3)',
+  },
+  // Ball metric group styles
+  ballMetricGroup: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 8,
+    padding: 8,
+    gap: 8,
+    minWidth: '100%',
+  },
+  ballGroupHeader: {
+    width: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 16,
+  },
+  ballGroupInputs: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  ballGroupMetricInput: {
+    flex: 1,
+  },
+  ballGroupMetricLabel: {
+    fontSize: 10,
+    color: '#737373',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  ballGroupInput: {
+    height: 40,
+    padding: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   setNotesDisplay: {
     width: '100%',

@@ -8,10 +8,18 @@ import {
   ActivityIndicator,
   Switch,
   Alert,
+  Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import {
+  isPushNotificationsEnabled,
+  setupPushNotifications,
+  unregisterPushToken,
+  getStoredPushToken,
+} from '../lib/pushNotifications';
 
 interface NotificationSettings {
   email_booking_confirmations: boolean;
@@ -37,10 +45,52 @@ export default function NotificationSettingsScreen({ navigation }: any) {
   const [settings, setSettings] = useState<NotificationSettings>(defaultSettings);
   const [userId, setUserId] = useState<string>('');
   const [orgId, setOrgId] = useState<string>('');
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
 
   useEffect(() => {
     loadSettings();
+    checkPushStatus();
   }, []);
+
+  async function checkPushStatus() {
+    const enabled = await isPushNotificationsEnabled();
+    const token = await getStoredPushToken();
+    setPushEnabled(enabled && !!token);
+  }
+
+  async function handlePushToggle(enabled: boolean) {
+    setPushLoading(true);
+    try {
+      if (enabled) {
+        const token = await setupPushNotifications();
+        if (token) {
+          setPushEnabled(true);
+        } else {
+          // Permission was denied or couldn't get token
+          Alert.alert(
+            'Enable Notifications',
+            'To receive push notifications, please enable them in your device settings.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Open Settings',
+                onPress: () => Linking.openSettings(),
+              },
+            ]
+          );
+        }
+      } else {
+        await unregisterPushToken();
+        setPushEnabled(false);
+      }
+    } catch (error) {
+      console.error('Error toggling push notifications:', error);
+      Alert.alert('Error', 'Failed to update push notification settings.');
+    } finally {
+      setPushLoading(false);
+    }
+  }
 
   async function loadSettings() {
     try {
@@ -167,6 +217,44 @@ export default function NotificationSettingsScreen({ navigation }: any) {
       </View>
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        {/* Push Notifications Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={[styles.sectionIconContainer, { backgroundColor: 'rgba(34, 197, 94, 0.15)' }]}>
+              <Ionicons name="notifications-outline" size={20} color="#22C55E" />
+            </View>
+            <Text style={styles.sectionTitle}>Push Notifications</Text>
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingInfo}>
+                <Text style={styles.settingLabel}>Enable Push Notifications</Text>
+                <Text style={styles.settingDescription}>
+                  Receive instant notifications on your device
+                </Text>
+              </View>
+              {pushLoading ? (
+                <ActivityIndicator size="small" color="#9BDDFF" />
+              ) : (
+                <Switch
+                  value={pushEnabled}
+                  onValueChange={handlePushToggle}
+                  trackColor={{ false: 'rgba(255,255,255,0.2)', true: '#22C55E' }}
+                  thumbColor={pushEnabled ? '#FFFFFF' : '#888888'}
+                  ios_backgroundColor="rgba(255,255,255,0.2)"
+                />
+              )}
+            </View>
+          </View>
+
+          {!pushEnabled && (
+            <Text style={styles.pushHint}>
+              Enable push notifications to receive workout reminders, session updates, and important alerts.
+            </Text>
+          )}
+        </View>
+
         {/* Email Notifications Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -439,5 +527,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#000000',
+  },
+  pushHint: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.5)',
+    marginTop: 8,
+    paddingHorizontal: 4,
+    lineHeight: 18,
   },
 });

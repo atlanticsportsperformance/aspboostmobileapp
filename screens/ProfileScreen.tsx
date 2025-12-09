@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { unregisterPushToken } from '../lib/pushNotifications';
 
 const COLORS = {
   primary: '#9BDDFF',
@@ -904,6 +905,8 @@ export default function ProfileScreen({ navigation, route }: any) {
                     text: 'Sign Out',
                     style: 'destructive',
                     onPress: async () => {
+                      // Unregister push token before signing out
+                      await unregisterPushToken();
                       await supabase.auth.signOut();
                       navigation.replace('Login');
                     },

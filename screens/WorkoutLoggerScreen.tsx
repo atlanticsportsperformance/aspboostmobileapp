@@ -133,6 +133,8 @@ export default function WorkoutLoggerScreen() {
   const [currentSetIndexes, setCurrentSetIndexes] = useState<Record<string, number>>({});
   // athleteMaxes keyed by exercise_id -> metric_id -> value
   const [athleteMaxes, setAthleteMaxes] = useState<Record<string, Record<string, number>>>({});
+  // Mound velocity for throwing velocity fallback (5oz baseball PR)
+  const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
   const [prAlert, setPRAlert] = useState<PRAlert | null>(null);
   const [saveTimeout, setSaveTimeout] = useState<NodeJS.Timeout | null>(null);
   const [timer, setTimer] = useState(0); // seconds elapsed
@@ -143,6 +145,29 @@ export default function WorkoutLoggerScreen() {
   useEffect(() => {
     loadWorkout();
   }, [workoutInstanceId]);
+
+  // Fetch mound velocity for throwing velocity fallback
+  useEffect(() => {
+    async function fetchMoundVelocity() {
+      if (!athleteId) return;
+
+      // Fetch the global 5oz mound velocity PR (exercise_id is null for global measurements)
+      const { data } = await supabase
+        .from('athlete_maxes')
+        .select('max_value')
+        .eq('athlete_id', athleteId)
+        .eq('metric_id', '5oz_mound_velo')
+        .is('exercise_id', null)
+        .single();
+
+      if (data) {
+        setMoundVelocity(data.max_value);
+        console.log(`🎯 Loaded mound velocity for fallback: ${data.max_value} mph`);
+      }
+    }
+
+    fetchMoundVelocity();
+  }, [athleteId]);
 
   const loadWorkout = async () => {
     try {
@@ -927,6 +952,7 @@ export default function WorkoutLoggerScreen() {
         routine={currentRoutine}
         customMeasurements={customMeasurements}
         athleteMaxes={athleteMaxes}
+        moundVelocity={moundVelocity}
         exerciseInputs={exerciseInputs}
         completedSets={completedSets}
         currentSetIndex={currentSetIndexes[currentExercise.id] || 0}

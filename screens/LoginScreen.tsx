@@ -16,6 +16,7 @@ import { Svg, Path, Circle } from 'react-native-svg';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
+import { setupPushNotifications } from '../lib/pushNotifications';
 
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
@@ -122,6 +123,9 @@ export default function LoginScreen({ navigation }: any) {
           return;
         }
 
+        // Register for push notifications after successful login
+        setupPushNotifications().catch(console.error);
+
         navigation.replace('Dashboard');
       }
     } catch (err) {
@@ -154,6 +158,9 @@ export default function LoginScreen({ navigation }: any) {
             setLoading(false);
             return;
           }
+
+          // Register for push notifications after successful login
+          setupPushNotifications().catch(console.error);
 
           navigation.replace('Dashboard');
         }
@@ -202,6 +209,9 @@ export default function LoginScreen({ navigation }: any) {
       if (enableFaceId) {
         await SecureStore.setItemAsync('faceIdEnabled', 'true');
       }
+
+      // Register for push notifications after successful login
+      setupPushNotifications().catch(console.error);
 
       navigation.replace('Dashboard');
     } catch (error: any) {
