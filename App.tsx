@@ -31,6 +31,7 @@ import BattedBallTrendsScreen from './screens/BattedBallTrendsScreen';
 import PairedDataTrendsScreen from './screens/PairedDataTrendsScreen';
 import PitchingScreen from './screens/PitchingScreen';
 import PitchingSessionScreen from './screens/PitchingSessionScreen';
+import PitchingTrendsScreen from './screens/PitchingTrendsScreen';
 import ArmCareScreen from './screens/ArmCareScreen';
 import ForceProfileScreen from './screens/ForceProfileScreen';
 import TestDetailScreen from './screens/TestDetailScreen';
@@ -204,6 +205,7 @@ export default function App() {
             <Stack.Screen name="PairedDataTrends" component={PairedDataTrendsScreen} />
             <Stack.Screen name="PitchingPerformance" component={PitchingScreen} />
             <Stack.Screen name="PitchingSession" component={PitchingSessionScreen} />
+            <Stack.Screen name="PitchingTrends" component={PitchingTrendsScreen} />
             <Stack.Screen name="ArmCare" component={ArmCareScreen} />
             <Stack.Screen name="ForceProfile" component={ForceProfileScreen} />
             <Stack.Screen name="TestDetail" component={TestDetailScreen} />

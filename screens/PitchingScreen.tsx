@@ -424,10 +424,10 @@ export default function PitchingScreen({ navigation, route }: any) {
             </View>
 
             <View style={styles.analysisButtons}>
-              <TouchableOpacity style={styles.analysisButton} onPress={() => navigation.navigate('PitchingTrackman', { athleteId })}>
+              <TouchableOpacity style={styles.analysisButton} onPress={() => navigation.navigate('PitchingTrends', { athleteId })}>
                 <View style={styles.analysisButtonInner}>
                   <Ionicons name="analytics" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Pitch History</Text>
+                  <Text style={styles.analysisButtonText}>Pitch Trends</Text>
                   <Ionicons name="chevron-forward" size={14} color="#4B5563" />
                 </View>
               </TouchableOpacity>
