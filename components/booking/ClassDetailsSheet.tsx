@@ -15,6 +15,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useStripe } from '@stripe/stripe-react-native';
+import { supabase } from '../../lib/supabase';
 import {
   BookableEvent,
   PaymentMethod,
@@ -97,10 +98,19 @@ export default function ClassDetailsSheet({
     setPaymentInProgress(true);
 
     try {
+      // Get auth token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('Please log in to make a purchase');
+      }
+
       // 1. Create checkout session on server (embedded mode for Payment Sheet)
       const response = await fetch(`${API_URL}/api/stripe/create-drop-in-checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           athlete_id: athleteId,
           event_id: event.id,

@@ -449,7 +449,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
     try {
       // Get the current session for auth token
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      console.log('=== STRIPE CHECKOUT DEBUG ===');
+      console.log('Session error:', sessionError);
+      console.log('Session exists:', !!session);
+      console.log('Access token exists:', !!session?.access_token);
+      console.log('Access token (first 20 chars):', session?.access_token?.substring(0, 20));
+
       if (!session?.access_token) {
         throw new Error('Please log in to make a purchase');
       }
@@ -473,6 +479,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             return_url: 'aspboost://purchase/complete',
           };
 
+      console.log('Endpoint:', endpoint);
+      console.log('Body params:', JSON.stringify(bodyParams, null, 2));
+      console.log('Target athlete ID:', targetAthleteId);
+      console.log('Selected item ID:', selectedItem.id);
+      console.log('Selected item type:', selectedItemType);
+
       // 1. Create checkout session on server (embedded mode for Payment Sheet)
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -483,10 +495,14 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         body: JSON.stringify(bodyParams),
       });
 
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
+
       const data = await response.json();
+      console.log('Response data:', JSON.stringify(data, null, 2));
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to create payment session');
+        throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create payment session`);
       }
 
       const { client_secret } = data;
