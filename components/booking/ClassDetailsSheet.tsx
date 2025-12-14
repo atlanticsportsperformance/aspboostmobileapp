@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
-import { useStripe } from '@stripe/stripe-react-native';
+import { useStripe, initStripe } from '@stripe/stripe-react-native';
 import { supabase } from '../../lib/supabase';
 import {
   BookableEvent,
@@ -55,9 +55,9 @@ export default function ClassDetailsSheet({
   onViewMemberships,
   onPaymentSuccess,
 }: ClassDetailsSheetProps) {
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   React.useEffect(() => {
     if (paymentMethods.length > 0 && !selectedPaymentId) {
@@ -100,71 +100,134 @@ export default function ClassDetailsSheet({
     try {
       // Get auth token
       const { data: { session } } = await supabase.auth.getSession();
+
       if (!session?.access_token) {
         throw new Error('Please log in to make a purchase');
       }
 
-      // 1. Create checkout session on server (embedded mode for Payment Sheet)
+      // Request PaymentIntent for in-app Payment Sheet
+      const requestBody = {
+        athlete_id: athleteId,
+        event_id: event.id,
+        embedded: true, // Use PaymentIntent for mobile Payment Sheet
+      };
+
       const response = await fetch(`${API_URL}/api/stripe/create-drop-in-checkout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          athlete_id: athleteId,
-          event_id: event.id,
-          embedded: true,
-          return_url: 'aspboost://booking/complete',
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      console.log('API Response:', JSON.stringify(data, null, 2));
+      console.log('Client secret prefix:', data.client_secret?.substring(0, 10));
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to create payment session');
       }
 
-      const { client_secret, stripe_account } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account, payment_intent_id } = data;
 
       if (!client_secret) {
         throw new Error('No client secret returned from server');
       }
 
-      // 2. Initialize Payment Sheet
-      const { error: initError } = await initPaymentSheet({
+      // Validate it's a PaymentIntent secret, not Checkout Session
+      if (client_secret.startsWith('cs_')) {
+        throw new Error('Server returned Checkout Session instead of PaymentIntent. Please contact support.');
+      }
+
+      console.log('stripe_account received:', stripe_account);
+
+      // For Stripe Connect, we need to reinitialize the SDK with the connected account
+      // This is required because stripeAccountId must be set at the provider level
+      if (stripe_account) {
+        console.log('Reinitializing Stripe with connected account:', stripe_account);
+        await initStripe({
+          publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '',
+          stripeAccountId: stripe_account,
+          merchantIdentifier: 'merchant.com.aspboost',
+          urlScheme: 'aspboost',
+        });
+      }
+
+      // Initialize the Payment Sheet
+      const initParams: any = {
         paymentIntentClientSecret: client_secret,
         merchantDisplayName: 'ASP Boost',
-        style: 'alwaysDark',
-        // Note: For Stripe Connect, we need to pass the connected account
-        // The SDK handles this automatically when the PaymentIntent is created on the connected account
-      });
+        returnURL: 'aspboost://stripe-redirect',
+        allowsDelayedPaymentMethods: false,
+      };
+
+      // Add customer info if available
+      if (customer_id && ephemeral_key) {
+        initParams.customerId = customer_id;
+        initParams.customerEphemeralKeySecret = ephemeral_key;
+      }
+
+      console.log('Full initParams:', JSON.stringify(initParams, null, 2));
+
+      const { error: initError } = await initPaymentSheet(initParams);
 
       if (initError) {
         throw new Error(initError.message);
       }
 
-      // 3. Present Payment Sheet
-      const { error: paymentError } = await presentPaymentSheet();
+      // Present the Payment Sheet
+      const { error: presentError } = await presentPaymentSheet();
 
-      if (paymentError) {
-        if (paymentError.code === 'Canceled') {
-          // User cancelled - not an error
-          setPaymentInProgress(false);
+      if (presentError) {
+        if (presentError.code === 'Canceled') {
+          // User cancelled - don't show error
           return;
         }
-        throw new Error(paymentError.message);
+        throw new Error(presentError.message);
       }
 
-      // 4. Payment successful!
-      // The webhook will create the booking automatically
+      // Payment successful - now confirm and create the booking
+      // This is necessary because Stripe webhooks are unreliable for connected account PaymentIntents
+      console.log('Payment Sheet completed, confirming booking...');
+
+      const confirmResponse = await fetch(`${API_URL}/api/stripe/confirm-drop-in`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          payment_intent_id: payment_intent_id,
+          athlete_id: athleteId,
+          event_id: event.id,
+        }),
+      });
+
+      const confirmData = await confirmResponse.json();
+      console.log('Confirm response:', confirmData);
+
+      if (!confirmResponse.ok) {
+        // Payment succeeded but booking creation failed
+        // This is a critical error - payment taken but no booking
+        console.error('Failed to confirm booking after payment:', confirmData.error);
+        Alert.alert(
+          'Booking Issue',
+          'Your payment was successful, but we encountered an issue creating your booking. Please contact support with your payment confirmation.',
+          [{ text: 'OK' }]
+        );
+        onPaymentSuccess?.();
+        onClose();
+        return;
+      }
+
+      // All successful
+      onClose();
       Alert.alert(
         'Payment Successful',
-        'Your class has been booked! Check your email for confirmation.',
+        'Your drop-in session has been booked!',
         [{ text: 'OK' }]
       );
-
-      onClose();
       onPaymentSuccess?.();
 
     } catch (error: any) {
