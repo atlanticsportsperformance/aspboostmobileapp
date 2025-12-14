@@ -448,6 +448,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     setPaymentInProgress(true);
 
     try {
+      // Get the current session for auth token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('Please log in to make a purchase');
+      }
+
       // Determine which endpoint to call based on item type
       const endpoint = selectedItemType === 'membership'
         ? `${API_URL}/api/stripe/create-membership-checkout`
@@ -470,7 +476,10 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // 1. Create checkout session on server (embedded mode for Payment Sheet)
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify(bodyParams),
       });
 
