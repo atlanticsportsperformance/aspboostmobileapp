@@ -5,8 +5,7 @@ import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-// TODO: Uncomment when Stripe is configured
-// import { StripeProvider } from '@stripe/stripe-react-native';
+import { StripeProvider } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
 import { AthleteProvider } from './contexts/AthleteContext';
 import {
@@ -172,14 +171,16 @@ export default function App() {
     return isParentAccount ? 'ParentDashboard' : 'Dashboard';
   };
 
-  // TODO: Wrap with StripeProvider when Stripe is configured
-  // <StripeProvider publishableKey={...} merchantIdentifier="merchant.com.aspboost">
   return (
-    <AthleteProvider>
-      <SafeAreaProvider>
-        <NavigationContainer ref={navigationRef}>
-          <StatusBar style="light" />
-          <Stack.Navigator
+    <StripeProvider
+      publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''}
+      merchantIdentifier="merchant.com.aspboost"
+    >
+      <AthleteProvider>
+        <SafeAreaProvider>
+          <NavigationContainer ref={navigationRef}>
+            <StatusBar style="light" />
+            <Stack.Navigator
             screenOptions={{
               headerShown: false,
               contentStyle: {
@@ -220,5 +221,6 @@ export default function App() {
         </NavigationContainer>
       </SafeAreaProvider>
     </AthleteProvider>
+  </StripeProvider>
   );
 }

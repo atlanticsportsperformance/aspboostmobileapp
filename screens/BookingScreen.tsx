@@ -642,12 +642,21 @@ export default function BookingScreen() {
         paymentMethods={paymentMethods}
         loading={loadingEligibility}
         bookingInProgress={bookingInProgress}
+        athleteId={selectedAthleteId}
         onClose={() => setSelectedEvent(null)}
         onReserve={handleReserve}
         onViewMemberships={() => {
           setSelectedEvent(null);
           // Could navigate to a memberships screen
           Alert.alert('Info', 'Memberships & Packages coming soon');
+        }}
+        onPaymentSuccess={() => {
+          // Refresh events after successful payment
+          if (viewMode === 'day') {
+            fetchEvents();
+          } else {
+            fetchListEvents();
+          }
         }}
       />
 

@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
+import { useStripe } from '@stripe/stripe-react-native';
 import {
   BookableEvent,
   PaymentMethod,
@@ -21,6 +22,8 @@ import {
   formatEventTime,
   formatFullDate,
 } from '../../types/booking';
+
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -31,9 +34,11 @@ interface ClassDetailsSheetProps {
   paymentMethods: PaymentMethod[];
   loading: boolean;
   bookingInProgress: boolean;
+  athleteId: string | null;
   onClose: () => void;
   onReserve: (paymentMethod: PaymentMethod) => void;
   onViewMemberships: () => void;
+  onPaymentSuccess?: () => void;
 }
 
 export default function ClassDetailsSheet({
@@ -43,11 +48,15 @@ export default function ClassDetailsSheet({
   paymentMethods,
   loading,
   bookingInProgress,
+  athleteId,
   onClose,
   onReserve,
   onViewMemberships,
+  onPaymentSuccess,
 }: ClassDetailsSheetProps) {
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null);
+  const [paymentInProgress, setPaymentInProgress] = useState(false);
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   React.useEffect(() => {
     if (paymentMethods.length > 0 && !selectedPaymentId) {
@@ -78,15 +87,86 @@ export default function ClassDetailsSheet({
   );
   const selectedPayment = paymentMethods.find((p) => p.id === selectedPaymentId);
 
-  // Handle paid drop-in - Stripe Checkout (coming soon)
-  const handlePaidDropInPress = () => {
-    // TODO: Implement Stripe Checkout session creation
-    // See STRIPE_DROP_IN_IMPLEMENTATION.md for full implementation plan
-    Alert.alert(
-      'Coming Soon',
-      'Drop-in payments will be available soon. Please contact the facility to book this session.',
-      [{ text: 'OK' }]
-    );
+  // Handle paid drop-in with Stripe Payment Sheet
+  const handlePaidDropInPress = async () => {
+    if (!athleteId || !event) {
+      Alert.alert('Error', 'Unable to process payment. Please try again.');
+      return;
+    }
+
+    setPaymentInProgress(true);
+
+    try {
+      // 1. Create checkout session on server (embedded mode for Payment Sheet)
+      const response = await fetch(`${API_URL}/api/stripe/create-drop-in-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          athlete_id: athleteId,
+          event_id: event.id,
+          embedded: true,
+          return_url: 'aspboost://booking/complete',
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create payment session');
+      }
+
+      const { client_secret, stripe_account } = data;
+
+      if (!client_secret) {
+        throw new Error('No client secret returned from server');
+      }
+
+      // 2. Initialize Payment Sheet
+      const { error: initError } = await initPaymentSheet({
+        paymentIntentClientSecret: client_secret,
+        merchantDisplayName: 'ASP Boost',
+        style: 'alwaysDark',
+        // Note: For Stripe Connect, we need to pass the connected account
+        // The SDK handles this automatically when the PaymentIntent is created on the connected account
+      });
+
+      if (initError) {
+        throw new Error(initError.message);
+      }
+
+      // 3. Present Payment Sheet
+      const { error: paymentError } = await presentPaymentSheet();
+
+      if (paymentError) {
+        if (paymentError.code === 'Canceled') {
+          // User cancelled - not an error
+          setPaymentInProgress(false);
+          return;
+        }
+        throw new Error(paymentError.message);
+      }
+
+      // 4. Payment successful!
+      // The webhook will create the booking automatically
+      Alert.alert(
+        'Payment Successful',
+        'Your class has been booked! Check your email for confirmation.',
+        [{ text: 'OK' }]
+      );
+
+      onClose();
+      onPaymentSuccess?.();
+
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      Alert.alert(
+        'Payment Failed',
+        error.message || 'Something went wrong. Please try again.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setPaymentInProgress(false);
+    }
   };
 
   // Handle reserve button press
@@ -305,17 +385,21 @@ export default function ClassDetailsSheet({
           {!loading && isPaidDropIn && !hasMissingRestrictions && (
             <View style={styles.footer}>
               <TouchableOpacity
-                style={[styles.reserveBtn, styles.reserveBtnDisabled]}
+                style={[styles.reserveBtn, paymentInProgress && styles.reserveBtnDisabled]}
                 onPress={handlePaidDropInPress}
+                disabled={paymentInProgress}
               >
                 <LinearGradient
                   colors={['#9BDDFF', '#7BC5F0']}
                   style={styles.reserveGradient}
                 >
-                  <Text style={styles.reserveText}>Pay {dropInPriceFormatted}</Text>
+                  {paymentInProgress ? (
+                    <ActivityIndicator size="small" color="#000" />
+                  ) : (
+                    <Text style={styles.reserveText}>Pay {dropInPriceFormatted}</Text>
+                  )}
                 </LinearGradient>
               </TouchableOpacity>
-              <Text style={styles.webPaymentNote}>Coming soon</Text>
             </View>
           )}
         </View>
@@ -581,11 +665,5 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     lineHeight: 20,
-  },
-  webPaymentNote: {
-    fontSize: 12,
-    color: '#888',
-    textAlign: 'center',
-    marginTop: 8,
   },
 });
