@@ -13,8 +13,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useStripe } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
+
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -139,6 +142,10 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [selectedItemType, setSelectedItemType] = useState<'membership' | 'package'>('membership');
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
   const [purchaseForAthleteId, setPurchaseForAthleteId] = useState<string | null>(null);
+  const [paymentInProgress, setPaymentInProgress] = useState(false);
+
+  // Stripe hook
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   useEffect(() => {
     loadAthleteAndData();
@@ -418,13 +425,118 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     return period.charAt(0).toUpperCase() + period.slice(1).replace(/_/g, '-');
   }
 
-  function handlePurchase() {
-    setShowPurchaseModal(false);
-    Alert.alert(
-      'Coming Soon',
-      'In-app purchases will be available soon. Please contact the facility to purchase memberships or packages.',
-      [{ text: 'OK' }]
-    );
+  async function handlePurchase() {
+    // Determine which athlete ID to use for the purchase
+    const targetAthleteId = purchaseForAthleteId || athleteId;
+
+    if (!targetAthleteId || !selectedItem) {
+      Alert.alert('Error', 'Unable to process purchase. Please try again.');
+      return;
+    }
+
+    // Check if free - no Stripe needed
+    if (!selectedItem.price_amount || selectedItem.price_amount === 0) {
+      Alert.alert(
+        'Free Item',
+        'This item is free. Please contact the facility to activate it.',
+        [{ text: 'OK' }]
+      );
+      setShowPurchaseModal(false);
+      return;
+    }
+
+    setPaymentInProgress(true);
+
+    try {
+      // Determine which endpoint to call based on item type
+      const endpoint = selectedItemType === 'membership'
+        ? `${API_URL}/api/stripe/create-membership-checkout`
+        : `${API_URL}/api/stripe/create-package-checkout`;
+
+      const bodyParams = selectedItemType === 'membership'
+        ? {
+            athlete_id: targetAthleteId,
+            membership_type_id: selectedItem.id,
+            embedded: true,
+            return_url: 'aspboost://purchase/complete',
+          }
+        : {
+            athlete_id: targetAthleteId,
+            package_type_id: selectedItem.id,
+            embedded: true,
+            return_url: 'aspboost://purchase/complete',
+          };
+
+      // 1. Create checkout session on server (embedded mode for Payment Sheet)
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyParams),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create payment session');
+      }
+
+      const { client_secret } = data;
+
+      if (!client_secret) {
+        throw new Error('No client secret returned from server');
+      }
+
+      // 2. Initialize Payment Sheet
+      const { error: initError } = await initPaymentSheet({
+        paymentIntentClientSecret: client_secret,
+        merchantDisplayName: 'ASP Boost',
+        style: 'alwaysDark',
+      });
+
+      if (initError) {
+        throw new Error(initError.message);
+      }
+
+      // 3. Present Payment Sheet
+      const { error: paymentError } = await presentPaymentSheet();
+
+      if (paymentError) {
+        if (paymentError.code === 'Canceled') {
+          // User cancelled - not an error
+          setPaymentInProgress(false);
+          return;
+        }
+        throw new Error(paymentError.message);
+      }
+
+      // 4. Payment successful!
+      // The webhook will create the membership/package automatically
+      const itemName = selectedItemType === 'membership' ? 'Membership' : 'Package';
+      Alert.alert(
+        'Payment Successful',
+        `Your ${itemName.toLowerCase()} has been activated! Check your email for confirmation.`,
+        [{ text: 'OK' }]
+      );
+
+      setShowPurchaseModal(false);
+
+      // Refresh data to show the new membership/package
+      if (isParent && linkedAthletes.length > 0) {
+        await fetchDataForAllAthletes();
+      } else if (athleteId) {
+        await fetchData(athleteId);
+      }
+
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      Alert.alert(
+        'Payment Failed',
+        error.message || 'Something went wrong. Please try again.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setPaymentInProgress(false);
+    }
   }
 
   function handleManageAction(action: 'pause' | 'cancel') {
@@ -1497,14 +1609,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             {/* Modal Footer */}
             <View style={styles.purchaseModalFooter}>
               <TouchableOpacity
-                style={styles.purchaseButton}
+                style={[styles.purchaseButton, paymentInProgress && styles.purchaseButtonDisabled]}
                 onPress={handlePurchase}
+                disabled={paymentInProgress}
               >
                 <LinearGradient
-                  colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']}
+                  colors={paymentInProgress ? ['#6B7280', '#4B5563'] : ['#9BDDFF', '#B0E5FF', '#7BC5F0']}
                   style={styles.purchaseButtonGradient}
                 >
-                  <Text style={styles.purchaseButtonText}>Add to Cart</Text>
+                  {paymentInProgress ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.purchaseButtonText}>
+                      {selectedItem?.price_amount && selectedItem.price_amount > 0
+                        ? `Pay ${formatPrice(selectedItem.price_amount)}`
+                        : 'Get Now'}
+                    </Text>
+                  )}
                 </LinearGradient>
               </TouchableOpacity>
             </View>
@@ -2206,6 +2327,9 @@ const styles = StyleSheet.create({
   purchaseButton: {
     borderRadius: 12,
     overflow: 'hidden',
+  },
+  purchaseButtonDisabled: {
+    opacity: 0.7,
   },
   purchaseButtonGradient: {
     paddingVertical: 14,
