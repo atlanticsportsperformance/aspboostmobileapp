@@ -21,7 +21,57 @@ import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
+import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
+import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
+import { cancelBooking } from '../lib/bookingApi';
+
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' }[],
+  orderColumn: string,
+  orderAscending: boolean = true
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
@@ -62,13 +112,35 @@ interface WorkoutInstance {
 }
 
 interface Booking {
+  id: string;
+  status: string;
   event: {
+    id: string;
     start_time: string;
+    end_time: string;
+    title?: string;
     scheduling_templates?: {
+      name: string;
       scheduling_categories?: {
+        name: string;
         color?: string;
       };
     };
+  };
+}
+
+interface ReminderInstance {
+  id: string;
+  reminder_id: string;
+  occurrence_date: string;
+  reminder: {
+    id: string;
+    title: string;
+    description: string | null;
+    category: string | null;
+    color: string | null;
+    icon: string | null;
+    visibility: string;
   };
 }
 
@@ -162,10 +234,13 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   valdProfileId,
   forceProfile,
   latestPrediction,
+  batSpeedPrediction,
   bodyweightData,
   armCareData,
   hittingData,
   pitchingData,
+  upcomingEvents,
+  onEventPress,
 }: {
   scrollX: Animated.Value;
   snapshotIndex: number;
@@ -173,15 +248,83 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   valdProfileId: string | null;
   forceProfile: any;
   latestPrediction: any;
+  batSpeedPrediction: any;
   bodyweightData: any;
   armCareData: any;
   hittingData: any;
   pitchingData: any;
+  upcomingEvents: any[];
+  onEventPress?: (event: any) => void;
 }) {
   let cardIndex = 0;
   const cards = [];
 
-  // Force Profile Card
+  // Filter upcoming events (only future events)
+  const futureEvents = upcomingEvents.filter((event) => {
+    const eventDate = new Date(event.event?.start_time);
+    return eventDate >= new Date();
+  });
+
+  /*
+   * CAROUSEL CARD HIERARCHY (priority order):
+   * 1. Upcoming Events - Most actionable/time-sensitive (bookings, sessions)
+   * 2. Pitching Performance - Sport-specific performance metrics
+   * 3. Hitting Performance - Sport-specific performance metrics
+   * 4. Force Profile - Athletic foundation/strength metrics
+   * 5. ArmCare - Injury prevention/maintenance metrics
+   */
+
+  // 1. Upcoming Events Card - FIRST card if there are upcoming events
+  if (futureEvents.length > 0) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="upcoming-events" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <UpcomingEventsCard events={futureEvents} isActive={snapshotIndex === thisIndex} onEventPress={onEventPress} />
+      </View>
+    );
+  }
+
+  // 2. Pitching Performance Card
+  if (pitchingData) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Pitching Performance</Text>
+        <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // 3. Hitting Performance Card
+  if (hittingData) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Hitting Performance</Text>
+        <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // 4. Force Profile Card
   if (valdProfileId && forceProfile) {
     const thisIndex = cardIndex++;
     cards.push(
@@ -193,12 +336,12 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           style={styles.cardGloss}
         />
         <Text style={styles.cardTitle}>Force Profile</Text>
-        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
+        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
       </View>
     );
   }
 
-  // ArmCare Card
+  // 5. ArmCare Card
   if (armCareData) {
     const thisIndex = cardIndex++;
     cards.push(
@@ -209,66 +352,52 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           end={{ x: 1, y: 1 }}
           style={styles.cardGloss}
         />
-        <Text style={styles.cardTitle}>🏋️ ArmCare</Text>
+        <Text style={styles.cardTitle}>ArmCare</Text>
         <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
       </View>
     );
   }
 
-  // Hitting Card
-  if (hittingData) {
-    const thisIndex = cardIndex++;
-    cards.push(
-      <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-        <LinearGradient
-          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.cardGloss}
-        />
-        <Text style={styles.cardTitle}>⚾ Hitting Performance</Text>
-        <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
-      </View>
-    );
-  }
-
-  // Pitching Card
-  if (pitchingData) {
-    const thisIndex = cardIndex++;
-    cards.push(
-      <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-        <LinearGradient
-          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.cardGloss}
-        />
-        <Text style={styles.cardTitle}>⚾ Pitching Performance</Text>
-        <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
-      </View>
-    );
-  }
+  const totalCards = cards.length;
+  const showLeftArrow = snapshotIndex > 0;
+  const showRightArrow = snapshotIndex < totalCards - 1;
 
   return (
-    <ScrollView
-      horizontal
-      pagingEnabled
-      showsHorizontalScrollIndicator={false}
-      onScroll={Animated.event(
-        [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-        {
-          useNativeDriver: false,
-          listener: (event: any) => {
-            const offsetX = event.nativeEvent.contentOffset.x;
-            const index = Math.round(offsetX / CARD_WIDTH);
-            setSnapshotIndex(index);
-          }
-        }
+    <View style={styles.carouselWrapper}>
+      {/* Left swipe indicator */}
+      {showLeftArrow && (
+        <View style={styles.swipeIndicatorLeft}>
+          <Text style={styles.swipeArrow}>‹</Text>
+        </View>
       )}
-      scrollEventThrottle={16}
-    >
-      {cards}
-    </ScrollView>
+
+      <ScrollView
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+          {
+            useNativeDriver: false,
+            listener: (event: any) => {
+              const offsetX = event.nativeEvent.contentOffset.x;
+              const index = Math.round(offsetX / CARD_WIDTH);
+              setSnapshotIndex(index);
+            }
+          }
+        )}
+        scrollEventThrottle={16}
+      >
+        {cards}
+      </ScrollView>
+
+      {/* Right swipe indicator */}
+      {showRightArrow && (
+        <View style={styles.swipeIndicatorRight}>
+          <Text style={styles.swipeArrow}>›</Text>
+        </View>
+      )}
+    </View>
   );
 });
 
@@ -278,6 +407,7 @@ export default function DashboardScreen({ navigation }: any) {
   const [firstName, setFirstName] = useState('');
   const [workoutInstances, setWorkoutInstances] = useState<WorkoutInstance[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [reminders, setReminders] = useState<ReminderInstance[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -293,6 +423,7 @@ export default function DashboardScreen({ navigation }: any) {
   const [pitchingData, setPitchingData] = useState<PitchingData | null>(null);
   const [valdProfileId, setValdProfileId] = useState<string | null>(null);
   const [latestPrediction, setLatestPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
+  const [batSpeedPrediction, setBatSpeedPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
   const [bodyweightData, setBodyweightData] = useState<{ current: number; previous: number | null; date: string } | null>(null);
 
   // Additional data presence flags for FAB (matching web app)
@@ -319,12 +450,41 @@ export default function DashboardScreen({ navigation }: any) {
   } | null>(null);
   const [showResumeModal, setShowResumeModal] = useState(false);
 
+  // Booking cancel sheet state
+  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+  const [showBookingSheet, setShowBookingSheet] = useState(false);
+  const [cancellingBooking, setCancellingBooking] = useState(false);
+
   const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
 
+  // Check if there are upcoming events (bookings in the future)
+  const hasUpcomingEvents = useMemo(() => {
+    const now = new Date();
+    return bookings.some((booking) => {
+      const eventDate = new Date(booking.event?.start_time);
+      return eventDate >= now;
+    });
+  }, [bookings]);
+
+  // Show carousel if there's performance data OR upcoming events
+  const showSnapshotCarousel = hasAnyData || hasUpcomingEvents;
+
+  // Ref to prevent multiple simultaneous loads and track last load time
+  const isLoadingRef = useRef(false);
+  const lastLoadTimeRef = useRef<number>(0);
+
   // Refetch dashboard data when screen gains focus (e.g., after returning from workout)
+  // Uses debounce to prevent infinite loop when returning from background
   useFocusEffect(
     useCallback(() => {
-      loadDashboard();
+      const now = Date.now();
+      const timeSinceLastLoad = now - lastLoadTimeRef.current;
+
+      // Only reload if not currently loading and at least 2 seconds since last load
+      // This prevents rapid re-renders when auth state changes
+      if (!isLoadingRef.current && timeSinceLastLoad > 2000) {
+        loadDashboard();
+      }
     }, [])
   );
 
@@ -394,6 +554,33 @@ export default function DashboardScreen({ navigation }: any) {
 
       // Refresh the dashboard to show updated state
       await loadDashboard();
+    }
+  }
+
+  // Booking sheet handlers
+  function handleBookingPress(booking: Booking) {
+    setSelectedBooking(booking);
+    setShowBookingSheet(true);
+  }
+
+  async function handleCancelBooking() {
+    if (!selectedBooking || !athleteId) return;
+
+    setCancellingBooking(true);
+    try {
+      const result = await cancelBooking(athleteId, selectedBooking.event.id);
+      if (result.success) {
+        // Remove the cancelled booking from the list
+        setBookings((prev) => prev.filter((b) => b.id !== selectedBooking.id));
+        setShowBookingSheet(false);
+        setSelectedBooking(null);
+      } else {
+        console.error('Failed to cancel booking:', result.error);
+      }
+    } catch (error) {
+      console.error('Error cancelling booking:', error);
+    } finally {
+      setCancellingBooking(false);
     }
   }
 
@@ -648,33 +835,53 @@ export default function DashboardScreen({ navigation }: any) {
 
   async function fetchPredictions(athleteIdParam: string) {
     try {
-      // Query the predictions table for the latest pitch velocity prediction
+      // Query the predictions table for both pitch velocity and bat speed predictions
+      // Join with prediction_models to get model_name
       const { data, error } = await supabase
         .from('predictions')
-        .select('predicted_value, predicted_value_low, predicted_value_high, predicted_at')
+        .select('predicted_value, predicted_value_low, predicted_value_high, predicted_at, model_id, prediction_models!inner(model_name)')
         .eq('athlete_id', athleteIdParam)
-        .order('predicted_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .order('predicted_at', { ascending: false });
 
       if (error) {
         console.error('Predictions query error:', error);
         setLatestPrediction(null);
+        setBatSpeedPrediction(null);
         return;
       }
 
-      if (data) {
-        setLatestPrediction({
-          predicted_value: data.predicted_value,
-          predicted_value_low: data.predicted_value_low,
-          predicted_value_high: data.predicted_value_high,
-        });
+      if (data && data.length > 0) {
+        // Find the latest pitch_velocity prediction
+        const pitchPrediction = data.find((p: any) => p.prediction_models?.model_name === 'pitch_velocity');
+        if (pitchPrediction) {
+          setLatestPrediction({
+            predicted_value: pitchPrediction.predicted_value,
+            predicted_value_low: pitchPrediction.predicted_value_low,
+            predicted_value_high: pitchPrediction.predicted_value_high,
+          });
+        } else {
+          setLatestPrediction(null);
+        }
+
+        // Find the latest bat_speed prediction
+        const batPrediction = data.find((p: any) => p.prediction_models?.model_name === 'bat_speed');
+        if (batPrediction) {
+          setBatSpeedPrediction({
+            predicted_value: batPrediction.predicted_value,
+            predicted_value_low: batPrediction.predicted_value_low,
+            predicted_value_high: batPrediction.predicted_value_high,
+          });
+        } else {
+          setBatSpeedPrediction(null);
+        }
       } else {
         setLatestPrediction(null);
+        setBatSpeedPrediction(null);
       }
     } catch (err) {
       console.error('Failed to fetch predictions:', err);
       setLatestPrediction(null);
+      setBatSpeedPrediction(null);
     }
   }
 
@@ -793,14 +1000,38 @@ export default function DashboardScreen({ navigation }: any) {
 
   async function fetchPitchingData(athleteIdParam: string) {
     // Query TrackMan pitch data for velocity metrics
-    // Use JOIN to get Stuff+ data (matches web app pattern for RLS compatibility)
-    const { data: pitches } = await supabase
-      .from('trackman_pitch_data')
-      .select(`
-        *,
-        stuff_plus:pitch_stuff_plus(stuff_plus, pitch_type_group, graded_at)
-      `)
-      .eq('athlete_id', athleteIdParam);
+    // Use pagination to bypass 1000 row limit
+    // Note: JOIN with stuff_plus requires custom pagination since fetchAllPaginated doesn't support JOINs
+    const allPitches: any[] = [];
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: pitchBatch, error } = await supabase
+        .from('trackman_pitch_data')
+        .select(`
+          *,
+          stuff_plus:pitch_stuff_plus(stuff_plus, pitch_type_group, graded_at)
+        `)
+        .eq('athlete_id', athleteIdParam)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + BATCH_SIZE - 1);
+
+      if (error) {
+        console.error('Error fetching pitching data:', error);
+        break;
+      }
+
+      if (pitchBatch && pitchBatch.length > 0) {
+        allPitches.push(...pitchBatch);
+        offset += BATCH_SIZE;
+        hasMore = pitchBatch.length === BATCH_SIZE;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    const pitches = allPitches;
 
     if (!pitches || pitches.length === 0) {
       setPitchingData(null);
@@ -868,8 +1099,13 @@ export default function DashboardScreen({ navigation }: any) {
 
     // Extract Stuff+ grades from joined data
     // The stuff_plus field is an array (from the join) - get first element if exists
+    // ONLY include pitches that have a tagged_pitch_type (actual Trackman tag)
+    // Exclude pitches where the model guessed the pitch type based on physics
     const pitchesWithStuffPlus = pitches
       .filter(p => {
+        // Must have a tagged pitch type from Trackman
+        if (!p.tagged_pitch_type) return false;
+
         const sp = p.stuff_plus;
         // Handle both array and object forms from Supabase join
         if (Array.isArray(sp) && sp.length > 0 && sp[0]?.stuff_plus != null) return true;
@@ -882,7 +1118,8 @@ export default function DashboardScreen({ navigation }: any) {
         return {
           pitch_uid: p.pitch_uid,
           stuff_plus: sp.stuff_plus as number,
-          pitch_type_group: (sp.pitch_type_group || p.tagged_pitch_type || 'Unknown') as string,
+          // Use tagged_pitch_type only (already filtered to ensure it exists)
+          pitch_type_group: p.tagged_pitch_type as string,
           graded_at: sp.graded_at as string,
           session_id: p.session_id,
           session_date: session?.game_date_utc || p.created_at,
@@ -953,10 +1190,236 @@ export default function DashboardScreen({ navigation }: any) {
     });
   }
 
+  async function fetchReminders(athleteIdParam: string) {
+    try {
+      // Get current month's date range (with buffer for prev/next month visibility)
+      const now = new Date();
+      const startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const endDate = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+
+      // Fetch reminder assignments directly assigned to this athlete
+      // Only fetch reminders visible to athletes (visibility = 'athletes' or 'both')
+      const { data: athleteAssignments, error: athleteError } = await supabase
+        .from('reminder_assignments')
+        .select(`
+          id,
+          reminder_id,
+          athlete_id,
+          group_id,
+          reminders!inner (
+            id,
+            title,
+            description,
+            category,
+            recurrence_type,
+            recurrence_interval,
+            recurrence_days,
+            start_date,
+            end_date,
+            color,
+            icon,
+            visibility
+          )
+        `)
+        .eq('athlete_id', athleteIdParam)
+        .in('reminders.visibility', ['athletes', 'both']);
+
+      if (athleteError) {
+        console.error('Error fetching athlete reminders:', athleteError);
+        return;
+      }
+
+      // Also get reminders assigned to groups the athlete is in
+      const { data: groupMemberships } = await supabase
+        .from('group_athletes')
+        .select('group_id')
+        .eq('athlete_id', athleteIdParam);
+
+      const groupIds = groupMemberships?.map(gm => gm.group_id) || [];
+
+      let groupAssignments: any[] = [];
+      if (groupIds.length > 0) {
+        const { data: groupData, error: groupError } = await supabase
+          .from('reminder_assignments')
+          .select(`
+            id,
+            reminder_id,
+            athlete_id,
+            group_id,
+            reminders!inner (
+              id,
+              title,
+              description,
+              category,
+              recurrence_type,
+              recurrence_interval,
+              recurrence_days,
+              start_date,
+              end_date,
+              color,
+              icon,
+              visibility
+            )
+          `)
+          .in('group_id', groupIds)
+          .in('reminders.visibility', ['athletes', 'both']);
+
+        if (!groupError && groupData) {
+          groupAssignments = groupData;
+        }
+      }
+
+      // Combine and deduplicate reminders
+      const allAssignments = [...(athleteAssignments || []), ...groupAssignments];
+      const uniqueAssignments = Array.from(
+        new Map(allAssignments.map(item => [item.reminder_id, item])).values()
+      );
+
+      // Generate reminder instances for the date range
+      const instances = generateReminderInstances(uniqueAssignments, startDate, endDate);
+      setReminders(instances);
+    } catch (error) {
+      console.error('Error fetching reminders:', error);
+    }
+  }
+
+  // Generate reminder instances based on recurrence pattern
+  function generateReminderInstances(assignments: any[], startDate: Date, endDate: Date): ReminderInstance[] {
+    const instances: ReminderInstance[] = [];
+
+    for (const assignment of assignments) {
+      const reminder = assignment.reminders;
+      if (!reminder) continue;
+
+      const reminderStart = reminder.start_date ? new Date(reminder.start_date) : startDate;
+      const reminderEnd = reminder.end_date ? new Date(reminder.end_date) : endDate;
+
+      // Check if reminder is active during requested range
+      if (reminderEnd < startDate || reminderStart > endDate) continue;
+
+      // Generate dates based on recurrence
+      const dates = generateRecurrenceDates(
+        reminder.recurrence_type,
+        reminder.recurrence_interval,
+        reminder.recurrence_days,
+        reminderStart,
+        reminderEnd,
+        startDate,
+        endDate
+      );
+
+      for (const date of dates) {
+        instances.push({
+          id: assignment.id,
+          reminder_id: assignment.reminder_id,
+          occurrence_date: date.toISOString().split('T')[0],
+          reminder: reminder,
+        });
+      }
+    }
+
+    return instances;
+  }
+
+  // Generate dates based on recurrence pattern
+  function generateRecurrenceDates(
+    type: string,
+    interval: number | null,
+    days: number[] | null,
+    reminderStart: Date,
+    reminderEnd: Date,
+    filterStart: Date,
+    filterEnd: Date
+  ): Date[] {
+    const dates: Date[] = [];
+    const current = new Date(reminderStart);
+
+    switch (type) {
+      case 'once':
+        if (current >= filterStart && current <= filterEnd && current >= reminderStart && current <= reminderEnd) {
+          dates.push(new Date(current));
+        }
+        break;
+
+      case 'daily':
+        while (current <= reminderEnd) {
+          if (current >= filterStart && current <= filterEnd) {
+            dates.push(new Date(current));
+          }
+          current.setDate(current.getDate() + 1);
+        }
+        break;
+
+      case 'weekly':
+        if (days && days.length > 0) {
+          while (current <= reminderEnd) {
+            if (days.includes(current.getDay()) && current >= filterStart && current <= filterEnd) {
+              dates.push(new Date(current));
+            }
+            current.setDate(current.getDate() + 1);
+          }
+        } else {
+          while (current <= reminderEnd) {
+            if (current >= filterStart && current <= filterEnd) {
+              dates.push(new Date(current));
+            }
+            current.setDate(current.getDate() + 7);
+          }
+        }
+        break;
+
+      case 'biweekly':
+        while (current <= reminderEnd) {
+          if (current >= filterStart && current <= filterEnd) {
+            dates.push(new Date(current));
+          }
+          current.setDate(current.getDate() + 14);
+        }
+        break;
+
+      case 'monthly':
+        while (current <= reminderEnd) {
+          if (current >= filterStart && current <= filterEnd) {
+            dates.push(new Date(current));
+          }
+          current.setMonth(current.getMonth() + 1);
+        }
+        break;
+
+      case 'custom':
+        if (interval && interval > 0) {
+          if (days && days.length > 0) {
+            while (current <= reminderEnd) {
+              if (days.includes(current.getDay()) && current >= filterStart && current <= filterEnd) {
+                dates.push(new Date(current));
+              }
+              current.setDate(current.getDate() + 1);
+            }
+          } else {
+            while (current <= reminderEnd) {
+              if (current >= filterStart && current <= filterEnd) {
+                dates.push(new Date(current));
+              }
+              current.setDate(current.getDate() + interval);
+            }
+          }
+        }
+        break;
+    }
+
+    return dates;
+  }
+
   async function loadDashboard() {
+    // Prevent multiple simultaneous loads
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
+    lastLoadTimeRef.current = Date.now();
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
+        isLoadingRef.current = false;
         navigation.replace('Login');
         return;
       }
@@ -1025,17 +1488,24 @@ export default function DashboardScreen({ navigation }: any) {
               )
             )
           `).eq('athlete_id', athlete.id).order('scheduled_date'),
-          // Load bookings
+          // Load bookings - only active ones (booked/confirmed/waitlisted)
           supabase.from('scheduling_bookings').select(`
+            id,
+            status,
             event:scheduling_events (
+              id,
               start_time,
+              end_time,
+              title,
               scheduling_templates (
+                name,
                 scheduling_categories (
+                  name,
                   color
                 )
               )
             )
-          `).eq('athlete_id', athlete.id),
+          `).eq('athlete_id', athlete.id).in('status', ['booked', 'confirmed', 'waitlisted']),
         ]);
 
         // Process results
@@ -1064,6 +1534,7 @@ export default function DashboardScreen({ navigation }: any) {
           fetchPitchingData(athlete.id),
           fetchPredictions(athlete.id),
           fetchBodyweightData(athlete.id),
+          fetchReminders(athlete.id),
         ]);
       }
     } catch (error) {
@@ -1071,11 +1542,15 @@ export default function DashboardScreen({ navigation }: any) {
     } finally {
       setLoading(false);
       setRefreshing(false);
+      isLoadingRef.current = false;
     }
   }
 
   const onRefresh = () => {
     setRefreshing(true);
+    // Reset the debounce timer so pull-to-refresh always works immediately
+    lastLoadTimeRef.current = 0;
+    isLoadingRef.current = false;
     loadDashboard();
   };
 
@@ -1114,6 +1589,11 @@ export default function DashboardScreen({ navigation }: any) {
   function getBookingsForDate(date: Date): Booking[] {
     const dateStr = date.toISOString().split('T')[0];
     return bookings.filter(b => b.event.start_time.startsWith(dateStr));
+  }
+
+  function getRemindersForDate(date: Date): ReminderInstance[] {
+    const dateStr = date.toISOString().split('T')[0];
+    return reminders.filter(r => r.occurrence_date === dateStr);
   }
 
   function isToday(date: Date): boolean {
@@ -1197,6 +1677,7 @@ export default function DashboardScreen({ navigation }: any) {
   const days = getDaysInMonth(currentDate);
   const selectedDateWorkouts = selectedDate ? getWorkoutsForDate(selectedDate) : [];
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
+  const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
 
   const snapshotSlides = [];
   if (valdProfileId && forceProfile) snapshotSlides.push('force');
@@ -1269,6 +1750,20 @@ export default function DashboardScreen({ navigation }: any) {
               style={styles.settingsMenuItem}
               onPress={() => {
                 setSettingsOpen(false);
+                navigation.navigate('Billing');
+              }}
+            >
+              <Ionicons name="wallet-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Billing & Payments</Text>
+                <Text style={styles.settingsMenuDescription}>Payment methods and transactions</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
                 navigation.navigate('NotificationSettings');
               }}
             >
@@ -1305,7 +1800,7 @@ export default function DashboardScreen({ navigation }: any) {
           }
         >
         {/* Snapshot Cards */}
-        {hasAnyData && viewMode === 'month' && (
+        {showSnapshotCarousel && viewMode === 'month' && (
           <View style={styles.snapshotContainer}>
             <SnapshotCarousel
               scrollX={scrollX}
@@ -1314,10 +1809,13 @@ export default function DashboardScreen({ navigation }: any) {
               valdProfileId={valdProfileId}
               forceProfile={forceProfile}
               latestPrediction={latestPrediction}
+              batSpeedPrediction={batSpeedPrediction}
               bodyweightData={bodyweightData}
               armCareData={armCareData}
               hittingData={hittingData}
               pitchingData={pitchingData}
+              upcomingEvents={bookings}
+              onEventPress={handleBookingPress}
             />
 
           </View>
@@ -1349,6 +1847,7 @@ export default function DashboardScreen({ navigation }: any) {
 
               const dayWorkouts = getWorkoutsForDate(date);
               const dayBookings = getBookingsForDate(date);
+              const dayReminders = getRemindersForDate(date);
               const today = isToday(date);
 
               return (
@@ -1360,14 +1859,24 @@ export default function DashboardScreen({ navigation }: any) {
                   <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
                     {date.getDate()}
                   </Text>
-                  {(dayWorkouts.length > 0 || dayBookings.length > 0) && (
+                  {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0) && (
                     <View style={styles.dayDots}>
-                      {dayWorkouts.slice(0, 3).map((workout, i) => (
+                      {dayWorkouts.slice(0, 2).map((workout, i) => (
                         <View
                           key={`workout-${i}`}
                           style={[styles.dayDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]}
                         />
                       ))}
+                      {dayBookings.length > 0 && (
+                        <View
+                          style={[styles.dayDot, { backgroundColor: '#a855f7' }]}
+                        />
+                      )}
+                      {dayReminders.length > 0 && (
+                        <View
+                          style={[styles.dayDot, { backgroundColor: '#f59e0b' }]}
+                        />
+                      )}
                     </View>
                   )}
                 </TouchableOpacity>
@@ -1409,6 +1918,7 @@ export default function DashboardScreen({ navigation }: any) {
                       const today = isToday(date);
                       const dayWorkouts = getWorkoutsForDate(date);
                       const dayBookings = getBookingsForDate(date);
+                      const dayReminders = getRemindersForDate(date);
 
                       return (
                         <TouchableOpacity
@@ -1434,9 +1944,9 @@ export default function DashboardScreen({ navigation }: any) {
                             {date.getDate()}
                           </Text>
                           {/* Activity Dots */}
-                          {(dayWorkouts.length > 0 || dayBookings.length > 0) && (
+                          {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0) && (
                             <View style={styles.weekDayDots}>
-                              {dayWorkouts.slice(0, 3).map((workout, i) => (
+                              {dayWorkouts.slice(0, 2).map((workout, i) => (
                                 <View
                                   key={`workout-${i}`}
                                   style={[
@@ -1447,6 +1957,9 @@ export default function DashboardScreen({ navigation }: any) {
                               ))}
                               {dayBookings.length > 0 && (
                                 <View style={[styles.weekDayDot, { backgroundColor: '#a855f7' }]} />
+                              )}
+                              {dayReminders.length > 0 && (
+                                <View style={[styles.weekDayDot, { backgroundColor: '#f59e0b' }]} />
                               )}
                             </View>
                           )}
@@ -1459,7 +1972,7 @@ export default function DashboardScreen({ navigation }: any) {
 
               {/* Workouts for Selected Date - SCROLLABLE */}
               <ScrollView style={styles.workoutsScrollView} contentContainerStyle={styles.workoutsContainer}>
-                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 ? (
+                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 ? (
                   <View style={styles.emptyDayView}>
                     <Text style={styles.emptyDayIcon}>📅</Text>
                     <Text style={styles.emptyDayText}>No activities scheduled</Text>
@@ -1601,16 +2114,67 @@ export default function DashboardScreen({ navigation }: any) {
                     })}
 
                     {/* Bookings */}
-                    {selectedDateBookings.map((booking, idx) => (
-                      <View key={idx} style={styles.bookingCard}>
-                        <Ionicons name="calendar" size={24} color="#FFFFFF" style={{ marginRight: 12 }} />
-                        <Text style={styles.bookingInfo}>
-                          Class Booking - {new Date(booking.event.start_time).toLocaleTimeString('en-US', {
-                            hour: 'numeric',
-                            minute: '2-digit',
-                            hour12: true
-                          })}
-                        </Text>
+                    {selectedDateBookings.map((booking, idx) => {
+                      const categoryColor = booking.event.scheduling_templates?.scheduling_categories?.color || '#a855f7';
+                      const className = booking.event.title || booking.event.scheduling_templates?.name || 'Class';
+                      const categoryName = booking.event.scheduling_templates?.scheduling_categories?.name;
+                      const startTime = new Date(booking.event.start_time).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                      });
+                      const endTime = booking.event.end_time ? new Date(booking.event.end_time).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                      }) : null;
+
+                      return (
+                        <TouchableOpacity
+                          key={booking.id || idx}
+                          style={[
+                            styles.bookingCard,
+                            { borderLeftColor: categoryColor, backgroundColor: `${categoryColor}15` }
+                          ]}
+                          onPress={() => handleBookingPress(booking)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={[styles.bookingIconContainer, { backgroundColor: categoryColor }]}>
+                            <Ionicons name="calendar" size={20} color="#FFFFFF" />
+                          </View>
+                          <View style={styles.bookingContent}>
+                            <Text style={styles.bookingTitle}>{className}</Text>
+                            {categoryName && (
+                              <Text style={[styles.bookingCategory, { color: categoryColor }]}>{categoryName}</Text>
+                            )}
+                            <Text style={styles.bookingTime}>
+                              {startTime}{endTime ? ` - ${endTime}` : ''}
+                            </Text>
+                          </View>
+                          {booking.status === 'confirmed' && (
+                            <View style={styles.bookingStatusBadge}>
+                              <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+
+                    {/* Reminders */}
+                    {selectedDateReminders.map((reminder, idx) => (
+                      <View key={`reminder-${idx}`} style={styles.reminderCard}>
+                        <View style={[styles.reminderIconContainer, { backgroundColor: reminder.reminder.color || '#f59e0b' }]}>
+                          <Ionicons name="notifications" size={20} color="#FFFFFF" />
+                        </View>
+                        <View style={styles.reminderContent}>
+                          <Text style={styles.reminderTitle}>{reminder.reminder.title}</Text>
+                          {reminder.reminder.description && (
+                            <Text style={styles.reminderDescription}>{reminder.reminder.description}</Text>
+                          )}
+                          {reminder.reminder.category && (
+                            <Text style={styles.reminderCategory}>{reminder.reminder.category}</Text>
+                          )}
+                        </View>
                       </View>
                     ))}
                   </>
@@ -1721,6 +2285,18 @@ export default function DashboardScreen({ navigation }: any) {
           { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
         ]}
       />
+
+      {/* Booking Cancel Sheet */}
+      <BookingCancelSheet
+        visible={showBookingSheet}
+        booking={selectedBooking}
+        cancelling={cancellingBooking}
+        onConfirm={handleCancelBooking}
+        onClose={() => {
+          setShowBookingSheet(false);
+          setSelectedBooking(null);
+        }}
+      />
     </View>
   );
 }
@@ -1772,6 +2348,37 @@ const styles = StyleSheet.create({
     height: CARD_HEIGHT,
     marginBottom: 0,
     position: 'relative',
+  },
+  carouselWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
+  swipeIndicatorLeft: {
+    position: 'absolute',
+    left: 2,
+    top: '50%',
+    transform: [{ translateY: -20 }],
+    zIndex: 10,
+    width: 20,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  swipeIndicatorRight: {
+    position: 'absolute',
+    right: 2,
+    top: '50%',
+    transform: [{ translateY: -20 }],
+    zIndex: 10,
+    width: 20,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  swipeArrow: {
+    fontSize: 28,
+    color: 'rgba(255, 255, 255, 0.23)',
+    fontWeight: '300',
   },
   snapshotCard: {
     backgroundColor: '#000000',
@@ -2127,18 +2734,84 @@ const styles = StyleSheet.create({
   },
   bookingCard: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    alignItems: 'flex-start',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
     borderLeftWidth: 4,
-    borderLeftColor: '#3b82f6',
+  },
+  bookingIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  bookingContent: {
+    flex: 1,
+  },
+  bookingTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  bookingCategory: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  bookingTime: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  bookingStatusBadge: {
+    marginLeft: 8,
   },
   bookingInfo: {
     fontSize: 14,
     color: '#FFFFFF',
     fontWeight: '600',
+  },
+  // Reminder Card Styles
+  reminderCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#f59e0b',
+  },
+  reminderIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  reminderContent: {
+    flex: 1,
+  },
+  reminderTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  reminderDescription: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 4,
+  },
+  reminderCategory: {
+    fontSize: 12,
+    color: '#f59e0b',
+    fontWeight: '500',
+    textTransform: 'capitalize',
   },
   // Week View Styles
   weekNavHeader: {

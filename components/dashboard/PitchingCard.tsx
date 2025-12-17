@@ -30,33 +30,74 @@ interface PitchingCardProps {
   data: PitchingData;
 }
 
-// Pitch type colors
+// Pitch type colors (standardized hex colors)
 const PITCH_COLORS: Record<string, string> = {
-  'Fastball': '#ef4444',
-  'FF': '#ef4444',
-  'Slider': '#f59e0b',
-  'SL': '#f59e0b',
-  'Curveball': '#8b5cf6',
-  'CB': '#8b5cf6',
-  'CU': '#8b5cf6',
-  'Changeup': '#10b981',
-  'CH': '#10b981',
-  'Cutter': '#3b82f6',
-  'FC': '#3b82f6',
-  'Sinker': '#ec4899',
-  'SI': '#ec4899',
-  'Splitter': '#06b6d4',
-  'FS': '#06b6d4',
-  'Sweeper': '#f97316',
-  'SW': '#f97316',
-  'Unknown': '#6b7280',
+  // Fastball (4-Seam) - Red
+  'Fastball': '#C33B3B',
+  'FF': '#C33B3B',
+  'FA': '#C33B3B',
+  // Sinker (2-Seam) - Orange
+  'Sinker': '#E86A33',
+  'SI': '#E86A33',
+  'FT': '#E86A33',
+  // Cutter - Brown
+  'Cutter': '#8B4513',
+  'FC': '#8B4513',
+  // Curveball - Blue
+  'Curveball': '#79b6ce',
+  'CB': '#79b6ce',
+  'CU': '#79b6ce',
+  // Slider - Yellow-orange
+  'Slider': '#FFC533',
+  'SL': '#FFC533',
+  // Sweeper - Gold
+  'Sweeper': '#D4AF37',
+  'SW': '#D4AF37',
+  // Slurve - Purple
+  'Slurve': '#9932CC',
+  'SV': '#9932CC',
+  // Changeup - Green
+  'Changeup': '#2e8720',
+  'CH': '#2e8720',
+  // Splitter - Cyan
+  'Splitter': '#00CED1',
+  'FS': '#00CED1',
+  'SF': '#00CED1',
+  // Knuckleball - Purple
+  'Knuckleball': '#9932CC',
+  'KN': '#9932CC',
+  // Eephus - Pink
+  'Eephus': '#FF69B4',
+  // Unknown/Other - Gray
+  'Unknown': '#808080',
 };
 
 const getPitchColor = (pitchType: string): string => {
-  return PITCH_COLORS[pitchType] || PITCH_COLORS['Unknown'];
+  // Direct match first
+  if (PITCH_COLORS[pitchType]) return PITCH_COLORS[pitchType];
+
+  // Normalize the pitch type for matching
+  const normalized = pitchType?.trim() || '';
+  const lower = normalized.toLowerCase();
+
+  // Match various database formats to our color keys
+  if (lower.includes('four') || lower === 'ff' || lower.includes('4-seam') || lower.includes('fastball')) return PITCH_COLORS['Fastball'];
+  if (lower.includes('two') || lower === 'ft' || lower.includes('2-seam') || lower.includes('sinker') || lower === 'si') return PITCH_COLORS['Sinker'];
+  if (lower === 'fc' || lower.includes('cutter')) return PITCH_COLORS['Cutter'];
+  if (lower === 'sl' || lower.includes('slider')) return PITCH_COLORS['Slider'];
+  if (lower === 'sw' || lower.includes('sweeper')) return PITCH_COLORS['Sweeper'];
+  if (lower === 'sv' || lower.includes('slurve')) return PITCH_COLORS['Slurve'];
+  if (lower === 'cu' || lower === 'cb' || lower.includes('curve')) return PITCH_COLORS['Curveball'];
+  if (lower === 'ch' || lower.includes('change')) return PITCH_COLORS['Changeup'];
+  if (lower === 'fs' || lower === 'sf' || lower.includes('split')) return PITCH_COLORS['Splitter'];
+  if (lower === 'kn' || lower.includes('knuckle')) return PITCH_COLORS['Knuckleball'];
+  if (lower.includes('eephus')) return PITCH_COLORS['Eephus'];
+
+  return PITCH_COLORS['Unknown'];
 };
 
 const getPitchAbbrev = (pitchType: string): string => {
+  // Direct abbreviation map for known pitch types
   const abbrevMap: Record<string, string> = {
     'Fastball': 'FF',
     'Slider': 'SL',
@@ -66,8 +107,34 @@ const getPitchAbbrev = (pitchType: string): string => {
     'Sinker': 'SI',
     'Splitter': 'FS',
     'Sweeper': 'SW',
+    'Slurve': 'SV',
+    'Knuckleball': 'KN',
+    'Eephus': 'EP',
   };
-  return abbrevMap[pitchType] || pitchType.substring(0, 2).toUpperCase();
+
+  // Check direct match first
+  if (abbrevMap[pitchType]) return abbrevMap[pitchType];
+
+  // Check if it's already a known abbreviation
+  const knownAbbrevs = ['FF', 'FA', 'SL', 'CB', 'CU', 'CH', 'FC', 'SI', 'FT', 'FS', 'SF', 'SW', 'SV', 'KN'];
+  const upper = pitchType?.toUpperCase().trim();
+  if (knownAbbrevs.includes(upper)) return upper;
+
+  // Normalize to get abbreviation
+  const lower = pitchType?.toLowerCase().trim() || '';
+  if (lower.includes('four') || lower.includes('4-seam') || lower.includes('fastball')) return 'FF';
+  if (lower.includes('two') || lower.includes('2-seam') || lower.includes('sinker')) return 'SI';
+  if (lower.includes('cutter')) return 'FC';
+  if (lower.includes('slider')) return 'SL';
+  if (lower.includes('sweeper')) return 'SW';
+  if (lower.includes('slurve')) return 'SV';
+  if (lower.includes('curve')) return 'CB';
+  if (lower.includes('change')) return 'CH';
+  if (lower.includes('split')) return 'FS';
+  if (lower.includes('knuckle')) return 'KN';
+  if (lower.includes('eephus')) return 'EP';
+
+  return pitchType?.substring(0, 2).toUpperCase() || '??';
 };
 
 export default function PitchingCard({ data, isActive = true }: PitchingCardProps & { isActive?: boolean }) {
