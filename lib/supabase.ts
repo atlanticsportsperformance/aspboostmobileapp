@@ -15,12 +15,20 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-// Handle app state changes to refresh session when coming back from background
-// This prevents infinite loading loops when the token expires while app is backgrounded
-AppState.addEventListener('change', (state: AppStateStatus) => {
-  if (state === 'active') {
-    supabase.auth.startAutoRefresh();
-  } else {
-    supabase.auth.stopAutoRefresh();
-  }
-});
+// Simple AppState handling - just start/stop auto refresh
+// The Supabase client handles token refresh automatically when needed
+let listenerRegistered = false;
+
+if (!listenerRegistered) {
+  listenerRegistered = true;
+
+  AppState.addEventListener('change', (state: AppStateStatus) => {
+    if (state === 'active') {
+      // Resume auto refresh when app is active
+      supabase.auth.startAutoRefresh();
+    } else {
+      // Pause auto refresh when app is in background
+      supabase.auth.stopAutoRefresh();
+    }
+  });
+}

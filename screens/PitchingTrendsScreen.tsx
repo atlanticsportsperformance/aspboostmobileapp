@@ -26,6 +26,54 @@ import { supabase } from '../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' | 'not_null' }[],
+  orderColumn: string,
+  orderAscending: boolean = true
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else if (filter.operator === 'not_null') {
+        q = q.not(filter.column, 'is', null);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
+
 // Professional color palette matching HittingTrendsScreen exactly
 const COLORS = {
   primary: '#9BDDFF',
@@ -47,23 +95,53 @@ const COLORS = {
   chartAccent: '#B0E5FF',
 };
 
-// Pitch type colors for chart lines
+// Pitch type colors for chart lines (standardized hex colors)
 const PITCH_TYPE_COLORS: Record<string, string> = {
-  'Fastball': '#EF4444',
-  'Four-Seam': '#EF4444',
-  'FourSeamFastBall': '#EF4444',
-  'Two-Seam': '#F97316',
-  'Sinker': '#F97316',
-  'Cutter': '#EC4899',
-  'Slider': '#8B5CF6',
-  'Curveball': '#3B82F6',
-  'Curve': '#3B82F6',
-  'Changeup': '#10B981',
-  'ChangeUp': '#10B981',
-  'Change': '#10B981',
-  'Splitter': '#14B8A6',
-  'Knuckleball': '#6B7280',
-  'Other': '#9CA3AF',
+  // Fastball (4-Seam) - Red
+  'Fastball': '#C33B3B',
+  'Four-Seam': '#C33B3B',
+  'FourSeamFastBall': '#C33B3B',
+  'FF': '#C33B3B',
+  'FA': '#C33B3B',
+  // Sinker (2-Seam) - Orange-brown
+  'Two-Seam': '#7e4d32',
+  'Sinker': '#7e4d32',
+  'SI': '#7e4d32',
+  'FT': '#7e4d32',
+  // Cutter - Brown
+  'Cutter': '#8B4513',
+  'FC': '#8B4513',
+  // Curveball - Blue
+  'Curveball': '#79b6ce',
+  'Curve': '#79b6ce',
+  'CU': '#79b6ce',
+  'CB': '#79b6ce',
+  // Slider - Yellow-orange
+  'Slider': '#FFC533',
+  'SL': '#FFC533',
+  // Sweeper - Gold
+  'Sweeper': '#D4AF37',
+  'SW': '#D4AF37',
+  // Slurve - Purple
+  'Slurve': '#9932CC',
+  'SV': '#9932CC',
+  // Changeup - Green
+  'Changeup': '#2e8720',
+  'ChangeUp': '#2e8720',
+  'Change': '#2e8720',
+  'CH': '#2e8720',
+  // Splitter - Cyan
+  'Splitter': '#00CED1',
+  'FS': '#00CED1',
+  'SF': '#00CED1',
+  // Knuckleball - Purple
+  'Knuckleball': '#9932CC',
+  'KN': '#9932CC',
+  // Eephus - Pink
+  'Eephus': '#FF69B4',
+  // Unknown/Other - Gray
+  'Other': '#808080',
+  'Unknown': '#808080',
 };
 
 interface SessionData {
@@ -154,11 +232,25 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
     setLoading(true);
 
     try {
-      // First get all unique session IDs for this athlete
-      const { data: pitchSessionIds } = await supabase
-        .from('trackman_pitch_data')
-        .select('session_id')
-        .eq('athlete_id', id);
+      // Type definitions for paginated queries
+      interface PitchSessionId {
+        session_id: number;
+      }
+
+      interface TrackmanPitch {
+        session_id: number;
+        rel_speed: string | null;
+        tagged_pitch_type: string | null;
+      }
+
+      // Get ALL unique session IDs with pagination (bypasses 1000 row limit)
+      const pitchSessionIds = await fetchAllPaginated<PitchSessionId>(
+        () => supabase.from('trackman_pitch_data'),
+        'session_id',
+        [{ column: 'athlete_id', value: id }],
+        'session_id',
+        true
+      );
 
       if (!pitchSessionIds || pitchSessionIds.length === 0) {
         setLoading(false);
@@ -167,7 +259,7 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
 
       const uniqueSessionIds = [...new Set(pitchSessionIds.map(p => p.session_id))];
 
-      // Get session info with dates
+      // Get session info with dates (typically won't exceed 1000 unique sessions)
       const { data: sessions } = await supabase
         .from('trackman_session')
         .select('id, game_date_utc')
@@ -179,18 +271,17 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
         return;
       }
 
-      // Fetch all pitches for this athlete
-      const { data: pitches, error } = await supabase
-        .from('trackman_pitch_data')
-        .select('session_id, rel_speed, tagged_pitch_type')
-        .eq('athlete_id', id)
-        .not('rel_speed', 'is', null);
-
-      if (error) {
-        console.error('Error fetching pitches:', error);
-        setLoading(false);
-        return;
-      }
+      // Fetch ALL pitches for this athlete with pagination
+      const pitches = await fetchAllPaginated<TrackmanPitch>(
+        () => supabase.from('trackman_pitch_data'),
+        'session_id, rel_speed, tagged_pitch_type',
+        [
+          { column: 'athlete_id', value: id },
+          { column: 'rel_speed', value: null, operator: 'not_null' },
+        ],
+        'session_id',
+        true
+      );
 
       if (!pitches || pitches.length === 0) {
         setLoading(false);
@@ -222,7 +313,7 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
           sessionData[pitchType] = [];
         }
 
-        sessionData[pitchType].push(pitch.rel_speed);
+        sessionData[pitchType].push(parseFloat(pitch.rel_speed));
       });
 
       // Convert to session data array

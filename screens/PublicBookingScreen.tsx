@@ -21,7 +21,6 @@ import {
   getPublicCategories,
   getPublicOrganizations,
   createAccount,
-  createPublicBooking,
   checkEmailExists,
   formatPrice,
   PublicEvent,
@@ -269,9 +268,20 @@ export default function PublicBookingScreen({ navigation }: any) {
     setError('');
 
     try {
-      // Check if payment is required BEFORE creating account
+      // Check if drop-in is allowed (dropInPriceCents should not be null for public booking)
       const priceInCents = selectedEvent.dropInPriceCents;
-      const requiresPayment = priceInCents !== null && priceInCents > 0;
+
+      // Safety check: if dropInPriceCents is null, this event requires membership (shouldn't happen in public booking)
+      if (priceInCents === null || priceInCents === undefined) {
+        Alert.alert(
+          'Membership Required',
+          'This class requires an active membership. Please contact the facility for more information.'
+        );
+        setProcessing(false);
+        return;
+      }
+
+      const requiresPayment = priceInCents > 0;
 
       if (requiresPayment) {
         // TODO: Implement Stripe payment

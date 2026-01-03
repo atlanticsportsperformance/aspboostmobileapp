@@ -907,10 +907,15 @@ export default function WorkoutLoggerScreen() {
   }, [allExercises, activeExerciseId]);
 
   const blockLabel = useMemo(() => {
-    if (!workout || !currentRoutine) return undefined;
+    if (!workout || !currentRoutine || !activeExerciseId) return undefined;
     const routineIndex = workout.routines.findIndex(r => r.id === currentRoutine.id);
-    return String.fromCharCode(65 + routineIndex); // A, B, C...
-  }, [workout, currentRoutine]);
+    const exerciseIndex = currentRoutine.routine_exercises
+      .filter(ex => !ex.exercises?.is_placeholder)
+      .findIndex(ex => ex.id === activeExerciseId);
+    if (exerciseIndex === -1) return undefined;
+    const letter = String.fromCharCode(65 + routineIndex); // A, B, C...
+    return `${letter}${exerciseIndex + 1}`; // A1, A2, B1...
+  }, [workout, currentRoutine, activeExerciseId]);
 
   if (loading || !workout) {
     return (

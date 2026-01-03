@@ -54,9 +54,9 @@ interface Conversation {
   unread_count: number;
 }
 
-// Check if conversation is the Notifications channel
+// Check if conversation is the Notifications or Automation channel
 function isNotificationsConversation(conversation: Conversation): boolean {
-  return conversation.title === 'Notifications' &&
+  return (conversation.title === 'Notifications' || conversation.title === '🤖 Automation') &&
     (conversation.type === 'announcement' || conversation.type === 'notifications');
 }
 

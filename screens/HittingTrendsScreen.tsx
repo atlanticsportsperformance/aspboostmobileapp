@@ -26,6 +26,48 @@ import { supabase } from '../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any }[],
+  orderColumn: string,
+  orderAscending: boolean = true
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      q = q.eq(filter.column, filter.value);
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
+
 // Professional color palette matching HittingPerformanceScreen
 const COLORS = {
   primary: '#9BDDFF',
@@ -140,11 +182,22 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
   async function fetchTrendsData(id: string) {
     setLoading(true);
 
-    const { data: blastSwings, error } = await supabase
-      .from('blast_swings')
-      .select('bat_speed, attack_angle, connection_at_impact, early_connection, recorded_date')
-      .eq('athlete_id', id)
-      .order('recorded_date', { ascending: true });
+    // Use paginated fetch to get ALL blast swings (bypasses 1000 row limit)
+    interface BlastSwing {
+      bat_speed: number | null;
+      attack_angle: number | null;
+      connection_at_impact: number | null;
+      early_connection: number | null;
+      recorded_date: string;
+    }
+
+    const blastSwings = await fetchAllPaginated<BlastSwing>(
+      () => supabase.from('blast_swings'),
+      'bat_speed, attack_angle, connection_at_impact, early_connection, recorded_date',
+      [{ column: 'athlete_id', value: id }],
+      'recorded_date',
+      true
+    );
 
     if (!blastSwings || blastSwings.length === 0) {
       setLoading(false);

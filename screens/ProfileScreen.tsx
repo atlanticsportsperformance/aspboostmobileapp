@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -122,8 +122,15 @@ export default function ProfileScreen({ navigation, route }: any) {
   const [showPlayLevelWarning, setShowPlayLevelWarning] = useState(false);
   const [pendingPlayLevel, setPendingPlayLevel] = useState('');
 
+  // Track mounted state to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+
   useEffect(() => {
+    isMountedRef.current = true;
     loadProfileData();
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   async function loadProfileData() {
@@ -141,6 +148,9 @@ export default function ProfileScreen({ navigation, route }: any) {
         .eq('id', user.id)
         .single();
 
+      // Check if still mounted before updating state
+      if (!isMountedRef.current) return;
+
       if (profile?.account_type === 'parent') {
         setIsParent(true);
         await loadLinkedAthletes(user.id);
@@ -148,6 +158,9 @@ export default function ProfileScreen({ navigation, route }: any) {
         // For athletes, load linked guardians (parents)
         await loadLinkedGuardians(user.id);
       }
+
+      // Check if still mounted before continuing
+      if (!isMountedRef.current) return;
 
       // Load athlete data
       const { data: athleteData, error } = await supabase
@@ -158,9 +171,12 @@ export default function ProfileScreen({ navigation, route }: any) {
 
       if (error || !athleteData) {
         console.error('Error loading athlete:', error);
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
         return;
       }
+
+      // Check if still mounted before updating state
+      if (!isMountedRef.current) return;
 
       setAthlete(athleteData);
       populateFormFields(athleteData);
@@ -174,12 +190,15 @@ export default function ProfileScreen({ navigation, route }: any) {
         supabase.from('imtp_tests').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteData.id),
       ]);
 
+      // Check if still mounted before updating state
+      if (!isMountedRef.current) return;
+
       const hasData = (cmj.count || 0) > 0 || (sj.count || 0) > 0 || (hj.count || 0) > 0 || (ppu.count || 0) > 0 || (imtp.count || 0) > 0;
       setHasForceData(hasData);
     } catch (err) {
       console.error('Error:', err);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }
 
@@ -704,6 +723,46 @@ export default function ProfileScreen({ navigation, route }: any) {
               </Text>
             )}
           </View>
+
+          {/* Billing & Payments Section */}
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => navigation.navigate('Billing')}
+          >
+            <View style={styles.cardSectionHeader}>
+              <Ionicons name="card" size={20} color={COLORS.purple500} />
+              <Text style={styles.cardSectionTitle}>Billing & Payments</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={COLORS.gray400}
+                style={{ marginLeft: 'auto' }}
+              />
+            </View>
+            <Text style={styles.billingDescription}>
+              Manage payment methods and view transaction history
+            </Text>
+          </TouchableOpacity>
+
+          {/* Waivers Section */}
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => navigation.navigate('Waivers')}
+          >
+            <View style={styles.cardSectionHeader}>
+              <Ionicons name="document-text" size={20} color={COLORS.yellow500} />
+              <Text style={styles.cardSectionTitle}>Waivers</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={COLORS.gray400}
+                style={{ marginLeft: 'auto' }}
+              />
+            </View>
+            <Text style={styles.billingDescription}>
+              View and sign required waivers
+            </Text>
+          </TouchableOpacity>
 
           {/* Change Password Section */}
           <View style={styles.card}>
@@ -1248,6 +1307,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: COLORS.white,
+  },
+  billingDescription: {
+    fontSize: 13,
+    color: COLORS.gray400,
+    marginTop: 4,
   },
   playLevelSelector: {
     flexDirection: 'row',

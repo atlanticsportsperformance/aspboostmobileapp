@@ -26,6 +26,9 @@ export interface BookableEvent {
   isEligible: boolean;
   eventTemplateId: string | null;
   categoryId: string | null;
+  // Booking window constraints
+  bookingWindowBlocked: boolean;
+  bookingWindowReason: string | null;
 }
 
 export interface MissingRestriction {

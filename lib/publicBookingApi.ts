@@ -166,7 +166,14 @@ export async function getPublicEvents(
     console.log('Raw events data:', JSON.stringify(result.events?.slice(0, 2), null, 2));
 
     // Map the API response to our PublicEvent interface
-    return (result.events || []).map((event: any) => {
+    // Filter out events where drop-in is not allowed (dropInPriceCents === null)
+    return (result.events || []).filter((event: any) => {
+      const template = Array.isArray(event.scheduling_templates)
+        ? event.scheduling_templates[0]
+        : event.scheduling_templates;
+      // Only include events that allow drop-in (drop_in_price_cents is not null)
+      return template?.drop_in_price_cents !== null && template?.drop_in_price_cents !== undefined;
+    }).map((event: any) => {
       const startTime = new Date(event.start_time);
       const endTime = new Date(event.end_time);
       const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
@@ -331,89 +338,13 @@ export async function createAccount(data: NewAccountData): Promise<BookingResult
 }
 
 /**
- * Create a drop-in booking (after payment if required)
- */
-export async function createPublicBooking(
-  athleteId: string,
-  eventId: string,
-  paymentIntentId?: string
-): Promise<BookingResult> {
-  try {
-    // Get athlete's org_id
-    const { data: athlete } = await supabase
-      .from('athletes')
-      .select('org_id')
-      .eq('id', athleteId)
-      .single();
-
-    if (!athlete?.org_id) {
-      return { success: false, error: 'Could not find athlete organization' };
-    }
-
-    // Check capacity
-    const { data: event } = await supabase
-      .from('scheduling_events')
-      .select('capacity')
-      .eq('id', eventId)
-      .single();
-
-    const { count: bookedCount } = await supabase
-      .from('scheduling_bookings')
-      .select('*', { count: 'exact', head: true })
-      .eq('event_id', eventId)
-      .eq('status', 'confirmed');
-
-    if ((bookedCount || 0) >= (event?.capacity || 0)) {
-      return { success: false, error: 'This class is full' };
-    }
-
-    // Check not already booked
-    const { data: existingBooking } = await supabase
-      .from('scheduling_bookings')
-      .select('id')
-      .eq('event_id', eventId)
-      .eq('athlete_id', athleteId)
-      .eq('status', 'confirmed')
-      .maybeSingle();
-
-    if (existingBooking) {
-      return { success: false, error: 'Already booked for this class' };
-    }
-
-    // Create booking
-    const { data: booking, error: bookingError } = await supabase
-      .from('scheduling_bookings')
-      .insert({
-        org_id: athlete.org_id,
-        athlete_id: athleteId,
-        event_id: eventId,
-        status: 'confirmed',
-        source_type: 'drop_in',
-        source_id: paymentIntentId || null,
-      })
-      .select('id')
-      .single();
-
-    if (bookingError) {
-      console.error('Error creating booking:', bookingError);
-      return { success: false, error: 'Failed to create booking' };
-    }
-
-    return {
-      success: true,
-      bookingId: booking.id,
-    };
-  } catch (error) {
-    console.error('Error in createPublicBooking:', error);
-    return { success: false, error: 'An unexpected error occurred' };
-  }
-}
-
-/**
  * Format price in cents to display string
+ * NULL = No drop-in allowed (membership required)
+ * 0 = Free drop-in
+ * > 0 = Paid drop-in
  */
 export function formatPrice(cents: number | null): string {
-  if (cents === null || cents === undefined) return 'Free';
+  if (cents === null || cents === undefined) return 'Membership Required';
   if (cents === 0) return 'Free';
   return `$${(cents / 100).toFixed(2)}`;
 }

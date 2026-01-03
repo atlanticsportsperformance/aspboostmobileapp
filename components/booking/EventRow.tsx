@@ -26,27 +26,53 @@ export default function EventRow({
   const spotsRemaining = event.capacity - event.bookedCount;
   const isFull = spotsRemaining <= 0;
 
+  // Check if event has already passed
+  const isPast = event.startTime < new Date();
+
   const renderButton = () => {
+    // 1. Already booked - show Reserved button (even for past events)
     if (event.isBooked) {
-      // Already booked - show Reserved button
       return (
         <TouchableOpacity
           style={styles.reservedButton}
-          onPress={onCancelPress}
-          activeOpacity={0.8}
+          onPress={isPast ? undefined : onCancelPress}
+          activeOpacity={isPast ? 1 : 0.8}
+          disabled={isPast}
         >
           <LinearGradient
-            colors={['#9BDDFF', '#7BC5F0']}
+            colors={isPast ? ['#6B7280', '#4B5563'] : ['#9BDDFF', '#7BC5F0']}
             style={styles.reservedGradient}
           >
-            <Text style={styles.reservedText}>Reserved</Text>
+            <Text style={[styles.reservedText, isPast && styles.pastReservedText]}>
+              {isPast ? 'Attended' : 'Reserved'}
+            </Text>
           </LinearGradient>
         </TouchableOpacity>
       );
     }
 
+    // 2. Past event - show Event Passed
+    if (isPast) {
+      return (
+        <View style={[styles.reserveButton, styles.pastButton]}>
+          <Text style={styles.pastText}>Event Passed</Text>
+        </View>
+      );
+    }
+
+    // 3. Booking window blocked - show reason in amber/warning color
+    if (event.bookingWindowBlocked && event.bookingWindowReason) {
+      return (
+        <View style={[styles.reserveButton, styles.windowBlockedButton]}>
+          <Text style={styles.windowBlockedText} numberOfLines={2}>
+            {event.bookingWindowReason}
+          </Text>
+        </View>
+      );
+    }
+
+    // 4. Full capacity - show disabled button
     if (isFull) {
-      // Full - show disabled button
       return (
         <View style={[styles.reserveButton, styles.fullButton]}>
           <Text style={styles.fullText}>Full</Text>
@@ -54,7 +80,7 @@ export default function EventRow({
       );
     }
 
-    // Available - show Reserve button
+    // 5. Available - show Reserve button
     return (
       <TouchableOpacity
         style={styles.reserveButton}
@@ -225,5 +251,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#6B7280',
+  },
+  pastButton: {
+    backgroundColor: 'rgba(107, 114, 128, 0.2)',
+    borderColor: 'rgba(107, 114, 128, 0.4)',
+    opacity: 0.7,
+  },
+  pastText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#9CA3AF',
+  },
+  pastReservedText: {
+    color: '#FFFFFF',
+  },
+  // Booking window blocked - amber/warning style
+  windowBlockedButton: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',  // amber-500 with 15% opacity
+    borderColor: 'rgba(245, 158, 11, 0.4)',       // amber-500 with 40% opacity
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: 100,
+  },
+  windowBlockedText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#FBBF24',  // amber-400
+    textAlign: 'center',
   },
 });

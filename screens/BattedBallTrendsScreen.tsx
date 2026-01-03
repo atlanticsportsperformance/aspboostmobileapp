@@ -27,6 +27,58 @@ import { supabase } from '../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' }[],
+  orderColumn: string,
+  orderAscending: boolean = true,
+  additionalFilters?: (q: any) => any
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    // Apply additional filters if provided
+    if (additionalFilters) {
+      q = additionalFilters(q);
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
+
 // Professional color palette matching HittingTrendsScreen
 const COLORS = {
   primary: '#9BDDFF',
@@ -184,11 +236,32 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
   async function fetchBattedBallData(id: string) {
     setLoading(true);
 
-    const { data: hittraxSessions } = await supabase
-      .from('hittrax_sessions')
-      .select('id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, max_distance, total_swings')
-      .eq('athlete_id', id)
-      .order('session_date', { ascending: true });
+    // Interfaces for typed pagination
+    interface HittraxSession {
+      id: string;
+      session_date: string;
+      avg_exit_velocity: number | null;
+      max_exit_velocity: number | null;
+      avg_launch_angle: number | null;
+      max_distance: number | null;
+      total_swings: number | null;
+    }
+
+    // Use existing HitTraxSwing interface for type compatibility
+
+    interface DistanceSwing {
+      session_id: string;
+      distance: number | null;
+    }
+
+    // Use paginated fetch to get ALL sessions (bypasses 1000 row limit)
+    const hittraxSessions = await fetchAllPaginated<HittraxSession>(
+      () => supabase.from('hittrax_sessions'),
+      'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, max_distance, total_swings',
+      [{ column: 'athlete_id', value: id }],
+      'session_date',
+      true
+    );
 
     if (!hittraxSessions || hittraxSessions.length === 0) {
       setLoading(false);
@@ -198,20 +271,28 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
     }
 
     const sessionIds = hittraxSessions.map(s => s.id);
-    const { data: swings } = await supabase
-      .from('hittrax_swings')
-      .select('id, session_id, exit_velocity, launch_angle, distance, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z')
-      .in('session_id', sessionIds)
-      .not('spray_chart_x', 'is', null)
-      .not('spray_chart_z', 'is', null);
+
+    // Use paginated fetch for swings with spray chart data (using existing HitTraxSwing interface)
+    const swings = await fetchAllPaginated<HitTraxSwing>(
+      () => supabase.from('hittrax_swings'),
+      'id, session_id, exit_velocity, launch_angle, distance, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z',
+      [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+      'id',
+      true,
+      (q) => q.not('spray_chart_x', 'is', null).not('spray_chart_z', 'is', null)
+    );
 
     const allSwingsData = swings || [];
     setAllSwings(allSwingsData);
 
-    const { data: allSwingsForDistance } = await supabase
-      .from('hittrax_swings')
-      .select('session_id, distance')
-      .in('session_id', sessionIds);
+    // Use paginated fetch for distance data
+    const allSwingsForDistance = await fetchAllPaginated<DistanceSwing>(
+      () => supabase.from('hittrax_swings'),
+      'session_id, distance',
+      [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+      'id',
+      true
+    );
 
     const sessionDistances: { [sessionId: string]: number[] } = {};
     (allSwingsForDistance || []).forEach(swing => {
@@ -237,7 +318,7 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
         avgLaunchAngle: session.avg_launch_angle,
         maxDistance: session.max_distance,
         avgDistance: avgDistance,
-        swingCount: session.total_swings,
+        swingCount: session.total_swings || 0,
       };
     });
 

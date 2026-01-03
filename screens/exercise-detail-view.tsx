@@ -266,36 +266,68 @@ const ballWeightOrder: Record<string, number> = {
 };
 
 // Helper: Get ball weight for sorting
-function getBallWeight(metricId: string): number {
-  const lowerMetric = metricId.toLowerCase();
+function getBallWeight(metricId: string, customMeasurements: Measurement[]): number {
+  // Get the measurement name to check (not the UUID)
+  const measurementName = customMeasurements.find(
+    m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
+  )?.name;
+  const textToCheck = (measurementName || metricId).toLowerCase();
+
   for (const [key, weight] of Object.entries(ballWeightOrder)) {
-    if (lowerMetric.includes(key)) {
+    if (textToCheck.includes(key)) {
       return weight;
     }
   }
   return 999; // Non-ball metrics go last
 }
 
+// Helper: Get measurement name from metricId (looks up in customMeasurements)
+function getMeasurementName(metricId: string, customMeasurements: Measurement[]): string | null {
+  for (const measurement of customMeasurements) {
+    if (measurement.primary_metric_id === metricId || measurement.secondary_metric_id === metricId) {
+      return measurement.name;
+    }
+  }
+  return null;
+}
+
 // Helper: Check if metric is a ball-related metric
-function isBallMetric(metricId: string): boolean {
-  const lowerMetric = metricId.toLowerCase();
+function isBallMetric(metricId: string, customMeasurements: Measurement[]): boolean {
+  // First check the measurement name from customMeasurements
+  const measurementName = getMeasurementName(metricId, customMeasurements);
+  const textToCheck = measurementName || metricId;
+  const lowerText = textToCheck.toLowerCase();
+
   const ballKeywords = ['oz', 'ball', 'blue', 'red', 'yellow', 'gray', 'grey', 'green', 'baseball'];
-  return ballKeywords.some(keyword => lowerMetric.includes(keyword));
+  return ballKeywords.some(keyword => lowerText.includes(keyword));
 }
 
 // Helper: Get ball type from metric ID for grouping
-function getBallType(metricId: string): string | null {
-  const lowerMetric = metricId.toLowerCase();
-  if (lowerMetric.includes('7oz') || lowerMetric.includes('7_oz')) return '7oz';
-  if (lowerMetric.includes('6oz') || lowerMetric.includes('6_oz')) return '6oz';
-  if (lowerMetric.includes('5oz') || lowerMetric.includes('5_oz') || lowerMetric.includes('baseball')) return '5oz';
-  if (lowerMetric.includes('4oz') || lowerMetric.includes('4_oz')) return '4oz';
-  if (lowerMetric.includes('3oz') || lowerMetric.includes('3_oz')) return '3oz';
-  if (lowerMetric.includes('blue')) return 'blue';
-  if (lowerMetric.includes('red') && !lowerMetric.includes('oz')) return 'red';
-  if (lowerMetric.includes('yellow')) return 'yellow';
-  if (lowerMetric.includes('gray') || lowerMetric.includes('grey')) return 'gray';
-  if (lowerMetric.includes('green')) return 'green';
+// Uses regex for more precise matching to avoid "4 oz" matching "5oz" patterns
+function getBallType(metricId: string, customMeasurements: Measurement[]): string | null {
+  // Get the measurement name to check (not the UUID)
+  const measurementName = getMeasurementName(metricId, customMeasurements);
+  const textToCheck = measurementName || metricId;
+  const lowerText = textToCheck.toLowerCase();
+
+  // Check for specific oz patterns with word boundaries or common formats
+  // "7oz", "7 oz", "7_oz" patterns
+  if (/\b7\s*oz\b|7_oz/i.test(textToCheck)) return '7oz';
+  if (/\b6\s*oz\b|6_oz/i.test(textToCheck)) return '6oz';
+  // Check 4oz BEFORE 5oz/baseball since "4 oz" should not match "5oz"
+  if (/\b4\s*oz\b|4_oz/i.test(textToCheck)) return '4oz';
+  if (/\b3\s*oz\b|3_oz/i.test(textToCheck)) return '3oz';
+  // 5oz and baseball - check both patterns
+  if (/\b5\s*oz\b|5_oz/i.test(textToCheck)) return '5oz';
+  // Baseball without explicit oz - treat as its own type
+  if (lowerText.includes('baseball')) return 'baseball';
+
+  // Plyo balls
+  if (lowerText.includes('blue')) return 'blue';
+  if (lowerText.includes('red') && !/\d\s*oz/i.test(textToCheck)) return 'red';
+  if (lowerText.includes('yellow')) return 'yellow';
+  if (lowerText.includes('gray') || lowerText.includes('grey')) return 'gray';
+  if (lowerText.includes('green') && !/\d\s*oz/i.test(textToCheck)) return 'green';
   return null;
 }
 
@@ -305,24 +337,24 @@ interface MetricGroup {
   metrics: string[];
 }
 
-function groupMetricsForDisplay(metricFields: string[]): MetricGroup[] {
+function groupMetricsForDisplay(metricFields: string[], customMeasurements: Measurement[]): MetricGroup[] {
   const groups: MetricGroup[] = [];
   const processedMetrics = new Set<string>();
 
   // First, handle non-ball metrics
   metricFields.forEach(metricId => {
-    if (!isBallMetric(metricId)) {
+    if (!isBallMetric(metricId, customMeasurements)) {
       groups.push({ ballType: null, metrics: [metricId] });
       processedMetrics.add(metricId);
     }
   });
 
   // Group ball metrics by ball type
-  const ballMetrics = metricFields.filter(m => isBallMetric(m) && !processedMetrics.has(m));
+  const ballMetrics = metricFields.filter(m => isBallMetric(m, customMeasurements) && !processedMetrics.has(m));
   const ballGroups = new Map<string, string[]>();
 
   ballMetrics.forEach(metricId => {
-    const ballType = getBallType(metricId);
+    const ballType = getBallType(metricId, customMeasurements);
     if (ballType) {
       if (!ballGroups.has(ballType)) {
         ballGroups.set(ballType, []);
@@ -357,41 +389,45 @@ function groupMetricsForDisplay(metricFields: string[]): MetricGroup[] {
 // Ball icon component for plyo balls and weighted balls
 interface BallIconProps {
   metricId: string;
+  customMeasurements: Measurement[];
 }
 
-function BallIcon({ metricId }: BallIconProps): React.ReactElement | null {
-  const lowerMetric = metricId.toLowerCase();
+function BallIcon({ metricId, customMeasurements }: BallIconProps): React.ReactElement | null {
+  // Get measurement name to check (not the UUID)
+  const measurementName = getMeasurementName(metricId, customMeasurements);
+  const textToCheck = measurementName || metricId;
+  const lowerText = textToCheck.toLowerCase();
 
   // Plyo balls - colored circles
-  if (lowerMetric.includes('blue')) {
+  if (lowerText.includes('blue')) {
     return (
       <View style={ballIconStyles.plyoBall}>
         <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#3B82F6', borderColor: '#2563EB' }]} />
       </View>
     );
   }
-  if (lowerMetric.includes('red') && !lowerMetric.includes('oz')) {
+  if (lowerText.includes('red') && !/\d\s*oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.plyoBall}>
         <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EF4444', borderColor: '#DC2626' }]} />
       </View>
     );
   }
-  if (lowerMetric.includes('yellow')) {
+  if (lowerText.includes('yellow')) {
     return (
       <View style={ballIconStyles.plyoBall}>
         <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EAB308', borderColor: '#CA8A04' }]} />
       </View>
     );
   }
-  if (lowerMetric.includes('gray') || lowerMetric.includes('grey')) {
+  if (lowerText.includes('gray') || lowerText.includes('grey')) {
     return (
       <View style={ballIconStyles.plyoBall}>
         <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#6B7280', borderColor: '#4B5563' }]} />
       </View>
     );
   }
-  if (lowerMetric.includes('green')) {
+  if (lowerText.includes('green') && !/\d\s*oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.plyoBall}>
         <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#22C55E', borderColor: '#16A34A' }]} />
@@ -400,38 +436,41 @@ function BallIcon({ metricId }: BallIconProps): React.ReactElement | null {
   }
 
   // Weighted balls - white circles with number
-  if (lowerMetric.includes('7oz') || lowerMetric.includes('7_oz')) {
+  // Use regex for patterns like "7oz", "7 oz", "7_oz"
+  if (/\b7\s*oz\b|7_oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.weightedBall}>
         <Text style={[ballIconStyles.weightedBallText, { color: '#EA580C' }]}>7</Text>
       </View>
     );
   }
-  if (lowerMetric.includes('6oz') || lowerMetric.includes('6_oz')) {
+  if (/\b6\s*oz\b|6_oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.weightedBall}>
         <Text style={[ballIconStyles.weightedBallText, { color: '#7C3AED' }]}>6</Text>
       </View>
     );
   }
-  if (lowerMetric.includes('5oz') || lowerMetric.includes('5_oz') || lowerMetric.includes('baseball')) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#DC2626' }]}>5</Text>
-      </View>
-    );
-  }
-  if (lowerMetric.includes('4oz') || lowerMetric.includes('4_oz')) {
+  // Check 4oz BEFORE 5oz/baseball
+  if (/\b4\s*oz\b|4_oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.weightedBall}>
         <Text style={[ballIconStyles.weightedBallText, { color: '#2563EB' }]}>4</Text>
       </View>
     );
   }
-  if (lowerMetric.includes('3oz') || lowerMetric.includes('3_oz')) {
+  if (/\b3\s*oz\b|3_oz/i.test(textToCheck)) {
     return (
       <View style={ballIconStyles.weightedBall}>
         <Text style={[ballIconStyles.weightedBallText, { color: '#16A34A' }]}>3</Text>
+      </View>
+    );
+  }
+  // 5oz or baseball (standard 5oz ball)
+  if (/\b5\s*oz\b|5_oz/i.test(textToCheck) || lowerText.includes('baseball')) {
+    return (
+      <View style={ballIconStyles.weightedBall}>
+        <Text style={[ballIconStyles.weightedBallText, { color: '#DC2626' }]}>5</Text>
       </View>
     );
   }
@@ -675,27 +714,28 @@ export default function ExerciseDetailView({
           if (measurement.secondary_metric_id) fields.push(measurement.secondary_metric_id);
         }
       });
-    } else if (exercise.metric_targets) {
-      // Fallback to legacy or metric_targets
+    } else if (exercise.metric_targets && Object.keys(exercise.metric_targets).length > 0) {
+      // Fallback to metric_targets if explicitly set
       fields = Object.keys(exercise.metric_targets);
-    } else {
-      // Legacy fallback
+    } else if (exercise.reps || exercise.weight) {
+      // Legacy fallback - only if exercise has legacy reps/weight set
       fields = ['reps'];
       if (exercise.weight) fields.push('weight');
     }
+    // If no metrics configured, fields stays empty (notes-only exercise)
 
     // Sort ball metrics by weight (heaviest to lightest)
     // Group primary metrics (reps) and secondary metrics (velo) together per ball type
-    const hasBallMetrics = fields.some(f => isBallMetric(f));
+    const hasBallMetrics = fields.some(f => isBallMetric(f, customMeasurements));
     if (hasBallMetrics) {
       // Separate ball and non-ball metrics
-      const ballMetrics = fields.filter(f => isBallMetric(f));
-      const nonBallMetrics = fields.filter(f => !isBallMetric(f));
+      const ballMetrics = fields.filter(f => isBallMetric(f, customMeasurements));
+      const nonBallMetrics = fields.filter(f => !isBallMetric(f, customMeasurements));
 
       // Sort ball metrics by weight, keeping primary (reps) before secondary (velo) for same ball
       ballMetrics.sort((a, b) => {
-        const weightA = getBallWeight(a);
-        const weightB = getBallWeight(b);
+        const weightA = getBallWeight(a, customMeasurements);
+        const weightB = getBallWeight(b, customMeasurements);
         if (weightA !== weightB) return weightA - weightB;
         // Same ball type - primary (reps) comes before secondary (velo)
         const isAPrimary = a.toLowerCase().includes('reps');
@@ -950,18 +990,70 @@ export default function ExerciseDetailView({
           {/* Metric Inputs Grid - with grouped ball metrics */}
           <View style={styles.metricsGrid}>
             {(() => {
-              const metricGroups = groupMetricsForDisplay(metricFields);
+              const metricGroups = groupMetricsForDisplay(metricFields, customMeasurements);
 
-              return metricGroups.map((group, groupIndex) => {
-                // For ball metric groups, show a grouped container with shared ball icon
-                if (group.ballType && group.metrics.length > 0) {
-                  return (
+              // Separate ball groups from non-ball metrics
+              const ballGroups = metricGroups.filter(g => g.ballType);
+              const nonBallMetrics = metricGroups.filter(g => !g.ballType).flatMap(g => g.metrics);
+
+              return (
+                <>
+                  {/* Non-ball metrics in a row */}
+                  {nonBallMetrics.length > 0 && (
+                    <View style={styles.nonBallMetricsRow}>
+                      {nonBallMetrics.map(metricId => {
+                        const label = getMetricLabel(metricId, customMeasurements);
+                        const targetValue = getTargetValue(i, metricId);
+                        const intensityTarget = getIntensityTarget(i, metricId);
+                        const currentValue = setData[metricId];
+                        const measurement = customMeasurements.find(
+                          m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
+                        );
+                        const metricType =
+                          measurement?.primary_metric_id === metricId
+                            ? measurement?.primary_metric_type
+                            : measurement?.secondary_metric_type;
+                        const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
+                        const isDecimal = metricType === 'decimal';
+                        const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
+
+                        return (
+                          <View key={metricId} style={styles.metricInput}>
+                            <View style={styles.metricLabelRow}>
+                              <Text style={styles.metricLabel}>{label}</Text>
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.input,
+                                currentValue != null && currentValue !== '' && styles.inputFilled,
+                                isActive && styles.inputActive,
+                              ]}
+                              onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={[
+                                styles.inputText,
+                                (currentValue == null || currentValue === '') && styles.inputPlaceholder,
+                              ]}>
+                                {currentValue != null && currentValue !== ''
+                                  ? String(currentValue)
+                                  : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+
+                  {/* Ball metric groups - each takes full width, 2 columns for reps/velo */}
+                  {ballGroups.map((group) => (
                     <View key={`group-${group.ballType}`} style={styles.ballMetricGroup}>
                       {/* Ball icon header for the group */}
                       <View style={styles.ballGroupHeader}>
-                        <BallIcon metricId={group.metrics[0]} />
+                        <BallIcon metricId={group.metrics[0]} customMeasurements={customMeasurements} />
                       </View>
-                      {/* Individual metrics in the group */}
+                      {/* Individual metrics in the group - always 2 columns */}
                       <View style={styles.ballGroupInputs}>
                         {group.metrics.map(metricId => {
                           const label = getMetricLabel(metricId, customMeasurements);
@@ -1005,53 +1097,9 @@ export default function ExerciseDetailView({
                         })}
                       </View>
                     </View>
-                  );
-                }
-
-                // For non-ball metrics, render normally
-                return group.metrics.map(metricId => {
-                  const label = getMetricLabel(metricId, customMeasurements);
-                  const targetValue = getTargetValue(i, metricId);
-                  const intensityTarget = getIntensityTarget(i, metricId);
-                  const currentValue = setData[metricId];
-                  const measurement = customMeasurements.find(
-                    m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
-                  );
-                  const metricType =
-                    measurement?.primary_metric_id === metricId
-                      ? measurement?.primary_metric_type
-                      : measurement?.secondary_metric_type;
-                  const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-                  const isDecimal = metricType === 'decimal';
-                  const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
-
-                  return (
-                    <View key={metricId} style={styles.metricInput}>
-                      <View style={styles.metricLabelRow}>
-                        <Text style={styles.metricLabel}>{label}</Text>
-                      </View>
-                      <TouchableOpacity
-                        style={[
-                          styles.input,
-                          currentValue != null && currentValue !== '' && styles.inputFilled,
-                          isActive && styles.inputActive,
-                        ]}
-                        onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={[
-                          styles.inputText,
-                          (currentValue == null || currentValue === '') && styles.inputPlaceholder,
-                        ]}>
-                          {currentValue != null && currentValue !== ''
-                            ? String(currentValue)
-                            : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  );
-                });
-              });
+                  ))}
+                </>
+              );
             })()}
           </View>
 
@@ -1208,16 +1256,9 @@ export default function ExerciseDetailView({
             <Text style={styles.backToOverviewIcon}>←</Text>
           </TouchableOpacity>
 
-          {/* Block Label Badge */}
+          {/* Block Label - Simple text */}
           {blockLabel && (
-            <LinearGradient
-              colors={['rgba(155,221,255,0.2)', 'rgba(123,197,240,0.2)']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.blockLabelBadge}
-            >
-              <Text style={styles.blockLabelText}>{blockLabel}</Text>
-            </LinearGradient>
+            <Text style={styles.blockLabelText}>{blockLabel}</Text>
           )}
 
           {/* Exercise Name */}
@@ -1231,18 +1272,10 @@ export default function ExerciseDetailView({
           )}
         </View>
 
-        {/* Exercise Details - Compact inline display */}
-        {(exercise.notes || exercise.exercises.description || exercise.tempo) && (
+        {/* Tempo only shown in header */}
+        {exercise.tempo && (
           <View style={styles.exerciseDetailsInline}>
-            {exercise.tempo && (
-              <Text style={styles.inlineDetail}>⏱ {exercise.tempo}</Text>
-            )}
-            {exercise.notes && (
-              <Text style={styles.inlineDetail}>📝 {exercise.notes}</Text>
-            )}
-            {exercise.exercises.description && (
-              <Text style={styles.inlineDetail}>ℹ️ {exercise.exercises.description}</Text>
-            )}
+            <Text style={styles.inlineDetail}>⏱ {exercise.tempo}</Text>
           </View>
         )}
       </View>
@@ -1293,6 +1326,24 @@ export default function ExerciseDetailView({
             )}
           </View>
         )
+      )}
+
+      {/* Exercise Notes/Description - Below video, above sets */}
+      {(exercise.notes || exercise.exercises.description) && (
+        <View style={styles.exerciseNotesSection}>
+          {exercise.notes && (
+            <View style={styles.coachNoteRow}>
+              <Text style={styles.coachNoteIcon}>📝</Text>
+              <Text style={styles.coachNoteText}>{exercise.notes}</Text>
+            </View>
+          )}
+          {exercise.exercises.description && (
+            <View style={styles.descriptionRow}>
+              <Text style={styles.descriptionIcon}>ℹ️</Text>
+              <Text style={styles.descriptionText}>{exercise.exercises.description}</Text>
+            </View>
+          )}
+        </View>
       )}
 
       {/* Sets Section */}
@@ -1394,6 +1445,50 @@ export default function ExerciseDetailView({
             {(() => {
               const currentSetCompleted = isSetCompleted(currentSetIndex);
               const nextText = getNextButtonText();
+              const isNotesOnly = metricFields.length === 0;
+
+              // For notes-only exercises, always show navigation (skip "Log Set")
+              // They just need to see the content and move on
+              if (isNotesOnly) {
+                // For notes-only, determine what to show
+                const currentExerciseIndex = allExercises.findIndex(ex => ex.id === exercise.id);
+                const isLastExercise = currentExerciseIndex >= allExercises.length - 1;
+
+                if (isLastExercise) {
+                  return (
+                    <TouchableOpacity
+                      style={[styles.nextSetButton, styles.doneButton]}
+                      onPress={onNextSet}
+                      activeOpacity={0.7}
+                    >
+                      <LinearGradient
+                        colors={['#10B981', '#059669']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.doneButtonGradient}
+                      >
+                        <Text style={styles.doneButtonIcon}>✓</Text>
+                        <Text style={styles.doneButtonText}>DONE</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  );
+                }
+
+                // Show next exercise name
+                const nextExercise = allExercises[currentExerciseIndex + 1];
+                const nextExerciseName = nextExercise ? truncateName(nextExercise.exercises.name) + ' →' : 'Next';
+
+                return (
+                  <TouchableOpacity
+                    style={styles.nextSetButton}
+                    onPress={onNextSet}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.nextSetButtonIcon}>›</Text>
+                    <Text style={styles.nextSetButtonText}>{nextExerciseName}</Text>
+                  </TouchableOpacity>
+                );
+              }
 
               return (
                 <TouchableOpacity
@@ -1517,19 +1612,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#60A5FA',
   },
-  blockLabelBadge: {
-    width: 28,
-    height: 28,
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-    borderRadius: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   blockLabelText: {
     fontSize: 12,
-    fontWeight: '900',
-    color: '#9BDDFF',
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginRight: 8,
   },
   exerciseName: {
     flex: 1,
@@ -1692,6 +1779,44 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#FFFFFF',
     fontWeight: '600',
+  },
+  exerciseNotesSection: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 10,
+    padding: 12,
+    gap: 10,
+  },
+  coachNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  coachNoteIcon: {
+    fontSize: 14,
+    marginTop: 1,
+  },
+  coachNoteText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#E5E5E5',
+    lineHeight: 20,
+  },
+  descriptionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  descriptionText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#A3A3A3',
+    lineHeight: 18,
+    fontStyle: 'italic',
   },
   setsScrollView: {
     flex: 1,
@@ -1886,10 +2011,14 @@ const styles = StyleSheet.create({
     color: '#93C5FD',
   },
   metricsGrid: {
+    flexDirection: 'column',
+    gap: 12,
+    marginBottom: 12,
+  },
+  nonBallMetricsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
-    marginBottom: 12,
   },
   metricInput: {
     flex: 1,
@@ -1951,10 +2080,13 @@ const styles = StyleSheet.create({
   ballGroupInputs: {
     flex: 1,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   ballGroupMetricInput: {
-    flex: 1,
+    flexBasis: '45%',
+    flexGrow: 1,
+    maxWidth: '48%',
   },
   ballGroupMetricLabel: {
     fontSize: 10,
@@ -2093,9 +2225,9 @@ const styles = StyleSheet.create({
     flex: 1.2,
     paddingVertical: 8,
     paddingHorizontal: 4,
-    backgroundColor: '#064E3B',
+    backgroundColor: '#0C4A6E',
     borderWidth: 1,
-    borderColor: '#10B981',
+    borderColor: '#9BDDFF',
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2103,11 +2235,11 @@ const styles = StyleSheet.create({
   },
   nextSetButtonIcon: {
     fontSize: 14,
-    color: '#A7F3D0',
+    color: '#9BDDFF',
   },
   nextSetButtonText: {
     fontSize: 9,
-    color: '#A7F3D0',
+    color: '#9BDDFF',
     marginTop: 2,
   },
   doneButton: {

@@ -9,11 +9,12 @@ import {
   Modal,
   Alert,
   Dimensions,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useStripe } from '@stripe/stripe-react-native';
+import { useStripe, initStripe } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 
@@ -76,8 +77,12 @@ interface Membership {
   current_period_start: string;
   current_period_end: string;
   cancel_at_period_end?: boolean;
+  cancel_at?: string | null;
+  pause_at?: string | null;
+  resume_at?: string | null;
   membership_type: MembershipType;
   membership_usage_counters?: UsageCounter[];
+  usage_counters?: UsageCounter[]; // API returns this format
 }
 
 interface PackageType {
@@ -96,14 +101,26 @@ interface PackageType {
   entitlement_rules?: EntitlementRule[];
 }
 
+interface PackageUsageCounter {
+  id: string;
+  package_id: string;
+  scope_type: 'category' | 'template' | 'any';
+  scope_id: string;
+  scope_name: string | null;
+  uses_allocated: number | null; // null = unlimited
+  uses_used: number;
+}
+
 interface Package {
   id: string;
   package_type_id: string;
   status: string;
   expiry_date: string;
-  uses_remaining: number;
-  uses_total?: number;
+  uses_granted: number | null; // null = unlimited
+  uses_remaining: number | null; // null = unlimited
+  is_unlimited: boolean;
   package_type: PackageType;
+  usage_counters?: PackageUsageCounter[];
 }
 
 type TabType = 'memberships' | 'packages';
@@ -118,6 +135,7 @@ interface AthleteData {
 }
 
 export default function MembershipsPackagesScreen({ navigation, route }: any) {
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
@@ -144,8 +162,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [purchaseForAthleteId, setPurchaseForAthleteId] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
 
-  // Stripe hook
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  // Membership management modal state
+  const [selectedMembership, setSelectedMembership] = useState<Membership | null>(null);
+  const [selectedMembershipAthleteId, setSelectedMembershipAthleteId] = useState<string | null>(null);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [managementLoading, setManagementLoading] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
 
   useEffect(() => {
     loadAthleteAndData();
@@ -194,54 +216,47 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
   async function fetchDataForAllAthletes() {
     try {
-      const athleteDataPromises = linkedAthletes.map(async (athlete) => {
-        // Fetch memberships for this athlete
-        const { data: membershipsData } = await supabase
-          .from('memberships')
-          .select(`
-            *,
-            membership_type:membership_types!membership_type_id(*),
-            membership_usage_counters(
-              id,
-              scope_type,
-              scope_id,
-              scope_name,
-              visits_allocated,
-              visits_used,
-              period_start,
-              period_end
-            )
-          `)
-          .eq('athlete_id', athlete.athlete_id)
-          .eq('status', 'active');
+      // Get auth token for API calls
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = session?.access_token
+        ? { 'Authorization': `Bearer ${session.access_token}` }
+        : {};
 
-        // Fetch packages for this athlete
-        const { data: packagesData } = await supabase
-          .from('packages')
-          .select(`
-            *,
-            package_type:package_types!package_type_id(
-              *,
-              entitlement_rules(
-                id,
-                scope,
-                category_id,
-                template_id,
-                visits_allocated,
-                category:scheduling_categories(id, name),
-                template:scheduling_templates(id, name)
-              )
-            )
-          `)
-          .eq('athlete_id', athlete.athlete_id)
-          .eq('status', 'active');
+      const athleteDataPromises = linkedAthletes.map(async (athlete) => {
+        // Fetch memberships via API
+        let membershipsData: Membership[] = [];
+        try {
+          const membershipsRes = await fetch(`${API_URL}/api/athletes/${athlete.athlete_id}/memberships`, { headers });
+          if (membershipsRes.ok) {
+            const { memberships } = await membershipsRes.json();
+            // Normalize usage_counters field name
+            membershipsData = (memberships || []).map((m: any) => ({
+              ...m,
+              membership_usage_counters: m.usage_counters || m.membership_usage_counters || [],
+            }));
+          }
+        } catch (e) {
+          console.error('Error fetching memberships for athlete:', athlete.athlete_id, e);
+        }
+
+        // Fetch packages via API
+        let packagesData: Package[] = [];
+        try {
+          const packagesRes = await fetch(`${API_URL}/api/athletes/${athlete.athlete_id}/packages`, { headers });
+          if (packagesRes.ok) {
+            const { packages } = await packagesRes.json();
+            packagesData = packages || [];
+          }
+        } catch (e) {
+          console.error('Error fetching packages for athlete:', athlete.athlete_id, e);
+        }
 
         return {
           athleteId: athlete.athlete_id,
           athleteName: `${athlete.first_name} ${athlete.last_name}`,
           color: athlete.color,
-          memberships: membershipsData || [],
-          packages: packagesData || [],
+          memberships: membershipsData,
+          packages: packagesData,
         };
       });
 
@@ -287,50 +302,57 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
   async function fetchData(id: string) {
     try {
-      // Fetch active memberships with usage counters
-      const { data: membershipsData } = await supabase
-        .from('memberships')
-        .select(`
-          *,
-          membership_type:membership_types!membership_type_id(*),
-          membership_usage_counters(
-            id,
-            scope_type,
-            scope_id,
-            scope_name,
-            visits_allocated,
-            visits_used,
-            period_start,
-            period_end
-          )
-        `)
-        .eq('athlete_id', id)
-        .eq('status', 'active');
+      // Get auth token for API calls
+      const { data: { session } } = await supabase.auth.getSession();
 
-      setMemberships(membershipsData || []);
+      // Fetch memberships via API (includes active, paused, trialing statuses + usage counters)
+      try {
+        const membershipsRes = await fetch(`${API_URL}/api/athletes/${id}/memberships`, {
+          headers: session?.access_token ? {
+            'Authorization': `Bearer ${session.access_token}`,
+          } : {},
+        });
+        if (membershipsRes.ok) {
+          const { memberships: membershipData } = await membershipsRes.json();
+          // Normalize usage_counters field name
+          const normalizedMemberships = (membershipData || []).map((m: any) => ({
+            ...m,
+            membership_usage_counters: m.usage_counters || m.membership_usage_counters || [],
+          }));
+          setMemberships(normalizedMemberships);
+        } else {
+          console.error('Error fetching memberships from API');
+          setMemberships([]);
+        }
+      } catch (apiError) {
+        console.error('Error fetching memberships:', apiError);
+        setMemberships([]);
+      }
 
-      // Fetch active packages with package type and entitlement rules
-      const { data: packagesData } = await supabase
-        .from('packages')
-        .select(`
-          *,
-          package_type:package_types!package_type_id(
-            *,
-            entitlement_rules(
-              id,
-              scope,
-              category_id,
-              template_id,
-              visits_allocated,
-              category:scheduling_categories(id, name),
-              template:scheduling_templates(id, name)
-            )
-          )
-        `)
-        .eq('athlete_id', id)
-        .eq('status', 'active');
-
-      setPackages(packagesData || []);
+      // Fetch packages via API (includes entitlement rules)
+      try {
+        console.log('Fetching packages for athlete:', id);
+        const packagesRes = await fetch(`${API_URL}/api/athletes/${id}/packages`, {
+          headers: session?.access_token ? {
+            'Authorization': `Bearer ${session.access_token}`,
+          } : {},
+        });
+        console.log('Packages response status:', packagesRes.status);
+        if (packagesRes.ok) {
+          const responseData = await packagesRes.json();
+          console.log('Packages API response:', JSON.stringify(responseData, null, 2));
+          const packageData = responseData.packages || [];
+          console.log('Setting packages:', packageData.length, 'items');
+          setPackages(packageData);
+        } else {
+          const errorText = await packagesRes.text();
+          console.error('Error fetching packages from API:', packagesRes.status, errorText);
+          setPackages([]);
+        }
+      } catch (apiError) {
+        console.error('Error fetching packages:', apiError);
+        setPackages([]);
+      }
 
       // Fetch available membership types (uses metadata.service_groupings)
       const { data: membershipTypesData } = await supabase
@@ -449,12 +471,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
     try {
       // Get the current session for auth token
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      console.log('=== STRIPE CHECKOUT DEBUG ===');
-      console.log('Session error:', sessionError);
-      console.log('Session exists:', !!session);
-      console.log('Access token exists:', !!session?.access_token);
-      console.log('Access token (first 20 chars):', session?.access_token?.substring(0, 20));
+      const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.access_token) {
         throw new Error('Please log in to make a purchase');
@@ -465,27 +482,19 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         ? `${API_URL}/api/stripe/create-membership-checkout`
         : `${API_URL}/api/stripe/create-package-checkout`;
 
+      // Request PaymentIntent for in-app Payment Sheet
       const bodyParams = selectedItemType === 'membership'
         ? {
             athlete_id: targetAthleteId,
             membership_type_id: selectedItem.id,
-            embedded: true,
-            return_url: 'aspboost://purchase/complete',
+            embedded: true, // Use PaymentIntent for mobile Payment Sheet
           }
         : {
             athlete_id: targetAthleteId,
             package_type_id: selectedItem.id,
-            embedded: true,
-            return_url: 'aspboost://purchase/complete',
+            embedded: true, // Use PaymentIntent for mobile Payment Sheet
           };
 
-      console.log('Endpoint:', endpoint);
-      console.log('Body params:', JSON.stringify(bodyParams, null, 2));
-      console.log('Target athlete ID:', targetAthleteId);
-      console.log('Selected item ID:', selectedItem.id);
-      console.log('Selected item type:', selectedItemType);
-
-      // 1. Create checkout session on server (embedded mode for Payment Sheet)
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -495,57 +504,130 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         body: JSON.stringify(bodyParams),
       });
 
-      console.log('Response status:', response.status);
-      console.log('Response ok:', response.ok);
-
       const data = await response.json();
-      console.log('Response data:', JSON.stringify(data, null, 2));
 
       if (!response.ok) {
         throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create payment session`);
       }
 
-      const { client_secret } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account } = data;
 
       if (!client_secret) {
         throw new Error('No client secret returned from server');
       }
 
-      // 2. Initialize Payment Sheet
-      const { error: initError } = await initPaymentSheet({
+      // CRITICAL: For Stripe Connect, reinitialize the SDK with the connected account
+      // This must happen BEFORE initPaymentSheet
+      if (stripe_account) {
+        console.log('Reinitializing Stripe with connected account:', stripe_account);
+        await initStripe({
+          publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '',
+          stripeAccountId: stripe_account,
+          merchantIdentifier: 'merchant.com.aspboost',
+          urlScheme: 'aspboost',
+        });
+      }
+
+      // Initialize the Payment Sheet
+      const initParams: any = {
         paymentIntentClientSecret: client_secret,
         merchantDisplayName: 'ASP Boost',
-        style: 'alwaysDark',
-      });
+        returnURL: 'aspboost://stripe-redirect',
+        allowsDelayedPaymentMethods: false,
+      };
+
+      // Add customer info if available
+      if (customer_id && ephemeral_key) {
+        initParams.customerId = customer_id;
+        initParams.customerEphemeralKeySecret = ephemeral_key;
+      }
+
+      const { error: initError } = await initPaymentSheet(initParams);
 
       if (initError) {
         throw new Error(initError.message);
       }
 
-      // 3. Present Payment Sheet
-      const { error: paymentError } = await presentPaymentSheet();
+      // Present the Payment Sheet
+      const { error: presentError } = await presentPaymentSheet();
 
-      if (paymentError) {
-        if (paymentError.code === 'Canceled') {
-          // User cancelled - not an error
-          setPaymentInProgress(false);
+      if (presentError) {
+        if (presentError.code === 'Canceled') {
+          // User cancelled - don't show error
           return;
         }
-        throw new Error(paymentError.message);
+        throw new Error(presentError.message);
       }
 
-      // 4. Payment successful!
-      // The webhook will create the membership/package automatically
-      const itemName = selectedItemType === 'membership' ? 'Membership' : 'Package';
+      // Payment successful - now confirm and create the record
+      // This is required because webhooks are unreliable for Connect PaymentIntents
+      console.log('Payment Sheet completed, confirming purchase...');
+
+      const confirmEndpoint = selectedItemType === 'membership'
+        ? `${API_URL}/api/stripe/confirm-membership`
+        : `${API_URL}/api/stripe/confirm-package`;
+
+      const confirmBody = selectedItemType === 'membership'
+        ? {
+            payment_intent_id: data.payment_intent_id,
+            athlete_id: targetAthleteId,
+            membership_type_id: selectedItem.id,
+          }
+        : {
+            payment_intent_id: data.payment_intent_id,
+            athlete_id: targetAthleteId,
+            package_type_id: selectedItem.id,
+          };
+
+      const confirmResponse = await fetch(confirmEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(confirmBody),
+      });
+
+      // Safely parse JSON response
+      let confirmData;
+      try {
+        const responseText = await confirmResponse.text();
+        console.log('Confirm response text:', responseText);
+        confirmData = responseText ? JSON.parse(responseText) : {};
+      } catch (parseError) {
+        console.error('Failed to parse confirm response:', parseError);
+        confirmData = { error: 'Invalid response from server' };
+      }
+      console.log('Confirm response:', confirmData);
+
+      if (!confirmResponse.ok || confirmData.success === false) {
+        // Payment succeeded but record creation failed
+        console.error('Failed to confirm purchase after payment:', confirmData.error);
+        Alert.alert(
+          'Purchase Issue',
+          'Your payment was successful, but we encountered an issue activating your purchase. Please contact support.',
+          [{ text: 'OK' }]
+        );
+        // Still refresh data in case it partially worked
+        if (isParent && linkedAthletes.length > 0) {
+          await fetchDataForAllAthletes();
+        } else if (athleteId) {
+          await fetchData(athleteId);
+        }
+        setShowPurchaseModal(false);
+        return;
+      }
+
+      // Success!
+      setShowPurchaseModal(false);
+      const itemName = selectedItemType === 'membership' ? 'membership' : 'package';
       Alert.alert(
         'Payment Successful',
-        `Your ${itemName.toLowerCase()} has been activated! Check your email for confirmation.`,
+        `Your ${itemName} has been activated!`,
         [{ text: 'OK' }]
       );
 
-      setShowPurchaseModal(false);
-
-      // Refresh data to show the new membership/package
+      // Refresh the data
       if (isParent && linkedAthletes.length > 0) {
         await fetchDataForAllAthletes();
       } else if (athleteId) {
@@ -564,13 +646,124 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     }
   }
 
-  function handleManageAction(action: 'pause' | 'cancel') {
+  function handleManageAction(action: 'cancel' | 'resume', membership: Membership, membershipAthleteId: string) {
     setShowManageMenu(null);
-    Alert.alert(
-      'Coming Soon',
-      `${action === 'pause' ? 'Pausing' : 'Canceling'} memberships will be available soon. Please contact the facility for assistance.`,
-      [{ text: 'OK' }]
-    );
+    setSelectedMembership(membership);
+    setSelectedMembershipAthleteId(membershipAthleteId);
+
+    if (action === 'cancel') {
+      setCancelReason('');
+      setShowCancelModal(true);
+    } else if (action === 'resume') {
+      // Resume directly without modal
+      handleResumeMembership(membership, membershipAthleteId);
+    }
+  }
+
+  // Cancel membership API call
+  async function handleCancelMembership(cancelImmediately: boolean) {
+    if (!selectedMembership || !selectedMembershipAthleteId) return;
+
+    setManagementLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        Alert.alert('Error', 'Please log in to manage membership');
+        return;
+      }
+
+      const response = await fetch(
+        `${API_URL}/api/athletes/${selectedMembershipAthleteId}/memberships/${selectedMembership.id}/cancel`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            cancel_at_period_end: !cancelImmediately,
+            cancellation_reason: cancelReason || 'Cancelled via mobile app',
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        Alert.alert('Error', data.error || 'Failed to cancel membership');
+        return;
+      }
+
+      Alert.alert(
+        'Membership Cancelled',
+        data.message || 'Your membership has been cancelled.',
+        [{ text: 'OK' }]
+      );
+
+      setShowCancelModal(false);
+      setSelectedMembership(null);
+      setCancelReason('');
+
+      // Refresh data
+      if (isParent && linkedAthletes.length > 0) {
+        await fetchDataForAllAthletes();
+      } else if (athleteId) {
+        await fetchData(athleteId);
+      }
+    } catch (error) {
+      console.error('Error cancelling membership:', error);
+      Alert.alert('Error', 'An unexpected error occurred');
+    } finally {
+      setManagementLoading(false);
+    }
+  }
+
+  // Resume membership API call
+  async function handleResumeMembership(membership: Membership, membershipAthleteId: string) {
+    setManagementLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        Alert.alert('Error', 'Please log in to manage membership');
+        return;
+      }
+
+      const response = await fetch(
+        `${API_URL}/api/athletes/${membershipAthleteId}/memberships/${membership.id}/resume`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        Alert.alert('Error', data.error || 'Failed to resume membership');
+        return;
+      }
+
+      Alert.alert(
+        'Membership Resumed',
+        data.message || 'Your membership has been resumed.',
+        [{ text: 'OK' }]
+      );
+
+      // Refresh data
+      if (isParent && linkedAthletes.length > 0) {
+        await fetchDataForAllAthletes();
+      } else if (athleteId) {
+        await fetchData(athleteId);
+      }
+    } catch (error) {
+      console.error('Error resuming membership:', error);
+      Alert.alert('Error', 'An unexpected error occurred');
+    } finally {
+      setManagementLoading(false);
+    }
   }
 
   // Get service allocations for memberships (from metadata.service_groupings)
@@ -720,6 +913,112 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     return getEntitlementNames(packageType);
   }
 
+  // Get package usage display from usage_counters (shows remaining vs allocated)
+  function getPackageUsageDisplay(pkg: Package): Array<{
+    id: string;
+    name: string;
+    used: number;
+    allocated: number | null;
+    remaining: number | null;
+    isUnlimited: boolean;
+  }> {
+    const counters = pkg.usage_counters || [];
+
+    // If we have usage counters, use them for accurate per-service tracking
+    if (counters.length > 0) {
+      return counters.map(counter => {
+        // Per-service unlimited is indicated by uses_allocated being null or -1
+        // NOT by pkg.is_unlimited (which is about total package uses)
+        const isUnlimited = counter.uses_allocated === null || counter.uses_allocated === -1;
+        const remaining = isUnlimited ? null : (counter.uses_allocated! - counter.uses_used);
+        return {
+          id: counter.id,
+          name: counter.scope_name || 'Sessions',
+          used: counter.uses_used,
+          allocated: counter.uses_allocated,
+          remaining,
+          isUnlimited,
+        };
+      });
+    }
+
+    // Fallback to entitlement rules if no usage counters
+    const rawRules = (pkg.package_type?.entitlement_rules || []) as any[];
+    return rawRules.map(rule => {
+      const name = rule.category?.name || rule.template?.name || 'All Classes';
+      const visits = rule.visits_allocated;
+      // Per-service unlimited is indicated by visits_allocated being null or -1
+      const isUnlimited = visits === null || visits === -1 || visits === undefined;
+      return {
+        id: rule.id,
+        name,
+        used: 0,
+        allocated: visits,
+        remaining: isUnlimited ? null : visits,
+        isUnlimited,
+      };
+    });
+  }
+
+  // Deduplicate entitlement rules for active package display (matches web app logic)
+  function getDeduplicatedEntitlementRules(pkg: Package): Array<{
+    id: string;
+    name: string;
+    visits: number | null;
+    isUnlimited: boolean;
+  }> {
+    // Use usage counters if available for accurate remaining counts
+    const usageDisplay = getPackageUsageDisplay(pkg);
+    if (usageDisplay.length > 0) {
+      return usageDisplay.map(u => ({
+        id: u.id,
+        name: u.name,
+        visits: u.remaining,
+        isUnlimited: u.isUnlimited,
+      }));
+    }
+
+    // Fallback to raw entitlement rules
+    const rawRules = (pkg.package_type?.entitlement_rules || []) as any[];
+    const deduplicatedRules: Array<{
+      id: string;
+      name: string;
+      visits: number | null;
+      isUnlimited: boolean;
+    }> = [];
+
+    for (const rule of rawRules) {
+      const name = rule.category?.name || rule.template?.name || 'All Classes';
+      const existingIndex = deduplicatedRules.findIndex(r => r.name === name);
+
+      const visits = rule.visits_allocated;
+      // Per-service unlimited is -1 or null, NOT pkg.is_unlimited
+      const isUnlimited = visits === null || visits === -1 || visits === undefined;
+
+      if (existingIndex === -1) {
+        deduplicatedRules.push({
+          id: rule.id,
+          name,
+          visits,
+          isUnlimited,
+        });
+      } else {
+        // Keep the one with more visits (or unlimited)
+        const existing = deduplicatedRules[existingIndex];
+        if (isUnlimited || (!existing.isUnlimited && visits > (existing.visits || 0))) {
+          deduplicatedRules[existingIndex] = {
+            id: rule.id,
+            name,
+            visits,
+            isUnlimited,
+          };
+        }
+      }
+    }
+
+    return deduplicatedRules;
+  }
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -803,24 +1102,64 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     {athleteData.memberships.length > 0 ? (
                       athleteData.memberships.map((membership) => {
                         const usageCounters = membership.membership_usage_counters || [];
+                        const isPaused = membership.status === 'paused';
+                        const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
+                        const hasScheduledPause = !!membership.pause_at;
+                        const hasScheduledResume = !!membership.resume_at;
+
+                        // Determine card border color based on status (keep athlete color on left)
+                        const cardBorderColor = isPaused
+                          ? 'rgba(234, 179, 8, 0.3)'
+                          : isScheduledForCancel
+                            ? 'rgba(239, 68, 68, 0.3)'
+                            : 'rgba(255,255,255,0.1)';
+
+                        // Determine icon colors based on status
+                        const iconColors: [string, string] = isPaused
+                          ? ['#EAB308', '#CA8A04']
+                          : isScheduledForCancel
+                            ? ['#EF4444', '#DC2626']
+                            : ['#9BDDFF', '#7BC5F0'];
+                        const iconTextColor = isPaused || isScheduledForCancel ? '#FFF' : '#000';
+
                         return (
-                          <View key={membership.id} style={[styles.activeMembershipCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3 }]}>
+                          <View key={membership.id} style={[styles.activeMembershipCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3, borderColor: cardBorderColor }]}>
                             {/* Header Row */}
                             <View style={styles.activeMembershipHeader}>
                               <View style={styles.activeMembershipIcon}>
                                 <LinearGradient
-                                  colors={['#9BDDFF', '#7BC5F0']}
+                                  colors={iconColors}
                                   style={styles.iconGradient}
                                 >
-                                  <Ionicons name="checkmark-circle" size={16} color="#000" />
+                                  <Ionicons
+                                    name={isPaused ? 'pause-circle' : isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
+                                    size={16}
+                                    color={iconTextColor}
+                                  />
                                 </LinearGradient>
                               </View>
                               <View style={styles.activeMembershipInfo}>
                                 <Text style={styles.activeMembershipName} numberOfLines={1}>
                                   {membership.membership_type.name}
                                 </Text>
-                                <Text style={styles.activeMembershipRenewal}>
-                                  Renews {formatDate(membership.current_period_end)}
+                                <Text style={[
+                                  styles.activeMembershipRenewal,
+                                  isPaused && styles.textYellow,
+                                  isScheduledForCancel && !isPaused && styles.textRed,
+                                ]}>
+                                  {isPaused ? (
+                                    hasScheduledResume
+                                      ? `Paused • Resumes ${formatDate(membership.resume_at!)}`
+                                      : 'Paused'
+                                  ) : hasScheduledPause ? (
+                                    `Pauses ${formatDate(membership.pause_at!)}`
+                                  ) : membership.cancel_at ? (
+                                    `Cancels ${formatDate(membership.cancel_at)}`
+                                  ) : isScheduledForCancel ? (
+                                    `Cancels ${formatDate(membership.current_period_end)}`
+                                  ) : (
+                                    `Renews ${formatDate(membership.current_period_end)}`
+                                  )}
                                 </Text>
                               </View>
                               <TouchableOpacity
@@ -830,6 +1169,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 <Text style={styles.manageButtonText}>Manage</Text>
                               </TouchableOpacity>
                             </View>
+
+                            {/* Status Banner for Scheduled Cancel */}
+                            {isScheduledForCancel && (
+                              <View style={styles.statusBannerRed}>
+                                <Text style={styles.statusBannerTextRed}>
+                                  {membership.cancel_at
+                                    ? `Cancels on ${formatDate(membership.cancel_at)}`
+                                    : 'Cancels at billing period end'}
+                                </Text>
+                                <TouchableOpacity
+                                  style={styles.statusBannerButtonBlue}
+                                  onPress={() => handleManageAction('resume', membership, athleteData.athleteId)}
+                                >
+                                  <Text style={styles.statusBannerButtonTextBlue}>Keep Membership</Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
 
                             {/* Usage Counters */}
                             {usageCounters.length > 0 && (
@@ -877,21 +1233,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             {/* Manage Menu */}
                             {showManageMenu === membership.id && (
                               <View style={styles.manageMenu}>
-                                <TouchableOpacity
-                                  style={styles.manageMenuItem}
-                                  onPress={() => handleManageAction('pause')}
-                                >
-                                  <Text style={styles.manageMenuText}>Pause Membership</Text>
-                                </TouchableOpacity>
-                                <View style={styles.manageMenuDivider} />
-                                <TouchableOpacity
-                                  style={styles.manageMenuItem}
-                                  onPress={() => handleManageAction('cancel')}
-                                >
-                                  <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
-                                    Cancel Membership
-                                  </Text>
-                                </TouchableOpacity>
+                                {isScheduledForCancel ? (
+                                  <TouchableOpacity
+                                    style={styles.manageMenuItem}
+                                    onPress={() => handleManageAction('resume', membership, athleteData.athleteId)}
+                                  >
+                                    <Text style={styles.manageMenuText}>Keep Membership</Text>
+                                  </TouchableOpacity>
+                                ) : (
+                                  <TouchableOpacity
+                                    style={styles.manageMenuItem}
+                                    onPress={() => handleManageAction('cancel', membership, athleteData.athleteId)}
+                                  >
+                                    <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
+                                      Cancel Membership
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
                               </View>
                             )}
                           </View>
@@ -985,24 +1343,64 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     <Text style={styles.sectionTitle}>YOUR MEMBERSHIP</Text>
                     {memberships.map((membership) => {
                       const usageCounters = membership.membership_usage_counters || [];
+                      const isPaused = membership.status === 'paused';
+                      const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
+                      const hasScheduledPause = !!membership.pause_at;
+                      const hasScheduledResume = !!membership.resume_at;
+
+                      // Determine card border color based on status
+                      const cardBorderColor = isPaused
+                        ? 'rgba(234, 179, 8, 0.3)'
+                        : isScheduledForCancel
+                          ? 'rgba(239, 68, 68, 0.3)'
+                          : 'rgba(255,255,255,0.1)';
+
+                      // Determine icon colors based on status
+                      const iconColors: [string, string] = isPaused
+                        ? ['#EAB308', '#CA8A04']
+                        : isScheduledForCancel
+                          ? ['#EF4444', '#DC2626']
+                          : ['#9BDDFF', '#7BC5F0'];
+                      const iconTextColor = isPaused || isScheduledForCancel ? '#FFF' : '#000';
+
                       return (
-                        <View key={membership.id} style={styles.activeMembershipCard}>
+                        <View key={membership.id} style={[styles.activeMembershipCard, { borderColor: cardBorderColor }]}>
                           {/* Header Row */}
                           <View style={styles.activeMembershipHeader}>
                             <View style={styles.activeMembershipIcon}>
                               <LinearGradient
-                                colors={['#9BDDFF', '#7BC5F0']}
+                                colors={iconColors}
                                 style={styles.iconGradient}
                               >
-                                <Ionicons name="checkmark-circle" size={16} color="#000" />
+                                <Ionicons
+                                  name={isPaused ? 'pause-circle' : isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
+                                  size={16}
+                                  color={iconTextColor}
+                                />
                               </LinearGradient>
                             </View>
                             <View style={styles.activeMembershipInfo}>
                               <Text style={styles.activeMembershipName} numberOfLines={1}>
                                 {membership.membership_type.name}
                               </Text>
-                              <Text style={styles.activeMembershipRenewal}>
-                                Renews {formatDate(membership.current_period_end)}
+                              <Text style={[
+                                styles.activeMembershipRenewal,
+                                isPaused && styles.textYellow,
+                                isScheduledForCancel && !isPaused && styles.textRed,
+                              ]}>
+                                {isPaused ? (
+                                  hasScheduledResume
+                                    ? `Paused • Resumes ${formatDate(membership.resume_at!)}`
+                                    : 'Paused'
+                                ) : hasScheduledPause ? (
+                                  `Pauses ${formatDate(membership.pause_at!)}`
+                                ) : membership.cancel_at ? (
+                                  `Cancels ${formatDate(membership.cancel_at)}`
+                                ) : isScheduledForCancel ? (
+                                  `Cancels ${formatDate(membership.current_period_end)}`
+                                ) : (
+                                  `Renews ${formatDate(membership.current_period_end)}`
+                                )}
                               </Text>
                             </View>
                             <TouchableOpacity
@@ -1012,6 +1410,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                               <Text style={styles.manageButtonText}>Manage</Text>
                             </TouchableOpacity>
                           </View>
+
+                          {/* Status Banner for Scheduled Cancel */}
+                          {isScheduledForCancel && (
+                            <View style={styles.statusBannerRed}>
+                              <Text style={styles.statusBannerTextRed}>
+                                {membership.cancel_at
+                                  ? `Cancels on ${formatDate(membership.cancel_at)}`
+                                  : 'Cancels at billing period end'}
+                              </Text>
+                              <TouchableOpacity
+                                style={styles.statusBannerButtonBlue}
+                                onPress={() => handleManageAction('resume', membership, athleteId!)}
+                              >
+                                <Text style={styles.statusBannerButtonTextBlue}>Keep Membership</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
 
                           {/* Usage Counters */}
                           {usageCounters.length > 0 && (
@@ -1059,21 +1474,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                           {/* Manage Menu */}
                           {showManageMenu === membership.id && (
                             <View style={styles.manageMenu}>
-                              <TouchableOpacity
-                                style={styles.manageMenuItem}
-                                onPress={() => handleManageAction('pause')}
-                              >
-                                <Text style={styles.manageMenuText}>Pause Membership</Text>
-                              </TouchableOpacity>
-                              <View style={styles.manageMenuDivider} />
-                              <TouchableOpacity
-                                style={styles.manageMenuItem}
-                                onPress={() => handleManageAction('cancel')}
-                              >
-                                <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
-                                  Cancel Membership
-                                </Text>
-                              </TouchableOpacity>
+                              {isScheduledForCancel ? (
+                                <TouchableOpacity
+                                  style={styles.manageMenuItem}
+                                  onPress={() => handleManageAction('resume', membership, athleteId!)}
+                                >
+                                  <Text style={styles.manageMenuText}>Keep Membership</Text>
+                                </TouchableOpacity>
+                              ) : (
+                                <TouchableOpacity
+                                  style={styles.manageMenuItem}
+                                  onPress={() => handleManageAction('cancel', membership, athleteId!)}
+                                >
+                                  <Text style={[styles.manageMenuText, { color: '#F87171' }]}>
+                                    Cancel Membership
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
                             </View>
                           )}
                         </View>
@@ -1172,68 +1589,89 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
                     {athleteData.packages.length > 0 ? (
                       athleteData.packages.map((pkg) => {
-                        const totalUses = pkg.package_type.uses ?? pkg.package_type.sessions_included;
-                        const isUnlimited = pkg.package_type.is_unlimited || totalUses === null;
-                        const allocations = getPackageServiceAllocations(pkg.package_type);
-                        const progressPercent = isUnlimited ? 0 : Math.min(100, ((totalUses - pkg.uses_remaining) / totalUses) * 100);
+                        const usageCounters = pkg.usage_counters || [];
 
                         return (
-                          <View key={pkg.id} style={[styles.activePackageCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3 }]}>
+                          <View key={pkg.id} style={[styles.activeMembershipCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3 }]}>
                             {/* Header Row */}
-                            <View style={styles.activePackageHeader}>
-                              <View style={styles.activePackageIcon}>
+                            <View style={styles.activeMembershipHeader}>
+                              <View style={styles.activeMembershipIcon}>
                                 <LinearGradient
                                   colors={['#9BDDFF', '#7BC5F0']}
                                   style={styles.iconGradient}
                                 >
-                                  <Ionicons name="card" size={14} color="#000" />
+                                  <Ionicons name="checkmark-circle" size={16} color="#000" />
                                 </LinearGradient>
                               </View>
-                              <View style={styles.activePackageInfo}>
-                                <Text style={styles.activePackageName} numberOfLines={1}>
+                              <View style={styles.activeMembershipInfo}>
+                                <Text style={styles.activeMembershipName} numberOfLines={1}>
                                   {pkg.package_type.name}
                                 </Text>
-                                <Text style={styles.activePackageExpiry}>
+                                <Text style={styles.activeMembershipRenewal}>
                                   Expires {formatDate(pkg.expiry_date)}
                                 </Text>
                               </View>
-                              <View style={styles.activePackageUsageRight}>
-                                {isUnlimited ? (
-                                  <Text style={styles.usageUnlimited}>∞</Text>
-                                ) : (
-                                  <>
-                                    <Text style={styles.activePackageUsesRemaining}>{pkg.uses_remaining}</Text>
-                                    <Text style={styles.activePackageUsesLabel}>left</Text>
-                                  </>
-                                )}
-                              </View>
                             </View>
 
-                            {/* Progress bar for limited packages */}
-                            {!isUnlimited && totalUses && (
-                              <View style={styles.activePackageProgress}>
-                                <View style={styles.usageProgressBar}>
-                                  <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
-                                </View>
-                                <Text style={styles.activePackageProgressText}>
-                                  {totalUses - pkg.uses_remaining} / {totalUses} used
-                                </Text>
+                            {/* Usage Counters - same style as memberships */}
+                            {usageCounters.length > 0 && (
+                              <View style={styles.usageCountersContainer}>
+                                {usageCounters.map((counter) => {
+                                  const isUnlimited = counter.uses_allocated === null || counter.uses_allocated === -1;
+                                  const remaining = isUnlimited ? '∞' : (counter.uses_allocated! - counter.uses_used);
+                                  return (
+                                    <View key={counter.id} style={styles.usageCounterRow}>
+                                      <View style={styles.usageCounterInfo}>
+                                        <Text style={styles.usageCounterName} numberOfLines={1}>
+                                          {counter.scope_name || 'All Classes'}
+                                        </Text>
+                                        <Text style={styles.usageCounterStats}>
+                                          {isUnlimited ? (
+                                            <Text><Text style={styles.usageUsed}>{counter.uses_used}</Text> used</Text>
+                                          ) : (
+                                            <Text><Text style={styles.usageUsed}>{counter.uses_used}</Text> / {counter.uses_allocated} used</Text>
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.usageCounterRight}>
+                                        {isUnlimited ? (
+                                          <Text style={styles.usageUnlimited}>∞</Text>
+                                        ) : (
+                                          <>
+                                            <Text style={styles.usageRemaining}>{remaining}</Text>
+                                            <Text style={styles.usageRemainingLabel}>left</Text>
+                                          </>
+                                        )}
+                                      </View>
+                                    </View>
+                                  );
+                                })}
                               </View>
                             )}
 
-                            {/* What this package is valid for */}
-                            {allocations.length > 0 && (
-                              <View style={styles.activePackageValidFor}>
-                                <Text style={styles.activePackageValidForLabel}>Valid for:</Text>
-                                <View style={styles.activePackageValidForList}>
-                                  {allocations.map((alloc, index) => (
-                                    <View key={index} style={styles.activePackageValidForItem}>
-                                      <Text style={styles.activePackageValidForName}>{alloc.name}</Text>
-                                      {!alloc.isUnlimited && alloc.visits !== '∞' && (
-                                        <Text style={styles.activePackageValidForVisits}>({alloc.visits} visits)</Text>
-                                      )}
-                                    </View>
-                                  ))}
+                            {/* Fallback if no usage counters */}
+                            {usageCounters.length === 0 && (
+                              <View style={styles.usageCountersContainer}>
+                                <View style={styles.usageCounterRow}>
+                                  <View style={styles.usageCounterInfo}>
+                                    <Text style={styles.usageCounterName}>Sessions</Text>
+                                    <Text style={styles.usageCounterStats}>
+                                      {pkg.is_unlimited || pkg.uses_remaining === null
+                                        ? 'Unlimited'
+                                        : `${(pkg.uses_granted ?? 0) - (pkg.uses_remaining ?? 0)} / ${pkg.uses_granted ?? 0} used`
+                                      }
+                                    </Text>
+                                  </View>
+                                  <View style={styles.usageCounterRight}>
+                                    {pkg.is_unlimited || pkg.uses_remaining === null ? (
+                                      <Text style={styles.usageUnlimited}>∞</Text>
+                                    ) : (
+                                      <>
+                                        <Text style={styles.usageRemaining}>{pkg.uses_remaining}</Text>
+                                        <Text style={styles.usageRemainingLabel}>left</Text>
+                                      </>
+                                    )}
+                                  </View>
                                 </View>
                               </View>
                             )}
@@ -1328,74 +1766,95 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               </>
             ) : (
               <>
-                {/* REGULAR ATHLETE VIEW: Original packages display */}
-                {/* Active Packages */}
+                {/* REGULAR ATHLETE VIEW: Active Packages - same style as memberships */}
                 {packages.length > 0 && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>YOUR PACKAGES</Text>
                     {packages.map((pkg) => {
-                      const totalUses = pkg.package_type.uses ?? pkg.package_type.sessions_included;
-                      const isUnlimited = pkg.package_type.is_unlimited || totalUses === null;
-                      const allocations = getPackageServiceAllocations(pkg.package_type);
-                      const progressPercent = isUnlimited ? 0 : Math.min(100, ((totalUses - pkg.uses_remaining) / totalUses) * 100);
+                      const usageCounters = pkg.usage_counters || [];
 
                       return (
-                        <View key={pkg.id} style={styles.activePackageCard}>
+                        <View key={pkg.id} style={styles.activeMembershipCard}>
                           {/* Header Row */}
-                          <View style={styles.activePackageHeader}>
-                            <View style={styles.activePackageIcon}>
+                          <View style={styles.activeMembershipHeader}>
+                            <View style={styles.activeMembershipIcon}>
                               <LinearGradient
                                 colors={['#9BDDFF', '#7BC5F0']}
                                 style={styles.iconGradient}
                               >
-                                <Ionicons name="card" size={14} color="#000" />
+                                <Ionicons name="checkmark-circle" size={16} color="#000" />
                               </LinearGradient>
                             </View>
-                            <View style={styles.activePackageInfo}>
-                              <Text style={styles.activePackageName} numberOfLines={1}>
+                            <View style={styles.activeMembershipInfo}>
+                              <Text style={styles.activeMembershipName} numberOfLines={1}>
                                 {pkg.package_type.name}
                               </Text>
-                              <Text style={styles.activePackageExpiry}>
+                              <Text style={styles.activeMembershipRenewal}>
                                 Expires {formatDate(pkg.expiry_date)}
                               </Text>
                             </View>
-                            <View style={styles.activePackageUsageRight}>
-                              {isUnlimited ? (
-                                <Text style={styles.usageUnlimited}>∞</Text>
-                              ) : (
-                                <>
-                                  <Text style={styles.activePackageUsesRemaining}>{pkg.uses_remaining}</Text>
-                                  <Text style={styles.activePackageUsesLabel}>left</Text>
-                                </>
-                              )}
-                            </View>
                           </View>
 
-                          {/* Progress bar for limited packages */}
-                          {!isUnlimited && totalUses && (
-                            <View style={styles.activePackageProgress}>
-                              <View style={styles.usageProgressBar}>
-                                <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
-                              </View>
-                              <Text style={styles.activePackageProgressText}>
-                                {totalUses - pkg.uses_remaining} / {totalUses} used
-                              </Text>
+                          {/* Usage Counters - same style as memberships */}
+                          {usageCounters.length > 0 && (
+                            <View style={styles.usageCountersContainer}>
+                              {usageCounters.map((counter) => {
+                                const isUnlimited = counter.uses_allocated === null || counter.uses_allocated === -1;
+                                const remaining = isUnlimited ? '∞' : (counter.uses_allocated! - counter.uses_used);
+                                const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.uses_used / counter.uses_allocated!) * 100);
+                                return (
+                                  <View key={counter.id} style={styles.usageCounterRow}>
+                                    <View style={styles.usageCounterInfo}>
+                                      <Text style={styles.usageCounterName} numberOfLines={1}>
+                                        {counter.scope_name || 'All Classes'}
+                                      </Text>
+                                      <Text style={styles.usageCounterStats}>
+                                        {isUnlimited ? (
+                                          <Text><Text style={styles.usageUsed}>{counter.uses_used}</Text> used</Text>
+                                        ) : (
+                                          <Text><Text style={styles.usageUsed}>{counter.uses_used}</Text> / {counter.uses_allocated} used</Text>
+                                        )}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.usageCounterRight}>
+                                      {isUnlimited ? (
+                                        <Text style={styles.usageUnlimited}>∞</Text>
+                                      ) : (
+                                        <>
+                                          <Text style={styles.usageRemaining}>{remaining}</Text>
+                                          <Text style={styles.usageRemainingLabel}>left</Text>
+                                        </>
+                                      )}
+                                    </View>
+                                  </View>
+                                );
+                              })}
                             </View>
                           )}
 
-                          {/* What this package is valid for */}
-                          {allocations.length > 0 && (
-                            <View style={styles.activePackageValidFor}>
-                              <Text style={styles.activePackageValidForLabel}>Valid for:</Text>
-                              <View style={styles.activePackageValidForList}>
-                                {allocations.map((alloc, index) => (
-                                  <View key={index} style={styles.activePackageValidForItem}>
-                                    <Text style={styles.activePackageValidForName}>{alloc.name}</Text>
-                                    {!alloc.isUnlimited && alloc.visits !== '∞' && (
-                                      <Text style={styles.activePackageValidForVisits}>({alloc.visits} visits)</Text>
-                                    )}
-                                  </View>
-                                ))}
+                          {/* Fallback if no usage counters */}
+                          {usageCounters.length === 0 && (
+                            <View style={styles.usageCountersContainer}>
+                              <View style={styles.usageCounterRow}>
+                                <View style={styles.usageCounterInfo}>
+                                  <Text style={styles.usageCounterName}>Sessions</Text>
+                                  <Text style={styles.usageCounterStats}>
+                                    {pkg.is_unlimited || pkg.uses_remaining === null
+                                      ? 'Unlimited'
+                                      : `${(pkg.uses_granted ?? 0) - (pkg.uses_remaining ?? 0)} / ${pkg.uses_granted ?? 0} used`
+                                    }
+                                  </Text>
+                                </View>
+                                <View style={styles.usageCounterRight}>
+                                  {pkg.is_unlimited || pkg.uses_remaining === null ? (
+                                    <Text style={styles.usageUnlimited}>∞</Text>
+                                  ) : (
+                                    <>
+                                      <Text style={styles.usageRemaining}>{pkg.uses_remaining}</Text>
+                                      <Text style={styles.usageRemainingLabel}>left</Text>
+                                    </>
+                                  )}
+                                </View>
                               </View>
                             </View>
                           )}
@@ -1657,6 +2116,96 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
           </View>
         </View>
       </Modal>
+
+      {/* Cancel Membership Modal */}
+      <Modal
+        visible={showCancelModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowCancelModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.managementModalContent}>
+            {/* Header */}
+            <View style={styles.managementModalHeader}>
+              <View style={styles.managementModalIconContainer}>
+                <LinearGradient
+                  colors={['#EF4444', '#DC2626']}
+                  style={styles.managementModalIcon}
+                >
+                  <Ionicons name="alert-circle" size={24} color="#FFF" />
+                </LinearGradient>
+              </View>
+              <Text style={styles.managementModalTitle}>Cancel Membership</Text>
+              <TouchableOpacity
+                style={styles.managementModalCloseButton}
+                onPress={() => setShowCancelModal(false)}
+              >
+                <Ionicons name="close" size={24} color="#9CA3AF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Membership Info */}
+            {selectedMembership && (
+              <View style={styles.managementModalInfo}>
+                <Text style={styles.managementModalMembershipName}>
+                  {selectedMembership.membership_type.name}
+                </Text>
+                <Text style={styles.managementModalSubtext}>
+                  Current period ends {formatDate(selectedMembership.current_period_end)}
+                </Text>
+              </View>
+            )}
+
+            {/* Warning */}
+            <View style={[styles.managementModalWarning, styles.managementModalWarningRed]}>
+              <Ionicons name="warning" size={20} color="#EF4444" />
+              <Text style={[styles.managementModalWarningText, styles.managementModalWarningTextRed]}>
+                Cancelling your membership will end your access to member benefits. This action cannot be undone after the billing period ends.
+              </Text>
+            </View>
+
+            {/* Optional reason */}
+            <View style={styles.managementModalInputContainer}>
+              <Text style={styles.managementModalInputLabel}>Reason (optional)</Text>
+              <TextInput
+                style={styles.managementModalInput}
+                placeholder="Help us improve by sharing your reason..."
+                placeholderTextColor="#6B7280"
+                value={cancelReason}
+                onChangeText={setCancelReason}
+                multiline
+                numberOfLines={3}
+              />
+            </View>
+
+            {/* Actions */}
+            <View style={styles.managementModalActions}>
+              <TouchableOpacity
+                style={[styles.managementModalButton, styles.managementModalButtonDanger]}
+                onPress={() => handleCancelMembership(false)}
+                disabled={managementLoading}
+              >
+                {managementLoading ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.managementModalButtonDangerText}>
+                    Cancel at Period End
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.managementModalButton}
+                onPress={() => setShowCancelModal(false)}
+                disabled={managementLoading}
+              >
+                <Text style={styles.managementModalButtonText}>Keep Membership</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1850,6 +2399,43 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: 'rgba(255,255,255,0.1)',
   },
+  // Status text colors
+  textYellow: {
+    color: '#EAB308',
+  },
+  textOrange: {
+    color: '#F97316',
+  },
+  textRed: {
+    color: '#EF4444',
+  },
+  // Status Banners
+  statusBannerRed: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(239, 68, 68, 0.2)',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusBannerTextRed: {
+    fontSize: 12,
+    color: '#EF4444',
+    flex: 1,
+    marginRight: 8,
+  },
+  statusBannerButtonBlue: {
+    backgroundColor: 'rgba(155, 221, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  statusBannerButtonTextBlue: {
+    fontSize: 12,
+    color: '#9BDDFF',
+    fontWeight: '500',
+  },
   // Usage Counters
   usageCountersContainer: {
     marginTop: 12,
@@ -1858,18 +2444,23 @@ const styles = StyleSheet.create({
     borderTopColor: 'rgba(255,255,255,0.1)',
   },
   usageCounterRow: {
-    marginBottom: 12,
-  },
-  usageCounterInfo: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  usageCounterInfo: {
+    flex: 1,
+    marginRight: 12,
   },
   usageCounterName: {
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '500',
     color: '#E5E7EB',
-    flex: 1,
+    marginBottom: 2,
   },
   usageCounterStats: {
     fontSize: 12,
@@ -1880,22 +2471,21 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   usageCounterRight: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
     alignItems: 'flex-end',
+    minWidth: 50,
   },
   usageRemaining: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#9BDDFF',
   },
   usageRemainingLabel: {
     fontSize: 10,
     color: '#9CA3AF',
+    marginTop: -2,
   },
   usageUnlimited: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#10B981',
   },
@@ -1910,6 +2500,35 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#9BDDFF',
     borderRadius: 2,
+  },
+  // Package Entitlements List (web app style)
+  packageEntitlementsList: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  packageEntitlementRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  packageEntitlementName: {
+    fontSize: 13,
+    color: '#E5E7EB',
+    flex: 1,
+  },
+  packageEntitlementVisits: {
+    fontSize: 13,
+    color: '#9BDDFF',
+    fontWeight: '500',
+  },
+  packageEntitlementUnlimited: {
+    color: '#10B981',
+    fontSize: 16,
   },
   // Membership Type Card
   membershipTypeCard: {
@@ -2364,5 +2983,125 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     color: '#000000',
+  },
+  // Management Modal Styles (Pause/Cancel)
+  managementModalContent: {
+    backgroundColor: '#1A1A1A',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '80%',
+    width: '100%',
+    position: 'absolute',
+    bottom: 0,
+    paddingBottom: 34,
+  },
+  managementModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  managementModalIconContainer: {
+    marginRight: 12,
+  },
+  managementModalIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  managementModalTitle: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  managementModalCloseButton: {
+    padding: 4,
+  },
+  managementModalInfo: {
+    padding: 20,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  managementModalMembershipName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  managementModalSubtext: {
+    fontSize: 14,
+    color: '#9CA3AF',
+  },
+  managementModalWarning: {
+    flexDirection: 'row',
+    padding: 16,
+    margin: 20,
+    marginBottom: 0,
+    backgroundColor: 'rgba(234, 179, 8, 0.1)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(234, 179, 8, 0.3)',
+    gap: 12,
+  },
+  managementModalWarningRed: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  managementModalWarningText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#EAB308',
+    lineHeight: 20,
+  },
+  managementModalWarningTextRed: {
+    color: '#EF4444',
+  },
+  managementModalInputContainer: {
+    padding: 20,
+    paddingBottom: 0,
+  },
+  managementModalInputLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    marginBottom: 8,
+  },
+  managementModalInput: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 14,
+    color: '#FFFFFF',
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  managementModalActions: {
+    padding: 20,
+    gap: 12,
+  },
+  managementModalButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  managementModalButtonDanger: {
+    backgroundColor: '#EF4444',
+  },
+  managementModalButtonDangerText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  managementModalButtonText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#FFFFFF',
   },
 });

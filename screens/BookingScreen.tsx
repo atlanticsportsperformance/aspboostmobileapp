@@ -7,8 +7,6 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -36,6 +34,9 @@ import ParentAthleteSelector from '../components/booking/ParentAthleteSelector';
 import EventRow from '../components/booking/EventRow';
 import ClassDetailsSheet from '../components/booking/ClassDetailsSheet';
 import CancelConfirmationSheet from '../components/booking/CancelConfirmationSheet';
+import WaiverSigningSheet from '../components/booking/WaiverSigningSheet';
+import { checkPendingWaivers } from '../lib/waiverApi';
+import { PendingWaiver } from '../types/waiver';
 
 type RootStackParamList = {
   Booking: { athleteId?: string };
@@ -71,9 +72,12 @@ export default function BookingScreen() {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
   // View mode: 'day' or 'list'
-  const [viewMode, setViewMode] = useState<'day' | 'list'>('day');
+  const [viewMode, setViewMode] = useState<'day' | 'list'>('list');
   const [listEvents, setListEvents] = useState<BookableEvent[]>([]);
   const [loadingListEvents, setLoadingListEvents] = useState(false);
+
+  // Selected days for filtering (list view)
+  const [selectedDays, setSelectedDays] = useState<Date[]>([]);
 
   // Booking flow
   const [selectedEvent, setSelectedEvent] = useState<BookableEvent | null>(null);
@@ -86,35 +90,31 @@ export default function BookingScreen() {
   const [cancelEvent, setCancelEvent] = useState<BookableEvent | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
-  // Track app state for refreshing after Stripe checkout
-  const appState = useRef(AppState.currentState);
+  // Waiver flow
+  const [showWaiverSheet, setShowWaiverSheet] = useState(false);
+  const [pendingWaivers, setPendingWaivers] = useState<PendingWaiver[]>([]);
+  const [pendingEventAfterWaivers, setPendingEventAfterWaivers] = useState<BookableEvent | null>(null);
+
+  // Refs to prevent infinite loops and state updates on unmounted component
+  const isMountedRef = useRef(true);
+  const isInitializingRef = useRef(false);
+  const isFetchingEventsRef = useRef(false);
+  const isFetchingListEventsRef = useRef(false);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Initialize
   useEffect(() => {
-    initializeBooking();
+    if (!isInitializingRef.current) {
+      initializeBooking();
+    }
   }, []);
-
-  // Refresh events when app comes back to foreground (after Stripe Checkout)
-  // This will be used when paid drop-in payments are implemented
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
-      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-        // App came back to foreground - refresh events in case user completed payment
-        if (selectedAthleteId) {
-          if (viewMode === 'day') {
-            fetchEvents();
-          } else {
-            fetchListEvents();
-          }
-        }
-      }
-      appState.current = nextAppState;
-    });
-
-    return () => {
-      subscription.remove();
-    };
-  }, [selectedAthleteId, viewMode]);
 
   // Generate week dates when selected date changes
   useEffect(() => {
@@ -123,21 +123,23 @@ export default function BookingScreen() {
 
   // Fetch events when athlete or date changes
   useEffect(() => {
-    if (selectedAthleteId) {
-      if (viewMode === 'day') {
-        fetchEvents();
-      }
+    if (selectedAthleteId && viewMode === 'day' && !isFetchingEventsRef.current) {
+      fetchEvents();
     }
   }, [selectedAthleteId, selectedDate, viewMode]);
 
   // Fetch list events when in list mode or week changes
   useEffect(() => {
-    if (selectedAthleteId && viewMode === 'list') {
+    if (selectedAthleteId && viewMode === 'list' && !isFetchingListEventsRef.current) {
       fetchListEvents();
     }
   }, [selectedAthleteId, weekDates, viewMode]);
 
   const initializeBooking = async () => {
+    // Prevent concurrent initialization
+    if (isInitializingRef.current) return;
+    isInitializingRef.current = true;
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -145,6 +147,7 @@ export default function BookingScreen() {
         return;
       }
 
+      if (!isMountedRef.current) return;
       setUserId(user.id);
 
       // Check account type
@@ -154,12 +157,15 @@ export default function BookingScreen() {
         .eq('id', user.id)
         .single();
 
+      if (!isMountedRef.current) return;
+
       const isParent = profile?.account_type === 'parent';
       setIsParentAccount(isParent);
 
       if (isParent) {
         // Load linked athletes
         const athletes = await getLinkedAthletes(user.id);
+        if (!isMountedRef.current) return;
         setLinkedAthletes(athletes);
         setLoadingAthletes(false);
 
@@ -173,6 +179,7 @@ export default function BookingScreen() {
       } else {
         // Get athlete ID for regular user
         const athleteId = await getAthleteId(user.id);
+        if (!isMountedRef.current) return;
         if (athleteId) {
           setSelectedAthleteId(athleteId);
 
@@ -183,16 +190,18 @@ export default function BookingScreen() {
             .eq('id', athleteId)
             .single();
 
-          if (athlete?.org_id) {
+          if (athlete?.org_id && isMountedRef.current) {
             const cats = await getCategories(athlete.org_id);
-            setCategories(cats);
+            if (isMountedRef.current) setCategories(cats);
           }
         }
-        setLoadingAthletes(false);
+        if (isMountedRef.current) setLoadingAthletes(false);
       }
     } catch (error) {
       console.error('Error initializing booking:', error);
-      setLoadingAthletes(false);
+      if (isMountedRef.current) setLoadingAthletes(false);
+    } finally {
+      isInitializingRef.current = false;
     }
   };
 
@@ -211,31 +220,37 @@ export default function BookingScreen() {
   };
 
   const fetchEvents = async () => {
-    if (!selectedAthleteId) return;
+    if (!selectedAthleteId || isFetchingEventsRef.current) return;
+    isFetchingEventsRef.current = true;
 
-    setLoadingEvents(true);
+    if (isMountedRef.current) setLoadingEvents(true);
     try {
       const eventsData = await getBookableEvents(selectedAthleteId, selectedDate);
-      setEvents(eventsData);
+      if (isMountedRef.current) setEvents(eventsData);
     } catch (error) {
       console.error('Error fetching events:', error);
     } finally {
-      setLoadingEvents(false);
+      isFetchingEventsRef.current = false;
+      if (isMountedRef.current) setLoadingEvents(false);
     }
   };
 
   const fetchListEvents = async () => {
-    if (!selectedAthleteId || weekDates.length === 0) return;
+    if (!selectedAthleteId || weekDates.length === 0 || isFetchingListEventsRef.current) return;
+    isFetchingListEventsRef.current = true;
 
-    setLoadingListEvents(true);
+    if (isMountedRef.current) setLoadingListEvents(true);
     try {
       // Fetch events for all days in the week
       const allEvents: BookableEvent[] = [];
 
       for (const date of weekDates) {
+        if (!isMountedRef.current) break;
         const dayEvents = await getBookableEvents(selectedAthleteId, date);
         allEvents.push(...dayEvents);
       }
+
+      if (!isMountedRef.current) return;
 
       // Sort by date/time
       allEvents.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
@@ -243,7 +258,8 @@ export default function BookingScreen() {
     } catch (error) {
       console.error('Error fetching list events:', error);
     } finally {
-      setLoadingListEvents(false);
+      isFetchingListEventsRef.current = false;
+      if (isMountedRef.current) setLoadingListEvents(false);
     }
   };
 
@@ -267,6 +283,29 @@ export default function BookingScreen() {
   const handleEventPress = async (event: BookableEvent) => {
     if (!selectedAthleteId) return;
 
+    // First, check for pending waivers
+    try {
+      const waiverCheck = await checkPendingWaivers(selectedAthleteId, 'booking');
+
+      if (waiverCheck.has_pending_waivers && waiverCheck.pending_waivers.length > 0) {
+        // Store the event to continue after waivers are signed
+        setPendingEventAfterWaivers(event);
+        setPendingWaivers(waiverCheck.pending_waivers);
+        setShowWaiverSheet(true);
+        return;
+      }
+    } catch (error) {
+      console.error('Error checking waivers:', error);
+      // Continue with booking even if waiver check fails
+    }
+
+    // No waivers needed, proceed with normal flow
+    proceedWithEventDetails(event);
+  };
+
+  const proceedWithEventDetails = async (event: BookableEvent) => {
+    if (!selectedAthleteId) return;
+
     setSelectedEvent(event);
     setLoadingEligibility(true);
     setEligibility(null);
@@ -285,6 +324,23 @@ export default function BookingScreen() {
     } finally {
       setLoadingEligibility(false);
     }
+  };
+
+  const handleWaiverComplete = () => {
+    setShowWaiverSheet(false);
+    setPendingWaivers([]);
+
+    // Continue with the event that was pending
+    if (pendingEventAfterWaivers) {
+      proceedWithEventDetails(pendingEventAfterWaivers);
+      setPendingEventAfterWaivers(null);
+    }
+  };
+
+  const handleWaiverClose = () => {
+    setShowWaiverSheet(false);
+    setPendingWaivers([]);
+    setPendingEventAfterWaivers(null);
   };
 
   const handleReserve = async (paymentMethod: PaymentMethod) => {
@@ -346,6 +402,8 @@ export default function BookingScreen() {
     const newDate = new Date(selectedDate);
     newDate.setDate(selectedDate.getDate() + (direction === 'next' ? 7 : -7));
     setSelectedDate(newDate);
+    // Clear day selections when navigating to a new week
+    setSelectedDays([]);
   };
 
   const isToday = (date: Date) => {
@@ -357,12 +415,39 @@ export default function BookingScreen() {
     );
   };
 
+  const isPastDay = (date: Date) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const compareDate = new Date(date);
+    compareDate.setHours(0, 0, 0, 0);
+    return compareDate < today;
+  };
+
   const isSameDay = (date1: Date, date2: Date) => {
     return (
       date1.getDate() === date2.getDate() &&
       date1.getMonth() === date2.getMonth() &&
       date1.getFullYear() === date2.getFullYear()
     );
+  };
+
+  const isDaySelected = (date: Date) => {
+    return selectedDays.some((d) => isSameDay(d, date));
+  };
+
+  const toggleDaySelection = (date: Date) => {
+    if (isDaySelected(date)) {
+      // Remove the day from selection
+      setSelectedDays(selectedDays.filter((d) => !isSameDay(d, date)));
+    } else {
+      // Add the day to selection
+      setSelectedDays([...selectedDays, date]);
+    }
+  };
+
+  const handleDayPress = (date: Date) => {
+    // Toggle the day selection (multi-select for filtering)
+    toggleDaySelection(date);
   };
 
   const getMonthYearDisplay = () => {
@@ -375,16 +460,28 @@ export default function BookingScreen() {
   // Get current events based on view mode
   const currentEvents = viewMode === 'day' ? events : listEvents;
 
+  // Filter list events:
+  // - If specific days are selected, show only those days
+  // - Otherwise, auto-hide past days (show today and future only)
+  const dayFilteredEvents =
+    viewMode === 'list'
+      ? selectedDays.length > 0
+        ? currentEvents.filter((event) =>
+            selectedDays.some((d) => isSameDay(d, event.startTime))
+          )
+        : currentEvents.filter((event) => !isPastDay(event.startTime))
+      : currentEvents;
+
   // Dynamic categories - only show categories that have events
   const availableCategories = categories.filter((cat) =>
-    currentEvents.some((e) => e.category === cat.name)
+    dayFilteredEvents.some((e) => e.category === cat.name)
   );
 
   // Filter events by selected category
   const filteredEvents =
     selectedCategory === 'all'
-      ? currentEvents
-      : currentEvents.filter((e) => e.category === selectedCategory);
+      ? dayFilteredEvents
+      : dayFilteredEvents.filter((e) => e.category === selectedCategory);
 
   // Group events by date for list view
   const groupedEvents: Record<string, BookableEvent[]> = {};
@@ -439,23 +536,7 @@ export default function BookingScreen() {
           <Text style={styles.backIcon}>‹</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Book a Class</Text>
-        {/* View Mode Toggle */}
-        <TouchableOpacity
-          style={styles.viewModeToggle}
-          onPress={() => {
-            setSelectedCategory('all'); // Reset filter when switching modes
-            setViewMode(viewMode === 'day' ? 'list' : 'day');
-          }}
-        >
-          <LinearGradient
-            colors={['#9BDDFF', '#7BC5F0']}
-            style={styles.viewModeToggleInner}
-          >
-            <Text style={styles.viewModeToggleText}>
-              {viewMode === 'day' ? 'List' : 'Day'}
-            </Text>
-          </LinearGradient>
-        </TouchableOpacity>
+        <View style={styles.headerPlaceholder} />
       </View>
 
       {/* Month Navigation */}
@@ -475,44 +556,54 @@ export default function BookingScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Week Date Picker - Only show in day mode */}
-      {viewMode === 'day' ? (
-        <View style={styles.weekPicker}>
-          {weekDates.map((date, index) => {
-            const isSelected = isSameDay(date, selectedDate);
-            const isTodayDate = isToday(date);
+      {/* Week Date Picker */}
+      <View style={styles.weekPicker}>
+        {weekDates.map((date, index) => {
+          // In day mode: single selection based on selectedDate
+          // In list mode: multi-selection based on selectedDays
+          const isSelected =
+            viewMode === 'day'
+              ? isSameDay(date, selectedDate)
+              : isDaySelected(date);
+          const isTodayDate = isToday(date);
+          const isPast = isPastDay(date);
+          // In list mode, past days are dimmed unless selected
+          const isDimmed = viewMode === 'list' && isPast && !isSelected;
 
-            return (
-              <TouchableOpacity
-                key={index}
-                style={styles.dateButton}
-                onPress={() => setSelectedDate(date)}
-                activeOpacity={0.7}
-              >
-                {isSelected ? (
-                  <LinearGradient
-                    colors={['#9BDDFF', '#7BC5F0']}
-                    style={styles.dateButtonSelected}
-                  >
-                    <Text style={styles.dayNameSelected}>{DAY_NAMES[index]}</Text>
-                    <Text style={styles.dayNumberSelected}>{date.getDate()}</Text>
-                  </LinearGradient>
-                ) : (
-                  <View style={styles.dateButtonInner}>
-                    <Text style={styles.dayName}>{DAY_NAMES[index]}</Text>
-                    <Text style={styles.dayNumber}>{date.getDate()}</Text>
-                    {isTodayDate && <View style={styles.todayDot} />}
-                  </View>
-                )}
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      ) : (
+          return (
+            <TouchableOpacity
+              key={index}
+              style={[styles.dateButton, isDimmed && styles.dateButtonDimmed]}
+              onPress={() => handleDayPress(date)}
+              activeOpacity={0.7}
+            >
+              {isSelected ? (
+                <LinearGradient
+                  colors={['#9BDDFF', '#7BC5F0']}
+                  style={styles.dateButtonSelected}
+                >
+                  <Text style={styles.dayNameSelected}>{DAY_NAMES[index]}</Text>
+                  <Text style={styles.dayNumberSelected}>{date.getDate()}</Text>
+                </LinearGradient>
+              ) : (
+                <View style={[styles.dateButtonInner, isDimmed && styles.dateButtonInnerDimmed]}>
+                  <Text style={[styles.dayName, isDimmed && styles.dayNameDimmed]}>{DAY_NAMES[index]}</Text>
+                  <Text style={[styles.dayNumber, isDimmed && styles.dayNumberDimmed]}>{date.getDate()}</Text>
+                  {isTodayDate && <View style={styles.todayDot} />}
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* List mode filter hint */}
+      {viewMode === 'list' && (
         <View style={styles.listModeIndicator}>
           <Text style={styles.listModeText}>
-            Showing all classes from {weekDates[0]?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} -{' '}
-            {weekDates[6]?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {selectedDays.length === 0
+              ? 'Showing today & upcoming • Tap days to filter'
+              : `Showing ${selectedDays.length} day${selectedDays.length !== 1 ? 's' : ''} • Tap to toggle`}
           </Text>
         </View>
       )}
@@ -668,6 +759,17 @@ export default function BookingScreen() {
         onConfirm={handleConfirmCancel}
         onClose={() => setCancelEvent(null)}
       />
+
+      {/* Waiver Signing Sheet */}
+      {selectedAthleteId && (
+        <WaiverSigningSheet
+          visible={showWaiverSheet}
+          waivers={pendingWaivers}
+          athleteId={selectedAthleteId}
+          onClose={handleWaiverClose}
+          onComplete={handleWaiverComplete}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -710,20 +812,6 @@ const styles = StyleSheet.create({
   headerPlaceholder: {
     width: 40,
   },
-  viewModeToggle: {
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  viewModeToggleInner: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  viewModeToggleText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0A0A0A',
-  },
   monthNav: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -759,6 +847,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 4,
   },
+  dateButtonDimmed: {
+    opacity: 0.4,
+  },
   dateButtonInner: {
     alignItems: 'center',
     paddingVertical: 8,
@@ -766,6 +857,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 12,
     minWidth: 44,
+  },
+  dateButtonInnerDimmed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
   },
   dateButtonSelected: {
     alignItems: 'center',
@@ -784,6 +878,9 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     marginBottom: 4,
   },
+  dayNameDimmed: {
+    color: '#525252',
+  },
   dayNameSelected: {
     fontSize: 10,
     fontWeight: '500',
@@ -794,6 +891,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  dayNumberDimmed: {
+    color: '#737373',
   },
   dayNumberSelected: {
     fontSize: 18,
@@ -889,12 +989,12 @@ const styles = StyleSheet.create({
   },
   listModeIndicator: {
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 8,
     alignItems: 'center',
   },
   listModeText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
-    color: 'rgba(155, 221, 255, 0.8)',
+    color: 'rgba(155, 221, 255, 0.6)',
   },
 });

@@ -16,6 +16,7 @@ interface PredictedVelocity {
   predicted_value: number;
   predicted_value_low?: number;
   predicted_value_high?: number;
+  model_name?: string; // 'pitch_velocity' or 'bat_speed'
 }
 
 interface BodyweightData {
@@ -27,48 +28,42 @@ interface BodyweightData {
 interface ForceProfileCardProps {
   data: ForceProfile;
   latestPrediction?: PredictedVelocity | null;
+  batSpeedPrediction?: PredictedVelocity | null;
   bodyweight?: BodyweightData | null;
 }
 
-export default function ForceProfileCard({ data, latestPrediction, bodyweight, isActive = true }: ForceProfileCardProps & { isActive?: boolean }) {
+export default function ForceProfileCard({ data, latestPrediction, batSpeedPrediction, bodyweight }: ForceProfileCardProps) {
   const { percentile_rank, best_metric, worst_metric } = data;
 
-  // Animation values
-  const circleAnim = useRef(new Animated.Value(0)).current;
-  const scoreAnim = useRef(new Animated.Value(0)).current;
-  const bestSliderAnim = useRef(new Animated.Value(0)).current;
-  const worstSliderAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.8)).current;
-  const glowAnim = useRef(new Animated.Value(0)).current;
-  const predictionAnim = useRef(new Animated.Value(0)).current;
+  // Track if this is the first mount (for animation)
+  const isFirstMount = useRef(true);
 
-  // Track if animation has already run to prevent re-triggering on parent re-renders
-  const hasAnimated = useRef(false);
+  // Animation values - start at final values to prevent reset on re-render
+  // Will be reset to 0 on first mount only for animation
+  const circleAnim = useRef(new Animated.Value(1)).current;
+  const scoreAnim = useRef(new Animated.Value(percentile_rank)).current;
+  const bestSliderAnim = useRef(new Animated.Value(best_metric?.percentile || 0)).current;
+  const worstSliderAnim = useRef(new Animated.Value(worst_metric?.percentile || 0)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const predictionAnim = useRef(new Animated.Value(1)).current;
 
   // Circle circumference
   const radius = 68;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - percentile_rank / 100);
 
-  // Reset hasAnimated when card becomes inactive (swiped away)
-  // This allows animation to replay when user swipes back to this card
+  // Animate ONCE on first mount only
   useEffect(() => {
-    if (!isActive) {
-      hasAnimated.current = false;
-    }
-  }, [isActive]);
+    if (!isFirstMount.current) return;
+    isFirstMount.current = false;
 
-  // Animate when card becomes active
-  useEffect(() => {
-    if (!isActive) return;
-
-    // Only animate once per active cycle - prevents re-triggering on parent re-renders
-    if (hasAnimated.current) return;
-    hasAnimated.current = true;
-
-    // NOTE: We no longer reset animation values to 0 here because if the component
-    // remounts (e.g., when a modal opens/closes), we want to preserve the current values.
-    // The animation values are initialized to 0 in useRef above, so first render will animate.
+    // Reset values to 0 for animation
+    circleAnim.setValue(0);
+    scoreAnim.setValue(0);
+    bestSliderAnim.setValue(0);
+    worstSliderAnim.setValue(0);
+    scaleAnim.setValue(0.8);
+    predictionAnim.setValue(0);
 
     // Scale in with bounce
     Animated.spring(scaleAnim, {
@@ -94,25 +89,6 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
-
-    // Glow pulse after circle completes
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowAnim, {
-          toValue: 1,
-          duration: 1500,
-          delay: 1200,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-        Animated.timing(glowAnim, {
-          toValue: 0,
-          duration: 1500,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
 
     // Best slider with spring (slower, more dramatic)
     Animated.spring(bestSliderAnim, {
@@ -142,7 +118,7 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
         useNativeDriver: true,
       }).start();
     }
-  }, [isActive]);
+  }, []); // Empty deps - only run once on mount
 
   // Interpolate circle stroke
   const animatedStrokeDashoffset = circleAnim.interpolate({
@@ -150,30 +126,16 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
     outputRange: [circumference, strokeDashoffset],
   });
 
-  // Display score (rounded)
-  const displayScore = scoreAnim.interpolate({
-    inputRange: [0, 100],
-    outputRange: [0, 100],
-    extrapolate: 'clamp',
-  });
+  // Display score state - start at target value so it shows correctly even after remount
+  const [displayScore, setDisplayScore] = React.useState(percentile_rank);
 
-  // Animated score text component
-  const AnimatedScore = () => {
-    const [displayValue, setDisplayValue] = React.useState(0);
-
-    useEffect(() => {
-      const listener = scoreAnim.addListener(({ value }) => {
-        setDisplayValue(Math.round(value));
-      });
-      return () => scoreAnim.removeListener(listener);
-    }, []);
-
-    return (
-      <Text style={[styles.circleScore, {
-        color: percentile_rank >= 75 ? '#34d399' : percentile_rank >= 50 ? '#9BDDFF' : percentile_rank >= 25 ? '#fbbf24' : '#ef4444'
-      }]}>{displayValue}</Text>
-    );
-  };
+  // Listen to score animation and update display value
+  useEffect(() => {
+    const listener = scoreAnim.addListener(({ value }) => {
+      setDisplayScore(Math.round(value));
+    });
+    return () => scoreAnim.removeListener(listener);
+  }, [scoreAnim]);
 
   return (
     <View style={styles.forceProfileContent}>
@@ -181,19 +143,7 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
       <View style={styles.leftColumn}>
         <Animated.View style={[styles.circleContainer, {
           transform: [{ scale: scaleAnim }],
-          opacity: glowAnim.interpolate({
-            inputRange: [0, 1],
-            outputRange: [1, 1],
-          }),
         }]}>
-          {/* Glow effect behind circle */}
-          <Animated.View style={[styles.circleGlow, {
-            opacity: glowAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, 0.6],
-            }),
-            backgroundColor: percentile_rank >= 75 ? '#34d399' : percentile_rank >= 50 ? '#9BDDFF' : percentile_rank >= 25 ? '#fbbf24' : '#ef4444',
-          }]} />
           <Svg width={160} height={160} style={{ transform: [{ rotate: '-90deg' }] }}>
             <Defs>
               <SvgLinearGradient id="forceGradient" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -217,15 +167,17 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
             />
           </Svg>
           <View style={styles.circleText}>
-            <AnimatedScore />
+            <Text style={[styles.circleScore, {
+              color: percentile_rank >= 75 ? '#34d399' : percentile_rank >= 50 ? '#9BDDFF' : percentile_rank >= 25 ? '#fbbf24' : '#ef4444'
+            }]}>{displayScore}</Text>
             <Text style={styles.circleLabel}>
               {percentile_rank >= 75 ? 'ELITE' : percentile_rank >= 50 ? 'OPTIMIZE' : percentile_rank >= 25 ? 'SHARPEN' : 'BUILD'}
             </Text>
           </View>
         </Animated.View>
 
-        {/* Predicted Velocity - Below Circle */}
-        {latestPrediction && (
+        {/* Predicted Velocities - Below Circle */}
+        {(latestPrediction || batSpeedPrediction) && (
           <Animated.View style={[styles.predictionContainer, {
             opacity: predictionAnim,
             transform: [{
@@ -241,14 +193,36 @@ export default function ForceProfileCard({ data, latestPrediction, bodyweight, i
                 <Text style={styles.betaText}>Beta</Text>
               </View>
             </View>
-            <Text style={styles.predictionValue}>
-              {latestPrediction.predicted_value.toFixed(1)}
-            </Text>
-            {latestPrediction.predicted_value_low && latestPrediction.predicted_value_high && (
-              <Text style={styles.predictionRange}>
-                {latestPrediction.predicted_value_low.toFixed(1)}-{latestPrediction.predicted_value_high.toFixed(1)} mph
-              </Text>
-            )}
+            <View style={styles.predictionsRow}>
+              {/* Pitching Prediction */}
+              {latestPrediction && (
+                <View style={styles.predictionItem}>
+                  <Text style={styles.predictionTypeLabel}>Pitch</Text>
+                  <Text style={styles.predictionValue}>
+                    {latestPrediction.predicted_value.toFixed(1)}
+                  </Text>
+                  {latestPrediction.predicted_value_low && latestPrediction.predicted_value_high && (
+                    <Text style={styles.predictionRange}>
+                      {latestPrediction.predicted_value_low.toFixed(1)}-{latestPrediction.predicted_value_high.toFixed(1)}
+                    </Text>
+                  )}
+                </View>
+              )}
+              {/* Bat Speed Prediction */}
+              {batSpeedPrediction && (
+                <View style={styles.predictionItem}>
+                  <Text style={styles.predictionTypeLabel}>Bat</Text>
+                  <Text style={[styles.predictionValue, styles.batSpeedValue]}>
+                    {batSpeedPrediction.predicted_value.toFixed(1)}
+                  </Text>
+                  {batSpeedPrediction.predicted_value_low && batSpeedPrediction.predicted_value_high && (
+                    <Text style={styles.predictionRange}>
+                      {batSpeedPrediction.predicted_value_low.toFixed(1)}-{batSpeedPrediction.predicted_value_high.toFixed(1)}
+                    </Text>
+                  )}
+                </View>
+              )}
+            </View>
           </Animated.View>
         )}
       </View>
@@ -479,9 +453,25 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
   },
   predictionRange: {
-    fontSize: 11,
+    fontSize: 10,
     color: 'rgba(255, 255, 255, 0.5)',
     marginTop: 2,
+  },
+  predictionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  predictionItem: {
+    alignItems: 'center',
+  },
+  predictionTypeLabel: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginBottom: 2,
+  },
+  batSpeedValue: {
+    color: '#34d399',
   },
   bodyweightContainer: {
     marginTop: 8,

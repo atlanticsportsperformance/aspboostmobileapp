@@ -278,7 +278,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       setWorkoutInstances(workoutsWithAthleteInfo);
 
-      // Load bookings for ALL linked athletes
+      // Load bookings for ALL linked athletes - only active ones (booked/confirmed/waitlisted)
       const { data: bookingsData, error: bookingsError } = await supabase
         .from('scheduling_bookings')
         .select(`
@@ -293,7 +293,8 @@ export default function ParentDashboardScreen({ navigation }: any) {
             )
           )
         `)
-        .in('athlete_id', athleteIds);
+        .in('athlete_id', athleteIds)
+        .in('status', ['booked', 'confirmed', 'waitlisted']);
 
       // Map bookings with athlete info
       const bookingsWithAthleteInfo = (bookingsData || []).map((b: any) => {
@@ -586,6 +587,21 @@ export default function ParentDashboardScreen({ navigation }: any) {
               <View style={styles.settingsMenuItemContent}>
                 <Text style={styles.settingsMenuLabel}>Memberships & Packages</Text>
                 <Text style={styles.settingsMenuDescription}>Manage subscriptions and credits</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Billing & Payments */}
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                navigation.navigate('Billing');
+              }}
+            >
+              <Ionicons name="wallet-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Billing & Payments</Text>
+                <Text style={styles.settingsMenuDescription}>Payment methods and transactions</Text>
               </View>
             </TouchableOpacity>
 

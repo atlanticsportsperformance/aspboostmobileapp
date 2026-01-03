@@ -40,7 +40,9 @@ import ProfileScreen from './screens/ProfileScreen';
 import NotificationSettingsScreen from './screens/NotificationSettingsScreen';
 import BookingScreen from './screens/BookingScreen';
 import MembershipsPackagesScreen from './screens/MembershipsPackagesScreen';
+import BillingScreen from './screens/BillingScreen';
 import PublicBookingScreen from './screens/PublicBookingScreen';
+import WaiversScreen from './screens/WaiversScreen';
 import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
@@ -216,7 +218,9 @@ export default function App() {
             <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
             <Stack.Screen name="Booking" component={BookingScreen} />
             <Stack.Screen name="MembershipsPackages" component={MembershipsPackagesScreen} />
+            <Stack.Screen name="Billing" component={BillingScreen} />
             <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
+            <Stack.Screen name="Waivers" component={WaiversScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>

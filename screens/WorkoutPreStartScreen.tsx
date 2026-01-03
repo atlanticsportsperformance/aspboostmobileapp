@@ -95,6 +95,23 @@ function formatRx(ex: RoutineExercise): string {
   return `${ex.sets}x${ex.reps}`;
 }
 
+// Get button gradient colors based on workout category
+function getCategoryButtonColors(category: string): [string, string] {
+  const cat = category?.toLowerCase() || '';
+  if (cat.includes('hitting')) return ['#dc2626', '#b91c1c']; // red
+  if (cat.includes('throwing')) return ['#2563eb', '#1d4ed8']; // blue
+  return ['#10B981', '#059669']; // green (strength/conditioning default)
+}
+
+// Check if exercise is notes-only (no trackable metrics)
+function isNotesOnlyExercise(ex: RoutineExercise): boolean {
+  const enabledMeasurements = ex.enabled_measurements || [];
+  const hasMetricTargets = ex.metric_targets && Object.keys(ex.metric_targets).length > 0;
+  const hasLegacyReps = !!ex.reps;
+
+  return enabledMeasurements.length === 0 && !hasMetricTargets && !hasLegacyReps;
+}
+
 export default function WorkoutPreStartScreen({
   workout,
   customMeasurements,
@@ -103,9 +120,10 @@ export default function WorkoutPreStartScreen({
   const totalExercises = workout.routines.reduce(
     (sum, r) => sum + r.routine_exercises.filter(ex => !ex.exercises?.is_placeholder).length, 0
   );
+  // Only count sets for exercises that have trackable metrics (not notes-only)
   const totalSets = workout.routines.reduce(
     (sum, r) => sum + r.routine_exercises
-      .filter(ex => !ex.exercises?.is_placeholder)
+      .filter(ex => !ex.exercises?.is_placeholder && !isNotesOnlyExercise(ex))
       .reduce((s, ex) => s + ex.sets, 0), 0
   );
 
@@ -142,7 +160,8 @@ export default function WorkoutPreStartScreen({
                   .filter(ex => !ex.exercises?.is_placeholder)
                   .map((ex) => {
                   const hasPRTracking = ex.tracked_max_metrics && ex.tracked_max_metrics.length > 0;
-                  const metrics = formatExerciseMetrics({
+                  const notesOnly = isNotesOnlyExercise(ex);
+                  const metrics = notesOnly ? null : formatExerciseMetrics({
                     exercise: ex,
                     customMeasurements,
                     separator: ' • ',
@@ -154,12 +173,25 @@ export default function WorkoutPreStartScreen({
                         <Text style={styles.exName}>{ex.exercises.name}</Text>
                         {hasPRTracking && <Text style={styles.prTrophy}>🏆</Text>}
                       </View>
-                      <Text style={styles.exRx}>
-                        {metrics || formatRx(ex)}
-                        {!metrics && ex.weight ? ` @ ${ex.weight}` : ''}
-                        {ex.tempo ? ` • ${ex.tempo}` : ''}
-                      </Text>
-                      {ex.notes && <Text style={styles.exNotes}>{ex.notes}</Text>}
+                      {notesOnly ? (
+                        // Notes-only exercise - just show notes or description
+                        <>
+                          {ex.notes && <Text style={styles.exNotesOnly}>{ex.notes}</Text>}
+                          {ex.exercises.description && !ex.notes && (
+                            <Text style={styles.exDescription}>{ex.exercises.description}</Text>
+                          )}
+                        </>
+                      ) : (
+                        // Regular exercise with metrics
+                        <>
+                          <Text style={styles.exRx}>
+                            {metrics || formatRx(ex)}
+                            {!metrics && ex.weight ? ` @ ${ex.weight}` : ''}
+                            {ex.tempo ? ` • ${ex.tempo}` : ''}
+                          </Text>
+                          {ex.notes && <Text style={styles.exNotes}>{ex.notes}</Text>}
+                        </>
+                      )}
                     </View>
                   );
                 })}
@@ -172,7 +204,7 @@ export default function WorkoutPreStartScreen({
       {/* Start Button */}
       <TouchableOpacity style={styles.startBtn} onPress={onStart} activeOpacity={0.8}>
         <LinearGradient
-          colors={['#10B981', '#059669']}
+          colors={getCategoryButtonColors(workout.category)}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
           style={styles.startGradient}
@@ -278,6 +310,18 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#525252',
     marginTop: 4,
+  },
+  exNotesOnly: {
+    fontSize: 13,
+    color: '#A3A3A3',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  exDescription: {
+    fontSize: 12,
+    color: '#737373',
+    marginTop: 4,
+    fontStyle: 'italic',
   },
   startBtn: {
     position: 'absolute',

@@ -81,6 +81,9 @@ interface TrackManPitch {
   vert_appr_angle: number | null;
   spin_axis_3d_spin_efficiency: number | null;
   video_url: string | null;
+  // Permanent video metadata (for on-demand token fetching)
+  video_clip_id: string | null;
+  video_camera_type: string | null;
   stuff_plus?: {
     stuff_plus: number;
     whiff_probability: number;
@@ -114,7 +117,58 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
 
   // Video modal state
   const [selectedVideoUrl, setSelectedVideoUrl] = useState<string | null>(null);
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const videoRef = useRef<Video>(null);
+
+  const API_URL = 'https://aspboostapp.vercel.app';
+
+  // Check if pitch has video available
+  const hasVideo = (pitch: TrackManPitch) => {
+    return !!(pitch.video_clip_id || pitch.video_url);
+  };
+
+  // Fetch fresh video URL on-demand (tokens expire, so we fetch when user clicks)
+  const handleVideoClick = async (pitch: TrackManPitch) => {
+    // If we have video_clip_id, fetch fresh token from API
+    if (pitch.video_clip_id) {
+      setVideoLoading(true);
+      setVideoError(null);
+      setSelectedVideoUrl(null);
+      try {
+        const session = await supabase.auth.getSession();
+        const token = session.data.session?.access_token;
+
+        const params = new URLSearchParams({
+          session_id: sessionId.toString(),
+          play_id: pitch.pitch_uid || '',
+          clip_id: pitch.video_clip_id,
+          camera_type: pitch.video_camera_type || 'Edgertronic',
+        });
+
+        const response = await fetch(`${API_URL}/api/trackman/video-token?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+        const data = await response.json();
+
+        if (response.ok && data.video_url) {
+          setSelectedVideoUrl(data.video_url);
+        } else {
+          setVideoError(data.error || 'Failed to load video');
+        }
+      } catch (err) {
+        setVideoError('Failed to load video');
+        console.error('Video fetch error:', err);
+      } finally {
+        setVideoLoading(false);
+      }
+    } else if (pitch.video_url) {
+      // Fallback to stored URL (may be expired but worth trying)
+      setSelectedVideoUrl(pitch.video_url);
+    }
+  };
 
   // Strike zone dimensions (feet)
   const STRIKE_ZONE_BOTTOM_INSIDE = 1.5;
@@ -191,12 +245,33 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
         id, pitch_uid, rel_speed, spin_rate, plate_loc_height, plate_loc_side, created_at,
         tagged_pitch_type, pitch_no,
         rel_height, rel_side, extension, spin_axis, tilt, measured_tilt, vert_break, induced_vert_break,
-        horz_break, vert_appr_angle, spin_axis_3d_spin_efficiency, video_url,
-        stuff_plus:pitch_stuff_plus(stuff_plus, whiff_probability, pitch_type_group)
+        horz_break, vert_appr_angle, spin_axis_3d_spin_efficiency, video_url, video_clip_id, video_camera_type
       `)
       .eq('session_id', sessionId)
       .eq('athlete_id', id)
       .order('pitch_no', { ascending: true });
+
+    // Fetch Stuff+ data separately if we have pitches
+    let stuffPlusMap: Record<string, { stuff_plus: number; whiff_probability: number; pitch_type_group: string }> = {};
+    if (pitchesData && pitchesData.length > 0) {
+      const pitchUids = pitchesData.map((p: any) => p.pitch_uid).filter(Boolean);
+      if (pitchUids.length > 0) {
+        const { data: stuffPlusData } = await supabase
+          .from('pitch_stuff_plus')
+          .select('pitch_uid, stuff_plus, whiff_probability, pitch_type_group')
+          .in('pitch_uid', pitchUids);
+
+        if (stuffPlusData) {
+          stuffPlusData.forEach((sp: any) => {
+            stuffPlusMap[sp.pitch_uid] = {
+              stuff_plus: sp.stuff_plus,
+              whiff_probability: sp.whiff_probability,
+              pitch_type_group: sp.pitch_type_group
+            };
+          });
+        }
+      }
+    }
 
     if (pitchesData && pitchesData.length > 0) {
       setTotalPitchCount(pitchesData.length);
@@ -226,9 +301,9 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
           vert_appr_angle: p.vert_appr_angle ? parseFloat(p.vert_appr_angle.toString()) : null,
           spin_axis_3d_spin_efficiency: p.spin_axis_3d_spin_efficiency ? parseFloat(p.spin_axis_3d_spin_efficiency.toString()) : null,
           video_url: p.video_url || null,
-          stuff_plus: (Array.isArray(p.stuff_plus) && p.stuff_plus.length > 0
-            ? p.stuff_plus[0]
-            : (p.stuff_plus || null)) as { stuff_plus: number; whiff_probability: number; pitch_type_group: string; } | null,
+          video_clip_id: p.video_clip_id || null,
+          video_camera_type: p.video_camera_type || null,
+          stuff_plus: p.pitch_uid && stuffPlusMap[p.pitch_uid] ? stuffPlusMap[p.pitch_uid] : null,
         }));
 
       setPitches(validPitches);
@@ -238,24 +313,36 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
     }
   }
 
-  // Get pitch type color
+  // Get pitch type color (standardized hex colors)
   function getPitchTypeColor(pitchType: string | null | undefined): string {
-    if (!pitchType || pitchType === 'Undefined' || pitchType === 'undefined') return COLORS.gray500;
+    if (!pitchType || pitchType === 'Undefined' || pitchType === 'undefined') return '#808080'; // Gray
 
     const type = pitchType.toUpperCase();
 
-    if (type.includes('FASTBALL') || type === 'FF' || type === 'FA') return COLORS.red500;
-    if (type.includes('SINKER') || type === 'SI' || type === 'FT') return '#DC2626';
-    if (type.includes('CUTTER') || type === 'FC') return COLORS.brown;
-    if (type.includes('CURVEBALL') || type === 'CU' || type === 'CB') return COLORS.blue500;
-    if (type.includes('SLIDER') || type === 'SL') return COLORS.yellow500;
-    if (type.includes('SWEEPER')) return COLORS.amber500;
-    if (type.includes('SLURVE') || type === 'SV') return COLORS.purple500;
-    if (type.includes('CHANGEUP') || type === 'CH') return COLORS.green500;
-    if (type.includes('SPLITTER') || type === 'FS') return COLORS.purple500;
-    if (type.includes('KNUCKLEBALL') || type === 'KN') return COLORS.amber500;
+    // Fastball (4-Seam) - Red
+    if (type.includes('FASTBALL') || type === 'FF' || type === 'FA') return '#C33B3B';
+    // Sinker (2-Seam) - Orange-brown
+    if (type.includes('SINKER') || type === 'SI' || type === 'FT') return '#7e4d32';
+    // Cutter - Brown
+    if (type.includes('CUTTER') || type === 'FC') return '#8B4513';
+    // Curveball - Blue
+    if (type.includes('CURVEBALL') || type === 'CU' || type === 'CB') return '#79b6ce';
+    // Slider - Yellow-orange
+    if (type.includes('SLIDER') || type === 'SL') return '#FFC533';
+    // Sweeper - Gold
+    if (type.includes('SWEEPER') || type === 'SW') return '#D4AF37';
+    // Slurve - Purple
+    if (type.includes('SLURVE') || type === 'SV') return '#9932CC';
+    // Changeup - Green
+    if (type.includes('CHANGEUP') || type === 'CH') return '#2e8720';
+    // Splitter - Cyan
+    if (type.includes('SPLITTER') || type === 'FS' || type === 'SF') return '#00CED1';
+    // Knuckleball - Purple
+    if (type.includes('KNUCKLEBALL') || type === 'KN') return '#9932CC';
+    // Eephus - Pink
+    if (type.includes('EEPHUS')) return '#FF69B4';
 
-    return COLORS.gray500;
+    return '#808080'; // Gray for unknown
   }
 
   // Get Stuff+ grade color
@@ -511,12 +598,12 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
             </View>
 
             {/* Video Button */}
-            {pitch.video_url && (
+            {hasVideo(pitch) && (
               <TouchableOpacity
                 style={styles.tooltipVideoButton}
                 onPress={() => {
                   onClose();
-                  setSelectedVideoUrl(pitch.video_url);
+                  handleVideoClick(pitch);
                 }}
               >
                 <Ionicons name="videocam" size={18} color={COLORS.black} />
@@ -1393,8 +1480,8 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
                         <Text style={styles.rawDataCellText}>{pitch.pitch_no ?? index + 1}</Text>
                       </View>
                       <View style={[styles.rawDataCell, styles.rawDataCellVid]}>
-                        {pitch.video_url ? (
-                          <TouchableOpacity onPress={() => setSelectedVideoUrl(pitch.video_url)}>
+                        {hasVideo(pitch) ? (
+                          <TouchableOpacity onPress={() => handleVideoClick(pitch)}>
                             <Ionicons name="videocam" size={18} color={COLORS.green500} />
                           </TouchableOpacity>
                         ) : (
@@ -1496,12 +1583,18 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
 
       {/* Video Player Modal */}
       <Modal
-        visible={selectedVideoUrl !== null}
+        visible={selectedVideoUrl !== null || videoLoading || videoError !== null}
         animationType="fade"
         transparent={true}
-        onRequestClose={() => setSelectedVideoUrl(null)}
+        onRequestClose={() => {
+          setSelectedVideoUrl(null);
+          setVideoError(null);
+        }}
       >
-        <Pressable style={styles.videoModalOverlay} onPress={() => setSelectedVideoUrl(null)}>
+        <Pressable style={styles.videoModalOverlay} onPress={() => {
+          setSelectedVideoUrl(null);
+          setVideoError(null);
+        }}>
           <Pressable style={styles.videoModalContainer} onPress={(e) => e.stopPropagation()}>
             {/* Header */}
             <View style={styles.videoModalHeader}>
@@ -1511,15 +1604,39 @@ export default function PitchingSessionScreen({ navigation, route }: any) {
               </View>
               <TouchableOpacity
                 style={styles.videoModalCloseButton}
-                onPress={() => setSelectedVideoUrl(null)}
+                onPress={() => {
+                  setSelectedVideoUrl(null);
+                  setVideoError(null);
+                }}
               >
                 <Ionicons name="close" size={20} color={COLORS.gray400} />
               </TouchableOpacity>
             </View>
 
-            {/* Video Player */}
+            {/* Video Player / Loading / Error */}
             <View style={styles.videoPlayerContainer}>
-              {selectedVideoUrl && (
+              {videoLoading && (
+                <View style={styles.videoLoadingContainer}>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                  <Text style={styles.videoLoadingText}>Loading video...</Text>
+                </View>
+              )}
+              {videoError && !videoLoading && (
+                <View style={styles.videoErrorContainer}>
+                  <Ionicons name="alert-circle" size={48} color={COLORS.red500} />
+                  <Text style={styles.videoErrorText}>{videoError}</Text>
+                  <TouchableOpacity
+                    style={styles.videoErrorButton}
+                    onPress={() => {
+                      setVideoError(null);
+                      setSelectedVideoUrl(null);
+                    }}
+                  >
+                    <Text style={styles.videoErrorButtonText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {selectedVideoUrl && !videoLoading && !videoError && (
                 <Video
                   ref={videoRef}
                   source={{ uri: selectedVideoUrl }}
@@ -1643,6 +1760,12 @@ const styles = StyleSheet.create({
   videoModalHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   videoModalTitle: { fontSize: 16, fontWeight: '600', color: COLORS.white },
   videoModalCloseButton: { padding: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
-  videoPlayerContainer: { width: '100%', aspectRatio: 16 / 9, backgroundColor: COLORS.black },
+  videoPlayerContainer: { width: '100%', aspectRatio: 16 / 9, backgroundColor: COLORS.black, justifyContent: 'center', alignItems: 'center' },
   videoPlayer: { width: '100%', height: '100%' },
+  videoLoadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  videoLoadingText: { color: COLORS.gray400, fontSize: 14, marginTop: 12 },
+  videoErrorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  videoErrorText: { color: COLORS.gray400, fontSize: 14, marginTop: 12, textAlign: 'center' },
+  videoErrorButton: { marginTop: 16, paddingVertical: 10, paddingHorizontal: 24, backgroundColor: COLORS.gray700, borderRadius: 8 },
+  videoErrorButtonText: { color: COLORS.white, fontSize: 14, fontWeight: '600' },
 });

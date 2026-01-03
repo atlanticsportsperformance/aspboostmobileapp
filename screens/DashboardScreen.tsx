@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Dimensions,
   Animated,
   Modal,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -293,8 +294,10 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   // 2. Pitching Performance Card
   if (pitchingData) {
     const thisIndex = cardIndex++;
+    // Use key with timestamp to force re-mount when data changes (ensures animations replay)
+    const pitchingKey = `pitching-${pitchingData.latest?.timestamp || 'default'}`;
     cards.push(
-      <View key="pitching" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+      <View key={pitchingKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
         <LinearGradient
           colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
           start={{ x: 0, y: 0 }}
@@ -310,8 +313,10 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   // 3. Hitting Performance Card
   if (hittingData) {
     const thisIndex = cardIndex++;
+    // Use key with timestamp to force re-mount when data changes (ensures animations replay)
+    const hittingKey = `hitting-${hittingData.latest?.timestamp || 'default'}`;
     cards.push(
-      <View key="hitting" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+      <View key={hittingKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
         <LinearGradient
           colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
           start={{ x: 0, y: 0 }}
@@ -327,8 +332,10 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   // 4. Force Profile Card
   if (valdProfileId && forceProfile) {
     const thisIndex = cardIndex++;
+    // Use key with composite score to force re-mount when data changes (ensures animations replay)
+    const forceKey = `force-profile-${forceProfile.composite_score || 'default'}`;
     cards.push(
-      <View key="force-profile" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+      <View key={forceKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
         <LinearGradient
           colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
           start={{ x: 0, y: 0 }}
@@ -336,7 +343,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           style={styles.cardGloss}
         />
         <Text style={styles.cardTitle}>Force Profile</Text>
-        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
+        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} />
       </View>
     );
   }
@@ -344,8 +351,10 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
   // 5. ArmCare Card
   if (armCareData) {
     const thisIndex = cardIndex++;
+    // Use key with arm score to force re-mount when data changes (ensures animations replay)
+    const armCareKey = `arm-care-${armCareData.latest?.arm_score || 'default'}`;
     cards.push(
-      <View key="arm-care" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+      <View key={armCareKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
         <LinearGradient
           colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
           start={{ x: 0, y: 0 }}
@@ -377,15 +386,14 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
         showsHorizontalScrollIndicator={false}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-          {
-            useNativeDriver: false,
-            listener: (event: any) => {
-              const offsetX = event.nativeEvent.contentOffset.x;
-              const index = Math.round(offsetX / CARD_WIDTH);
-              setSnapshotIndex(index);
-            }
-          }
+          { useNativeDriver: false }
         )}
+        onMomentumScrollEnd={(event) => {
+          // Only update snapshotIndex when scroll settles to prevent mid-swipe animation resets
+          const offsetX = event.nativeEvent.contentOffset.x;
+          const index = Math.round(offsetX / CARD_WIDTH);
+          setSnapshotIndex(index);
+        }}
         scrollEventThrottle={16}
       >
         {cards}
@@ -472,6 +480,15 @@ export default function DashboardScreen({ navigation }: any) {
   // Ref to prevent multiple simultaneous loads and track last load time
   const isLoadingRef = useRef(false);
   const lastLoadTimeRef = useRef<number>(0);
+  const mountedRef = useRef(true);
+
+  // Track component mount/unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Refetch dashboard data when screen gains focus (e.g., after returning from workout)
   // Uses debounce to prevent infinite loop when returning from background
@@ -480,9 +497,9 @@ export default function DashboardScreen({ navigation }: any) {
       const now = Date.now();
       const timeSinceLastLoad = now - lastLoadTimeRef.current;
 
-      // Only reload if not currently loading and at least 2 seconds since last load
-      // This prevents rapid re-renders when auth state changes
-      if (!isLoadingRef.current && timeSinceLastLoad > 2000) {
+      // Only reload if not currently loading and at least 3 seconds since last load
+      // Increased from 2s to 3s to better handle background return scenarios
+      if (!isLoadingRef.current && timeSinceLastLoad > 3000) {
         loadDashboard();
       }
     }, [])
@@ -559,6 +576,7 @@ export default function DashboardScreen({ navigation }: any) {
 
   // Booking sheet handlers
   function handleBookingPress(booking: Booking) {
+    console.log('handleBookingPress - booking:', JSON.stringify(booking, null, 2));
     setSelectedBooking(booking);
     setShowBookingSheet(true);
   }
@@ -566,9 +584,19 @@ export default function DashboardScreen({ navigation }: any) {
   async function handleCancelBooking() {
     if (!selectedBooking || !athleteId) return;
 
+    const eventId = selectedBooking.event?.id;
+    if (!eventId) {
+      console.error('handleCancelBooking - No event ID found');
+      Alert.alert('Error', 'Unable to cancel - booking data is incomplete');
+      return;
+    }
+
+    console.log('handleCancelBooking - athleteId:', athleteId);
+    console.log('handleCancelBooking - eventId:', eventId);
+
     setCancellingBooking(true);
     try {
-      const result = await cancelBooking(athleteId, selectedBooking.event.id);
+      const result = await cancelBooking(athleteId, eventId);
       if (result.success) {
         // Remove the cancelled booking from the list
         setBookings((prev) => prev.filter((b) => b.id !== selectedBooking.id));
@@ -576,9 +604,11 @@ export default function DashboardScreen({ navigation }: any) {
         setSelectedBooking(null);
       } else {
         console.error('Failed to cancel booking:', result.error);
+        Alert.alert('Unable to Cancel', result.error || 'Failed to cancel booking');
       }
     } catch (error) {
       console.error('Error cancelling booking:', error);
+      Alert.alert('Error', 'An unexpected error occurred');
     } finally {
       setCancellingBooking(false);
     }
@@ -1001,7 +1031,7 @@ export default function DashboardScreen({ navigation }: any) {
   async function fetchPitchingData(athleteIdParam: string) {
     // Query TrackMan pitch data for velocity metrics
     // Use pagination to bypass 1000 row limit
-    // Note: JOIN with stuff_plus requires custom pagination since fetchAllPaginated doesn't support JOINs
+    // Fetch pitches and stuff_plus separately (no FK relationship in DB for JOIN)
     const allPitches: any[] = [];
     let offset = 0;
     let hasMore = true;
@@ -1009,10 +1039,7 @@ export default function DashboardScreen({ navigation }: any) {
     while (hasMore) {
       const { data: pitchBatch, error } = await supabase
         .from('trackman_pitch_data')
-        .select(`
-          *,
-          stuff_plus:pitch_stuff_plus(stuff_plus, pitch_type_group, graded_at)
-        `)
+        .select('*')
         .eq('athlete_id', athleteIdParam)
         .order('created_at', { ascending: false })
         .range(offset, offset + BATCH_SIZE - 1);
@@ -1031,7 +1058,29 @@ export default function DashboardScreen({ navigation }: any) {
       }
     }
 
-    const pitches = allPitches;
+    // Fetch stuff_plus grades separately
+    const { data: stuffPlusGrades } = await supabase
+      .from('pitch_stuff_plus')
+      .select('pitch_uid, stuff_plus, pitch_type_group, graded_at')
+      .eq('athlete_id', athleteIdParam);
+
+    // Create a map for quick lookup
+    const stuffPlusMap = new Map<string, { stuff_plus: number; pitch_type_group: string; graded_at: string }>();
+    if (stuffPlusGrades) {
+      for (const grade of stuffPlusGrades) {
+        stuffPlusMap.set(grade.pitch_uid, {
+          stuff_plus: grade.stuff_plus,
+          pitch_type_group: grade.pitch_type_group,
+          graded_at: grade.graded_at,
+        });
+      }
+    }
+
+    // Merge stuff_plus into pitches
+    const pitches = allPitches.map(p => ({
+      ...p,
+      stuff_plus: stuffPlusMap.get(p.pitch_uid) || null,
+    }));
 
     if (!pitches || pitches.length === 0) {
       setPitchingData(null);
@@ -1089,7 +1138,7 @@ export default function DashboardScreen({ navigation }: any) {
     }
     const avg30d = last30DayPitches.length > 0 ? sum30d / last30DayPitches.length : 0;
 
-    // Process Stuff+ data from the JOIN (no separate query needed)
+    // Process Stuff+ data (fetched separately and merged above)
     let stuffPlusData: {
       allTimeBest: StuffPlusByPitch[];
       recentSession: StuffPlusByPitch[];
@@ -1097,30 +1146,25 @@ export default function DashboardScreen({ navigation }: any) {
       overallRecent: number | null;
     } | null = null;
 
-    // Extract Stuff+ grades from joined data
-    // The stuff_plus field is an array (from the join) - get first element if exists
+    // Extract Stuff+ grades
     // ONLY include pitches that have a tagged_pitch_type (actual Trackman tag)
     // Exclude pitches where the model guessed the pitch type based on physics
     const pitchesWithStuffPlus = pitches
       .filter(p => {
         // Must have a tagged pitch type from Trackman
         if (!p.tagged_pitch_type) return false;
-
-        const sp = p.stuff_plus;
-        // Handle both array and object forms from Supabase join
-        if (Array.isArray(sp) && sp.length > 0 && sp[0]?.stuff_plus != null) return true;
-        if (sp && !Array.isArray(sp) && sp.stuff_plus != null) return true;
-        return false;
+        // Must have stuff_plus data
+        if (!p.stuff_plus || p.stuff_plus.stuff_plus == null) return false;
+        return true;
       })
       .map(p => {
-        const sp = Array.isArray(p.stuff_plus) ? p.stuff_plus[0] : p.stuff_plus;
         const session = sessions.find(s => s.id === p.session_id);
         return {
           pitch_uid: p.pitch_uid,
-          stuff_plus: sp.stuff_plus as number,
+          stuff_plus: p.stuff_plus.stuff_plus as number,
           // Use tagged_pitch_type only (already filtered to ensure it exists)
           pitch_type_group: p.tagged_pitch_type as string,
-          graded_at: sp.graded_at as string,
+          graded_at: p.stuff_plus.graded_at as string,
           session_id: p.session_id,
           session_date: session?.game_date_utc || p.created_at,
         };
@@ -1417,12 +1461,26 @@ export default function DashboardScreen({ navigation }: any) {
     lastLoadTimeRef.current = Date.now();
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        isLoadingRef.current = false;
-        navigation.replace('Login');
+      // First try getSession which is faster and doesn't require network
+      let { data: { session } } = await supabase.auth.getSession();
+
+      // If no session, try to refresh (handles background return scenarios)
+      if (!session) {
+        const { data: refreshData } = await supabase.auth.refreshSession();
+        session = refreshData.session;
+      }
+
+      // If still no session after refresh attempt, redirect to login
+      if (!session?.user) {
+        // Only redirect if component is still mounted
+        if (mountedRef.current) {
+          isLoadingRef.current = false;
+          navigation.replace('Login');
+        }
         return;
       }
+
+      const user = session.user;
 
       const { data: athlete } = await supabase
         .from('athletes')
@@ -1443,7 +1501,7 @@ export default function DashboardScreen({ navigation }: any) {
           commandSessionsResult,
           resourcesResult,
           athleteLastViewedResult,
-          messagesResult,
+          conversationParticipantsResult,
           workoutsResult,
           bookingsResult,
         ] = await Promise.all([
@@ -1454,8 +1512,8 @@ export default function DashboardScreen({ navigation }: any) {
           supabase.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
           // Get last viewed resources timestamp
           supabase.from('athletes').select('last_viewed_resources_at').eq('id', athlete.id).single(),
-          // Fetch unread messages count
-          supabase.from('messages').select('id', { count: 'exact', head: true }).eq('recipient_id', user.id).eq('is_read', false),
+          // Fetch user's conversation participants for unread count calculation
+          supabase.from('conversation_participants').select('conversation_id, last_read_at').eq('user_id', user.id).eq('is_archived', false),
           // Load workout instances with full routine details
           supabase.from('workout_instances').select(`
             id,
@@ -1511,9 +1569,57 @@ export default function DashboardScreen({ navigation }: any) {
         // Process results
         setHasPitchingData((trackmanPitchesResult.count || 0) > 0 || (commandSessionsResult.count || 0) > 0);
         setHasResourcesData((resourcesResult.count || 0) > 0);
-        setUnreadMessagesCount(messagesResult.error ? 0 : (messagesResult.count || 0));
         setWorkoutInstances((workoutsResult.data as any) || []);
-        setBookings((bookingsResult.data as any) || []);
+
+        // Normalize bookings data - Supabase may return nested objects as arrays
+        const normalizedBookings = (bookingsResult.data || [])
+          .map((booking: any) => {
+            const rawEvent = booking.event;
+            const event = Array.isArray(rawEvent) ? rawEvent[0] : rawEvent;
+
+            // Skip bookings with no valid event
+            if (!event || !event.id) {
+              console.warn('Skipping booking with invalid event:', booking.id);
+              return null;
+            }
+
+            const rawTemplate = event.scheduling_templates;
+            const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+
+            if (template) {
+              const rawCategory = template.scheduling_categories;
+              const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+              event.scheduling_templates = { ...template, scheduling_categories: category };
+            }
+
+            return { ...booking, event };
+          })
+          .filter(Boolean); // Remove null entries
+        setBookings(normalizedBookings);
+
+        // Calculate unread messages count using conversation_participants.last_read_at
+        // This matches how the web app calculates unread count
+        // Run in background to not block initial render
+        (async () => {
+          try {
+            let totalUnread = 0;
+            const participants = conversationParticipantsResult.data || [];
+            for (const participant of participants) {
+              const lastReadAt = participant.last_read_at || '1970-01-01';
+              const { count } = await supabase
+                .from('messages')
+                .select('*', { count: 'exact', head: true })
+                .eq('conversation_id', participant.conversation_id)
+                .eq('is_deleted', false)
+                .neq('sender_id', user.id)
+                .gt('created_at', lastReadAt);
+              totalUnread += count || 0;
+            }
+            setUnreadMessagesCount(totalUnread);
+          } catch (err) {
+            console.error('Error calculating unread messages:', err);
+          }
+        })();
 
         // Count NEW resources if we have last viewed timestamp
         if (athleteLastViewedResult.data) {
@@ -1540,8 +1646,11 @@ export default function DashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('Error loading dashboard:', error);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      // Only update state if component is still mounted
+      if (mountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
       isLoadingRef.current = false;
     }
   }
@@ -2069,9 +2178,6 @@ export default function DashboardScreen({ navigation }: any) {
                                       <View key={routine.id} style={styles.routinePreview}>
                                         <View style={styles.routinePreviewHeader}>
                                           <Text style={styles.routinePreviewName}>{routine.name}</Text>
-                                          {routine.scheme && (
-                                            <Text style={styles.routinePreviewScheme}>{routine.scheme}</Text>
-                                          )}
                                         </View>
 
                                         {/* Routine Notes/Info */}
@@ -2094,9 +2200,6 @@ export default function DashboardScreen({ navigation }: any) {
                                                   </Text>
                                                   <Text style={styles.exercisePreviewName}>
                                                     {routineExercise.exercises.name}
-                                                  </Text>
-                                                  <Text style={styles.exercisePreviewSets}>
-                                                    {routineExercise.sets} sets
                                                   </Text>
                                                 </View>
                                               ))}
@@ -3074,19 +3177,19 @@ const styles = StyleSheet.create({
   // Resume Workout Modal Styles
   resumeModalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,
   },
   resumeModalContainer: {
-    backgroundColor: '#1A1A1A',
+    backgroundColor: '#000000',
     borderRadius: 24,
     padding: 24,
     maxWidth: 400,
     width: '100%',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   resumeModalIconContainer: {
     alignItems: 'center',
@@ -3096,7 +3199,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -3124,17 +3227,17 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   resumeModalInfoBox: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.06)',
     padding: 16,
     marginBottom: 24,
   },
   resumeModalInfoTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#60A5FA',
+    color: '#9BDDFF',
     marginBottom: 4,
   },
   resumeModalInfoText: {
@@ -3159,10 +3262,10 @@ const styles = StyleSheet.create({
     color: '#000000',
   },
   resumeModalSecondaryButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     paddingVertical: 12,
     paddingHorizontal: 16,
     alignItems: 'center',
@@ -3180,7 +3283,7 @@ const styles = StyleSheet.create({
   resumeModalTertiaryButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: 'rgba(255, 255, 255, 0.4)',
   },
   // Settings dropdown styles
   settingsOverlay: {

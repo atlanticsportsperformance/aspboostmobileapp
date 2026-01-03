@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,58 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
+
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' | 'not_null' }[],
+  orderColumn: string,
+  orderAscending: boolean = true
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else if (filter.operator === 'not_null') {
+        q = q.not(filter.column, 'is', null);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
 
 // Color theme matching HittingPerformanceScreen
 const COLORS = {
@@ -87,18 +136,42 @@ export default function PitchingScreen({ navigation, route }: any) {
   const [displayedSessions, setDisplayedSessions] = useState(20);
   const [allSessions, setAllSessions] = useState<Session[]>([]);
 
-  useEffect(() => {
-    loadAthleteAndData();
-  }, []);
+  // Track mounted state and loading to prevent issues
+  const isMountedRef = useRef(true);
+  const isLoadingRef = useRef(false);
+  const lastLoadTimeRef = useRef<number>(0);
+
+  // Use useFocusEffect instead of useEffect to handle app backgrounding properly
+  useFocusEffect(
+    useCallback(() => {
+      isMountedRef.current = true;
+      const now = Date.now();
+      const timeSinceLastLoad = now - lastLoadTimeRef.current;
+
+      // Only reload if not currently loading and at least 30 seconds since last load
+      if (!isLoadingRef.current && timeSinceLastLoad > 30000) {
+        loadAthleteAndData();
+      }
+
+      return () => {
+        isMountedRef.current = false;
+      };
+    }, [])
+  );
 
   async function loadAthleteAndData() {
+    // Prevent concurrent loads
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
+    lastLoadTimeRef.current = Date.now();
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         navigation.replace('Login');
         return;
       }
-      setUserId(user.id);
+      if (isMountedRef.current) setUserId(user.id);
 
       let currentAthleteId = athleteId;
       if (!currentAthleteId) {
@@ -109,11 +182,17 @@ export default function PitchingScreen({ navigation, route }: any) {
           .single();
 
         if (!athlete) {
-          setLoading(false);
+          isLoadingRef.current = false;
+          if (isMountedRef.current) setLoading(false);
           return;
         }
         currentAthleteId = athlete.id;
-        setAthleteId(athlete.id);
+        if (isMountedRef.current) setAthleteId(athlete.id);
+      }
+
+      if (!isMountedRef.current) {
+        isLoadingRef.current = false;
+        return;
       }
 
       // Fetch pitching data
@@ -123,10 +202,12 @@ export default function PitchingScreen({ navigation, route }: any) {
       // Fetch data availability for dynamic FAB menu (matching DashboardScreen)
       await fetchFabDataAvailability(currentAthleteId, user.id);
 
-      setLoading(false);
+      isLoadingRef.current = false;
+      if (isMountedRef.current) setLoading(false);
     } catch (error) {
       console.error('Error loading athlete:', error);
-      setLoading(false);
+      isLoadingRef.current = false;
+      if (isMountedRef.current) setLoading(false);
     }
   }
 
@@ -194,16 +275,34 @@ export default function PitchingScreen({ navigation, route }: any) {
     const now = new Date();
     const last30DaysStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const { data: trackmanPitches } = await supabase
-      .from('trackman_pitch_data')
-      .select('rel_speed, spin_rate, created_at')
-      .eq('athlete_id', id)
-      .order('created_at', { ascending: false });
+    // Type definitions for paginated queries
+    interface TrackmanPitch {
+      rel_speed: string | null;
+      spin_rate: number | null;
+      created_at: string;
+    }
 
-    const { data: pitchSessions } = await supabase
-      .from('trackman_pitch_data')
-      .select('session_id')
-      .eq('athlete_id', id);
+    interface PitchSession {
+      session_id: number;
+    }
+
+    // Use paginated fetch to get ALL trackman pitches (bypasses 1000 row limit)
+    const trackmanPitches = await fetchAllPaginated<TrackmanPitch>(
+      () => supabase.from('trackman_pitch_data'),
+      'rel_speed, spin_rate, created_at',
+      [{ column: 'athlete_id', value: id }],
+      'created_at',
+      false
+    );
+
+    // Get ALL unique session IDs with pagination
+    const pitchSessions = await fetchAllPaginated<PitchSession>(
+      () => supabase.from('trackman_pitch_data'),
+      'session_id',
+      [{ column: 'athlete_id', value: id }],
+      'session_id',
+      true
+    );
 
     const trackmanSessionsCount = pitchSessions
       ? new Set(pitchSessions.map(p => p.session_id)).size
@@ -273,14 +372,24 @@ export default function PitchingScreen({ navigation, route }: any) {
   async function fetchSessions(id: string) {
     const fetchedSessions: Session[] = [];
 
-    const { data: pitchSessionIds } = await supabase
-      .from('trackman_pitch_data')
-      .select('session_id')
-      .eq('athlete_id', id);
+    // Type for session IDs
+    interface PitchSessionId {
+      session_id: number;
+    }
+
+    // Get ALL session IDs with pagination
+    const pitchSessionIds = await fetchAllPaginated<PitchSessionId>(
+      () => supabase.from('trackman_pitch_data'),
+      'session_id',
+      [{ column: 'athlete_id', value: id }],
+      'session_id',
+      true
+    );
 
     if (pitchSessionIds && pitchSessionIds.length > 0) {
       const uniqueSessionIds = [...new Set(pitchSessionIds.map(p => p.session_id))];
 
+      // Session metadata - typically won't exceed 1000 unique sessions
       const { data: trackmanSessions } = await supabase
         .from('trackman_session')
         .select('*')
@@ -289,6 +398,7 @@ export default function PitchingScreen({ navigation, route }: any) {
 
       if (trackmanSessions) {
         for (const session of trackmanSessions) {
+          // Per-session pitches - single session won't exceed 1000 pitches
           const { data: pitches, count } = await supabase
             .from('trackman_pitch_data')
             .select('rel_speed, spin_rate', { count: 'exact' })
@@ -549,6 +659,7 @@ export default function PitchingScreen({ navigation, route }: any) {
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
+          { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
           { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           { id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },

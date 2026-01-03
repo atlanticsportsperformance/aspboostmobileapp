@@ -99,7 +99,7 @@ export async function registerPushToken(token: string): Promise<boolean> {
         'Authorization': `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({
-        token,
+        deviceToken: token,
         platform: Platform.OS,
       }),
     });

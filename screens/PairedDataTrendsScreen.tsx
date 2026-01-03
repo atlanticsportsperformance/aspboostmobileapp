@@ -26,6 +26,64 @@ import { supabase } from '../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' | 'gte' | 'not_null' | 'gt' }[],
+  orderColumn: string,
+  orderAscending: boolean = true,
+  additionalFilters?: (q: any) => any
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else if (filter.operator === 'gte') {
+        q = q.gte(filter.column, filter.value);
+      } else if (filter.operator === 'not_null') {
+        q = q.not(filter.column, 'is', null);
+      } else if (filter.operator === 'gt') {
+        q = q.gt(filter.column, filter.value);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    // Apply additional filters if provided
+    if (additionalFilters) {
+      q = additionalFilters(q);
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
+
 // Professional color palette
 const COLORS = {
   primary: '#9BDDFF',
@@ -269,31 +327,57 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     const startDateObj = getDateRange();
     const startDate = startDateObj ? startDateObj.toISOString() : null;
 
-    // Fetch Blast Motion data for bat speed
-    let blastQuery = supabase
-      .from('blast_swings')
-      .select('bat_speed, recorded_date')
-      .eq('athlete_id', id)
-      .not('bat_speed', 'is', null)
-      .gt('bat_speed', 0);
-
-    if (startDate) {
-      blastQuery = blastQuery.gte('recorded_date', startDate);
+    // Type definitions for paginated queries
+    interface BlastSwingData {
+      bat_speed: number | null;
+      recorded_date: string;
     }
 
-    const { data: blastSwings } = await blastQuery;
-
-    // Fetch HitTrax sessions
-    let hittraxQuery = supabase
-      .from('hittrax_sessions')
-      .select('id, created_at')
-      .eq('athlete_id', id);
-
-    if (startDate) {
-      hittraxQuery = hittraxQuery.gte('created_at', startDate);
+    interface HittraxSessionData {
+      id: string;
+      created_at: string;
     }
 
-    const { data: hittraxSessions } = await hittraxQuery;
+    interface HittraxSwingData {
+      exit_velocity: number | null;
+      launch_angle: number | string | null;
+    }
+
+    // Build filters for Blast swings
+    const blastFilters: { column: string; value: any; operator?: 'eq' | 'in' | 'gte' | 'not_null' | 'gt' }[] = [
+      { column: 'athlete_id', value: id },
+      { column: 'bat_speed', value: null, operator: 'not_null' },
+      { column: 'bat_speed', value: 0, operator: 'gt' },
+    ];
+    if (startDate) {
+      blastFilters.push({ column: 'recorded_date', value: startDate, operator: 'gte' });
+    }
+
+    // Fetch ALL Blast Motion data with pagination
+    const blastSwings = await fetchAllPaginated<BlastSwingData>(
+      () => supabase.from('blast_swings'),
+      'bat_speed, recorded_date',
+      blastFilters,
+      'recorded_date',
+      true
+    );
+
+    // Build filters for HitTrax sessions
+    const hittraxFilters: { column: string; value: any; operator?: 'eq' | 'in' | 'gte' | 'not_null' | 'gt' }[] = [
+      { column: 'athlete_id', value: id },
+    ];
+    if (startDate) {
+      hittraxFilters.push({ column: 'created_at', value: startDate, operator: 'gte' });
+    }
+
+    // Fetch ALL HitTrax sessions with pagination
+    const hittraxSessions = await fetchAllPaginated<HittraxSessionData>(
+      () => supabase.from('hittrax_sessions'),
+      'id, created_at',
+      hittraxFilters,
+      'created_at',
+      true
+    );
 
     let avgBatSpeed: number | null = null;
     let maxBatSpeed: number | null = null;
@@ -312,12 +396,18 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     if (hittraxSessions && hittraxSessions.length > 0) {
       const sessionIds = hittraxSessions.map(s => s.id);
 
-      const { data: hittraxSwings } = await supabase
-        .from('hittrax_swings')
-        .select('exit_velocity, launch_angle')
-        .in('session_id', sessionIds)
-        .not('exit_velocity', 'is', null)
-        .gt('exit_velocity', 0);
+      // Fetch ALL HitTrax swings with pagination
+      const hittraxSwings = await fetchAllPaginated<HittraxSwingData>(
+        () => supabase.from('hittrax_swings'),
+        'exit_velocity, launch_angle',
+        [
+          { column: 'session_id', value: sessionIds, operator: 'in' },
+          { column: 'exit_velocity', value: null, operator: 'not_null' },
+          { column: 'exit_velocity', value: 0, operator: 'gt' },
+        ],
+        'id',
+        true
+      );
 
       if (hittraxSwings && hittraxSwings.length > 0) {
         const exitVelos = hittraxSwings.map(s => s.exit_velocity).filter((v): v is number => v !== null && v > 0);
@@ -378,20 +468,49 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
       const startDateObj = getDateRange();
       const startDate = startDateObj ? startDateObj.toISOString().split('T')[0] : null;
 
-      // Fetch blast swings with ALL timestamp fields needed for proper parsing
-      const { data: blastSwings } = await supabase
-        .from('blast_swings')
-        .select('id, bat_speed, recorded_date, recorded_time, created_at_utc')
-        .eq('athlete_id', id)
-        .not('bat_speed', 'is', null)
-        .gt('bat_speed', 0)
-        .order('recorded_date', { ascending: true });
+      // Type definitions for squared up data queries
+      interface BlastSwingSquaredUp {
+        id: string;
+        bat_speed: number;
+        recorded_date: string;
+        recorded_time?: string;
+        created_at_utc?: string;
+      }
 
-      // Fetch hittrax sessions with session_date for proper date matching
-      const { data: hittraxSessions } = await supabase
-        .from('hittrax_sessions')
-        .select('id, session_date')
-        .eq('athlete_id', id);
+      interface HittraxSessionSquaredUp {
+        id: string;
+        session_date: string;
+      }
+
+      interface HittraxSwingSquaredUp {
+        id: string;
+        exit_velocity: number;
+        pitch_velocity: number | null;
+        session_id: string;
+        swing_timestamp: string;
+      }
+
+      // Fetch ALL blast swings with pagination
+      const blastSwings = await fetchAllPaginated<BlastSwingSquaredUp>(
+        () => supabase.from('blast_swings'),
+        'id, bat_speed, recorded_date, recorded_time, created_at_utc',
+        [
+          { column: 'athlete_id', value: id },
+          { column: 'bat_speed', value: null, operator: 'not_null' },
+          { column: 'bat_speed', value: 0, operator: 'gt' },
+        ],
+        'recorded_date',
+        true
+      );
+
+      // Fetch ALL hittrax sessions with pagination
+      const hittraxSessions = await fetchAllPaginated<HittraxSessionSquaredUp>(
+        () => supabase.from('hittrax_sessions'),
+        'id, session_date',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        true
+      );
 
       if (!blastSwings || blastSwings.length === 0 || !hittraxSessions || hittraxSessions.length === 0) {
         setSquaredUpData([]);
@@ -401,13 +520,18 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
 
       const sessionIds = hittraxSessions.map(s => s.id);
 
-      // Fetch hittrax swings with all needed fields
-      const { data: hittraxSwings } = await supabase
-        .from('hittrax_swings')
-        .select('id, exit_velocity, pitch_velocity, session_id, swing_timestamp')
-        .in('session_id', sessionIds)
-        .not('exit_velocity', 'is', null)
-        .gt('exit_velocity', 0);
+      // Fetch ALL hittrax swings with pagination
+      const hittraxSwings = await fetchAllPaginated<HittraxSwingSquaredUp>(
+        () => supabase.from('hittrax_swings'),
+        'id, exit_velocity, pitch_velocity, session_id, swing_timestamp',
+        [
+          { column: 'session_id', value: sessionIds, operator: 'in' },
+          { column: 'exit_velocity', value: null, operator: 'not_null' },
+          { column: 'exit_velocity', value: 0, operator: 'gt' },
+        ],
+        'id',
+        true
+      );
 
       if (!hittraxSwings || hittraxSwings.length === 0) {
         setSquaredUpData([]);

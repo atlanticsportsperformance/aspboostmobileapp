@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,9 +10,62 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
+
+// Supabase has a default 1000 row limit - this fetches ALL records with pagination
+const BATCH_SIZE = 1000;
+async function fetchAllPaginated<T>(
+  query: () => ReturnType<typeof supabase.from>,
+  selectColumns: string,
+  filters: { column: string; value: any; operator?: 'eq' | 'in' }[],
+  orderColumn: string,
+  orderAscending: boolean = true,
+  additionalFilters?: (q: any) => any
+): Promise<T[]> {
+  const allData: T[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let q = query().select(selectColumns);
+
+    // Apply filters
+    for (const filter of filters) {
+      if (filter.operator === 'in') {
+        q = q.in(filter.column, filter.value);
+      } else {
+        q = q.eq(filter.column, filter.value);
+      }
+    }
+
+    // Apply additional filters if provided
+    if (additionalFilters) {
+      q = additionalFilters(q);
+    }
+
+    const { data, error } = await q
+      .order(orderColumn, { ascending: orderAscending })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) {
+      console.error('Pagination fetch error:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allData.push(...(data as T[]));
+      offset += BATCH_SIZE;
+      hasMore = data.length === BATCH_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData;
+}
 
 interface OverviewStats {
   totalSwingsAllTime: number;
@@ -71,18 +124,43 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   const [displayedSessions, setDisplayedSessions] = useState(20);
   const [allSessions, setAllSessions] = useState<Session[]>([]);
 
-  useEffect(() => {
-    loadAthleteAndData();
-  }, []);
+  // Track mounted state and loading to prevent issues
+  const isMountedRef = useRef(true);
+  const isLoadingRef = useRef(false);
+  const lastLoadTimeRef = useRef<number>(0);
+
+  // Use useFocusEffect instead of useEffect to handle app backgrounding properly
+  useFocusEffect(
+    useCallback(() => {
+      isMountedRef.current = true;
+      const now = Date.now();
+      const timeSinceLastLoad = now - lastLoadTimeRef.current;
+
+      // Only reload if not currently loading and at least 30 seconds since last load
+      // This prevents rapid reloads when switching tabs but allows refresh after backgrounding
+      if (!isLoadingRef.current && timeSinceLastLoad > 30000) {
+        loadAthleteAndData();
+      }
+
+      return () => {
+        isMountedRef.current = false;
+      };
+    }, [])
+  );
 
   async function loadAthleteAndData() {
+    // Prevent concurrent loads
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
+    lastLoadTimeRef.current = Date.now();
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         navigation.replace('Login');
         return;
       }
-      setUserId(user.id);
+      if (isMountedRef.current) setUserId(user.id);
 
       // Use passed athleteId or fallback to looking up by user_id
       let currentAthleteId = athleteId;
@@ -98,8 +176,10 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
           return;
         }
         currentAthleteId = athlete.id;
-        setAthleteId(athlete.id);
+        if (isMountedRef.current) setAthleteId(athlete.id);
       }
+
+      if (!isMountedRef.current) return;
 
       await Promise.all([
         fetchData(currentAthleteId!),
@@ -108,7 +188,8 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     } catch (error) {
       console.error('Error loading athlete:', error);
     } finally {
-      setLoading(false);
+      isLoadingRef.current = false;
+      if (isMountedRef.current) setLoading(false);
     }
   }
 
@@ -185,25 +266,46 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     const last30DaysStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const last30DaysStr = last30DaysStart.toISOString().split('T')[0];
 
-    // Get Blast swings
-    const { data: blastSwings } = await supabase
-      .from('blast_swings')
-      .select('bat_speed, recorded_date, attack_angle, on_plane_efficiency')
-      .eq('athlete_id', id)
-      .order('recorded_date', { ascending: false });
+    // Type definitions for paginated queries
+    interface BlastSwing {
+      bat_speed: number | null;
+      recorded_date: string;
+      attack_angle: number | null;
+      on_plane_efficiency: number | null;
+    }
 
-    // Get total Blast swings count
-    const { count: totalBlastSwings } = await supabase
-      .from('blast_swings')
-      .select('*', { count: 'exact', head: true })
-      .eq('athlete_id', id);
+    interface HittraxSession {
+      id: string;
+      session_date: string;
+    }
 
-    // Get HitTrax sessions
-    const { data: hittraxSessions } = await supabase
-      .from('hittrax_sessions')
-      .select('id, session_date')
-      .eq('athlete_id', id)
-      .order('session_date', { ascending: false });
+    interface HittraxSwing {
+      exit_velocity: number | null;
+      distance: number | null;
+      launch_angle: number | null;
+      horizontal_angle: number | null;
+    }
+
+    // Get ALL Blast swings with pagination (bypasses 1000 row limit)
+    const blastSwings = await fetchAllPaginated<BlastSwing>(
+      () => supabase.from('blast_swings'),
+      'bat_speed, recorded_date, attack_angle, on_plane_efficiency',
+      [{ column: 'athlete_id', value: id }],
+      'recorded_date',
+      false
+    );
+
+    // Total count is just the length of all fetched swings
+    const totalBlastSwings = blastSwings.length;
+
+    // Get ALL HitTrax sessions with pagination
+    const hittraxSessions = await fetchAllPaginated<HittraxSession>(
+      () => supabase.from('hittrax_sessions'),
+      'id, session_date',
+      [{ column: 'athlete_id', value: id }],
+      'session_date',
+      false
+    );
 
     const sessionIds = hittraxSessions?.map(s => s.id) || [];
 
@@ -216,13 +318,16 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     let hittraxAvgHorizontalAngleLast30Days: number | null = null;
 
     if (sessionIds.length > 0) {
-      // Get total HitTrax swings count
-      const { count: hittraxTotalCount } = await supabase
-        .from('hittrax_swings')
-        .select('*', { count: 'exact', head: true })
-        .in('session_id', sessionIds);
+      // Get ALL HitTrax swings with pagination for total count
+      const allHittraxSwings = await fetchAllPaginated<{ id: string }>(
+        () => supabase.from('hittrax_swings'),
+        'id',
+        [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+        'id',
+        true
+      );
 
-      hittraxTotalSwingsAllTime = hittraxTotalCount || 0;
+      hittraxTotalSwingsAllTime = allHittraxSwings.length;
 
       // Get swings from last 30 days
       const sessionIdsLast30 = hittraxSessions
@@ -230,11 +335,14 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         .map(s => s.id) || [];
 
       if (sessionIdsLast30.length > 0) {
-        const { data: hittraxLast30Swings } = await supabase
-          .from('hittrax_swings')
-          .select('exit_velocity, distance, launch_angle, horizontal_angle')
-          .in('session_id', sessionIdsLast30)
-          .order('created_at', { ascending: false });
+        // Get ALL swings from last 30 days with pagination
+        const hittraxLast30Swings = await fetchAllPaginated<HittraxSwing>(
+          () => supabase.from('hittrax_swings'),
+          'exit_velocity, distance, launch_angle, horizontal_angle',
+          [{ column: 'session_id', value: sessionIdsLast30, operator: 'in' }],
+          'created_at',
+          false
+        );
 
         if (hittraxLast30Swings && hittraxLast30Swings.length > 0) {
           const contactSwings = hittraxLast30Swings.filter(s => s.exit_velocity && s.exit_velocity > 0);
@@ -402,30 +510,60 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
   async function fetchSessions(id: string) {
     try {
-      // Get all Blast swings with full timestamp data
-      const { data: blastSwings } = await supabase
-        .from('blast_swings')
-        .select('id, recorded_date, recorded_time, created_at_utc, bat_speed, attack_angle, on_plane_efficiency')
-        .eq('athlete_id', id)
-        .order('recorded_date', { ascending: false });
+      // Type definitions for session fetching
+      interface BlastSwingSession {
+        id: string;
+        recorded_date: string;
+        recorded_time: string | null;
+        created_at_utc: string | null;
+        bat_speed: number | null;
+        attack_angle: number | null;
+        on_plane_efficiency: number | null;
+      }
 
-      // Get all HitTrax sessions
-      const { data: hittraxSessions } = await supabase
-        .from('hittrax_sessions')
-        .select('id, session_date')
-        .eq('athlete_id', id)
-        .order('session_date', { ascending: false });
+      interface HittraxSessionData {
+        id: string;
+        session_date: string;
+      }
 
-      // Get all HitTrax swings
-      let hittraxSwings: any[] = [];
+      interface HittraxSwingSession {
+        id: string;
+        session_id: string;
+        swing_timestamp: string | null;
+        exit_velocity: number | null;
+        distance: number | null;
+        launch_angle: number | null;
+      }
+
+      // Get ALL Blast swings with pagination (bypasses 1000 row limit)
+      const blastSwings = await fetchAllPaginated<BlastSwingSession>(
+        () => supabase.from('blast_swings'),
+        'id, recorded_date, recorded_time, created_at_utc, bat_speed, attack_angle, on_plane_efficiency',
+        [{ column: 'athlete_id', value: id }],
+        'recorded_date',
+        false
+      );
+
+      // Get ALL HitTrax sessions with pagination
+      const hittraxSessions = await fetchAllPaginated<HittraxSessionData>(
+        () => supabase.from('hittrax_sessions'),
+        'id, session_date',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        false
+      );
+
+      // Get ALL HitTrax swings with pagination
+      let hittraxSwings: HittraxSwingSession[] = [];
       if (hittraxSessions && hittraxSessions.length > 0) {
         const sessionIds = hittraxSessions.map(s => s.id);
-        const { data: swings } = await supabase
-          .from('hittrax_swings')
-          .select('id, session_id, swing_timestamp, exit_velocity, distance, launch_angle')
-          .in('session_id', sessionIds)
-          .order('swing_timestamp', { ascending: false });
-        hittraxSwings = swings || [];
+        hittraxSwings = await fetchAllPaginated<HittraxSwingSession>(
+          () => supabase.from('hittrax_swings'),
+          'id, session_id, swing_timestamp, exit_velocity, distance, launch_angle',
+          [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+          'swing_timestamp',
+          false
+        );
       }
 
       // Match swings by timestamp (7-second window)

@@ -68,22 +68,27 @@ export default function ClassDetailsSheet({
   if (!event) return null;
 
   const spotsRemaining = event.capacity - event.bookedCount;
+
+  // Check if blocked by restriction tags - this is the PRIMARY check
+  // Use eligibility.canBook as the source of truth, not cached event data
+  const isBlocked = eligibility?.sourceType === 'blocked';
   const hasMissingRestrictions =
     eligibility?.missingRestrictions && eligibility.missingRestrictions.length > 0;
 
-  // Check drop-in status
-  const isDropIn = eligibility?.sourceType === 'drop_in';
+  // Check drop-in status - only valid if not blocked
+  const isDropIn = !isBlocked && eligibility?.sourceType === 'drop_in';
   const dropInPriceCents = eligibility?.dropInPriceCents ?? null;
   const isFreeDropIn = isDropIn && dropInPriceCents === 0;
   const isPaidDropIn = isDropIn && dropInPriceCents !== null && dropInPriceCents > 0;
   const dropInPriceFormatted = dropInPriceCents ? `$${(dropInPriceCents / 100).toFixed(2)}` : '';
 
   // Determine if we should show the "no payment methods" card
-  // Don't show it if drop-in is available
-  const hasNoPaymentMethods = !loading && paymentMethods.length === 0 && !hasMissingRestrictions && !isDropIn;
+  // Don't show it if: blocked by restrictions, drop-in is available, or user has payment methods
+  const hasNoPaymentMethods = !loading && paymentMethods.length === 0 && !isBlocked && !hasMissingRestrictions && !isDropIn;
 
-  // Can book if: has payment methods selected OR is a free drop-in
-  const canBook = eligibility?.canBook && (
+  // Can book if: eligibility says yes AND (has payment methods selected OR is a free drop-in)
+  // IMPORTANT: Always use eligibility.canBook as the source of truth
+  const canBook = eligibility?.canBook === true && (
     (paymentMethods.length > 0 && selectedPaymentId) || isFreeDropIn
   );
   const selectedPayment = paymentMethods.find((p) => p.id === selectedPaymentId);
@@ -344,13 +349,26 @@ export default function ClassDetailsSheet({
               <ActivityIndicator size="small" color="#9BDDFF" style={{ marginVertical: 20 }} />
             )}
 
-            {/* Restrictions Warning */}
-            {hasMissingRestrictions && (
+            {/* Restrictions Warning - Show when blocked by restriction tags */}
+            {(isBlocked || hasMissingRestrictions) && (
               <View style={styles.warning}>
-                <Text style={styles.warningTitle}>Requirements Not Met</Text>
-                {eligibility!.missingRestrictions!.map((r, i) => (
-                  <Text key={i} style={styles.warningText}>• {r.name}</Text>
-                ))}
+                <Text style={styles.warningTitle}>
+                  {hasMissingRestrictions ? 'Requirements Not Met' : 'Cannot Book This Session'}
+                </Text>
+                {hasMissingRestrictions ? (
+                  eligibility!.missingRestrictions!.map((r, i) => (
+                    <View key={i} style={styles.restrictionItem}>
+                      <Text style={styles.warningText}>• {r.name}</Text>
+                      {r.description ? (
+                        <Text style={styles.restrictionDesc}>{r.description}</Text>
+                      ) : null}
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.warningText}>
+                    {eligibility?.reason || 'This session has requirements that must be met before booking.'}
+                  </Text>
+                )}
               </View>
             )}
 
@@ -375,8 +393,8 @@ export default function ClassDetailsSheet({
               </View>
             )}
 
-            {/* Payment Options - Show if user has memberships/packages */}
-            {!loading && paymentMethods.length > 0 && !hasMissingRestrictions && (
+            {/* Payment Options - Show if user has memberships/packages and is not blocked */}
+            {!loading && paymentMethods.length > 0 && !isBlocked && !hasMissingRestrictions && (
               <View style={styles.paymentSection}>
                 <Text style={styles.sectionLabel}>Pay With</Text>
                 {paymentMethods.map((method) => (
@@ -397,8 +415,8 @@ export default function ClassDetailsSheet({
               </View>
             )}
 
-            {/* Free Drop-in Card */}
-            {!loading && isFreeDropIn && !hasMissingRestrictions && (
+            {/* Free Drop-in Card - Only show if not blocked */}
+            {!loading && isFreeDropIn && !isBlocked && !hasMissingRestrictions && (
               <View style={styles.dropInCard}>
                 <LinearGradient colors={['#34D399', '#10B981']} style={styles.dropInIcon}>
                   <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
@@ -413,8 +431,8 @@ export default function ClassDetailsSheet({
               </View>
             )}
 
-            {/* Paid Drop-in Card */}
-            {!loading && isPaidDropIn && !hasMissingRestrictions && (
+            {/* Paid Drop-in Card - Only show if not blocked */}
+            {!loading && isPaidDropIn && !isBlocked && !hasMissingRestrictions && (
               <View style={styles.dropInCard}>
                 <LinearGradient colors={['#9BDDFF', '#7BC5F0']} style={styles.dropInIcon}>
                   <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
@@ -430,8 +448,8 @@ export default function ClassDetailsSheet({
             )}
           </ScrollView>
 
-          {/* Reserve Button - For memberships/packages and FREE drop-ins */}
-          {!loading && (paymentMethods.length > 0 || isFreeDropIn) && !hasMissingRestrictions && !isPaidDropIn && (
+          {/* Reserve Button - For memberships/packages and FREE drop-ins - Only if not blocked */}
+          {!loading && (paymentMethods.length > 0 || isFreeDropIn) && !isBlocked && !hasMissingRestrictions && !isPaidDropIn && (
             <View style={styles.footer}>
               <TouchableOpacity
                 style={[styles.reserveBtn, !canBook && styles.reserveBtnDisabled]}
@@ -454,8 +472,8 @@ export default function ClassDetailsSheet({
             </View>
           )}
 
-          {/* Continue to Payment Button - For PAID drop-ins only */}
-          {!loading && isPaidDropIn && !hasMissingRestrictions && (
+          {/* Continue to Payment Button - For PAID drop-ins only - Only if not blocked */}
+          {!loading && isPaidDropIn && !isBlocked && !hasMissingRestrictions && (
             <View style={styles.footer}>
               <TouchableOpacity
                 style={[styles.reserveBtn, paymentInProgress && styles.reserveBtnDisabled]}
@@ -588,6 +606,16 @@ const styles = StyleSheet.create({
   warningText: {
     color: '#92400E',
     fontSize: 13,
+  },
+  restrictionItem: {
+    marginBottom: 8,
+  },
+  restrictionDesc: {
+    color: '#92400E',
+    fontSize: 12,
+    marginLeft: 12,
+    marginTop: 2,
+    opacity: 0.8,
   },
   membershipCard: {
     backgroundColor: 'rgba(155, 221, 255, 0.1)',

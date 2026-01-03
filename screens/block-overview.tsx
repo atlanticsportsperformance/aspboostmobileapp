@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,12 @@ import {
   StyleSheet,
   Modal,
   Pressable,
+  useWindowDimensions,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import YoutubePlayer from 'react-native-youtube-iframe';
 import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 
 // Types
@@ -125,6 +128,32 @@ function isExerciseCompleted(exerciseId: string, completedSets: Record<string, b
   return sets ? sets.every(s => s === true) : false;
 }
 
+// Get gradient colors based on workout category - BLACK at top, color at bottom
+// Uses the exact same colors as the dashboard workout cards
+function getCategoryGradient(category: string): [string, string, string, string, string] {
+  const cat = category?.toLowerCase() || '';
+
+  if (cat.includes('hitting')) {
+    // Hitting - dark red (matches #7f1d1d from dashboard)
+    return ['#000000', '#000000', '#000000', '#0a0505', '#7f1d1d'];
+  }
+  if (cat.includes('throwing')) {
+    // Throwing - dark blue (matches #1e3a8a from dashboard)
+    return ['#000000', '#000000', '#000000', '#05080a', '#1e3a8a'];
+  }
+  // Default strength_conditioning - dark green (matches #0a1f0d from dashboard)
+  return ['#000000', '#000000', '#000000', '#050a06', '#0a1f0d'];
+}
+
+// Get accent color for category (matches dashboard dot colors)
+function getCategoryAccent(category: string): string {
+  const cat = category?.toLowerCase() || '';
+
+  if (cat.includes('hitting')) return '#ef4444'; // red dot
+  if (cat.includes('throwing')) return '#3b82f6'; // blue dot
+  return '#00ff55'; // green dot for strength_conditioning
+}
+
 export default function BlockOverview({
   workout,
   customMeasurements,
@@ -137,6 +166,46 @@ export default function BlockOverview({
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
+  const [videoModalId, setVideoModalId] = useState<string | null>(null);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
+  const [videoError, setVideoError] = useState(false);
+
+  const { width: screenWidth } = useWindowDimensions();
+  const videoWidth = Math.min(screenWidth - 48, 400);
+  const videoHeight = videoWidth * (9 / 16);
+
+  const gradientColors = getCategoryGradient(workout.category);
+  const accentColor = getCategoryAccent(workout.category);
+
+  // Video modal handlers
+  const openVideoModal = (videoId: string) => {
+    setVideoModalId(videoId);
+    setVideoPlaying(false);
+    setVideoReady(false);
+    setVideoError(false);
+  };
+
+  const closeVideoModal = () => {
+    setVideoModalId(null);
+    setVideoPlaying(false);
+    setVideoReady(false);
+    setVideoError(false);
+  };
+
+  const onVideoStateChange = useCallback((state: string) => {
+    if (state === 'ended') {
+      setVideoPlaying(false);
+    }
+  }, []);
+
+  const onVideoReady = useCallback(() => {
+    setVideoReady(true);
+  }, []);
+
+  const onVideoError = useCallback(() => {
+    setVideoError(true);
+  }, []);
 
   const toggleBlock = (routineId: string) => {
     setExpandedBlocks(prev => ({
@@ -161,19 +230,14 @@ export default function BlockOverview({
   const progressPercent = totalSets > 0 ? (completedSetsCount / totalSets) * 100 : 0;
   const allSetsCompleted = completedSetsCount === totalSets && totalSets > 0;
 
-  // Format timer display
-  const minutes = Math.floor(timer / 60);
-  const seconds = timer % 60;
-  const timerDisplay = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-
-  // Timer color based on duration
-  const getTimerColor = () => {
-    if (minutes < 30) return '#10B981';
-    if (minutes < 60) return '#F59E0B';
-    return '#EF4444';
-  };
-
   return (
+    <LinearGradient
+      colors={gradientColors}
+      locations={[0, 0.3, 0.7, 0.9, 1]}
+      style={styles.gradientContainer}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0, y: 1 }}
+    >
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header with Timer */}
       <View style={styles.header}>
@@ -192,11 +256,6 @@ export default function BlockOverview({
           </Text>
           <View style={styles.backButtonPlaceholder} />
         </View>
-
-        {/* Timer */}
-        <Text style={[styles.timerDisplay, { color: getTimerColor() }]}>
-          {timerDisplay}
-        </Text>
 
         {/* Progress Bar */}
         <View style={styles.progressBarContainer}>
@@ -242,7 +301,10 @@ export default function BlockOverview({
               activeOpacity={0.7}
             >
               <View style={styles.blockHeaderContent}>
-                <Text style={styles.blockName}>{routine.name}</Text>
+                <View style={styles.blockNameRow}>
+                  <Text style={styles.blockName}>{routine.name}</Text>
+                  <View style={styles.blockDividerLine} />
+                </View>
                 {routine.description && (
                   <Text style={styles.blockDescription}>{routine.description}</Text>
                 )}
@@ -273,10 +335,11 @@ export default function BlockOverview({
                   const isCompleted = isExerciseCompleted(exercise.id, completedSets);
                   const hasPRTracking = exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0;
 
+                  // Use newline separator for paired measurements (each ball type on its own line)
                   const metrics = formatExerciseMetrics({
                     exercise,
                     customMeasurements,
-                    separator: ' • ',
+                    separator: '\n',
                   });
 
                   return (
@@ -288,13 +351,21 @@ export default function BlockOverview({
                     >
                       {/* Left Section */}
                       <View style={styles.exerciseLeft}>
-                        {/* Exercise Code Badge */}
-                        <View style={styles.exerciseCodeBadge}>
-                          <Text style={styles.exerciseCodeText}>{exerciseCode}</Text>
-                        </View>
+                        {/* Exercise Code - Simple text */}
+                        <Text style={styles.exerciseCodeText}>{exerciseCode}</Text>
 
                         {/* Video Thumbnail */}
-                        <View style={styles.videoThumbnail}>
+                        <TouchableOpacity
+                          style={styles.videoThumbnail}
+                          onPress={(e) => {
+                            if (videoId) {
+                              e.stopPropagation();
+                              openVideoModal(videoId);
+                            }
+                          }}
+                          activeOpacity={videoId ? 0.7 : 1}
+                          disabled={!videoId}
+                        >
                           {videoId ? (
                             <Image
                               source={{ uri: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` }}
@@ -302,9 +373,11 @@ export default function BlockOverview({
                               resizeMode="cover"
                             />
                           ) : (
-                            <Text style={styles.playIcon}>▶</Text>
+                            <View style={styles.noVideoPlaceholder}>
+                              <Text style={styles.playIcon}>▶</Text>
+                            </View>
                           )}
-                        </View>
+                        </TouchableOpacity>
                       </View>
 
                       {/* Center Section */}
@@ -319,7 +392,7 @@ export default function BlockOverview({
 
                         {/* Metrics Display */}
                         {metrics && (
-                          <Text style={styles.metricsDisplay} numberOfLines={3}>
+                          <Text style={styles.metricsDisplay} numberOfLines={6}>
                             {metrics}
                           </Text>
                         )}
@@ -337,19 +410,41 @@ export default function BlockOverview({
                         )}
                       </View>
 
-                      {/* Right Section - Quick Complete or Arrow */}
+                      {/* Right Section - Quick Complete Checkbox */}
                       {(() => {
-                        // Check if exercise only has reps (no weight to log)
+                        // Check if exercise has any trackable metrics
                         const enabledMeasurementIds = exercise.enabled_measurements || [];
+                        const hasMetricTargets = exercise.metric_targets && Object.keys(exercise.metric_targets).length > 0;
+                        const hasLegacyReps = !!exercise.reps;
 
-                        // Reps-only = only "reps" in enabled_measurements, no "weight"
-                        const hasWeight = enabledMeasurementIds.includes('weight');
-                        const hasIntensityTargets = exercise.intensity_targets && exercise.intensity_targets.length > 0;
+                        // Notes-only exercise = no enabled_measurements, no metric_targets, no legacy reps
+                        const isNotesOnly = enabledMeasurementIds.length === 0 && !hasMetricTargets && !hasLegacyReps;
 
-                        const isRepsOnly = !hasWeight && !hasIntensityTargets;
+                        if (isNotesOnly) {
+                          // Notes-only exercises show a simple complete checkbox
+                          return (
+                            <TouchableOpacity
+                              style={styles.exerciseRight}
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                onToggleExerciseComplete(exercise.id, 1);
+                              }}
+                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            >
+                              <View style={[
+                                styles.quickCompleteCheckbox,
+                                isCompleted && styles.quickCompleteCheckboxChecked
+                              ]}>
+                                {isCompleted && (
+                                  <Text style={styles.quickCompleteCheckmark}>✓</Text>
+                                )}
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        }
 
-                        return isRepsOnly ? (
-                          // Reps-only exercises can be quick-completed
+                        // All exercises with metrics get a quick-complete checkbox
+                        return (
                           <TouchableOpacity
                             style={styles.exerciseRight}
                             onPress={(e) => {
@@ -367,11 +462,6 @@ export default function BlockOverview({
                               )}
                             </View>
                           </TouchableOpacity>
-                        ) : (
-                          // Exercises with weight/metrics show arrow (must log properly)
-                          <View style={styles.exerciseRight}>
-                            <Text style={styles.arrowIcon}>›</Text>
-                          </View>
                         );
                       })()}
                     </TouchableOpacity>
@@ -488,14 +578,91 @@ export default function BlockOverview({
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Video Modal */}
+      <Modal
+        visible={!!videoModalId}
+        transparent
+        animationType="fade"
+        onRequestClose={closeVideoModal}
+      >
+        <Pressable
+          style={styles.videoModalBackdrop}
+          onPress={closeVideoModal}
+        >
+          <Pressable style={styles.videoModalContainer} onPress={() => {}}>
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.videoModalClose}
+              onPress={closeVideoModal}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.videoModalCloseText}>✕</Text>
+            </TouchableOpacity>
+
+            {/* Video Player */}
+            {videoModalId && (
+              videoError ? (
+                // Fallback: Thumbnail that opens YouTube app
+                <TouchableOpacity
+                  style={[styles.videoModalPlayer, { width: videoWidth, height: videoHeight }]}
+                  onPress={() => {
+                    Linking.openURL(`https://www.youtube.com/watch?v=${videoModalId}`);
+                    closeVideoModal();
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Image
+                    source={{ uri: `https://img.youtube.com/vi/${videoModalId}/hqdefault.jpg` }}
+                    style={styles.videoModalThumbnail}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.videoModalPlayOverlay}>
+                    <View style={styles.videoModalPlayButton}>
+                      <Text style={styles.videoModalPlayIcon}>▶</Text>
+                    </View>
+                    <Text style={styles.videoModalWatchText}>Watch on YouTube</Text>
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                // YouTube Player
+                <View style={[styles.videoModalPlayer, { width: videoWidth, height: videoHeight }]}>
+                  {!videoReady && (
+                    <View style={styles.videoModalLoading}>
+                      <Text style={styles.videoModalLoadingText}>Loading video...</Text>
+                    </View>
+                  )}
+                  <YoutubePlayer
+                    height={videoHeight}
+                    width={videoWidth}
+                    play={videoPlaying}
+                    videoId={videoModalId}
+                    onChangeState={onVideoStateChange}
+                    onReady={onVideoReady}
+                    onError={onVideoError}
+                    webViewProps={{
+                      allowsInlineMediaPlayback: true,
+                      mediaPlaybackRequiresUserAction: false,
+                    }}
+                  />
+                </View>
+              )
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
+  gradientContainer: {
+    flex: 1,
+  },
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: 'transparent',
   },
   contentContainer: {
     paddingHorizontal: 16,
@@ -507,106 +674,99 @@ const styles = StyleSheet.create({
   workoutNotes: {
     fontSize: 14,
     fontStyle: 'italic',
-    color: '#D4D4D4',
-    paddingHorizontal: 12,
-    marginBottom: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
   },
   blockSection: {
-    marginBottom: 8,
+    marginBottom: 20,
   },
   blockHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderLeftWidth: 4,
-    borderLeftColor: 'rgba(255, 255, 255, 0.3)',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
+    paddingVertical: 8,
+    marginBottom: 4,
   },
   blockHeaderContent: {
     flex: 1,
   },
+  blockNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   blockName: {
-    fontSize: 14,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    fontStyle: 'italic',
+    letterSpacing: 0.5,
+    color: '#9BDDFF',
+  },
+  blockDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    maxWidth: 100,
   },
   blockDescription: {
     fontSize: 12,
-    fontStyle: 'italic',
-    color: '#A3A3A3',
-    marginTop: 2,
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginTop: 4,
   },
   chevronIcon: {
-    fontSize: 16,
-    color: '#FFFFFF',
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
     marginLeft: 8,
   },
   blockNotesContainer: {
-    marginTop: 8,
     marginBottom: 8,
-    padding: 8,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-    borderRadius: 8,
+    paddingLeft: 2,
   },
   blockNotes: {
     fontSize: 12,
-    color: '#93C5FD',
+    fontStyle: 'italic',
+    color: 'rgba(255, 255, 255, 0.5)',
   },
   exerciseList: {
-    marginLeft: 24,
-    gap: 6,
+    gap: 2,
   },
   exerciseCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 6,
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
   exerciseLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  exerciseCodeBadge: {
-    width: 24,
-    height: 24,
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.4)',
-    borderRadius: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
+    gap: 10,
   },
   exerciseCodeText: {
     fontSize: 12,
-    fontWeight: '900',
-    color: '#9BDDFF',
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.4)',
+    minWidth: 28,
   },
   videoThumbnail: {
-    width: 56,
-    height: 36,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    backgroundColor: '#000000',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 48,
+    height: 32,
+    borderRadius: 4,
     overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
   thumbnailImage: {
     width: '100%',
     height: '100%',
   },
+  noVideoPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   playIcon: {
-    fontSize: 14,
-    color: '#525252',
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.2)',
   },
   exerciseCenter: {
     flex: 1,
@@ -617,10 +777,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   exerciseName: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
     flex: 1,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   prTrophy: {
     fontSize: 14,
@@ -641,10 +803,10 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   metricsDisplay: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#D4D4D4',
-    marginTop: 2,
-    maxHeight: 60,
+    marginTop: 4,
+    lineHeight: 18,
   },
   exerciseNotes: {
     fontSize: 12,
@@ -666,10 +828,10 @@ const styles = StyleSheet.create({
     color: '#737373',
   },
   header: {
-    backgroundColor: '#0A0A0A',
+    backgroundColor: 'transparent',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
     zIndex: 50,
   },
   headerTopRow: {
@@ -705,12 +867,6 @@ const styles = StyleSheet.create({
   backButtonPlaceholder: {
     width: 60,
   },
-  timerDisplay: {
-    fontSize: 32,
-    fontWeight: '700',
-    fontFamily: 'monospace',
-    textAlign: 'center',
-  },
   progressBarContainer: {
     marginTop: 8,
   },
@@ -734,13 +890,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   workoutNotesBanner: {
-    padding: 12,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-    marginHorizontal: 16,
-    marginTop: 16,
-    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginTop: 8,
   },
   completeButtonContainer: {
     position: 'absolute',
@@ -916,5 +1068,85 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  // Video Modal Styles
+  videoModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoModalContainer: {
+    alignItems: 'center',
+    padding: 16,
+  },
+  videoModalClose: {
+    position: 'absolute',
+    top: -40,
+    right: 0,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  videoModalCloseText: {
+    fontSize: 18,
+    color: '#FFFFFF',
+  },
+  videoModalPlayer: {
+    backgroundColor: '#000000',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  videoModalLoading: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1A1A1A',
+    zIndex: 1,
+  },
+  videoModalLoadingText: {
+    color: '#737373',
+    fontSize: 14,
+  },
+  videoModalThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  videoModalPlayOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoModalPlayButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoModalPlayIcon: {
+    fontSize: 24,
+    color: '#FFFFFF',
+    marginLeft: 4,
+  },
+  videoModalWatchText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
 });
