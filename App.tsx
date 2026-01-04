@@ -1,11 +1,12 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
-import React, { useEffect, useState, useRef } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { View, Image, StyleSheet } from 'react-native';
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StripeProvider } from '@stripe/stripe-react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import { supabase } from './lib/supabase';
 import { AthleteProvider } from './contexts/AthleteContext';
 import {
@@ -13,6 +14,9 @@ import {
   getLastNotificationResponse,
   parseNotificationData,
 } from './lib/pushNotifications';
+
+// Keep the splash screen visible while we fetch resources
+SplashScreen.preventAutoHideAsync();
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
@@ -159,10 +163,21 @@ export default function App() {
     }
   }
 
+  const onLayoutRootView = useCallback(async () => {
+    if (!isLoading) {
+      // Hide the splash screen once we're ready
+      await SplashScreen.hideAsync();
+    }
+  }, [isLoading]);
+
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0A0A0A' }}>
-        <ActivityIndicator size="large" color="#9BDDFF" />
+      <View style={styles.splashContainer}>
+        <Image
+          source={require('./assets/icon.png')}
+          style={styles.splashLogo}
+          resizeMode="contain"
+        />
       </View>
     );
   }
@@ -174,15 +189,16 @@ export default function App() {
   };
 
   return (
-    <StripeProvider
-      publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''}
-      merchantIdentifier="merchant.com.aspboost"
-    >
-      <AthleteProvider>
-        <SafeAreaProvider>
-          <NavigationContainer ref={navigationRef}>
-            <StatusBar style="light" />
-            <Stack.Navigator
+    <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
+      <StripeProvider
+        publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''}
+        merchantIdentifier="merchant.com.aspboost"
+      >
+        <AthleteProvider>
+          <SafeAreaProvider>
+            <NavigationContainer ref={navigationRef}>
+              <StatusBar style="light" />
+              <Stack.Navigator
             screenOptions={{
               headerShown: false,
               contentStyle: {
@@ -221,10 +237,24 @@ export default function App() {
             <Stack.Screen name="Billing" component={BillingScreen} />
             <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
             <Stack.Screen name="Waivers" component={WaiversScreen} />
-          </Stack.Navigator>
-        </NavigationContainer>
-      </SafeAreaProvider>
-    </AthleteProvider>
-  </StripeProvider>
+            </Stack.Navigator>
+          </NavigationContainer>
+        </SafeAreaProvider>
+      </AthleteProvider>
+    </StripeProvider>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0A0A0A',
+  },
+  splashLogo: {
+    width: 200,
+    height: 200,
+  },
+});
