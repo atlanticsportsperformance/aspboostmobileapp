@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import * as WebBrowser from 'expo-web-browser';
+import { useStripe } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 
@@ -135,6 +135,7 @@ interface AthleteData {
 }
 
 export default function MembershipsPackagesScreen({ navigation, route }: any) {
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
@@ -476,23 +477,21 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         throw new Error('Please log in to make a purchase');
       }
 
-      // Determine which endpoint to call based on item type
-      const endpoint = selectedItemType === 'membership'
-        ? `${API_URL}/api/stripe/create-membership-checkout`
-        : `${API_URL}/api/stripe/create-package-checkout`;
+      // Use mobile checkout endpoint that returns PaymentIntent for embedded Payment Sheet
+      const endpoint = `${API_URL}/api/stripe/create-mobile-checkout`;
 
-      // Request checkout URL (same as web app - NOT embedded mode)
       const bodyParams = selectedItemType === 'membership'
         ? {
             athlete_id: targetAthleteId,
             membership_type_id: selectedItem.id,
-            // Don't use embedded mode - get the checkout URL instead
           }
         : {
             athlete_id: targetAthleteId,
             package_type_id: selectedItem.id,
-            // Don't use embedded mode - get the checkout URL instead
           };
+
+      console.log('[Checkout] Calling endpoint:', endpoint);
+      console.log('[Checkout] Body params:', bodyParams);
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -504,54 +503,106 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       });
 
       const data = await response.json();
+      console.log('[Checkout] Response status:', response.status);
+      console.log('[Checkout] Response data:', data);
 
       if (!response.ok) {
-        throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create checkout session`);
+        throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create checkout`);
       }
 
-      // Handle free membership that was activated directly
+      // Handle free item response
       if (data.free) {
         setShowPurchaseModal(false);
-        Alert.alert(
-          'Success',
-          data.message || 'Free membership activated!',
-          [{ text: 'OK' }]
-        );
-        // Refresh data
-        if (isParent && linkedAthletes.length > 0) {
-          await fetchDataForAllAthletes();
-        } else if (athleteId) {
-          await fetchData(athleteId);
-        }
+        Alert.alert('Info', data.error || 'This item is free');
         return;
       }
 
-      const { checkout_url } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account, mode, setup_intent_id, subscription_data } = data;
 
-      if (!checkout_url) {
-        throw new Error('No checkout URL returned from server');
+      if (!client_secret) {
+        throw new Error('No payment details returned from server');
       }
 
-      // Close the purchase modal before opening browser
+      console.log('[Checkout] Initializing Payment Sheet with mode:', mode, 'account:', stripe_account);
+
+      // Initialize the Payment Sheet - use setupIntentClientSecret for recurring, paymentIntentClientSecret for one-time
+      const initConfig: any = {
+        customerId: customer_id,
+        customerEphemeralKeySecret: ephemeral_key,
+        merchantDisplayName: 'ASP Boost',
+        returnURL: 'aspboost://stripe-redirect',
+        allowsDelayedPaymentMethods: false,
+      };
+
+      if (mode === 'setup') {
+        initConfig.setupIntentClientSecret = client_secret;
+      } else {
+        initConfig.paymentIntentClientSecret = client_secret;
+      }
+
+      const { error: initError } = await initPaymentSheet(initConfig);
+
+      if (initError) {
+        console.error('[Checkout] Init error:', initError);
+        throw new Error(initError.message);
+      }
+
+      console.log('[Checkout] Payment Sheet initialized, presenting...');
+
+      // Close modal and present Payment Sheet
       setShowPurchaseModal(false);
 
-      // Open Stripe Checkout in browser (exactly like web app)
-      const result = await WebBrowser.openBrowserAsync(checkout_url, {
-        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
-        dismissButtonStyle: 'close',
-      });
+      const { error: presentError } = await presentPaymentSheet();
 
-      console.log('WebBrowser result:', result);
-
-      // When browser is closed, refresh data to check if purchase completed
-      // The webhook will have processed the payment by then
-      setTimeout(async () => {
-        if (isParent && linkedAthletes.length > 0) {
-          await fetchDataForAllAthletes();
-        } else if (athleteId) {
-          await fetchData(athleteId);
+      if (presentError) {
+        if (presentError.code === 'Canceled') {
+          // User cancelled - don't show error
+          console.log('[Checkout] User cancelled');
+          return;
         }
-      }, 1000);
+        throw new Error(presentError.message);
+      }
+
+      // Payment/Setup successful!
+      console.log('[Checkout] Success! Mode:', mode);
+
+      // For recurring memberships, we need to create the subscription after setup succeeds
+      if (mode === 'setup' && setup_intent_id && subscription_data) {
+        console.log('[Checkout] Creating subscription after setup...');
+
+        const subscriptionResponse = await fetch(`${API_URL}/api/stripe/create-mobile-subscription`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            athlete_id: targetAthleteId,
+            setup_intent_id: setup_intent_id,
+            ...subscription_data,
+          }),
+        });
+
+        const subData = await subscriptionResponse.json();
+        console.log('[Checkout] Subscription response:', subData);
+
+        if (!subscriptionResponse.ok) {
+          throw new Error(subData.error || 'Failed to create subscription');
+        }
+      }
+
+      Alert.alert(
+        'Payment Successful',
+        `Your ${selectedItemType} has been activated!`,
+        [{ text: 'OK' }]
+      );
+
+      // Refresh the data to show new purchase
+      if (isParent && linkedAthletes.length > 0) {
+        await fetchDataForAllAthletes();
+      } else if (athleteId) {
+        await fetchData(athleteId);
+      }
 
     } catch (error: any) {
       console.error('Payment error:', error);

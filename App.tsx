@@ -17,10 +17,6 @@ import {
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
-SplashScreen.setOptions({
-  duration: 500,
-  fade: true,
-});
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
@@ -59,7 +55,6 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isParentAccount, setIsParentAccount] = useState(false);
-  const [appIsReady, setAppIsReady] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const appState = useRef(AppState.currentState);
 
@@ -126,14 +121,12 @@ export default function App() {
       const timeoutId = setTimeout(() => {
         console.warn('Auth check timed out, proceeding anyway');
         setIsLoading(false);
-        setAppIsReady(true);
       }, 5000); // 5 second timeout
 
       try {
         await checkSession();
       } finally {
         clearTimeout(timeoutId);
-        setAppIsReady(true);
       }
     };
 

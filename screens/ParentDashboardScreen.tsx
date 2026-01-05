@@ -218,12 +218,20 @@ export default function ParentDashboardScreen({ navigation }: any) {
   }
 
   async function loadDashboard(athletes = linkedAthletes) {
+    // Set a timeout to prevent infinite loading - force stop after 10 seconds
+    const timeoutId = setTimeout(() => {
+      console.warn('Parent dashboard load timed out after 10 seconds');
+      setLoading(false);
+      setRefreshing(false);
+    }, 10000);
+
     try {
       const athleteIds = athletes.map(a => a.athlete_id);
       console.log('[ParentDashboard] loadDashboard called with athleteIds:', athleteIds);
 
       if (athleteIds.length === 0) {
         console.log('[ParentDashboard] No athlete IDs, returning early');
+        clearTimeout(timeoutId);
         setLoading(false);
         return;
       }
@@ -315,6 +323,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('Error loading dashboard:', error);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
       setRefreshing(false);
     }

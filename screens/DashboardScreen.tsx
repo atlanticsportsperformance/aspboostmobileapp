@@ -1460,6 +1460,16 @@ export default function DashboardScreen({ navigation }: any) {
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
 
+    // Set a timeout to prevent infinite loading - force stop after 10 seconds
+    const timeoutId = setTimeout(() => {
+      console.warn('Dashboard load timed out after 10 seconds');
+      if (mountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+      isLoadingRef.current = false;
+    }, 10000);
+
     try {
       // First try getSession which is faster and doesn't require network
       let { data: { session } } = await supabase.auth.getSession();
@@ -1646,6 +1656,8 @@ export default function DashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('Error loading dashboard:', error);
     } finally {
+      // Clear the timeout since we're done (success or error)
+      clearTimeout(timeoutId);
       // Only update state if component is still mounted
       if (mountedRef.current) {
         setLoading(false);
