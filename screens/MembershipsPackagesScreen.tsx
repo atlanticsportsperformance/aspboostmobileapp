@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useStripe, initStripe } from '@stripe/stripe-react-native';
+import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 
@@ -135,7 +135,6 @@ interface AthleteData {
 }
 
 export default function MembershipsPackagesScreen({ navigation, route }: any) {
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
@@ -456,7 +455,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       return;
     }
 
-    // Check if free - no Stripe needed
+    // Check if free - handle free items
     if (!selectedItem.price_amount || selectedItem.price_amount === 0) {
       Alert.alert(
         'Free Item',
@@ -482,17 +481,17 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         ? `${API_URL}/api/stripe/create-membership-checkout`
         : `${API_URL}/api/stripe/create-package-checkout`;
 
-      // Request PaymentIntent for in-app Payment Sheet
+      // Request checkout URL (same as web app - NOT embedded mode)
       const bodyParams = selectedItemType === 'membership'
         ? {
             athlete_id: targetAthleteId,
             membership_type_id: selectedItem.id,
-            embedded: true, // Use PaymentIntent for mobile Payment Sheet
+            // Don't use embedded mode - get the checkout URL instead
           }
         : {
             athlete_id: targetAthleteId,
             package_type_id: selectedItem.id,
-            embedded: true, // Use PaymentIntent for mobile Payment Sheet
+            // Don't use embedded mode - get the checkout URL instead
           };
 
       const response = await fetch(endpoint, {
@@ -507,132 +506,52 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create payment session`);
+        throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create checkout session`);
       }
 
-      const { client_secret, customer_id, ephemeral_key, stripe_account } = data;
-
-      if (!client_secret) {
-        throw new Error('No client secret returned from server');
-      }
-
-      // CRITICAL: For Stripe Connect, reinitialize the SDK with the connected account
-      // This must happen BEFORE initPaymentSheet
-      if (stripe_account) {
-        console.log('Reinitializing Stripe with connected account:', stripe_account);
-        await initStripe({
-          publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '',
-          stripeAccountId: stripe_account,
-          merchantIdentifier: 'merchant.com.aspboost',
-          urlScheme: 'aspboost',
-        });
-      }
-
-      // Initialize the Payment Sheet
-      const initParams: any = {
-        paymentIntentClientSecret: client_secret,
-        merchantDisplayName: 'ASP Boost',
-        returnURL: 'aspboost://stripe-redirect',
-        allowsDelayedPaymentMethods: false,
-      };
-
-      // Add customer info if available
-      if (customer_id && ephemeral_key) {
-        initParams.customerId = customer_id;
-        initParams.customerEphemeralKeySecret = ephemeral_key;
-      }
-
-      const { error: initError } = await initPaymentSheet(initParams);
-
-      if (initError) {
-        throw new Error(initError.message);
-      }
-
-      // Present the Payment Sheet
-      const { error: presentError } = await presentPaymentSheet();
-
-      if (presentError) {
-        if (presentError.code === 'Canceled') {
-          // User cancelled - don't show error
-          return;
-        }
-        throw new Error(presentError.message);
-      }
-
-      // Payment successful - now confirm and create the record
-      // This is required because webhooks are unreliable for Connect PaymentIntents
-      console.log('Payment Sheet completed, confirming purchase...');
-
-      const confirmEndpoint = selectedItemType === 'membership'
-        ? `${API_URL}/api/stripe/confirm-membership`
-        : `${API_URL}/api/stripe/confirm-package`;
-
-      const confirmBody = selectedItemType === 'membership'
-        ? {
-            payment_intent_id: data.payment_intent_id,
-            athlete_id: targetAthleteId,
-            membership_type_id: selectedItem.id,
-          }
-        : {
-            payment_intent_id: data.payment_intent_id,
-            athlete_id: targetAthleteId,
-            package_type_id: selectedItem.id,
-          };
-
-      const confirmResponse = await fetch(confirmEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify(confirmBody),
-      });
-
-      // Safely parse JSON response
-      let confirmData;
-      try {
-        const responseText = await confirmResponse.text();
-        console.log('Confirm response text:', responseText);
-        confirmData = responseText ? JSON.parse(responseText) : {};
-      } catch (parseError) {
-        console.error('Failed to parse confirm response:', parseError);
-        confirmData = { error: 'Invalid response from server' };
-      }
-      console.log('Confirm response:', confirmData);
-
-      if (!confirmResponse.ok || confirmData.success === false) {
-        // Payment succeeded but record creation failed
-        console.error('Failed to confirm purchase after payment:', confirmData.error);
+      // Handle free membership that was activated directly
+      if (data.free) {
+        setShowPurchaseModal(false);
         Alert.alert(
-          'Purchase Issue',
-          'Your payment was successful, but we encountered an issue activating your purchase. Please contact support.',
+          'Success',
+          data.message || 'Free membership activated!',
           [{ text: 'OK' }]
         );
-        // Still refresh data in case it partially worked
+        // Refresh data
         if (isParent && linkedAthletes.length > 0) {
           await fetchDataForAllAthletes();
         } else if (athleteId) {
           await fetchData(athleteId);
         }
-        setShowPurchaseModal(false);
         return;
       }
 
-      // Success!
-      setShowPurchaseModal(false);
-      const itemName = selectedItemType === 'membership' ? 'membership' : 'package';
-      Alert.alert(
-        'Payment Successful',
-        `Your ${itemName} has been activated!`,
-        [{ text: 'OK' }]
-      );
+      const { checkout_url } = data;
 
-      // Refresh the data
-      if (isParent && linkedAthletes.length > 0) {
-        await fetchDataForAllAthletes();
-      } else if (athleteId) {
-        await fetchData(athleteId);
+      if (!checkout_url) {
+        throw new Error('No checkout URL returned from server');
       }
+
+      // Close the purchase modal before opening browser
+      setShowPurchaseModal(false);
+
+      // Open Stripe Checkout in browser (exactly like web app)
+      const result = await WebBrowser.openBrowserAsync(checkout_url, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+        dismissButtonStyle: 'close',
+      });
+
+      console.log('WebBrowser result:', result);
+
+      // When browser is closed, refresh data to check if purchase completed
+      // The webhook will have processed the payment by then
+      setTimeout(async () => {
+        if (isParent && linkedAthletes.length > 0) {
+          await fetchDataForAllAthletes();
+        } else if (athleteId) {
+          await fetchData(athleteId);
+        }
+      }, 1000);
 
     } catch (error: any) {
       console.error('Payment error:', error);
@@ -2106,7 +2025,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   ) : (
                     <Text style={styles.purchaseButtonText}>
                       {selectedItem?.price_amount && selectedItem.price_amount > 0
-                        ? `Pay ${formatPrice(selectedItem.price_amount)}`
+                        ? `Checkout - ${formatPrice(selectedItem.price_amount)}`
                         : 'Get Now'}
                     </Text>
                   )}

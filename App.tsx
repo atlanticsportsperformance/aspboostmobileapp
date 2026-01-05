@@ -17,6 +17,10 @@ import {
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
+SplashScreen.setOptions({
+  duration: 500,
+  fade: true,
+});
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
@@ -216,7 +220,7 @@ export default function App() {
     return (
       <View style={styles.splashContainer}>
         <Image
-          source={require('./assets/icon.png')}
+          source={require('./assets/splash-logo.png')}
           style={styles.splashLogo}
           resizeMode="contain"
         />

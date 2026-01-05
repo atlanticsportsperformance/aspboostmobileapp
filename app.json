@@ -2,13 +2,13 @@
   "expo": {
     "name": "ASP Boost",
     "slug": "aspboost-mobile",
-    "version": "1.5.1",
+    "version": "1.5.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/icon.png",
+      "image": "./assets/splash-logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#0A0A0A"
     },
@@ -46,9 +46,10 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/icon.png",
+          "image": "./assets/splash-logo.png",
           "backgroundColor": "#0A0A0A",
-          "imageWidth": 200
+          "imageWidth": 200,
+          "enableFullScreenImage_DO_NOT_USE": false
         }
       ],
       [
@@ -57,7 +58,8 @@
           "icon": "./assets/icon.png",
           "color": "#ef4444"
         }
-      ]
+      ],
+      "expo-web-browser"
     ]
   }
 }
