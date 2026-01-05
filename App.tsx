@@ -1,7 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Image, StyleSheet } from 'react-native';
+import { View, Image, StyleSheet, AppState, AppStateStatus } from 'react-native';
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -55,7 +55,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isParentAccount, setIsParentAccount] = useState(false);
+  const [appIsReady, setAppIsReady] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
+  const appState = useRef(AppState.currentState);
 
   // Handle notification tap navigation
   const handleNotificationNavigation = (data: { type?: string; id?: string; screen?: string }) => {
@@ -89,9 +91,49 @@ export default function App() {
     }
   };
 
+  // Handle app state changes (background/foreground)
   useEffect(() => {
-    // Check for existing session on app launch
-    checkSession();
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      // App is coming back to foreground
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        console.log('App came to foreground, refreshing session...');
+        // Re-check session when app comes back - don't set loading to true to avoid spinner
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          setIsAuthenticated(!!session);
+          if (session) {
+            await checkAccountType(session.user.id);
+          }
+        } catch (error) {
+          console.error('Error refreshing session:', error);
+        }
+      }
+      appState.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    // Check for existing session on app launch with timeout
+    const initializeAuth = async () => {
+      // Set a timeout to prevent infinite loading
+      const timeoutId = setTimeout(() => {
+        console.warn('Auth check timed out, proceeding anyway');
+        setIsLoading(false);
+        setAppIsReady(true);
+      }, 5000); // 5 second timeout
+
+      try {
+        await checkSession();
+      } finally {
+        clearTimeout(timeoutId);
+        setAppIsReady(true);
+      }
+    };
+
+    initializeAuth();
 
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
