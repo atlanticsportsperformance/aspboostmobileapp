@@ -12,11 +12,16 @@ import {
 
 /**
  * Get linked athletes for a parent account
+ * Note: athlete_guardians.athlete_id can reference either:
+ * - profiles.id (if athlete has a user account)
+ * - athletes.id directly (if athlete doesn't have a user account)
+ * We check both to ensure all linked athletes are found.
  */
 export async function getLinkedAthletes(guardianId: string): Promise<LinkedAthlete[]> {
   const { data: links, error } = await supabase
     .from('athlete_guardians')
     .select(`
+      athlete_id,
       athlete:profiles!athlete_guardians_athlete_id_fkey(
         id,
         first_name,
@@ -35,24 +40,60 @@ export async function getLinkedAthletes(guardianId: string): Promise<LinkedAthle
 
   for (let i = 0; i < (links || []).length; i++) {
     const link = links[i];
-    const athlete = link.athlete as any;
+    const profileData = link.athlete as any;
 
-    if (!athlete) continue;
+    // Try to find athlete record by user_id first (if athlete_guardians.athlete_id is profile id)
+    let athleteTableId: string | null = null;
+    let firstName = '';
+    let lastName = '';
+    let email = '';
+    let profileId = '';
 
-    // Get the athletes table ID
-    const { data: athleteRecord } = await supabase
-      .from('athletes')
-      .select('id')
-      .eq('user_id', athlete.id)
-      .single();
+    if (profileData) {
+      // Profile exists - athlete has a user account
+      profileId = profileData.id;
+      firstName = profileData.first_name || '';
+      lastName = profileData.last_name || '';
+      email = profileData.email || '';
 
-    if (athleteRecord) {
+      const { data: athleteByUserId } = await supabase
+        .from('athletes')
+        .select('id')
+        .eq('user_id', profileData.id)
+        .maybeSingle();
+
+      if (athleteByUserId) {
+        athleteTableId = athleteByUserId.id;
+      }
+    }
+
+    // If we didn't find athlete by user_id, try direct lookup
+    if (!athleteTableId && link.athlete_id) {
+      const { data: athleteDirectLookup } = await supabase
+        .from('athletes')
+        .select('id, first_name, last_name, email, user_id')
+        .eq('id', link.athlete_id)
+        .maybeSingle();
+
+      if (athleteDirectLookup) {
+        athleteTableId = athleteDirectLookup.id;
+        // If we didn't get profile data, use athlete table data
+        if (!profileData) {
+          firstName = athleteDirectLookup.first_name || '';
+          lastName = athleteDirectLookup.last_name || '';
+          email = athleteDirectLookup.email || '';
+          profileId = athleteDirectLookup.user_id || athleteDirectLookup.id;
+        }
+      }
+    }
+
+    if (athleteTableId) {
       athletes.push({
-        id: athlete.id,
-        athleteId: athleteRecord.id,
-        firstName: athlete.first_name || '',
-        lastName: athlete.last_name || '',
-        email: athlete.email || '',
+        id: profileId,
+        athleteId: athleteTableId,
+        firstName,
+        lastName,
+        email,
         color: getAthleteColor(i),
       });
     }
@@ -158,8 +199,6 @@ export async function getBookableEvents(
       .from('staff')
       .select('id, user_id, profiles:profiles!user_id(first_name, last_name, avatar_url)')
       .in('id', staffIds);
-
-    console.log('Staff query:', { staffIds, staffRecords, staffError });
 
     (staffRecords || []).forEach((s: any) => {
       // The profile data is nested under the 'profiles' key from the join
@@ -453,7 +492,7 @@ export async function getPaymentMethods(
   const categoryId = templateData?.category_id;
 
   // Get active memberships with service_groupings from metadata
-  const { data: memberships } = await supabase
+  const { data: memberships, error: membershipsError } = await supabase
     .from('memberships')
     .select(`
       id,
@@ -468,21 +507,29 @@ export async function getPaymentMethods(
     .eq('athlete_id', athleteId)
     .in('status', ['active', 'trialing']);
 
+  if (membershipsError) {
+    console.error('[getPaymentMethods] Error fetching memberships:', membershipsError);
+  }
+
   // Filter memberships that cover this event based on service_groupings
-  (memberships || []).filter((m: any) => {
+  const filteredMemberships = (memberships || []).filter((m: any) => {
     const metadata = m.membership_type?.metadata as any;
     const serviceGroupings = metadata?.service_groupings || [];
 
     // If no service groupings defined, membership doesn't cover specific events
-    if (serviceGroupings.length === 0) return false;
+    if (serviceGroupings.length === 0) {
+      return false;
+    }
 
     // Check if any service grouping covers this event
     return serviceGroupings.some((sg: any) => {
-      if (sg.type === 'category' && sg.id === categoryId) return true;
-      if (sg.type === 'template' && sg.id === templateId) return true;
-      return false;
+      const categoryMatch = sg.type === 'category' && sg.id === categoryId;
+      const templateMatch = sg.type === 'template' && sg.id === templateId;
+      return categoryMatch || templateMatch;
     });
-  }).forEach((m: any) => {
+  });
+
+  filteredMemberships.forEach((m: any) => {
     const type = m.membership_type as any;
     const expiryDate = m.current_period_end ? new Date(m.current_period_end) : null;
 
@@ -583,29 +630,31 @@ export async function createBooking(
       return { success: false, error: 'Please log in to book a class' };
     }
 
-    const response = await fetch(`${API_URL}/api/athletes/${athleteId}/bookings`, {
+    const url = `${API_URL}/api/athletes/${athleteId}/bookings`;
+    const body = {
+      event_id: eventId,
+      payment_type: paymentType,
+      payment_id: paymentType === 'drop_in' ? null : paymentId,
+    };
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${session.access_token}`,
       },
-      body: JSON.stringify({
-        event_id: eventId,
-        payment_type: paymentType,
-        payment_id: paymentType === 'drop_in' ? null : paymentId,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error('Error creating booking:', data.error);
       return { success: false, error: data.error || 'Failed to create booking' };
     }
 
     return { success: true };
   } catch (error) {
-    console.error('Error in createBooking:', error);
+    console.error('Error creating booking:', error);
     return { success: false, error: 'An unexpected error occurred' };
   }
 }
@@ -623,16 +672,12 @@ export async function cancelBooking(
   reason?: string
 ): Promise<{ success: boolean; error?: string; refunded?: boolean; refundAmount?: number }> {
   try {
-    console.log('cancelBooking called with:', { athleteId, eventId, reason });
-
     // Get auth token
     const { data: { session } } = await supabase.auth.getSession();
 
     if (!session?.access_token) {
       return { success: false, error: 'Please log in to cancel booking' };
     }
-
-    console.log('Making DELETE request to:', `${API_URL}/api/athletes/${athleteId}/bookings`);
 
     const response = await fetch(`${API_URL}/api/athletes/${athleteId}/bookings`, {
       method: 'DELETE',
@@ -649,7 +694,6 @@ export async function cancelBooking(
     const data = await response.json();
 
     if (!response.ok) {
-      console.error('Error cancelling booking:', data.error, data.debug);
       return { success: false, error: data.error || 'Failed to cancel booking' };
     }
 

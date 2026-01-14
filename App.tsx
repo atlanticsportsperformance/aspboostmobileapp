@@ -1,11 +1,29 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Image, StyleSheet, AppState, AppStateStatus } from 'react-native';
+import { View, Image, StyleSheet, AppState, AppStateStatus, Text, TextInput } from 'react-native';
+
+// Disable font scaling completely to prevent iOS accessibility large fonts from breaking layouts.
+// This ensures consistent UI across all devices regardless of accessibility settings.
+// @ts-ignore - defaultProps is deprecated but still works and is the cleanest solution
+Text.defaultProps = Text.defaultProps || {};
+// @ts-ignore
+Text.defaultProps.maxFontSizeMultiplier = 1;
+// @ts-ignore
+Text.defaultProps.allowFontScaling = false;
+
+// @ts-ignore
+TextInput.defaultProps = TextInput.defaultProps || {};
+// @ts-ignore
+TextInput.defaultProps.maxFontSizeMultiplier = 1;
+// @ts-ignore
+TextInput.defaultProps.allowFontScaling = false;
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StripeProvider } from '@stripe/stripe-react-native';
+// Note: We don't use StripeProvider here - instead we call initStripe()
+// before each payment flow with the publishable key from the API response.
+// This ensures we always use the correct key for the connected account.
 import * as SplashScreen from 'expo-splash-screen';
 import { supabase } from './lib/supabase';
 import { AthleteProvider } from './contexts/AthleteContext';
@@ -13,6 +31,7 @@ import {
   setupNotificationListeners,
   getLastNotificationResponse,
   parseNotificationData,
+  setupPushNotifications,
 } from './lib/pushNotifications';
 
 // Keep the splash screen visible while we fetch resources
@@ -51,12 +70,17 @@ import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
 
+// Threshold for showing splash screen when returning from background (5 minutes)
+const BACKGROUND_SPLASH_THRESHOLD_MS = 5 * 60 * 1000;
+
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isParentAccount, setIsParentAccount] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const appState = useRef(AppState.currentState);
+  const backgroundedAt = useRef<number | null>(null);
+  const isRefreshing = useRef(false);
 
   // Handle notification tap navigation
   const handleNotificationNavigation = (data: { type?: string; id?: string; screen?: string }) => {
@@ -90,23 +114,121 @@ export default function App() {
     }
   };
 
+  // Refresh session - used when app comes back to foreground
+  // Returns true if session is valid, false if user needs to re-login
+  const refreshSession = async (): Promise<boolean> => {
+    if (isRefreshing.current) return isAuthenticated;
+    isRefreshing.current = true;
+
+    // Set a hard timeout to prevent hanging
+    const timeoutPromise = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), 10000)
+    );
+
+    try {
+      const result = await Promise.race([
+        (async () => {
+          const { data: { session }, error } = await supabase.auth.getSession();
+
+          if (error) {
+            // Network errors - keep existing auth state
+            if (error.message?.includes('network') || error.message?.includes('fetch')) {
+              console.log('[App] Network error during session check, keeping existing state');
+              return 'network_error';
+            }
+          }
+
+          if (session) {
+            // Check if token is expiring soon (within 5 minutes)
+            const expiresAt = session.expires_at;
+            const now = Math.floor(Date.now() / 1000);
+            const fiveMinutes = 5 * 60;
+
+            if (expiresAt && expiresAt - now < fiveMinutes) {
+              // Token expiring soon, refresh it
+              console.log('[App] Token expiring soon, refreshing...');
+              const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+              if (!refreshError && refreshData.session) {
+                setIsAuthenticated(true);
+                await checkAccountType(refreshData.session.user.id);
+                return 'authenticated';
+              } else if (expiresAt > now) {
+                // Refresh failed but token still valid, use it
+                console.log('[App] Refresh failed but token still valid');
+                setIsAuthenticated(true);
+                await checkAccountType(session.user.id);
+                return 'authenticated';
+              } else {
+                // Token actually expired and refresh failed
+                console.log('[App] Token expired and refresh failed');
+                setIsAuthenticated(false);
+                setIsParentAccount(false);
+                return 'no_session';
+              }
+            } else {
+              setIsAuthenticated(true);
+              await checkAccountType(session.user.id);
+              return 'authenticated';
+            }
+          } else {
+            // No session - user needs to log in
+            console.log('[App] No session found');
+            setIsAuthenticated(false);
+            setIsParentAccount(false);
+            return 'no_session';
+          }
+        })(),
+        timeoutPromise,
+      ]);
+
+      if (result === 'timeout') {
+        console.warn('[App] Session refresh timed out after 10s');
+        // On timeout, keep existing auth state rather than logging out
+        return isAuthenticated;
+      }
+
+      return result === 'authenticated' || result === 'network_error';
+    } catch (error) {
+      console.error('[App] Error refreshing session:', error);
+      return isAuthenticated; // Keep existing state on error
+    } finally {
+      isRefreshing.current = false;
+    }
+  };
+
   // Handle app state changes (background/foreground)
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-      // App is coming back to foreground
-      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-        console.log('App came to foreground, refreshing session...');
-        // Re-check session when app comes back - don't set loading to true to avoid spinner
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          setIsAuthenticated(!!session);
-          if (session) {
-            await checkAccountType(session.user.id);
-          }
-        } catch (error) {
-          console.error('Error refreshing session:', error);
-        }
+      // App going to background - record timestamp
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        backgroundedAt.current = Date.now();
       }
+
+      // App coming to foreground from background
+      if (
+        appState.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        const wasBackgroundedFor = backgroundedAt.current
+          ? Date.now() - backgroundedAt.current
+          : 0;
+
+        // If backgrounded for longer than threshold, show splash and re-validate
+        if (wasBackgroundedFor > BACKGROUND_SPLASH_THRESHOLD_MS) {
+          console.log(`[App] Backgrounded for ${Math.round(wasBackgroundedFor / 1000)}s, showing splash and re-validating session`);
+          setIsLoading(true);
+          await refreshSession();
+          setIsLoading(false);
+          // After refresh completes, the Navigator will re-render if auth state changed
+          // The individual screens will reload their data via useFocusEffect
+        } else {
+          // Short background - just refresh session silently
+          refreshSession();
+        }
+
+        backgroundedAt.current = null;
+      }
+
       appState.current = nextAppState;
     };
 
@@ -179,6 +301,10 @@ export default function App() {
       setIsAuthenticated(!!session);
       if (session) {
         await checkAccountType(session.user.id);
+        // Register push notifications for existing session
+        setupPushNotifications().catch((err) => {
+          console.log('[App] Push notification setup failed:', err);
+        });
       }
     } catch (error) {
       console.error('Error checking session:', error);
@@ -189,15 +315,24 @@ export default function App() {
 
   async function checkAccountType(userId: string) {
     try {
-      const { data: profile } = await supabase
+      console.log('[App] Checking account type for user:', userId);
+      const { data: profile, error } = await supabase
         .from('profiles')
         .select('account_type')
         .eq('id', userId)
         .single();
 
-      setIsParentAccount(profile?.account_type === 'parent');
+      if (error) {
+        console.error('[App] Error fetching profile:', error);
+        setIsParentAccount(false);
+        return;
+      }
+
+      const isParent = profile?.account_type === 'parent';
+      console.log('[App] Account type:', profile?.account_type, 'isParent:', isParent);
+      setIsParentAccount(isParent);
     } catch (error) {
-      console.error('Error checking account type:', error);
+      console.error('[App] Error checking account type:', error);
       setIsParentAccount(false);
     }
   }
@@ -229,58 +364,53 @@ export default function App() {
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
-      <StripeProvider
-        publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''}
-        merchantIdentifier="merchant.com.aspboost"
-      >
-        <AthleteProvider>
-          <SafeAreaProvider>
-            <NavigationContainer ref={navigationRef}>
-              <StatusBar style="light" />
-              <Stack.Navigator
-            screenOptions={{
-              headerShown: false,
-              contentStyle: {
-                backgroundColor: '#0A0A0A',
-              },
-            }}
-            initialRouteName={getInitialRoute()}
-          >
-            <Stack.Screen name="Login" component={LoginScreen} />
-            <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
-            <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
-            <Stack.Screen name="Dashboard" component={DashboardScreen} />
-            <Stack.Screen name="ParentDashboard" component={ParentDashboardScreen} />
-            <Stack.Screen name="WorkoutExecution" component={WorkoutExecutionScreen} />
-            <Stack.Screen name="WorkoutLogger" component={WorkoutLoggerScreen} />
-            <Stack.Screen name="CompletedWorkout" component={CompletedWorkoutScreen} />
-            <Stack.Screen name="Messages" component={MessagesScreen} />
-            <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
-            <Stack.Screen name="HittingPerformance" component={HittingPerformanceScreen} />
-            <Stack.Screen name="HittingSession" component={HittingSessionScreen} />
-            <Stack.Screen name="HittingTrends" component={HittingTrendsScreen} />
-            <Stack.Screen name="BattedBallTrends" component={BattedBallTrendsScreen} />
-            <Stack.Screen name="PairedDataTrends" component={PairedDataTrendsScreen} />
-            <Stack.Screen name="PitchingPerformance" component={PitchingScreen} />
-            <Stack.Screen name="PitchingSession" component={PitchingSessionScreen} />
-            <Stack.Screen name="PitchingTrends" component={PitchingTrendsScreen} />
-            <Stack.Screen name="ArmCare" component={ArmCareScreen} />
-            <Stack.Screen name="ForceProfile" component={ForceProfileScreen} />
-            <Stack.Screen name="TestDetail" component={TestDetailScreen} />
-            <Stack.Screen name="Resources" component={ResourcesScreen} />
-            <Stack.Screen name="Performance" component={PerformanceScreen} />
-            <Stack.Screen name="Profile" component={ProfileScreen} />
-            <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
-            <Stack.Screen name="Booking" component={BookingScreen} />
-            <Stack.Screen name="MembershipsPackages" component={MembershipsPackagesScreen} />
-            <Stack.Screen name="Billing" component={BillingScreen} />
-            <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
-            <Stack.Screen name="Waivers" component={WaiversScreen} />
+      <AthleteProvider>
+        <SafeAreaProvider>
+          <NavigationContainer ref={navigationRef}>
+            <StatusBar style="light" />
+            <Stack.Navigator
+              screenOptions={{
+                headerShown: false,
+                contentStyle: {
+                  backgroundColor: '#0A0A0A',
+                },
+              }}
+              initialRouteName={getInitialRoute()}
+            >
+              <Stack.Screen name="Login" component={LoginScreen} />
+              <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
+              <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
+              <Stack.Screen name="Dashboard" component={DashboardScreen} />
+              <Stack.Screen name="ParentDashboard" component={ParentDashboardScreen} />
+              <Stack.Screen name="WorkoutExecution" component={WorkoutExecutionScreen} />
+              <Stack.Screen name="WorkoutLogger" component={WorkoutLoggerScreen} />
+              <Stack.Screen name="CompletedWorkout" component={CompletedWorkoutScreen} />
+              <Stack.Screen name="Messages" component={MessagesScreen} />
+              <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
+              <Stack.Screen name="HittingPerformance" component={HittingPerformanceScreen} />
+              <Stack.Screen name="HittingSession" component={HittingSessionScreen} />
+              <Stack.Screen name="HittingTrends" component={HittingTrendsScreen} />
+              <Stack.Screen name="BattedBallTrends" component={BattedBallTrendsScreen} />
+              <Stack.Screen name="PairedDataTrends" component={PairedDataTrendsScreen} />
+              <Stack.Screen name="PitchingPerformance" component={PitchingScreen} />
+              <Stack.Screen name="PitchingSession" component={PitchingSessionScreen} />
+              <Stack.Screen name="PitchingTrends" component={PitchingTrendsScreen} />
+              <Stack.Screen name="ArmCare" component={ArmCareScreen} />
+              <Stack.Screen name="ForceProfile" component={ForceProfileScreen} />
+              <Stack.Screen name="TestDetail" component={TestDetailScreen} />
+              <Stack.Screen name="Resources" component={ResourcesScreen} />
+              <Stack.Screen name="Performance" component={PerformanceScreen} />
+              <Stack.Screen name="Profile" component={ProfileScreen} />
+              <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+              <Stack.Screen name="Booking" component={BookingScreen} />
+              <Stack.Screen name="MembershipsPackages" component={MembershipsPackagesScreen} />
+              <Stack.Screen name="Billing" component={BillingScreen} />
+              <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
+              <Stack.Screen name="Waivers" component={WaiversScreen} />
             </Stack.Navigator>
           </NavigationContainer>
         </SafeAreaProvider>
       </AthleteProvider>
-    </StripeProvider>
     </View>
   );
 }

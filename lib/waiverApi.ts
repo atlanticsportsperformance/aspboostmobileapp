@@ -35,10 +35,9 @@ export async function checkPendingWaivers(
 ): Promise<WaiverCheckResponse> {
   try {
     const headers = await getAuthHeaders();
-    const response = await fetch(
-      `${API_URL}/api/waivers/check?athlete_id=${athleteId}&check_type=${checkType}`,
-      { headers }
-    );
+    const url = `${API_URL}/api/waivers/check?athlete_id=${athleteId}&check_type=${checkType}`;
+
+    const response = await fetch(url, { headers });
 
     if (!response.ok) {
       const error = await response.json();

@@ -12,10 +12,12 @@ import {
   Animated,
   Modal,
   Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, getValidSession } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import HittingCard from '../components/dashboard/HittingCard';
@@ -477,10 +479,12 @@ export default function DashboardScreen({ navigation }: any) {
   // Show carousel if there's performance data OR upcoming events
   const showSnapshotCarousel = hasAnyData || hasUpcomingEvents;
 
-  // Ref to prevent multiple simultaneous loads and track last load time
+  // CRITICAL refs for preventing concurrent loads and loops
   const isLoadingRef = useRef(false);
   const lastLoadTimeRef = useRef<number>(0);
   const mountedRef = useRef(true);
+  const initialFetchDone = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
 
   // Track component mount/unmount
   useEffect(() => {
@@ -490,16 +494,56 @@ export default function DashboardScreen({ navigation }: any) {
     };
   }, []);
 
-  // Refetch dashboard data when screen gains focus (e.g., after returning from workout)
-  // Uses debounce to prevent infinite loop when returning from background
+  // Initial fetch - only once
+  useEffect(() => {
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true;
+      loadDashboard();
+    }
+  }, []);
+
+  // AppState listener - reload data when app comes back to foreground
+  // App.tsx handles the splash screen and session refresh, but we need to reload dashboard data
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      // Only trigger when coming FROM background/inactive TO active
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        const now = Date.now();
+        const timeSinceLastLoad = now - lastLoadTimeRef.current;
+        const ONE_MINUTE = 60 * 1000;
+
+        // Only refresh if enough time has passed (1 minute) and not currently loading
+        if (timeSinceLastLoad > ONE_MINUTE && !isLoadingRef.current) {
+          console.log('[Dashboard] App foregrounded after 1+ min, refreshing data...');
+          // Small delay to let App.tsx finish its session refresh first
+          setTimeout(() => {
+            if (mountedRef.current && !isLoadingRef.current) {
+              loadDashboard();
+            }
+          }, 500);
+        } else {
+          console.log('[Dashboard] App foregrounded, skipping refresh (too recent or loading)');
+        }
+      }
+      // Update ref AFTER checking
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
+  // useFocusEffect for navigation (coming back from other screens)
   useFocusEffect(
     useCallback(() => {
       const now = Date.now();
       const timeSinceLastLoad = now - lastLoadTimeRef.current;
 
-      // Only reload if not currently loading and at least 3 seconds since last load
-      // Increased from 2s to 3s to better handle background return scenarios
-      if (!isLoadingRef.current && timeSinceLastLoad > 3000) {
+      // Only reload if not currently loading and at least 5 seconds since last load
+      if (!isLoadingRef.current && timeSinceLastLoad > 5000 && initialFetchDone.current) {
         loadDashboard();
       }
     }, [])
@@ -1456,54 +1500,75 @@ export default function DashboardScreen({ navigation }: any) {
 
   async function loadDashboard() {
     // Prevent multiple simultaneous loads
-    if (isLoadingRef.current) return;
+    if (isLoadingRef.current) {
+      console.log('[Dashboard] Already loading, skipping');
+      return;
+    }
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
+    console.log('[Dashboard] Starting load...');
 
-    // Set a timeout to prevent infinite loading - force stop after 10 seconds
+    // CRITICAL: Hard timeout to prevent infinite loading
     const timeoutId = setTimeout(() => {
-      console.warn('Dashboard load timed out after 10 seconds');
+      console.warn('[Dashboard] TIMEOUT after 8s');
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
       isLoadingRef.current = false;
-    }, 10000);
+    }, 8000);
 
     try {
-      // First try getSession which is faster and doesn't require network
-      let { data: { session } } = await supabase.auth.getSession();
+      // CRITICAL: Get a VALID session (refreshes if expired)
+      const session = await getValidSession();
 
-      // If no session, try to refresh (handles background return scenarios)
-      if (!session) {
-        const { data: refreshData } = await supabase.auth.refreshSession();
-        session = refreshData.session;
-      }
-
-      // If still no session after refresh attempt, redirect to login
       if (!session?.user) {
-        // Only redirect if component is still mounted
+        console.log('[Dashboard] No valid session');
+        clearTimeout(timeoutId);
         if (mountedRef.current) {
-          isLoadingRef.current = false;
+          setLoading(false);
           navigation.replace('Login');
         }
+        isLoadingRef.current = false;
         return;
       }
 
       const user = session.user;
+      console.log('[Dashboard] Session valid, user:', user.id);
 
-      const { data: athlete } = await supabase
+      // Fetch athlete
+      const { data: athlete, error: athleteError } = await supabase
         .from('athletes')
         .select('id, first_name, last_name, vald_profile_id')
         .eq('user_id', user.id)
         .single();
 
-      if (athlete) {
-        setAthleteId(athlete.id);
-        setUserId(user.id);
-        setFirstName(athlete.first_name || '');
-        setAthleteName(`${athlete.first_name || ''} ${athlete.last_name || ''}`);
-        setValdProfileId(athlete.vald_profile_id);
+      console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message });
+
+      // If athlete query failed, don't redirect - show error
+      if (!athlete) {
+        console.log('[Dashboard] No athlete found for user');
+        clearTimeout(timeoutId);
+        if (mountedRef.current) {
+          setLoading(false);
+          // Don't redirect to login - user is authenticated but has no athlete record
+          // This could be a parent account or data issue
+        }
+        isLoadingRef.current = false;
+        return;
+      }
+
+      // Set athlete state - check mounted before each setState
+      if (!mountedRef.current) return;
+      setAthleteId(athlete.id);
+      setUserId(user.id);
+      setFirstName(athlete.first_name || '');
+      setAthleteName(`${athlete.first_name || ''} ${athlete.last_name || ''}`);
+      setValdProfileId(athlete.vald_profile_id);
+      console.log('[Dashboard] Athlete state set:', athlete.first_name);
+
+      // Load rest of data
+      {
 
         // Fetch all initial data in parallel for faster loading
         const [
@@ -1654,11 +1719,9 @@ export default function DashboardScreen({ navigation }: any) {
         ]);
       }
     } catch (error) {
-      console.error('Error loading dashboard:', error);
+      console.error('[Dashboard] Error:', error);
     } finally {
-      // Clear the timeout since we're done (success or error)
       clearTimeout(timeoutId);
-      // Only update state if component is still mounted
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
