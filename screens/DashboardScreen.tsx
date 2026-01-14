@@ -1514,6 +1514,12 @@ export default function DashboardScreen({ navigation }: any) {
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
+        // If we timed out without loading athlete data, redirect to login
+        // This prevents showing an empty dashboard
+        if (!athleteId) {
+          console.log('[Dashboard] Timeout with no athlete data - redirecting to login');
+          navigation.replace('Login');
+        }
       }
       isLoadingRef.current = false;
     }, 8000);
@@ -1545,14 +1551,16 @@ export default function DashboardScreen({ navigation }: any) {
 
       console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message });
 
-      // If athlete query failed, don't redirect - show error
+      // If athlete query failed, this user shouldn't be on athlete dashboard
       if (!athlete) {
-        console.log('[Dashboard] No athlete found for user');
+        console.log('[Dashboard] No athlete found for user - redirecting to login');
         clearTimeout(timeoutId);
         if (mountedRef.current) {
           setLoading(false);
-          // Don't redirect to login - user is authenticated but has no athlete record
-          // This could be a parent account or data issue
+          // User is authenticated but has no athlete record
+          // This could be a parent account that somehow got to athlete dashboard
+          // or a data issue - redirect to login to reset state
+          navigation.replace('Login');
         }
         isLoadingRef.current = false;
         return;
