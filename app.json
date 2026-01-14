@@ -2,7 +2,7 @@
   "expo": {
     "name": "ASP Boost",
     "slug": "aspboost-mobile",
-    "version": "1.5.4",
+    "version": "1.5.12",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.aspboost.app",
-      "buildNumber": "6",
+      "buildNumber": "11",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSFaceIDUsageDescription": "ASP Boost uses Face ID to securely sign you in to your account."
