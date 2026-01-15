@@ -684,69 +684,80 @@ export default function BillingScreen({ navigation }: any) {
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* Add Card Modal */}
+      {/* Add Card Modal - Full Screen */}
       <Modal
         visible={showAddCardModal}
         animationType="slide"
-        transparent={true}
+        presentationStyle="pageSheet"
         onRequestClose={() => {
           setShowAddCardModal(false);
           setSetupIntentClientSecret(null);
           setCardComplete(false);
         }}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.addCardModal}>
+        <SafeAreaView style={styles.addCardModalContainer}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ flex: 1 }}
+          >
+            {/* Header */}
             <View style={styles.addCardModalHeader}>
-              <Text style={styles.addCardModalTitle}>Add Payment Method</Text>
               <TouchableOpacity
                 onPress={() => {
                   setShowAddCardModal(false);
                   setSetupIntentClientSecret(null);
                   setCardComplete(false);
                 }}
+                style={styles.addCardModalCloseButton}
               >
-                <Ionicons name="close" size={24} color="#9CA3AF" />
+                <Ionicons name="close" size={28} color="#FFFFFF" />
               </TouchableOpacity>
+              <Text style={styles.addCardModalTitle}>Add Card</Text>
+              <View style={{ width: 44 }} />
             </View>
 
-            <Text style={styles.addCardModalDescription}>
-              Add a card to use for future purchases and subscriptions.
-            </Text>
+            {/* Content */}
+            <View style={styles.addCardModalContent}>
+              <View style={styles.cardIconContainer}>
+                <Ionicons name="card" size={48} color="#9BDDFF" />
+              </View>
 
-            <CardField
-              postalCodeEnabled={true}
-              placeholders={{
-                number: '4242 4242 4242 4242',
-              }}
-              cardStyle={{
-                backgroundColor: '#1F2937',
-                textColor: '#FFFFFF',
-                placeholderColor: '#6B7280',
-                borderWidth: 1,
-                borderColor: 'rgba(255,255,255,0.2)',
-                borderRadius: 12,
-              }}
-              style={styles.cardField}
-              onCardChange={(cardDetails) => {
-                setCardComplete(cardDetails.complete);
-              }}
-            />
+              <Text style={styles.addCardModalHeading}>Payment Details</Text>
+              <Text style={styles.addCardModalDescription}>
+                Your card will be saved securely with Stripe for future purchases.
+              </Text>
 
-            <View style={styles.addCardModalActions}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => {
-                  setShowAddCardModal(false);
-                  setSetupIntentClientSecret(null);
-                  setCardComplete(false);
-                }}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
+              <View style={styles.cardFieldContainer}>
+                <CardField
+                  postalCodeEnabled={true}
+                  placeholders={{
+                    number: '4242 4242 4242 4242',
+                  }}
+                  cardStyle={{
+                    backgroundColor: '#111111',
+                    textColor: '#FFFFFF',
+                    placeholderColor: '#6B7280',
+                    borderWidth: 0,
+                    borderRadius: 0,
+                    fontSize: 16,
+                  }}
+                  style={styles.cardField}
+                  onCardChange={(cardDetails) => {
+                    setCardComplete(cardDetails.complete);
+                  }}
+                />
+              </View>
+
+              <View style={styles.secureNotice}>
+                <Ionicons name="lock-closed" size={14} color="#6B7280" />
+                <Text style={styles.secureNoticeText}>
+                  Secured by Stripe. We never store your card details.
+                </Text>
+              </View>
+            </View>
+
+            {/* Footer Actions */}
+            <View style={styles.addCardModalFooter}>
               <TouchableOpacity
                 style={[
                   styles.saveCardButton,
@@ -762,8 +773,8 @@ export default function BillingScreen({ navigation }: any) {
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-        </KeyboardAvoidingView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -1052,57 +1063,90 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
-  modalOverlay: {
+  // Add Card Modal Styles
+  addCardModalContainer: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-  },
-  addCardModal: {
-    backgroundColor: '#1A1A1A',
-    borderRadius: 24,
-    padding: 24,
+    backgroundColor: '#0A0A0A',
   },
   addCardModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  addCardModalCloseButton: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   addCardModalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 18,
+    fontWeight: '600',
     color: '#FFFFFF',
   },
-  addCardModalDescription: {
-    fontSize: 14,
-    color: '#9CA3AF',
+  addCardModalContent: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 40,
+  },
+  cardIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'center',
     marginBottom: 24,
+  },
+  addCardModalHeading: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  addCardModalDescription: {
+    fontSize: 15,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    marginBottom: 32,
+    lineHeight: 22,
+  },
+  cardFieldContainer: {
+    backgroundColor: '#111111',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    overflow: 'hidden',
   },
   cardField: {
     width: '100%',
-    height: 50,
-    marginBottom: 24,
+    height: 56,
   },
-  addCardModalActions: {
+  secureNotice: {
     flexDirection: 'row',
-    gap: 12,
-  },
-  cancelButton: {
-    flex: 1,
-    paddingVertical: 14,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 12,
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 16,
   },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#FFFFFF',
+  secureNoticeText: {
+    fontSize: 13,
+    color: '#6B7280',
+  },
+  addCardModalFooter: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
   },
   saveCardButton: {
-    flex: 1,
-    paddingVertical: 14,
+    paddingVertical: 16,
     backgroundColor: '#9BDDFF',
     borderRadius: 12,
     alignItems: 'center',
@@ -1111,7 +1155,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   saveCardButtonText: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     color: '#000000',
   },
