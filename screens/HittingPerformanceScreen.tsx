@@ -103,8 +103,16 @@ interface Session {
 }
 
 export default function HittingPerformanceScreen({ navigation, route }: any) {
-  const { isParent } = useAthlete();
+  const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
+
+  // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
+  useEffect(() => {
+    if (isParent && !route?.params?.athleteId && linkedAthletes.length > 0) {
+      // Parent without athleteId - go back to dashboard where they can select athlete via FAB
+      navigation.goBack();
+    }
+  }, [isParent, route?.params?.athleteId, linkedAthletes]);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -318,18 +326,35 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     let hittraxAvgHorizontalAngleLast30Days: number | null = null;
 
     if (sessionIds.length > 0) {
-      // Get ALL HitTrax swings with pagination for total count
-      const allHittraxSwings = await fetchAllPaginated<{ id: string }>(
+      // Get ALL HitTrax swings with pagination for total count AND all-time PRs
+      const allHittraxSwings = await fetchAllPaginated<HittraxSwing>(
         () => supabase.from('hittrax_swings'),
-        'id',
+        'exit_velocity, distance, launch_angle, horizontal_angle',
         [{ column: 'session_id', value: sessionIds, operator: 'in' }],
-        'id',
-        true
+        'created_at',
+        false
       );
 
       hittraxTotalSwingsAllTime = allHittraxSwings.length;
 
-      // Get swings from last 30 days
+      // Calculate ALL-TIME PRs from ALL swings (not just last 30 days)
+      if (allHittraxSwings.length > 0) {
+        const allContactSwings = allHittraxSwings.filter(s => s.exit_velocity && s.exit_velocity > 0);
+
+        if (allContactSwings.length > 0) {
+          const allExitVelocities = allContactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
+          if (allExitVelocities.length > 0) {
+            hittraxMaxExitVelocity = Math.max(...allExitVelocities);
+          }
+
+          const allDistances = allContactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
+          if (allDistances.length > 0) {
+            hittraxMaxDistance = Math.max(...allDistances);
+          }
+        }
+      }
+
+      // Get swings from last 30 days for AVERAGES only
       const sessionIdsLast30 = hittraxSessions
         ?.filter(s => new Date(s.session_date) >= last30DaysStart)
         .map(s => s.id) || [];
@@ -349,12 +374,10 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
           if (contactSwings.length > 0) {
             const exitVelocities = contactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
-            hittraxMaxExitVelocity = Math.max(...exitVelocities);
             hittraxAvgExitVelocityLast30Days = exitVelocities.reduce((sum, v) => sum + v, 0) / exitVelocities.length;
 
             const distances = contactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
             if (distances.length > 0) {
-              hittraxMaxDistance = Math.max(...distances);
               hittraxAvgDistanceLast30Days = distances.reduce((sum, d) => sum + d, 0) / distances.length;
             }
 
