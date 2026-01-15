@@ -12,12 +12,11 @@ import {
   Animated,
   Modal,
   Alert,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase, getValidSession } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import HittingCard from '../components/dashboard/HittingCard';
@@ -412,6 +411,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
 });
 
 export default function DashboardScreen({ navigation }: any) {
+  const { session, loading: authLoading, refreshSession, setAppReady, isParentAccount } = useAuth();
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -484,7 +484,6 @@ export default function DashboardScreen({ navigation }: any) {
   const lastLoadTimeRef = useRef<number>(0);
   const mountedRef = useRef(true);
   const initialFetchDone = useRef(false);
-  const appStateRef = useRef(AppState.currentState);
 
   // Track component mount/unmount
   useEffect(() => {
@@ -494,59 +493,35 @@ export default function DashboardScreen({ navigation }: any) {
     };
   }, []);
 
-  // Initial fetch - only once
+  // Redirect to login if not authenticated
   useEffect(() => {
-    if (!initialFetchDone.current) {
+    if (!authLoading && !session) {
+      console.log('[Dashboard] No session, redirecting to login');
+      navigation.replace('Login');
+    }
+  }, [authLoading, session, navigation]);
+
+  // Initial fetch when session is available
+  useEffect(() => {
+    if (session && !initialFetchDone.current) {
       initialFetchDone.current = true;
       loadDashboard();
     }
-  }, []);
+  }, [session]);
 
-  // AppState listener - reload data when app comes back to foreground
-  // App.tsx handles the splash screen and session refresh, but we need to reload dashboard data
-  useEffect(() => {
-    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-      // Only trigger when coming FROM background/inactive TO active
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active'
-      ) {
-        const now = Date.now();
-        const timeSinceLastLoad = now - lastLoadTimeRef.current;
-        const ONE_MINUTE = 60 * 1000;
-
-        // Only refresh if enough time has passed (1 minute) and not currently loading
-        if (timeSinceLastLoad > ONE_MINUTE && !isLoadingRef.current) {
-          console.log('[Dashboard] App foregrounded after 1+ min, refreshing data...');
-          // Small delay to let App.tsx finish its session refresh first
-          setTimeout(() => {
-            if (mountedRef.current && !isLoadingRef.current) {
-              loadDashboard();
-            }
-          }, 500);
-        } else {
-          console.log('[Dashboard] App foregrounded, skipping refresh (too recent or loading)');
-        }
-      }
-      // Update ref AFTER checking
-      appStateRef.current = nextAppState;
-    };
-
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, []);
-
-  // useFocusEffect for navigation (coming back from other screens)
+  // useFocusEffect for navigation (coming back from other screens) AND foreground refresh
+  // AuthContext handles session refresh, we just need to reload data
   useFocusEffect(
     useCallback(() => {
       const now = Date.now();
       const timeSinceLastLoad = now - lastLoadTimeRef.current;
 
-      // Only reload if not currently loading and at least 5 seconds since last load
-      if (!isLoadingRef.current && timeSinceLastLoad > 5000 && initialFetchDone.current) {
+      // Reload if not currently loading and at least 30 seconds since last load
+      if (session && !isLoadingRef.current && timeSinceLastLoad > 30000 && initialFetchDone.current) {
+        console.log('[Dashboard] Focus effect triggering data refresh');
         loadDashboard();
       }
-    }, [])
+    }, [session])
   );
 
   // Check if workout is in progress and show resume modal
@@ -1504,43 +1479,21 @@ export default function DashboardScreen({ navigation }: any) {
       console.log('[Dashboard] Already loading, skipping');
       return;
     }
+
+    // Session is managed by AuthContext - if no session, the redirect effect will handle it
+    if (!session?.user) {
+      console.log('[Dashboard] No session in loadDashboard, waiting for redirect');
+      return;
+    }
+
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
     console.log('[Dashboard] Starting load...');
 
-    // CRITICAL: Hard timeout to prevent infinite loading
-    const timeoutId = setTimeout(() => {
-      console.warn('[Dashboard] TIMEOUT after 8s');
-      if (mountedRef.current) {
-        setLoading(false);
-        setRefreshing(false);
-        // If we timed out without loading athlete data, redirect to login
-        // This prevents showing an empty dashboard
-        if (!athleteId) {
-          console.log('[Dashboard] Timeout with no athlete data - redirecting to login');
-          navigation.replace('Login');
-        }
-      }
-      isLoadingRef.current = false;
-    }, 8000);
+    const user = session.user;
 
     try {
-      // CRITICAL: Get a VALID session (refreshes if expired)
-      const session = await getValidSession();
-
-      if (!session?.user) {
-        console.log('[Dashboard] No valid session');
-        clearTimeout(timeoutId);
-        if (mountedRef.current) {
-          setLoading(false);
-          navigation.replace('Login');
-        }
-        isLoadingRef.current = false;
-        return;
-      }
-
-      const user = session.user;
-      console.log('[Dashboard] Session valid, user:', user.id);
+      console.log('[Dashboard] User:', user.id);
 
       // Fetch athlete
       const { data: athlete, error: athleteError } = await supabase
@@ -1553,14 +1506,19 @@ export default function DashboardScreen({ navigation }: any) {
 
       // If athlete query failed, this user shouldn't be on athlete dashboard
       if (!athlete) {
-        console.log('[Dashboard] No athlete found for user - redirecting to login');
-        clearTimeout(timeoutId);
+        console.log('[Dashboard] No athlete found for user');
         if (mountedRef.current) {
           setLoading(false);
+          setAppReady(true); // Signal app is ready even on error
           // User is authenticated but has no athlete record
-          // This could be a parent account that somehow got to athlete dashboard
-          // or a data issue - redirect to login to reset state
-          navigation.replace('Login');
+          // Check if they're a parent account and redirect appropriately
+          if (isParentAccount) {
+            console.log('[Dashboard] User is a parent, redirecting to ParentDashboard');
+            navigation.replace('ParentDashboard');
+          } else {
+            console.log('[Dashboard] Unknown account type, redirecting to Login');
+            navigation.replace('Login');
+          }
         }
         isLoadingRef.current = false;
         return;
@@ -1729,10 +1687,10 @@ export default function DashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('[Dashboard] Error:', error);
     } finally {
-      clearTimeout(timeoutId);
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
+        setAppReady(true); // Signal to App.tsx that dashboard is loaded
       }
       isLoadingRef.current = false;
     }
@@ -1793,6 +1751,12 @@ export default function DashboardScreen({ navigation }: any) {
     return date.getDate() === today.getDate() &&
            date.getMonth() === today.getMonth() &&
            date.getFullYear() === today.getFullYear();
+  }
+
+  // Check if a booking has already passed (start time is in the past)
+  function isBookingPassed(booking: Booking): boolean {
+    const bookingDate = new Date(booking.event.start_time);
+    return bookingDate < new Date();
   }
 
   function handleDayClick(date: Date) {
@@ -2301,7 +2265,8 @@ export default function DashboardScreen({ navigation }: any) {
 
                     {/* Bookings */}
                     {selectedDateBookings.map((booking, idx) => {
-                      const categoryColor = booking.event.scheduling_templates?.scheduling_categories?.color || '#a855f7';
+                      const passed = isBookingPassed(booking);
+                      const categoryColor = passed ? '#4B5563' : (booking.event.scheduling_templates?.scheduling_categories?.color || '#a855f7');
                       const className = booking.event.title || booking.event.scheduling_templates?.name || 'Class';
                       const categoryName = booking.event.scheduling_templates?.scheduling_categories?.name;
                       const startTime = new Date(booking.event.start_time).toLocaleTimeString('en-US', {
@@ -2320,28 +2285,34 @@ export default function DashboardScreen({ navigation }: any) {
                           key={booking.id || idx}
                           style={[
                             styles.bookingCard,
-                            { borderLeftColor: categoryColor, backgroundColor: `${categoryColor}15` }
+                            { borderLeftColor: categoryColor, backgroundColor: `${categoryColor}15` },
+                            passed && styles.bookingCardPassed
                           ]}
-                          onPress={() => handleBookingPress(booking)}
-                          activeOpacity={0.7}
+                          onPress={() => !passed && handleBookingPress(booking)}
+                          activeOpacity={passed ? 1 : 0.7}
+                          disabled={passed}
                         >
                           <View style={[styles.bookingIconContainer, { backgroundColor: categoryColor }]}>
                             <Ionicons name="calendar" size={20} color="#FFFFFF" />
                           </View>
                           <View style={styles.bookingContent}>
-                            <Text style={styles.bookingTitle}>{className}</Text>
+                            <Text style={[styles.bookingTitle, passed && styles.bookingTitlePassed]}>{className}</Text>
                             {categoryName && (
-                              <Text style={[styles.bookingCategory, { color: categoryColor }]}>{categoryName}</Text>
+                              <Text style={[styles.bookingCategory, { color: passed ? '#9CA3AF' : categoryColor }]}>{categoryName}</Text>
                             )}
                             <Text style={styles.bookingTime}>
                               {startTime}{endTime ? ` - ${endTime}` : ''}
                             </Text>
                           </View>
-                          {booking.status === 'confirmed' && (
+                          {passed ? (
+                            <View style={styles.passedBadge}>
+                              <Text style={styles.passedBadgeText}>Passed</Text>
+                            </View>
+                          ) : booking.status === 'confirmed' ? (
                             <View style={styles.bookingStatusBadge}>
                               <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
                             </View>
-                          )}
+                          ) : null}
                         </TouchableOpacity>
                       );
                     })}
@@ -2959,6 +2930,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FFFFFF',
     fontWeight: '600',
+  },
+  bookingCardPassed: {
+    opacity: 0.6,
+  },
+  bookingTitlePassed: {
+    color: '#9CA3AF',
+  },
+  passedBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(107, 114, 128, 0.3)',
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  passedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#9CA3AF',
   },
   // Reminder Card Styles
   reminderCard: {

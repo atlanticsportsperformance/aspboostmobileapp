@@ -80,17 +80,27 @@ export default function UpcomingEventsCard({
   }, [isActive]);
 
   // Filter events based on selected range
+  // Show all events from today onwards (including past events from today)
   const filteredEvents = React.useMemo(() => {
     const now = new Date();
+    // Start of today in LOCAL time (midnight)
+    const startOfTodayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const daysToAdd = filterRange === '7d' ? 7 : 30;
     const endDate = new Date(now.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
 
-    return events
+    const filtered = events
       .filter((event) => {
         const eventDate = new Date(event.event.start_time);
-        return eventDate >= now && eventDate <= endDate;
+        // Get the LOCAL date of the event (ignoring time)
+        const eventLocalDate = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+        // Include events from today onwards (based on local date, even if start time has passed)
+        const isFromTodayOnwards = eventLocalDate >= startOfTodayLocal;
+        const isBeforeEnd = eventDate <= endDate;
+        return isFromTodayOnwards && isBeforeEnd;
       })
       .sort((a, b) => new Date(a.event.start_time).getTime() - new Date(b.event.start_time).getTime());
+
+    return filtered;
   }, [events, filterRange]);
 
   // Group events by date
@@ -152,6 +162,12 @@ export default function UpcomingEventsCard({
 
   const getCategoryName = (event: UpcomingEvent) => {
     return event.event.scheduling_templates?.scheduling_categories?.name || '';
+  };
+
+  // Check if an event has already passed (start time is in the past)
+  const isEventPassed = (event: UpcomingEvent) => {
+    const eventDate = new Date(event.event.start_time);
+    return eventDate < new Date();
   };
 
   return (
@@ -223,44 +239,52 @@ export default function UpcomingEventsCard({
               </View>
 
               {/* Events for this date */}
-              {group.events.map((event, eventIndex) => (
-                <TouchableOpacity
-                  key={event.id}
-                  style={styles.eventCard}
-                  onPress={() => onEventPress?.(event)}
-                  activeOpacity={0.7}
-                >
-                  <View
-                    style={[
-                      styles.eventColorBar,
-                      { backgroundColor: getEventColor(event) },
-                    ]}
-                  />
-                  <View style={styles.eventContent}>
-                    <Text style={styles.eventTitle} numberOfLines={1}>
-                      {getEventTitle(event)}
-                    </Text>
-                    {getCategoryName(event) && (
-                      <Text style={styles.eventCategory} numberOfLines={1}>
-                        {getCategoryName(event)}
+              {group.events.map((event, eventIndex) => {
+                const passed = isEventPassed(event);
+                return (
+                  <TouchableOpacity
+                    key={event.id}
+                    style={[styles.eventCard, passed && styles.eventCardPassed]}
+                    onPress={() => !passed && onEventPress?.(event)}
+                    activeOpacity={passed ? 1 : 0.7}
+                    disabled={passed}
+                  >
+                    <View
+                      style={[
+                        styles.eventColorBar,
+                        { backgroundColor: passed ? '#4B5563' : getEventColor(event) },
+                      ]}
+                    />
+                    <View style={styles.eventContent}>
+                      <Text style={[styles.eventTitle, passed && styles.eventTitlePassed]} numberOfLines={1}>
+                        {getEventTitle(event)}
                       </Text>
-                    )}
-                    <View style={styles.eventTimeRow}>
-                      <Ionicons name="time-outline" size={12} color="#9CA3AF" />
-                      <Text style={styles.eventTime}>
-                        {formatTime(event.event.start_time)}
-                        {event.event.end_time &&
-                          ` - ${formatTime(event.event.end_time)}`}
-                      </Text>
+                      {getCategoryName(event) && (
+                        <Text style={styles.eventCategory} numberOfLines={1}>
+                          {getCategoryName(event)}
+                        </Text>
+                      )}
+                      <View style={styles.eventTimeRow}>
+                        <Ionicons name="time-outline" size={12} color="#9CA3AF" />
+                        <Text style={styles.eventTime}>
+                          {formatTime(event.event.start_time)}
+                          {event.event.end_time &&
+                            ` - ${formatTime(event.event.end_time)}`}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                  {event.status === 'confirmed' && (
-                    <View style={styles.confirmedBadge}>
-                      <Ionicons name="checkmark-circle" size={16} color="#10B981" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
+                    {passed ? (
+                      <View style={styles.passedBadge}>
+                        <Text style={styles.passedBadgeText}>Passed</Text>
+                      </View>
+                    ) : event.status === 'confirmed' ? (
+                      <View style={styles.confirmedBadge}>
+                        <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           ))}
         </ScrollView>
@@ -392,6 +416,25 @@ const styles = StyleSheet.create({
   },
   confirmedBadge: {
     paddingRight: 12,
+  },
+  eventCardPassed: {
+    opacity: 0.6,
+  },
+  eventTitlePassed: {
+    color: '#9CA3AF',
+  },
+  passedBadge: {
+    paddingRight: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(107, 114, 128, 0.3)',
+    borderRadius: 6,
+    marginRight: 8,
+  },
+  passedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#9CA3AF',
   },
   emptyState: {
     flex: 1,

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Dimensions,
   Animated,
   Modal,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -18,10 +19,15 @@ import { supabase } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAthlete } from '../contexts/AthleteContext';
+import { useAuth } from '../contexts/AuthContext';
 import AthletePickerModal from '../components/AthletePickerModal';
 import FABMenu from '../components/FABMenu';
+import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
+import { cancelBooking } from '../lib/bookingApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const CARD_WIDTH = SCREEN_WIDTH - 16;
+const CARD_HEIGHT = SCREEN_HEIGHT * 0.34;
 const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
 const CALENDAR_DAY_SIZE = Math.floor((SCREEN_WIDTH - 32 - 48) / 7);
 
@@ -66,6 +72,29 @@ interface Booking {
   athlete_name: string;
   athlete_color: string;
   start_time: string;
+  end_time?: string;
+  event_name: string;
+  event_id: string;
+  category_name?: string;
+  category_color?: string;
+}
+
+interface UpcomingEvent {
+  id: string;
+  status: string;
+  event: {
+    id: string;
+    start_time: string;
+    end_time: string;
+    title?: string;
+    scheduling_templates?: {
+      name: string;
+      scheduling_categories?: {
+        name: string;
+        color?: string;
+      };
+    };
+  };
 }
 
 const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; button: string; label: string } } = {
@@ -93,6 +122,7 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
 };
 
 export default function ParentDashboardScreen({ navigation }: any) {
+  const { setAppReady } = useAuth();
   const {
     parentName,
     linkedAthletes,
@@ -103,11 +133,16 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   const [workoutInstances, setWorkoutInstances] = useState<WorkoutInstance[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [upcomingEvents, setUpcomingEvents] = useState<UpcomingEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [viewMode, setViewMode] = useState<'month' | 'day'>('month');
+
+  // Carousel state
+  const [snapshotIndex, setSnapshotIndex] = useState(0);
+  const scrollX = useRef(new Animated.Value(0)).current;
 
   // FAB menu state
   const [fabOpen, setFabOpen] = useState(false);
@@ -122,20 +157,16 @@ export default function ParentDashboardScreen({ navigation }: any) {
   const [showAthletePicker, setShowAthletePicker] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
 
-  // Resume workout modal state
-  const [resumeWorkoutData, setResumeWorkoutData] = useState<{
-    instanceId: string;
-    workoutName: string;
-    elapsedTime: number;
-    athleteId: string;
-  } | null>(null);
-  const [showResumeModal, setShowResumeModal] = useState(false);
-
   // Data presence flags for FAB visibility
   const [hasHittingData, setHasHittingData] = useState(false);
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
+
+  // Cancel booking modal state
+  const [cancelModalVisible, setCancelModalVisible] = useState(false);
+  const [bookingToCancel, setBookingToCancel] = useState<Booking | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   // Use JSON stringified athlete IDs as dependency to properly trigger when athletes load/change
   const athleteIdsKey = linkedAthletes.map(a => a.athlete_id).join(',');
@@ -148,74 +179,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
         loadDashboard(linkedAthletes);
       } else if (!contextLoading) {
         setLoading(false);
+        setAppReady(true); // Signal app is ready even with no athletes
       }
-    }, [athleteIdsKey, contextLoading, linkedAthletes])
+    }, [athleteIdsKey, contextLoading, linkedAthletes, setAppReady])
   );
-
-  async function checkAndShowResumeModal(workout: WorkoutInstance) {
-    try {
-      if (workout.status === 'in_progress') {
-        const savedData = await AsyncStorage.getItem(`workout_${workout.id}`);
-        const elapsedTime = savedData ? JSON.parse(savedData).elapsedTime || 0 : 0;
-
-        setResumeWorkoutData({
-          instanceId: workout.id,
-          workoutName: workout.workouts.name,
-          elapsedTime,
-          athleteId: workout.athlete_id,
-        });
-        setShowResumeModal(true);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error('Error checking workout status:', error);
-      return false;
-    }
-  }
-
-  async function handleResumeWorkout() {
-    if (resumeWorkoutData) {
-      setShowResumeModal(false);
-      navigation.navigate('WorkoutLogger', {
-        workoutInstanceId: resumeWorkoutData.instanceId,
-        athleteId: resumeWorkoutData.athleteId
-      });
-    }
-  }
-
-  async function handleRestartWorkout() {
-    if (resumeWorkoutData) {
-      await AsyncStorage.removeItem(`workout_${resumeWorkoutData.instanceId}`);
-      setShowResumeModal(false);
-      navigation.navigate('WorkoutLogger', {
-        workoutInstanceId: resumeWorkoutData.instanceId,
-        athleteId: resumeWorkoutData.athleteId
-      });
-    }
-  }
-
-  async function handleDiscardWorkout() {
-    if (resumeWorkoutData) {
-      const instanceId = resumeWorkoutData.instanceId;
-      setShowResumeModal(false);
-      setResumeWorkoutData(null);
-      await AsyncStorage.removeItem(`workout_${instanceId}`);
-      await supabase.from('exercise_logs').delete().eq('workout_instance_id', instanceId);
-      await supabase.from('workout_instances').update({ status: 'not_started' }).eq('id', instanceId);
-      await loadDashboard();
-    }
-  }
-
-  function formatElapsedTime(seconds: number): string {
-    const mins = Math.floor(seconds / 60);
-    if (mins < 60) {
-      return `${mins} min${mins !== 1 ? 's' : ''} ago`;
-    } else {
-      const hours = Math.floor(mins / 60);
-      return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
-    }
-  }
 
   async function loadDashboard(athletes = linkedAthletes) {
     // Set a timeout to prevent infinite loading - force stop after 10 seconds
@@ -223,6 +190,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
       console.warn('Parent dashboard load timed out after 10 seconds');
       setLoading(false);
       setRefreshing(false);
+      setAppReady(true); // Signal app is ready even on timeout
     }, 10000);
 
     try {
@@ -233,6 +201,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         console.log('[ParentDashboard] No athlete IDs, returning early');
         clearTimeout(timeoutId);
         setLoading(false);
+        setAppReady(true);
         return;
       }
 
@@ -293,9 +262,14 @@ export default function ParentDashboardScreen({ navigation }: any) {
           id,
           athlete_id,
           event:scheduling_events (
+            id,
             start_time,
+            end_time,
+            title,
             scheduling_templates (
+              name,
               scheduling_categories (
+                name,
                 color
               )
             )
@@ -307,16 +281,97 @@ export default function ParentDashboardScreen({ navigation }: any) {
       // Map bookings with athlete info
       const bookingsWithAthleteInfo = (bookingsData || []).map((b: any) => {
         const athlete = athletes.find(a => a.athlete_id === b.athlete_id);
+        const rawEvent = b.event;
+        const event = Array.isArray(rawEvent) ? rawEvent[0] : rawEvent;
+        const rawTemplate = event?.scheduling_templates;
+        const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+        const rawCategory = template?.scheduling_categories;
+        const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+        const eventName = event?.title || template?.name || 'Session';
         return {
           id: b.id,
           athlete_id: b.athlete_id,
           athlete_name: athlete ? `${athlete.first_name} ${athlete.last_name}` : 'Unknown',
           athlete_color: athlete?.color || '#9BDDFF',
-          start_time: b.event?.start_time,
+          start_time: event?.start_time,
+          end_time: event?.end_time,
+          event_name: eventName,
+          event_id: event?.id,
+          category_name: category?.name,
+          category_color: category?.color,
         };
-      });
+      }).filter((b: any) => b.event_id && b.start_time);
 
       setBookings(bookingsWithAthleteInfo);
+
+      // Fetch upcoming events for the UpcomingEventsCard (need full event details)
+      console.log('[ParentDashboard] Fetching upcoming events for athleteIds:', athleteIds);
+      const { data: upcomingEventsData, error: upcomingEventsError } = await supabase
+        .from('scheduling_bookings')
+        .select(`
+          id,
+          status,
+          event:scheduling_events (
+            id,
+            start_time,
+            end_time,
+            title,
+            scheduling_templates (
+              name,
+              scheduling_categories (
+                name,
+                color
+              )
+            )
+          )
+        `)
+        .in('athlete_id', athleteIds)
+        .in('status', ['booked', 'confirmed', 'waitlisted']);
+
+      console.log('[ParentDashboard] Upcoming events raw data:', JSON.stringify(upcomingEventsData, null, 2));
+      if (upcomingEventsError) {
+        console.error('[ParentDashboard] Upcoming events error:', upcomingEventsError);
+      }
+
+      // Transform to match UpcomingEvent interface
+      // Note: Supabase may return event as array or object depending on relationship
+      const formattedEvents: UpcomingEvent[] = [];
+      for (const e of upcomingEventsData || []) {
+        // Handle event being an array (Supabase FK relationship)
+        const rawEvent = Array.isArray(e.event) ? e.event[0] : e.event;
+        if (!rawEvent?.start_time) continue;
+
+        // Handle scheduling_templates being an array
+        const rawTemplate = rawEvent.scheduling_templates;
+        const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+
+        // Handle scheduling_categories being an array
+        let formattedTemplate: UpcomingEvent['event']['scheduling_templates'] = undefined;
+        if (template) {
+          const rawCategory = template.scheduling_categories;
+          const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+          formattedTemplate = {
+            name: template.name,
+            scheduling_categories: category,
+          };
+        }
+
+        formattedEvents.push({
+          id: e.id,
+          status: e.status,
+          event: {
+            id: rawEvent.id,
+            start_time: rawEvent.start_time,
+            end_time: rawEvent.end_time,
+            title: rawEvent.title,
+            scheduling_templates: formattedTemplate,
+          },
+        });
+      }
+
+      console.log('[ParentDashboard] Formatted events count:', formattedEvents.length);
+      console.log('[ParentDashboard] Formatted events:', JSON.stringify(formattedEvents, null, 2));
+      setUpcomingEvents(formattedEvents);
 
       // Fetch data presence for FAB (check what data types exist for linked athletes)
       await fetchDataPresence(athleteIds);
@@ -326,6 +381,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
       clearTimeout(timeoutId);
       setLoading(false);
       setRefreshing(false);
+      setAppReady(true); // Signal to App.tsx that dashboard is loaded
     }
   }
 
@@ -414,8 +470,20 @@ export default function ParentDashboardScreen({ navigation }: any) {
   }
 
   function getBookingsForDate(date: Date): Booking[] {
-    const dateStr = date.toISOString().split('T')[0];
-    return bookings.filter(b => b.start_time?.startsWith(dateStr));
+    // Compare using local dates, not UTC
+    const targetYear = date.getFullYear();
+    const targetMonth = date.getMonth();
+    const targetDay = date.getDate();
+
+    return bookings
+      .filter(b => {
+        if (!b.start_time) return false;
+        const eventDate = new Date(b.start_time);
+        return eventDate.getFullYear() === targetYear &&
+               eventDate.getMonth() === targetMonth &&
+               eventDate.getDate() === targetDay;
+      })
+      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
   }
 
   function isToday(date: Date): boolean {
@@ -423,6 +491,12 @@ export default function ParentDashboardScreen({ navigation }: any) {
     return date.getDate() === today.getDate() &&
            date.getMonth() === today.getMonth() &&
            date.getFullYear() === today.getFullYear();
+  }
+
+  // Check if a booking has already passed (start time is in the past)
+  function isBookingPassed(booking: Booking): boolean {
+    const bookingDate = new Date(booking.start_time);
+    return bookingDate < new Date();
   }
 
   function handleDayClick(date: Date) {
@@ -507,6 +581,48 @@ export default function ParentDashboardScreen({ navigation }: any) {
       }
       setPendingNavigation(null);
     }
+  }
+
+  // Cancel booking handler
+  async function handleCancelBooking() {
+    if (!bookingToCancel) return;
+
+    setCancelling(true);
+    try {
+      const result = await cancelBooking(
+        bookingToCancel.athlete_id,
+        bookingToCancel.event_id,
+        'Cancelled by parent via mobile app'
+      );
+
+      if (result.success) {
+        // Show success message
+        let message = 'Your booking has been cancelled.';
+        if (result.refunded && result.refundAmount) {
+          message += ` A refund of $${(result.refundAmount / 100).toFixed(2)} has been processed.`;
+        } else if (result.refunded) {
+          message += ' Your session credit has been refunded.';
+        }
+        Alert.alert('Booking Cancelled', message);
+
+        // Refresh the dashboard to update the bookings list
+        await loadDashboard(linkedAthletes);
+      } else {
+        Alert.alert('Error', result.error || 'Failed to cancel booking. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error cancelling booking:', error);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setCancelling(false);
+      setCancelModalVisible(false);
+      setBookingToCancel(null);
+    }
+  }
+
+  function openCancelModal(booking: Booking) {
+    setBookingToCancel(booking);
+    setCancelModalVisible(true);
   }
 
   if (loading || contextLoading) {
@@ -656,6 +772,43 @@ export default function ParentDashboardScreen({ navigation }: any) {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
           }
         >
+          {/* Upcoming Events Carousel - ABOVE calendar like athlete dashboard */}
+          {upcomingEvents.length > 0 && (
+            <View style={styles.snapshotContainer}>
+              <View style={styles.carouselWrapper}>
+                <ScrollView
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  onScroll={Animated.event(
+                    [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+                    { useNativeDriver: false }
+                  )}
+                  onMomentumScrollEnd={(event) => {
+                    const offsetX = event.nativeEvent.contentOffset.x;
+                    const index = Math.round(offsetX / CARD_WIDTH);
+                    setSnapshotIndex(index);
+                  }}
+                  scrollEventThrottle={16}
+                >
+                  <View style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+                    <LinearGradient
+                      colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.cardGloss}
+                    />
+                    <UpcomingEventsCard
+                      events={upcomingEvents}
+                      isActive={snapshotIndex === 0}
+                      onEventPress={() => navigation.navigate('Booking')}
+                    />
+                  </View>
+                </ScrollView>
+              </View>
+            </View>
+          )}
+
           {/* Calendar */}
           <View style={styles.calendarContainer}>
             <View style={styles.monthHeader}>
@@ -827,31 +980,17 @@ export default function ParentDashboardScreen({ navigation }: any) {
                                   </Text>
                                 </View>
                               </View>
-                              <TouchableOpacity
-                                style={[
-                                  styles.workoutActionButton,
-                                  !isCompleted && { backgroundColor: categoryInfo.button },
-                                  isCompleted && styles.workoutActionButtonCompleted
-                                ]}
-                                onPress={async () => {
-                                  if (isCompleted) {
-                                    // Navigate to read-only completed workout view
+                              {/* Parents can only view completed workouts - no Start button */}
+                              {isCompleted && (
+                                <TouchableOpacity
+                                  style={[styles.workoutActionButton, styles.workoutActionButtonCompleted]}
+                                  onPress={() => {
                                     navigation.navigate('CompletedWorkout', { workoutInstanceId: workout.id });
-                                  } else {
-                                    const showedModal = await checkAndShowResumeModal(workout);
-                                    if (!showedModal) {
-                                      navigation.navigate('WorkoutLogger', {
-                                        workoutInstanceId: workout.id,
-                                        athleteId: workout.athlete_id
-                                      });
-                                    }
-                                  }
-                                }}
-                              >
-                                <Text style={[styles.workoutActionButtonText, !isCompleted && { color: '#FFFFFF' }]}>
-                                  {isCompleted ? 'View' : 'Start'}
-                                </Text>
-                              </TouchableOpacity>
+                                  }}
+                                >
+                                  <Text style={styles.workoutActionButtonText}>View</Text>
+                                </TouchableOpacity>
+                              )}
                             </View>
 
                             {/* Workout Name + Duration + Accordion Toggle */}
@@ -938,22 +1077,57 @@ export default function ParentDashboardScreen({ navigation }: any) {
                     })}
 
                     {/* Bookings */}
-                    {selectedDateBookings.map((booking, idx) => (
-                      <View key={idx} style={styles.bookingCard}>
-                        <View style={[styles.bookingAthleteIndicator, { backgroundColor: booking.athlete_color }]} />
-                        <Ionicons name="calendar" size={24} color="#3B82F6" style={{ marginRight: 12 }} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.bookingAthleteName}>{booking.athlete_name}</Text>
-                          <Text style={styles.bookingInfo}>
-                            Class Booking - {new Date(booking.start_time).toLocaleTimeString('en-US', {
-                              hour: 'numeric',
-                              minute: '2-digit',
-                              hour12: true
-                            })}
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
+                    {selectedDateBookings.map((booking, idx) => {
+                      const passed = isBookingPassed(booking);
+                      const categoryColor = passed ? '#4B5563' : (booking.category_color || '#a855f7');
+                      const startTime = new Date(booking.start_time).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                      });
+                      const endTime = booking.end_time ? new Date(booking.end_time).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                      }) : null;
+
+                      return (
+                        <TouchableOpacity
+                          key={idx}
+                          style={[
+                            styles.bookingCard,
+                            { borderLeftColor: categoryColor, backgroundColor: `${categoryColor}15` },
+                            passed && styles.bookingCardPassed
+                          ]}
+                          onPress={() => !passed && openCancelModal(booking)}
+                          activeOpacity={passed ? 1 : 0.7}
+                          disabled={passed}
+                        >
+                          <View style={[styles.bookingIconContainer, { backgroundColor: categoryColor }]}>
+                            <Ionicons name="calendar" size={20} color="#FFFFFF" />
+                          </View>
+                          <View style={styles.bookingContent}>
+                            <Text style={[styles.bookingTitle, passed && styles.bookingTitlePassed]}>{booking.event_name}</Text>
+                            {booking.category_name && (
+                              <Text style={[styles.bookingCategory, { color: passed ? '#9CA3AF' : categoryColor }]}>{booking.category_name}</Text>
+                            )}
+                            <Text style={styles.bookingTime}>
+                              {startTime}{endTime ? ` - ${endTime}` : ''}
+                            </Text>
+                          </View>
+                          <View style={styles.bookingAthleteBadge}>
+                            <Text style={styles.bookingAthleteBadgeText}>{booking.athlete_name.split(' ')[0]}</Text>
+                          </View>
+                          {passed ? (
+                            <View style={styles.passedBadge}>
+                              <Text style={styles.passedBadgeText}>Passed</Text>
+                            </View>
+                          ) : (
+                            <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
                   </>
                 )}
               </ScrollView>
@@ -962,72 +1136,87 @@ export default function ParentDashboardScreen({ navigation }: any) {
         </View>
       )}
 
-      {/* Resume Workout Modal */}
-      {showResumeModal && resumeWorkoutData && (
-        <Modal
-          visible={showResumeModal}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowResumeModal(false)}
+      {/* Cancel Booking Confirmation Modal */}
+      <Modal
+        visible={cancelModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!cancelling) {
+            setCancelModalVisible(false);
+            setBookingToCancel(null);
+          }
+        }}
+      >
+        <Pressable
+          style={styles.cancelModalBackdrop}
+          onPress={() => {
+            if (!cancelling) {
+              setCancelModalVisible(false);
+              setBookingToCancel(null);
+            }
+          }}
         >
-          <Pressable
-            style={styles.resumeModalBackdrop}
-            onPress={() => setShowResumeModal(false)}
-          >
-            <Pressable style={styles.resumeModalContainer} onPress={() => {}}>
-              <View style={styles.resumeModalIconContainer}>
-                <View style={styles.resumeModalIconBadge}>
-                  <Text style={styles.resumeModalIconText}>⚡</Text>
-                </View>
+          <Pressable style={styles.cancelModalContainer} onPress={() => {}}>
+            <View style={styles.cancelModalIconContainer}>
+              <View style={styles.cancelModalIconBadge}>
+                <Ionicons name="calendar-outline" size={32} color="#EF4444" />
               </View>
+            </View>
 
-              <Text style={styles.resumeModalTitle}>Workout In Progress</Text>
-              <Text style={styles.resumeModalWorkoutName}>{resumeWorkoutData.workoutName}</Text>
-              <Text style={styles.resumeModalTime}>
-                Started {formatElapsedTime(resumeWorkoutData.elapsedTime)}
-              </Text>
-
-              <View style={styles.resumeModalInfoBox}>
-                <Text style={styles.resumeModalInfoTitle}>Your progress is saved</Text>
-                <Text style={styles.resumeModalInfoText}>
-                  Resume right where you left off or start fresh
+            <Text style={styles.cancelModalTitle}>Cancel Booking?</Text>
+            {bookingToCancel && (
+              <>
+                <Text style={styles.cancelModalEventName}>{bookingToCancel.event_name}</Text>
+                <Text style={styles.cancelModalDetails}>
+                  {bookingToCancel.athlete_name} - {new Date(bookingToCancel.start_time).toLocaleDateString('en-US', {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric'
+                  })} at {new Date(bookingToCancel.start_time).toLocaleTimeString('en-US', {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true
+                  })}
                 </Text>
-              </View>
+              </>
+            )}
 
-              <View style={styles.resumeModalActions}>
-                <TouchableOpacity
-                  style={styles.resumeModalPrimaryButton}
-                  onPress={handleResumeWorkout}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={['#9BDDFF', '#7BC5F0']}
-                    style={styles.resumeModalPrimaryButtonGradient}
-                  >
-                    <Text style={styles.resumeModalPrimaryButtonText}>Resume Workout</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
+            <View style={styles.cancelModalInfoBox}>
+              <Text style={styles.cancelModalInfoText}>
+                If you cancel within the allowed time window, any credits or payments will be refunded.
+              </Text>
+            </View>
 
-                <TouchableOpacity
-                  style={styles.resumeModalSecondaryButton}
-                  onPress={handleRestartWorkout}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.resumeModalSecondaryButtonText}>Restart from Beginning</Text>
-                </TouchableOpacity>
+            <View style={styles.cancelModalActions}>
+              <TouchableOpacity
+                style={styles.cancelModalDestructiveButton}
+                onPress={handleCancelBooking}
+                activeOpacity={0.8}
+                disabled={cancelling}
+              >
+                {cancelling ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.cancelModalDestructiveButtonText}>Yes, Cancel Booking</Text>
+                )}
+              </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.resumeModalTertiaryButton}
-                  onPress={handleDiscardWorkout}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.resumeModalTertiaryButtonText}>Discard Progress</Text>
-                </TouchableOpacity>
-              </View>
-            </Pressable>
+              <TouchableOpacity
+                style={styles.cancelModalSecondaryButton}
+                onPress={() => {
+                  setCancelModalVisible(false);
+                  setBookingToCancel(null);
+                }}
+                activeOpacity={0.8}
+                disabled={cancelling}
+              >
+                <Text style={styles.cancelModalSecondaryButtonText}>Keep Booking</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
-        </Modal>
-      )}
+        </Pressable>
+      </Modal>
 
       {/* FAB Menu */}
       <FABMenu
@@ -1035,6 +1224,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         onToggle={() => setFabOpen(!fabOpen)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => setFabOpen(false) },
+          { id: 'messages', label: 'Messages', icon: 'chatbubbles', onPress: () => navigation.navigate('Messages') },
           { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('HittingPerformance') }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
@@ -1125,6 +1315,35 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  snapshotContainer: {
+    height: CARD_HEIGHT,
+    marginBottom: 0,
+    position: 'relative',
+  },
+  carouselWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
+  snapshotCard: {
+    backgroundColor: '#000000',
+    borderRadius: 24,
+    padding: 16,
+    marginHorizontal: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.8,
+    shadowRadius: 60,
+    elevation: 10,
+    position: 'relative',
+  },
+  cardGloss: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 24,
   },
   calendarContainer: {
     paddingHorizontal: 16,
@@ -1489,32 +1708,66 @@ const styles = StyleSheet.create({
   },
   bookingCard: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    alignItems: 'flex-start',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
+    borderLeftWidth: 4,
   },
-  bookingAthleteIndicator: {
-    width: 4,
-    height: '100%',
-    borderRadius: 2,
+  bookingIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 12,
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
   },
-  bookingAthleteName: {
-    fontSize: 13,
+  bookingContent: {
+    flex: 1,
+  },
+  bookingTitle: {
+    fontSize: 16,
     fontWeight: '600',
-    color: '#9BDDFF',
+    color: '#FFFFFF',
     marginBottom: 2,
   },
-  bookingInfo: {
-    fontSize: 14,
-    color: '#FFFFFF',
+  bookingCategory: {
+    fontSize: 12,
     fontWeight: '500',
+    marginBottom: 4,
+  },
+  bookingTime: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  bookingAthleteBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginRight: 8,
+  },
+  bookingAthleteBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  bookingCardPassed: {
+    opacity: 0.6,
+  },
+  bookingTitlePassed: {
+    color: '#9CA3AF',
+  },
+  passedBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(107, 114, 128, 0.3)',
+    borderRadius: 6,
+  },
+  passedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#9CA3AF',
   },
   settingsOverlay: {
     flex: 1,
@@ -1688,5 +1941,95 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#EF4444',
+  },
+  // Cancel modal styles
+  cancelModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  cancelModalContainer: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 24,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  cancelModalIconContainer: {
+    marginBottom: 16,
+  },
+  cancelModalIconBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  cancelModalEventName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#9BDDFF',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  cancelModalDetails: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  cancelModalInfoBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    width: '100%',
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+  },
+  cancelModalInfoText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
+  cancelModalActions: {
+    width: '100%',
+    gap: 12,
+  },
+  cancelModalDestructiveButton: {
+    backgroundColor: '#EF4444',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  cancelModalDestructiveButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  cancelModalSecondaryButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  cancelModalSecondaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
