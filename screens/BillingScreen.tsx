@@ -9,6 +9,8 @@ import {
   RefreshControl,
   Alert,
   Modal,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -103,24 +105,43 @@ export default function BillingScreen({ navigation }: any) {
         return;
       }
 
-      // Check if user is a parent
-      const { data: parentLinks } = await supabase
-        .from('parent_athlete_links')
+      // Check if user is a parent - use athlete_guardians table (same as rest of app)
+      const { data: guardianLinks } = await supabase
+        .from('athlete_guardians')
         .select(`
           athlete_id,
-          athlete:athletes(id, first_name, last_name)
+          athlete:profiles!athlete_guardians_athlete_id_fkey(
+            id,
+            first_name,
+            last_name
+          )
         `)
-        .eq('parent_user_id', user.id);
+        .eq('guardian_id', user.id);
 
-      if (parentLinks && parentLinks.length > 0) {
-        const athletes = parentLinks
+      if (guardianLinks && guardianLinks.length > 0) {
+        // Need to get the athletes table ID for each linked profile
+        const athletePromises = guardianLinks
           .filter((link: any) => link.athlete)
-          .map((link: any) => ({
-            id: link.athlete.id,
-            athlete_id: link.athlete.id,
-            first_name: link.athlete.first_name,
-            last_name: link.athlete.last_name,
-          }));
+          .map(async (link: any) => {
+            // Look up athletes table ID from user_id (profile id)
+            const { data: athleteRecord } = await supabase
+              .from('athletes')
+              .select('id, first_name, last_name')
+              .eq('user_id', link.athlete.id)
+              .single();
+
+            if (athleteRecord) {
+              return {
+                id: athleteRecord.id,
+                athlete_id: athleteRecord.id,
+                first_name: athleteRecord.first_name || link.athlete.first_name,
+                last_name: athleteRecord.last_name || link.athlete.last_name,
+              };
+            }
+            return null;
+          });
+
+        const athletes = (await Promise.all(athletePromises)).filter(Boolean);
 
         setLinkedAthletes(athletes);
         if (athletes.length > 0) {
@@ -674,7 +695,10 @@ export default function BillingScreen({ navigation }: any) {
           setCardComplete(false);
         }}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
           <View style={styles.addCardModal}>
             <View style={styles.addCardModalHeader}>
               <Text style={styles.addCardModalTitle}>Add Payment Method</Text>
@@ -739,7 +763,7 @@ export default function BillingScreen({ navigation }: any) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
