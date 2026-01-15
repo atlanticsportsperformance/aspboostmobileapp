@@ -64,6 +64,7 @@ interface RoutineExercise {
   enabled_measurements?: string[];
   is_amrap?: boolean;
   set_configurations?: SetConfiguration[];
+  selected_variation?: string | null;
   exercises: Exercise;
 }
 
@@ -387,6 +388,9 @@ export default function BlockOverview({
                           <Text style={styles.exerciseName} numberOfLines={2}>
                             {exercise.exercises.name}
                           </Text>
+                          {exercise.selected_variation && (
+                            <Text style={styles.variationText}> ({exercise.selected_variation})</Text>
+                          )}
                           {hasPRTracking && <Text style={styles.prTrophy}>🏆</Text>}
                         </View>
 
@@ -780,9 +784,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
-    flex: 1,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  variationText: {
+    color: '#C084FC',
+    fontSize: 13,
+    fontWeight: 'normal',
   },
   prTrophy: {
     fontSize: 14,

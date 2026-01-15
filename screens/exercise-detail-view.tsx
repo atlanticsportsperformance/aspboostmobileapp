@@ -76,6 +76,7 @@ interface RoutineExercise {
   enabled_measurements?: string[];
   is_amrap?: boolean;
   set_configurations?: SetConfiguration[];
+  selected_variation?: string | null;
   exercises: Exercise;
 }
 
@@ -1265,6 +1266,9 @@ export default function ExerciseDetailView({
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exercise.exercises.name}
           </Text>
+          {exercise.selected_variation && (
+            <Text style={styles.variationText}> ({exercise.selected_variation})</Text>
+          )}
 
           {/* PR Trophy */}
           {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
@@ -1625,6 +1629,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     color: '#FFFFFF',
+  },
+  variationText: {
+    color: '#C084FC',
+    fontSize: 14,
+    fontWeight: 'normal',
+    textTransform: 'none',
   },
   headerPrTrophy: {
     fontSize: 18,

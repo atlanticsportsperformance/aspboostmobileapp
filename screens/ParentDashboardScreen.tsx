@@ -56,6 +56,7 @@ interface WorkoutInstance {
         order_index: number;
         sets: number;
         metric_targets: any;
+        selected_variation?: string | null;
         exercises: {
           id: string;
           name: string;
@@ -231,6 +232,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 order_index,
                 sets,
                 metric_targets,
+                selected_variation,
                 exercises (
                   id,
                   name,
@@ -1057,6 +1059,9 @@ export default function ParentDashboardScreen({ navigation }: any) {
                                                     </Text>
                                                     <Text style={styles.exercisePreviewName}>
                                                       {routineExercise.exercises.name}
+                                                      {routineExercise.selected_variation && (
+                                                        <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
+                                                      )}
                                                     </Text>
                                                     <Text style={styles.exercisePreviewSets}>
                                                       {routineExercise.sets} sets
@@ -1702,6 +1707,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#FFFFFF',
     flex: 1,
+  },
+  exercisePreviewVariation: {
+    color: '#C084FC',
+    fontSize: 13,
+    fontWeight: 'normal',
   },
   exercisePreviewSets: {
     fontSize: 12,

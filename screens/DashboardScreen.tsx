@@ -103,6 +103,7 @@ interface WorkoutInstance {
         order_index: number;
         sets: number;
         metric_targets: any;
+        selected_variation?: string | null;
         exercises: {
           id: string;
           name: string;
@@ -1578,6 +1579,7 @@ export default function DashboardScreen({ navigation }: any) {
                   order_index,
                   sets,
                   metric_targets,
+                  selected_variation,
                   exercises (
                     id,
                     name,
@@ -2247,6 +2249,9 @@ export default function DashboardScreen({ navigation }: any) {
                                                   </Text>
                                                   <Text style={styles.exercisePreviewName}>
                                                     {routineExercise.exercises.name}
+                                                    {routineExercise.selected_variation && (
+                                                      <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
+                                                    )}
                                                   </Text>
                                                 </View>
                                               ))}
@@ -3234,6 +3239,11 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: 'rgba(255, 255, 255, 0.9)',
+  },
+  exercisePreviewVariation: {
+    color: '#C084FC',
+    fontSize: 13,
+    fontWeight: 'normal',
   },
   exercisePreviewSets: {
     fontSize: 12,

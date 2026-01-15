@@ -107,6 +107,7 @@ interface RoutineExercise {
   enabled_measurements?: string[];
   is_amrap?: boolean;
   set_configurations?: SetConfiguration[];
+  selected_variation?: string | null;
   exercises: Exercise;
 }
 
