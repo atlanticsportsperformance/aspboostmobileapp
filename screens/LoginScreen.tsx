@@ -17,33 +17,10 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 import { setupPushNotifications } from '../lib/pushNotifications';
-
-// Helper to navigate to the correct dashboard based on account type
-async function navigateToCorrectDashboard(navigation: any, userId: string) {
-  try {
-    console.log('[Login] Checking account type for navigation...');
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('account_type')
-      .eq('id', userId)
-      .single();
-
-    const isParent = profile?.account_type === 'parent';
-    console.log('[Login] Account type:', profile?.account_type, 'isParent:', isParent);
-
-    if (isParent) {
-      navigation.replace('ParentDashboard');
-    } else {
-      navigation.replace('Dashboard');
-    }
-  } catch (error) {
-    console.error('[Login] Error checking account type:', error);
-    // Default to athlete dashboard on error
-    navigation.replace('Dashboard');
-  }
-}
+import { useAuth } from '../contexts/AuthContext';
 
 export default function LoginScreen({ navigation }: any) {
+  const { session, isParentAccount, signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -57,6 +34,18 @@ export default function LoginScreen({ navigation }: any) {
   const pulse1 = useRef(new Animated.Value(0.3)).current;
   const pulse2 = useRef(new Animated.Value(0.2)).current;
   const shakeAnimation = useRef(new Animated.Value(0)).current;
+
+  // Navigate when session becomes available
+  useEffect(() => {
+    if (session) {
+      console.log('[LoginScreen] Session detected, navigating to dashboard. isParent:', isParentAccount);
+      if (isParentAccount) {
+        navigation.replace('ParentDashboard');
+      } else {
+        navigation.replace('Dashboard');
+      }
+    }
+  }, [session, isParentAccount, navigation]);
 
   useEffect(() => {
     // Check biometric availability and saved credentials
@@ -137,10 +126,9 @@ export default function LoginScreen({ navigation }: any) {
 
       if (result.success) {
         setLoading(true);
-        const { data, error: authError } = await supabase.auth.signInWithPassword({
-          email: savedEmail,
-          password: savedPassword,
-        });
+        setError('');
+
+        const { error: authError } = await signIn(savedEmail, savedPassword);
 
         if (authError) {
           setError('Biometric login failed. Please use your password.');
@@ -150,11 +138,12 @@ export default function LoginScreen({ navigation }: any) {
 
         // Register for push notifications after successful login
         setupPushNotifications().catch(console.error);
-
-        await navigateToCorrectDashboard(navigation, data.user.id);
+        // Navigation is handled by the useEffect watching session
+        setLoading(false);
       }
     } catch (err) {
       console.error('Auto biometric auth error:', err);
+      setLoading(false);
     }
   }
 
@@ -173,10 +162,9 @@ export default function LoginScreen({ navigation }: any) {
 
         if (savedEmail && savedPassword) {
           setLoading(true);
-          const { data, error: authError } = await supabase.auth.signInWithPassword({
-            email: savedEmail,
-            password: savedPassword,
-          });
+          setError('');
+
+          const { error: authError } = await signIn(savedEmail, savedPassword);
 
           if (authError) {
             setError('Biometric login failed. Please use your password.');
@@ -186,8 +174,8 @@ export default function LoginScreen({ navigation }: any) {
 
           // Register for push notifications after successful login
           setupPushNotifications().catch(console.error);
-
-          await navigateToCorrectDashboard(navigation, data.user.id);
+          // Navigation is handled by the useEffect watching session
+          setLoading(false);
         }
       }
     } catch (err) {
@@ -265,12 +253,17 @@ export default function LoginScreen({ navigation }: any) {
     setError('');
 
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      console.log('[LoginScreen] Attempting login...');
+      const { error: authError } = await signIn(email.trim(), password);
 
-      if (authError) throw authError;
+      if (authError) {
+        console.log('[LoginScreen] Login error:', authError.message);
+        setError(authError.message || 'Failed to sign in');
+        setLoading(false);
+        return;
+      }
+
+      console.log('[LoginScreen] Login successful');
 
       // Save credentials and Face ID preference
       if (rememberMe || enableFaceId) {
@@ -284,10 +277,11 @@ export default function LoginScreen({ navigation }: any) {
       // Register for push notifications after successful login
       setupPushNotifications().catch(console.error);
 
-      await navigateToCorrectDashboard(navigation, data.user.id);
+      // Navigation is handled by the useEffect watching session
+      setLoading(false);
     } catch (error: any) {
+      console.log('[LoginScreen] Login exception:', error);
       setError(error.message || 'Failed to sign in');
-    } finally {
       setLoading(false);
     }
   }
