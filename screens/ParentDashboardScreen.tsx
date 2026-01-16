@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   Animated,
   Modal,
   Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -171,6 +173,21 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   // Use JSON stringified athlete IDs as dependency to properly trigger when athletes load/change
   const athleteIdsKey = linkedAthletes.map(a => a.athlete_id).join(',');
+
+  // Handle app resume from background - ensure appReady is set
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && linkedAthletes.length > 0) {
+        // When app comes back to foreground, ensure appReady is true
+        // This prevents the splash screen from getting stuck
+        console.log('[ParentDashboard] App resumed, ensuring appReady=true');
+        setAppReady(true);
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [linkedAthletes.length, setAppReady]);
 
   useFocusEffect(
     useCallback(() => {

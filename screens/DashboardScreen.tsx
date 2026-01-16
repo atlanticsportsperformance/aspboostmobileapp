@@ -12,6 +12,8 @@ import {
   Animated,
   Modal,
   Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -493,6 +495,21 @@ export default function DashboardScreen({ navigation }: any) {
       mountedRef.current = false;
     };
   }, []);
+
+  // Handle app resume from background - ensure appReady is set
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && session && mountedRef.current) {
+        // When app comes back to foreground, ensure appReady is true
+        // This prevents the splash screen from getting stuck
+        console.log('[Dashboard] App resumed, ensuring appReady=true');
+        setAppReady(true);
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [session, setAppReady]);
 
   // Redirect to login if not authenticated
   useEffect(() => {

@@ -1,7 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Image, StyleSheet, Animated, Text, TextInput } from 'react-native';
+import { View, Image, StyleSheet, Animated, Text, TextInput, AppState, AppStateStatus } from 'react-native';
 
 // Disable font scaling completely to prevent iOS accessibility large fonts from breaking layouts.
 // This ensures consistent UI across all devices regardless of accessibility settings.
@@ -72,15 +72,64 @@ const Stack = createNativeStackNavigator();
 
 // Inner component that uses AuthContext
 function AppContent() {
-  const { session, initializing, isParentAccount, appReady } = useAuth();
+  const { session, initializing, isParentAccount, appReady, setAppReady } = useAuth();
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  const appStateRef = useRef(AppState.currentState);
+  const lastBackgroundTime = useRef<number | null>(null);
 
   // Hide native splash screen on mount
   useEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
+
+  // Handle app resume from long background
+  // This ensures the app doesn't get stuck on splash after being backgrounded for a while
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      const previousState = appStateRef.current;
+
+      // Track when app goes to background
+      if (nextAppState.match(/inactive|background/)) {
+        lastBackgroundTime.current = Date.now();
+        console.log('[App] Going to background');
+      }
+
+      // When app comes back to foreground
+      if (previousState.match(/inactive|background/) && nextAppState === 'active') {
+        const backgroundDuration = lastBackgroundTime.current
+          ? Date.now() - lastBackgroundTime.current
+          : 0;
+        console.log('[App] Resuming from background, duration:', Math.round(backgroundDuration / 1000), 'seconds');
+
+        // If we have a session and were backgrounded for more than 5 seconds,
+        // ensure appReady is true so the app doesn't get stuck
+        if (session && !initializing && backgroundDuration > 5000) {
+          console.log('[App] Long background detected, ensuring appReady=true');
+          setAppReady(true);
+        }
+
+        // Also ensure splash is hidden if we already have a session
+        // and auth is not initializing
+        if (session && !initializing && showSplash) {
+          console.log('[App] Forcing splash hide after background resume');
+          Animated.timing(fadeAnim, {
+            toValue: 0,
+            duration: 300,
+            useNativeDriver: true,
+          }).start(() => {
+            setShowSplash(false);
+          });
+        }
+      }
+
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [session, initializing, showSplash, fadeAnim, setAppReady]);
 
   // Handle notification tap navigation
   const handleNotificationNavigation = useCallback((data: { type?: string; id?: string; screen?: string }) => {
@@ -144,11 +193,16 @@ function AppContent() {
   }, [session]);
 
   // Fade out splash when ready
-  // Ready means: auth initialized AND (no session OR app ready)
+  // SIMPLIFIED: Hide splash as soon as auth is done initializing
+  // Don't wait for appReady - the dashboard will load in the background
   useEffect(() => {
-    const shouldHideSplash = !initializing && (!session || appReady);
+    // Hide splash when auth initialization is complete
+    // If no session -> show login (no need to wait)
+    // If session exists -> show dashboard (it will load its own data)
+    const shouldHideSplash = !initializing;
 
     if (shouldHideSplash && showSplash) {
+      console.log('[App] Auth initialized, hiding splash. Session:', !!session);
       Animated.timing(fadeAnim, {
         toValue: 0,
         duration: 300,
@@ -157,15 +211,15 @@ function AppContent() {
         setShowSplash(false);
       });
     }
-  }, [initializing, session, appReady, showSplash, fadeAnim]);
+  }, [initializing, session, showSplash, fadeAnim]);
 
-  // Safety timeout: force hide splash after 8 seconds no matter what
+  // Safety timeout: force hide splash after 5 seconds no matter what
   useEffect(() => {
     if (!showSplash) return;
 
     const safetyTimeout = setTimeout(() => {
       if (showSplash) {
-        console.warn('[App] Safety timeout - forcing splash hide after 8s');
+        console.warn('[App] Safety timeout - forcing splash hide after 5s');
         Animated.timing(fadeAnim, {
           toValue: 0,
           duration: 300,
@@ -174,7 +228,7 @@ function AppContent() {
           setShowSplash(false);
         });
       }
-    }, 8000);
+    }, 5000); // Reduced from 8s to 5s
 
     return () => clearTimeout(safetyTimeout);
   }, [showSplash, fadeAnim]);

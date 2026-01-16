@@ -162,8 +162,15 @@ const GLOBAL_METRICS = [
 ];
 
 export default function PerformanceScreen({ route, navigation }: any) {
-  const { isParent } = useAthlete();
-  const { athleteId } = route.params;
+  const { isParent, linkedAthletes } = useAthlete();
+  const { athleteId } = route.params || {};
+
+  // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
+  useEffect(() => {
+    if (isParent && !athleteId && linkedAthletes.length > 0) {
+      navigation.goBack();
+    }
+  }, [isParent, athleteId, linkedAthletes]);
 
   // View mode state
   const [viewMode, setViewMode] = useState<ViewMode>('personalRecords');

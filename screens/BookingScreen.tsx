@@ -172,9 +172,36 @@ export default function BookingScreen() {
         if (athletes.length === 1) {
           // Auto-select if only one athlete
           setSelectedAthleteId(athletes[0].athleteId);
+          // Load categories for this athlete's org
+          const { data: athleteData } = await supabase
+            .from('athletes')
+            .select('org_id')
+            .eq('id', athletes[0].athleteId)
+            .single();
+
+          if (athleteData?.org_id && isMountedRef.current) {
+            console.log('[BookingScreen] Parent auto-select - loading categories for org:', athleteData.org_id);
+            const cats = await getCategories(athleteData.org_id);
+            console.log('[BookingScreen] Parent auto-select - categories loaded:', cats);
+            if (isMountedRef.current) setCategories(cats);
+          }
         } else if (athletes.length > 1 && !route.params?.athleteId) {
           // Show selector if multiple athletes
           setShowAthleteSelector(true);
+        } else if (route.params?.athleteId) {
+          // Athlete was passed via route params, load their categories
+          const { data: athleteData } = await supabase
+            .from('athletes')
+            .select('org_id')
+            .eq('id', route.params.athleteId)
+            .single();
+
+          if (athleteData?.org_id && isMountedRef.current) {
+            console.log('[BookingScreen] Route param athlete - loading categories for org:', athleteData.org_id);
+            const cats = await getCategories(athleteData.org_id);
+            console.log('[BookingScreen] Route param athlete - categories loaded:', cats);
+            if (isMountedRef.current) setCategories(cats);
+          }
         }
       } else {
         // Get athlete ID for regular user
@@ -191,8 +218,12 @@ export default function BookingScreen() {
             .single();
 
           if (athlete?.org_id && isMountedRef.current) {
+            console.log('[BookingScreen] Loading categories for org:', athlete.org_id);
             const cats = await getCategories(athlete.org_id);
+            console.log('[BookingScreen] Categories loaded:', cats);
             if (isMountedRef.current) setCategories(cats);
+          } else {
+            console.log('[BookingScreen] No org_id for athlete:', athleteId);
           }
         }
         if (isMountedRef.current) setLoadingAthletes(false);
@@ -275,8 +306,12 @@ export default function BookingScreen() {
       .single();
 
     if (athleteData?.org_id) {
+      console.log('[BookingScreen] Parent flow - loading categories for org:', athleteData.org_id);
       const cats = await getCategories(athleteData.org_id);
+      console.log('[BookingScreen] Parent flow - categories loaded:', cats);
       setCategories(cats);
+    } else {
+      console.log('[BookingScreen] Parent flow - no org_id for athlete:', athlete.athleteId);
     }
   };
 
@@ -359,7 +394,12 @@ export default function BookingScreen() {
       if (result.success) {
         Alert.alert('Success', 'Class reserved successfully!');
         setSelectedEvent(null);
-        fetchEvents(); // Refresh events
+        // Refresh events based on current view mode
+        if (viewMode === 'day') {
+          fetchEvents();
+        } else {
+          fetchListEvents();
+        }
       } else {
         Alert.alert('Error', result.error || 'Failed to reserve class');
       }
@@ -386,7 +426,12 @@ export default function BookingScreen() {
       if (result.success) {
         Alert.alert('Success', 'Reservation cancelled');
         setCancelEvent(null);
-        fetchEvents(); // Refresh events
+        // Refresh events based on current view mode
+        if (viewMode === 'day') {
+          fetchEvents();
+        } else {
+          fetchListEvents();
+        }
       } else {
         Alert.alert('Error', result.error || 'Failed to cancel reservation');
       }
@@ -472,10 +517,9 @@ export default function BookingScreen() {
         : currentEvents.filter((event) => !isPastDay(event.startTime))
       : currentEvents;
 
-  // Dynamic categories - only show categories that have events
-  const availableCategories = categories.filter((cat) =>
-    dayFilteredEvents.some((e) => e.category === cat.name)
-  );
+  // Show all categories - don't filter based on available events
+  // Users should be able to filter by any category even if current view is empty
+  const availableCategories = categories;
 
   // Filter events by selected category
   const filteredEvents =
@@ -672,6 +716,10 @@ export default function BookingScreen() {
             <Text style={styles.emptyText}>
               {viewMode === 'day'
                 ? 'No classes available for this date'
+                : selectedDays.length > 0
+                ? `No classes available for selected day${selectedDays.length > 1 ? 's' : ''}`
+                : selectedCategory !== 'all'
+                ? 'No classes in this category'
                 : 'No classes available this week'}
             </Text>
           </View>

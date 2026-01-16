@@ -86,8 +86,15 @@ const getZoneBgColor = (percentile: number) => {
 };
 
 export default function ForceProfileScreen({ route, navigation }: any) {
-  const { isParent } = useAthlete();
-  const { athleteId } = route.params;
+  const { isParent, linkedAthletes } = useAthlete();
+  const { athleteId } = route.params || {};
+
+  // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
+  useEffect(() => {
+    if (isParent && !athleteId && linkedAthletes.length > 0) {
+      navigation.goBack();
+    }
+  }, [isParent, athleteId, linkedAthletes]);
   const [loading, setLoading] = useState(true);
   const [radarData, setRadarData] = useState<RadarDataPoint[]>([]);
   const [compositeScore, setCompositeScore] = useState<number | null>(null);

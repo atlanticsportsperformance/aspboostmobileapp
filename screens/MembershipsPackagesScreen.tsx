@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useStripe } from '@stripe/stripe-react-native';
+import { initStripe, initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 
@@ -135,7 +135,8 @@ interface AthleteData {
 }
 
 export default function MembershipsPackagesScreen({ navigation, route }: any) {
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  // Note: We use direct imports (initStripe, initPaymentSheet, presentPaymentSheet) instead of useStripe()
+  // This allows us to call initStripe() with the connected account before each payment
   const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
@@ -172,6 +173,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   useEffect(() => {
     loadAthleteAndData();
   }, [isParent, linkedAthletes]);
+
+  // Auto-select athlete for purchase when modal opens (if only one athlete)
+  useEffect(() => {
+    if (showPurchaseModal && isParent && linkedAthletes.length === 1 && !purchaseForAthleteId) {
+      setPurchaseForAthleteId(linkedAthletes[0].athlete_id);
+    }
+  }, [showPurchaseModal, isParent, linkedAthletes, purchaseForAthleteId]);
 
   async function loadAthleteAndData() {
     try {
@@ -517,13 +525,28 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         return;
       }
 
-      const { client_secret, customer_id, ephemeral_key, stripe_account, mode, setup_intent_id, subscription_data } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account, mode, setup_intent_id, subscription_data, publishable_key } = data;
 
       if (!client_secret) {
         throw new Error('No payment details returned from server');
       }
 
       console.log('[Checkout] Initializing Payment Sheet with mode:', mode, 'account:', stripe_account);
+
+      // CRITICAL: For Stripe Connect, must call initStripe with the connected account BEFORE initPaymentSheet
+      if (stripe_account) {
+        const stripePublishableKey = publishable_key || process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
+        console.log('[Checkout] Calling initStripe with connected account:', stripe_account);
+        console.log('[Checkout] Using publishable key:', stripePublishableKey.substring(0, 20) + '...');
+
+        await initStripe({
+          publishableKey: stripePublishableKey,
+          stripeAccountId: stripe_account,
+          merchantIdentifier: 'merchant.com.aspboost',
+          urlScheme: 'aspboost',
+        });
+        console.log('[Checkout] initStripe completed');
+      }
 
       // Initialize the Payment Sheet - use setupIntentClientSecret for recurring, paymentIntentClientSecret for one-time
       const initConfig: any = {
@@ -536,28 +559,41 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
       if (mode === 'setup') {
         initConfig.setupIntentClientSecret = client_secret;
+        console.log('[Checkout] Using SetupIntent mode');
       } else {
         initConfig.paymentIntentClientSecret = client_secret;
+        console.log('[Checkout] Using PaymentIntent mode');
       }
 
+      console.log('[Checkout] Calling initPaymentSheet...');
       const { error: initError } = await initPaymentSheet(initConfig);
+      console.log('[Checkout] initPaymentSheet result:', initError ? initError.message : 'success');
 
       if (initError) {
         console.error('[Checkout] Init error:', initError);
         throw new Error(initError.message);
       }
 
-      console.log('[Checkout] Payment Sheet initialized, presenting...');
+      console.log('[Checkout] Payment Sheet initialized successfully!');
 
-      // Close modal and present Payment Sheet
+      // CRITICAL: Close modal and wait for it to fully dismiss
+      // Payment Sheet conflicts with React Native modals - need longer delay
       setShowPurchaseModal(false);
+      setPaymentInProgress(false); // Reset so user can retry if needed
+
+      // Wait 600ms for modal animation to fully complete
+      await new Promise(resolve => setTimeout(resolve, 600));
+
+      console.log('[Checkout] Modal dismissed, presenting Payment Sheet...');
 
       const { error: presentError } = await presentPaymentSheet();
 
+      console.log('[Checkout] presentPaymentSheet returned!');
+      console.log('[Checkout] Result:', presentError ? `Error: ${presentError.code} - ${presentError.message}` : 'SUCCESS');
+
       if (presentError) {
         if (presentError.code === 'Canceled') {
-          // User cancelled - don't show error
-          console.log('[Checkout] User cancelled');
+          console.log('[Checkout] User cancelled payment');
           return;
         }
         throw new Error(presentError.message);
@@ -1925,7 +1961,10 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         visible={showPurchaseModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowPurchaseModal(false)}
+        onRequestClose={() => {
+          setShowPurchaseModal(false);
+          setPurchaseForAthleteId(null);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.purchaseModal}>
@@ -1944,7 +1983,10 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               </View>
               <TouchableOpacity
                 style={styles.purchaseModalClose}
-                onPress={() => setShowPurchaseModal(false)}
+                onPress={() => {
+                  setShowPurchaseModal(false);
+                  setPurchaseForAthleteId(null);
+                }}
               >
                 <Ionicons name="close" size={20} color="#9CA3AF" />
               </TouchableOpacity>
@@ -2056,16 +2098,59 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     }
                     return null;
                   })()}
+
+                  {/* Parent: Athlete Selection */}
+                  {isParent && linkedAthletes.length > 0 && (
+                    <View style={styles.purchaseModalAthleteSection}>
+                      <View style={styles.purchaseModalValidForHeader}>
+                        <Ionicons name="person" size={16} color="#9BDDFF" />
+                        <Text style={styles.purchaseModalValidForTitle}>Purchase For</Text>
+                      </View>
+                      <View style={styles.purchaseModalAthleteList}>
+                        {linkedAthletes.map((athlete) => {
+                          const isSelected = purchaseForAthleteId === athlete.athlete_id;
+                          return (
+                            <TouchableOpacity
+                              key={athlete.athlete_id}
+                              style={[
+                                styles.purchaseModalAthleteOption,
+                                isSelected && styles.purchaseModalAthleteOptionSelected,
+                              ]}
+                              onPress={() => setPurchaseForAthleteId(athlete.athlete_id)}
+                            >
+                              <View style={[styles.purchaseModalAthleteDot, { backgroundColor: athlete.color }]} />
+                              <Text style={[
+                                styles.purchaseModalAthleteName,
+                                isSelected && styles.purchaseModalAthleteNameSelected,
+                              ]}>
+                                {athlete.first_name} {athlete.last_name}
+                              </Text>
+                              {isSelected && (
+                                <Ionicons name="checkmark-circle" size={18} color="#9BDDFF" />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  )}
                 </>
               )}
             </ScrollView>
 
             {/* Modal Footer */}
             <View style={styles.purchaseModalFooter}>
+              {/* Show warning if parent hasn't selected athlete */}
+              {isParent && linkedAthletes.length > 0 && !purchaseForAthleteId && (
+                <Text style={styles.purchaseModalWarning}>Please select an athlete above</Text>
+              )}
               <TouchableOpacity
-                style={[styles.purchaseButton, paymentInProgress && styles.purchaseButtonDisabled]}
+                style={[
+                  styles.purchaseButton,
+                  (paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId)) && styles.purchaseButtonDisabled
+                ]}
                 onPress={handlePurchase}
-                disabled={paymentInProgress}
+                disabled={paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId)}
               >
                 <LinearGradient
                   colors={paymentInProgress ? ['#6B7280', '#4B5563'] : ['#9BDDFF', '#B0E5FF', '#7BC5F0']}
@@ -2930,6 +3015,49 @@ const styles = StyleSheet.create({
   purchaseModalValueText: {
     fontSize: 14,
     color: '#6B7280',
+  },
+  purchaseModalAthleteSection: {
+    margin: 24,
+    marginTop: 0,
+  },
+  purchaseModalAthleteList: {
+    marginTop: 12,
+    gap: 8,
+  },
+  purchaseModalAthleteOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.1)',
+    backgroundColor: '#F9FAFB',
+  },
+  purchaseModalAthleteOptionSelected: {
+    borderColor: '#9BDDFF',
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+  },
+  purchaseModalAthleteDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 12,
+  },
+  purchaseModalAthleteName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#374151',
+  },
+  purchaseModalAthleteNameSelected: {
+    color: '#000000',
+    fontWeight: '600',
+  },
+  purchaseModalWarning: {
+    fontSize: 13,
+    color: '#EF4444',
+    textAlign: 'center',
+    marginBottom: 12,
   },
   purchaseModalFooter: {
     padding: 24,

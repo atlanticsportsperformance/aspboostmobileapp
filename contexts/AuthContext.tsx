@@ -61,9 +61,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data: { session: currentSession }, error } = await supabase.auth.getSession();
 
       if (error) {
-        // Network errors - keep existing state
+        // Network errors - keep existing state but ensure app is ready
         if (error.message?.includes('network') || error.message?.includes('fetch')) {
           console.log('[AuthContext] Network error, keeping existing state');
+          // CRITICAL: If we have an existing session, make sure appReady is true
+          // so the splash screen hides even on network errors
+          if (session) {
+            setAppReady(true);
+          }
           isRefreshing.current = false;
           return;
         }
@@ -92,19 +97,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(currentSession);
           setUser(currentSession.user);
         }
+        // CRITICAL: When resuming from background with valid session,
+        // ensure appReady is true so splash screen hides
+        console.log('[AuthContext] Session valid on resume, setting appReady=true');
+        setAppReady(true);
       } else {
         // No session
         setSession(null);
         setUser(null);
         setIsParentAccount(false);
+        // No session means we'll show login, which doesn't need appReady
       }
     } catch (e) {
       console.log('[AuthContext] Refresh error:', e);
-      // Keep existing state on error
+      // Keep existing state on error, but ensure app can continue
+      if (session) {
+        setAppReady(true);
+      }
     } finally {
       isRefreshing.current = false;
     }
-  }, []);
+  }, [session]);
 
   // Handle app state changes (foreground/background) - SINGLE LISTENER
   useEffect(() => {
@@ -130,15 +143,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initializeAuth = async () => {
       try {
         console.log('[AuthContext] Initializing auth...');
-        const { data: { session: initialSession } } = await supabase.auth.getSession();
+
+        // Add timeout to getSession - don't wait forever
+        const sessionPromise = supabase.auth.getSession();
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Session fetch timeout')), 5000)
+        );
+
+        const { data: { session: initialSession } } = await Promise.race([
+          sessionPromise,
+          timeoutPromise
+        ]) as { data: { session: any } };
 
         if (mounted) {
           if (initialSession) {
             console.log('[AuthContext] Found existing session for user:', initialSession.user.id);
             setSession(initialSession);
             setUser(initialSession.user);
-            await checkAccountType(initialSession.user.id);
-            console.log('[AuthContext] Init complete with session, isParentAccount will be set');
+            // Don't await checkAccountType - do it in background
+            // This prevents hanging if the network is slow
+            checkAccountType(initialSession.user.id).catch(e => {
+              console.log('[AuthContext] checkAccountType error (non-blocking):', e);
+            });
+            console.log('[AuthContext] Init complete with session');
           } else {
             console.log('[AuthContext] No existing session');
           }
@@ -155,13 +182,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // SAFETY: Force initialization to complete after 6 seconds no matter what
+    const safetyTimeout = setTimeout(() => {
+      if (mounted) {
+        console.warn('[AuthContext] Safety timeout - forcing initializing=false');
+        setLoading(false);
+        setInitializing(false);
+      }
+    }, 6000);
+
     // Listen for auth state changes AFTER initial auth is done
     // We use a flag to track if init is done to avoid race conditions
     let initDone = false;
 
     initializeAuth().then(() => {
       initDone = true;
+      clearTimeout(safetyTimeout); // Clear safety timeout since we completed normally
       console.log('[AuthContext] initDone = true');
+    }).catch(() => {
+      clearTimeout(safetyTimeout);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -214,6 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false;
+      clearTimeout(safetyTimeout);
       subscription.unsubscribe();
     };
   }, []);

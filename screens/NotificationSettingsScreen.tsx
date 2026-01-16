@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,9 +10,12 @@ import {
   Alert,
   Linking,
   Platform,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import {
   isPushNotificationsEnabled,
@@ -53,10 +56,44 @@ export default function NotificationSettingsScreen({ navigation }: any) {
     checkPushStatus();
   }, []);
 
+  // Re-check push status when screen gains focus (e.g., returning from iOS Settings)
+  useFocusEffect(
+    useCallback(() => {
+      checkPushStatus();
+    }, [])
+  );
+
+  // Also re-check when app returns from background (user might have changed settings in iOS Settings)
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        checkPushStatus();
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
   async function checkPushStatus() {
+    // The toggle should reflect iOS permission state, not backend registration status
     const enabled = await isPushNotificationsEnabled();
-    const token = await getStoredPushToken();
-    setPushEnabled(enabled && !!token);
+    console.log('[Notifications] iOS permissions enabled:', enabled);
+
+    // Always show the toggle based on iOS permission state
+    setPushEnabled(enabled);
+
+    // If iOS permissions are enabled, make sure we have a token registered
+    if (enabled) {
+      const token = await getStoredPushToken();
+      if (!token) {
+        // Permissions granted but no token registered - try to register in background
+        console.log('[Notifications] Permissions enabled but no token, registering...');
+        setupPushNotifications().catch((err) => {
+          console.error('[Notifications] Failed to register token:', err);
+        });
+      }
+    }
   }
 
   async function handlePushToggle(enabled: boolean) {

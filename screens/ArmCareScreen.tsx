@@ -37,8 +37,15 @@ interface ArmCareSession {
 }
 
 export default function ArmCareScreen({ navigation, route }: any) {
-  const { isParent } = useAthlete();
+  const { isParent, linkedAthletes } = useAthlete();
   const athleteId = route?.params?.athleteId;
+
+  // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
+  useEffect(() => {
+    if (isParent && !athleteId && linkedAthletes.length > 0) {
+      navigation.goBack();
+    }
+  }, [isParent, athleteId, linkedAthletes]);
   const [sessions, setSessions] = useState<ArmCareSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

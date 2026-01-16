@@ -116,8 +116,15 @@ interface CommandSession {
 type Session = TrackManSession | CommandSession;
 
 export default function PitchingScreen({ navigation, route }: any) {
-  const { isParent } = useAthlete();
+  const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
+
+  // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
+  useEffect(() => {
+    if (isParent && !route?.params?.athleteId && linkedAthletes.length > 0) {
+      navigation.goBack();
+    }
+  }, [isParent, route?.params?.athleteId, linkedAthletes]);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);

@@ -415,7 +415,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   circleLabel: {
-    fontSize: 10,
+    fontSize: 11,
     color: 'rgba(255, 255, 255, 0.8)',
     letterSpacing: 2,
     marginTop: 4,
@@ -443,7 +443,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   betaText: {
-    fontSize: 9,
+    fontSize: 10,
     color: '#9BDDFF',
     fontWeight: '600',
   },
@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
   },
   predictionRange: {
-    fontSize: 10,
+    fontSize: 11,
     color: 'rgba(255, 255, 255, 0.5)',
     marginTop: 2,
   },
@@ -466,7 +466,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   predictionTypeLabel: {
-    fontSize: 10,
+    fontSize: 11,
     color: 'rgba(255, 255, 255, 0.5)',
     marginBottom: 2,
   },

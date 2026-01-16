@@ -396,12 +396,12 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   progressLabel: {
-    fontSize: 8,
+    fontSize: 10,
     color: 'rgba(255, 255, 255, 0.5)',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
     fontWeight: '600',
-    width: 58,
+    width: 65,
   },
   progressBarContainer: {
     flex: 1,
@@ -434,7 +434,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   progressDate: {
-    fontSize: 8,
+    fontSize: 10,
     color: 'rgba(255, 255, 255, 0.4)',
   },
   progressPercentage: {

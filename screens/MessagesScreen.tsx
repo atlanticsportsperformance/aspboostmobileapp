@@ -126,7 +126,7 @@ export default function MessagesScreen({ navigation }: any) {
 
       setCurrentUser(user);
 
-      // Get athlete info
+      // First try to get athlete info (for athlete users)
       const { data: athlete } = await supabase
         .from('athletes')
         .select('id, org_id')
@@ -136,6 +136,17 @@ export default function MessagesScreen({ navigation }: any) {
       if (athlete) {
         setAthleteId(athlete.id);
         setOrgId(athlete.org_id);
+      } else {
+        // For parent accounts, get org_id from their profile
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('org_id')
+          .eq('id', user.id)
+          .single();
+
+        if (profile?.org_id) {
+          setOrgId(profile.org_id);
+        }
       }
 
       await fetchConversations(user.id);
@@ -546,15 +557,7 @@ export default function MessagesScreen({ navigation }: any) {
         return;
       }
 
-      // Get coaches assigned to this athlete (coach_id is the profile user_id)
-      const { data: assignedCoaches } = await supabase
-        .from('coach_athletes')
-        .select('coach_id')
-        .eq('athlete_id', athleteId);
-
-      const coachIds = assignedCoaches?.map(ac => ac.coach_id) || [];
-
-      // Query 1: Get admins and super_admins in the same org
+      // Parents and athletes can only message admins
       const { data: adminProfiles, error: adminError } = await supabase
         .from('profiles')
         .select('id, first_name, last_name, email, avatar_url, app_role')
@@ -562,26 +565,7 @@ export default function MessagesScreen({ navigation }: any) {
         .neq('id', currentUser?.id)
         .in('app_role', ['admin', 'super_admin']);
 
-      // Query 2: Get assigned coaches (if any)
-      let coachProfiles: Profile[] = [];
-      if (coachIds.length > 0) {
-        const { data: coaches, error: coachError } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, email, avatar_url, app_role')
-          .eq('org_id', currentProfile.org_id)
-          .in('id', coachIds);
-
-        coachProfiles = coaches || [];
-      }
-
-      // Combine and deduplicate results
-      const allProfiles = [...(adminProfiles || []), ...coachProfiles];
-      const uniqueProfiles = allProfiles.reduce((acc: Profile[], profile) => {
-        if (!acc.find(p => p.id === profile.id)) {
-          acc.push(profile);
-        }
-        return acc;
-      }, []);
+      const uniqueProfiles = adminProfiles || [];
 
       // Sort by first name
       uniqueProfiles.sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));

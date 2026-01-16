@@ -12,11 +12,36 @@ import {
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Svg, Path, Circle } from 'react-native-svg';
+import { Svg, Path } from 'react-native-svg';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 import { setupPushNotifications } from '../lib/pushNotifications';
+
+// Helper to navigate to the correct dashboard based on account type
+async function navigateToCorrectDashboard(navigation: any, userId: string) {
+  try {
+    console.log('[Login] Checking account type for navigation...');
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('account_type')
+      .eq('id', userId)
+      .single();
+
+    const isParent = profile?.account_type === 'parent';
+    console.log('[Login] Account type:', profile?.account_type, 'isParent:', isParent);
+
+    if (isParent) {
+      navigation.replace('ParentDashboard');
+    } else {
+      navigation.replace('Dashboard');
+    }
+  } catch (error) {
+    console.error('[Login] Error checking account type:', error);
+    // Default to athlete dashboard on error
+    navigation.replace('Dashboard');
+  }
+}
 
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
@@ -126,7 +151,7 @@ export default function LoginScreen({ navigation }: any) {
         // Register for push notifications after successful login
         setupPushNotifications().catch(console.error);
 
-        navigation.replace('Dashboard');
+        await navigateToCorrectDashboard(navigation, data.user.id);
       }
     } catch (err) {
       console.error('Auto biometric auth error:', err);
@@ -162,7 +187,7 @@ export default function LoginScreen({ navigation }: any) {
           // Register for push notifications after successful login
           setupPushNotifications().catch(console.error);
 
-          navigation.replace('Dashboard');
+          await navigateToCorrectDashboard(navigation, data.user.id);
         }
       }
     } catch (err) {
@@ -183,6 +208,52 @@ export default function LoginScreen({ navigation }: any) {
       ]).start();
     }
   }, [error]);
+
+  async function handleForgotPassword() {
+    if (!email) {
+      Alert.alert(
+        'Email Required',
+        'Please enter your email address first, then tap "Forgot password?"',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Reset Password',
+      `Send a password reset link to ${email}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send',
+          onPress: async () => {
+            setLoading(true);
+            setError('');
+            try {
+              const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+                email.trim(),
+                {
+                  redirectTo: 'https://aspboostapp.vercel.app/update-password',
+                }
+              );
+
+              if (resetError) throw resetError;
+
+              Alert.alert(
+                'Check Your Email',
+                'If an account exists with this email, you will receive a password reset link shortly.',
+                [{ text: 'OK' }]
+              );
+            } catch (err: any) {
+              setError(err.message || 'Failed to send reset email');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  }
 
   async function handleLogin() {
     if (!email || !password) {
@@ -213,7 +284,7 @@ export default function LoginScreen({ navigation }: any) {
       // Register for push notifications after successful login
       setupPushNotifications().catch(console.error);
 
-      navigation.replace('Dashboard');
+      await navigateToCorrectDashboard(navigation, data.user.id);
     } catch (error: any) {
       setError(error.message || 'Failed to sign in');
     } finally {
@@ -310,7 +381,7 @@ export default function LoginScreen({ navigation }: any) {
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <Text style={styles.label}>Password</Text>
-                <TouchableOpacity disabled={loading}>
+                <TouchableOpacity onPress={handleForgotPassword} disabled={loading}>
                   <Text style={styles.forgotPassword}>Forgot password?</Text>
                 </TouchableOpacity>
               </View>
