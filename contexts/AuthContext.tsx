@@ -41,9 +41,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Background token refresh - NEVER blocks UI, just updates state if successful
+  // Background token refresh - doesn't block UI but logs out if token is truly expired
   const refreshInBackground = useCallback(() => {
-    // Don't await this - fire and forget
     supabase.auth.refreshSession().then(({ data, error }) => {
       if (!error && data.session) {
         console.log('[Auth] Background refresh successful');
@@ -51,11 +50,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(data.session.user);
       } else if (error) {
         console.log('[Auth] Background refresh failed:', error.message);
-        // Don't clear session on error - let user continue with stale session
-        // They'll get kicked out when they try to do something that needs auth
+
+        // Check if this is a real auth failure (expired token) vs network error
+        const isAuthError = error.message?.includes('refresh_token') ||
+                           error.message?.includes('invalid') ||
+                           error.message?.includes('expired') ||
+                           error.status === 401 ||
+                           error.status === 403;
+
+        if (isAuthError) {
+          // Token is actually expired - log the user out
+          console.log('[Auth] Token expired, logging out');
+          setSession(null);
+          setUser(null);
+          setIsParentAccount(false);
+        }
+        // For network errors, keep the session - user might just be offline temporarily
       }
     }).catch(e => {
       console.log('[Auth] Background refresh exception:', e);
+      // On exception, assume network error and keep session
     });
   }, []);
 
