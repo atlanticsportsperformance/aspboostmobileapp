@@ -414,7 +414,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
 });
 
 export default function DashboardScreen({ navigation }: any) {
-  const { session, loading: authLoading, refreshSession, setAppReady, isParentAccount } = useAuth();
+  const { session, loading: authLoading, isParentAccount } = useAuth();
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -496,20 +496,6 @@ export default function DashboardScreen({ navigation }: any) {
     };
   }, []);
 
-  // Handle app resume from background - ensure appReady is set
-  useEffect(() => {
-    const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      if (nextAppState === 'active' && session && mountedRef.current) {
-        // When app comes back to foreground, ensure appReady is true
-        // This prevents the splash screen from getting stuck
-        console.log('[Dashboard] App resumed, ensuring appReady=true');
-        setAppReady(true);
-      }
-    };
-
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, [session, setAppReady]);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -1527,7 +1513,6 @@ export default function DashboardScreen({ navigation }: any) {
         console.log('[Dashboard] No athlete found for user');
         if (mountedRef.current) {
           setLoading(false);
-          setAppReady(true); // Signal app is ready even on error
           // User is authenticated but has no athlete record
           // Check if they're a parent account and redirect appropriately
           if (isParentAccount) {
@@ -1709,7 +1694,6 @@ export default function DashboardScreen({ navigation }: any) {
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
-        setAppReady(true); // Signal to App.tsx that dashboard is loaded
       }
       isLoadingRef.current = false;
     }

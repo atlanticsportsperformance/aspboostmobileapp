@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,6 @@ import {
   Animated,
   Modal,
   Alert,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -21,7 +19,6 @@ import { supabase } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAthlete } from '../contexts/AthleteContext';
-import { useAuth } from '../contexts/AuthContext';
 import AthletePickerModal from '../components/AthletePickerModal';
 import FABMenu from '../components/FABMenu';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
@@ -125,7 +122,6 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
 };
 
 export default function ParentDashboardScreen({ navigation }: any) {
-  const { setAppReady } = useAuth();
   const {
     parentName,
     linkedAthletes,
@@ -174,32 +170,16 @@ export default function ParentDashboardScreen({ navigation }: any) {
   // Use JSON stringified athlete IDs as dependency to properly trigger when athletes load/change
   const athleteIdsKey = linkedAthletes.map(a => a.athlete_id).join(',');
 
-  // Handle app resume from background - ensure appReady is set
-  useEffect(() => {
-    const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      if (nextAppState === 'active' && linkedAthletes.length > 0) {
-        // When app comes back to foreground, ensure appReady is true
-        // This prevents the splash screen from getting stuck
-        console.log('[ParentDashboard] App resumed, ensuring appReady=true');
-        setAppReady(true);
-      }
-    };
-
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, [linkedAthletes.length, setAppReady]);
 
   useFocusEffect(
     useCallback(() => {
       console.log('[ParentDashboard] useFocusEffect triggered, linkedAthletes:', linkedAthletes.map(a => `${a.first_name} (${a.athlete_id})`));
       if (linkedAthletes.length > 0) {
-        // Pass current linkedAthletes to avoid stale closure issues
         loadDashboard(linkedAthletes);
       } else if (!contextLoading) {
         setLoading(false);
-        setAppReady(true); // Signal app is ready even with no athletes
       }
-    }, [athleteIdsKey, contextLoading, linkedAthletes, setAppReady])
+    }, [athleteIdsKey, contextLoading, linkedAthletes])
   );
 
   async function loadDashboard(athletes = linkedAthletes) {
@@ -208,7 +188,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
       console.warn('Parent dashboard load timed out after 10 seconds');
       setLoading(false);
       setRefreshing(false);
-      setAppReady(true); // Signal app is ready even on timeout
     }, 10000);
 
     try {
@@ -219,7 +198,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
         console.log('[ParentDashboard] No athlete IDs, returning early');
         clearTimeout(timeoutId);
         setLoading(false);
-        setAppReady(true);
         return;
       }
 
@@ -400,7 +378,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
       clearTimeout(timeoutId);
       setLoading(false);
       setRefreshing(false);
-      setAppReady(true); // Signal to App.tsx that dashboard is loaded
     }
   }
 

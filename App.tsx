@@ -1,11 +1,9 @@
 import 'react-native-url-polyfill/auto';
 import './global.css';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Image, StyleSheet, Animated, Text, TextInput, AppState, AppStateStatus } from 'react-native';
+import { View, Image, StyleSheet, Animated, Text, TextInput } from 'react-native';
 
 // Disable font scaling completely to prevent iOS accessibility large fonts from breaking layouts.
-// This ensures consistent UI across all devices regardless of accessibility settings.
-// @ts-ignore - defaultProps is deprecated but still works and is the cleanest solution
 Text.defaultProps = Text.defaultProps || {};
 // @ts-ignore
 Text.defaultProps.maxFontSizeMultiplier = 1;
@@ -18,12 +16,10 @@ TextInput.defaultProps = TextInput.defaultProps || {};
 TextInput.defaultProps.maxFontSizeMultiplier = 1;
 // @ts-ignore
 TextInput.defaultProps.allowFontScaling = false;
+
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-// Note: We don't use StripeProvider here - instead we call initStripe()
-// before each payment flow with the publishable key from the API response.
-// This ensures we always use the correct key for the connected account.
 import * as SplashScreen from 'expo-splash-screen';
 import { AthleteProvider } from './contexts/AthleteContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -36,6 +32,7 @@ import {
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
+
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
@@ -70,66 +67,16 @@ import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
 
-// Inner component that uses AuthContext
 function AppContent() {
-  const { session, initializing, isParentAccount, appReady, setAppReady } = useAuth();
+  const { session, initializing, isParentAccount } = useAuth();
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
-  const appStateRef = useRef(AppState.currentState);
-  const lastBackgroundTime = useRef<number | null>(null);
 
   // Hide native splash screen on mount
   useEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
-
-  // Handle app resume from long background
-  // This ensures the app doesn't get stuck on splash after being backgrounded for a while
-  useEffect(() => {
-    const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      const previousState = appStateRef.current;
-
-      // Track when app goes to background
-      if (nextAppState.match(/inactive|background/)) {
-        lastBackgroundTime.current = Date.now();
-        console.log('[App] Going to background');
-      }
-
-      // When app comes back to foreground
-      if (previousState.match(/inactive|background/) && nextAppState === 'active') {
-        const backgroundDuration = lastBackgroundTime.current
-          ? Date.now() - lastBackgroundTime.current
-          : 0;
-        console.log('[App] Resuming from background, duration:', Math.round(backgroundDuration / 1000), 'seconds');
-
-        // If we have a session and were backgrounded for more than 5 seconds,
-        // ensure appReady is true so the app doesn't get stuck
-        if (session && !initializing && backgroundDuration > 5000) {
-          console.log('[App] Long background detected, ensuring appReady=true');
-          setAppReady(true);
-        }
-
-        // Also ensure splash is hidden if we already have a session
-        // and auth is not initializing
-        if (session && !initializing && showSplash) {
-          console.log('[App] Forcing splash hide after background resume');
-          Animated.timing(fadeAnim, {
-            toValue: 0,
-            duration: 300,
-            useNativeDriver: true,
-          }).start(() => {
-            setShowSplash(false);
-          });
-        }
-      }
-
-      appStateRef.current = nextAppState;
-    };
-
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, [session, initializing, showSplash, fadeAnim, setAppReady]);
 
   // Handle notification tap navigation
   const handleNotificationNavigation = useCallback((data: { type?: string; id?: string; screen?: string }) => {
@@ -137,7 +84,6 @@ function AppContent() {
 
     const nav = navigationRef.current as any;
 
-    // Navigate based on notification type
     if (data.screen) {
       nav.navigate(data.screen, data.id ? { id: data.id } : undefined);
     } else if (data.type) {
@@ -172,7 +118,6 @@ function AppContent() {
       }
     );
 
-    // Check if app was opened from a notification (cold start)
     getLastNotificationResponse().then((response) => {
       if (response) {
         const data = parseNotificationData(response.notification);
@@ -192,17 +137,10 @@ function AppContent() {
     }
   }, [session]);
 
-  // Fade out splash when ready
-  // SIMPLIFIED: Hide splash as soon as auth is done initializing
-  // Don't wait for appReady - the dashboard will load in the background
+  // Hide splash when auth init is done - SIMPLE
   useEffect(() => {
-    // Hide splash when auth initialization is complete
-    // If no session -> show login (no need to wait)
-    // If session exists -> show dashboard (it will load its own data)
-    const shouldHideSplash = !initializing;
-
-    if (shouldHideSplash && showSplash) {
-      console.log('[App] Auth initialized, hiding splash. Session:', !!session);
+    if (!initializing && showSplash) {
+      console.log('[App] Auth done, hiding splash');
       Animated.timing(fadeAnim, {
         toValue: 0,
         duration: 300,
@@ -211,37 +149,21 @@ function AppContent() {
         setShowSplash(false);
       });
     }
-  }, [initializing, session, showSplash, fadeAnim]);
+  }, [initializing, showSplash, fadeAnim]);
 
-  // Safety timeout: force hide splash after 5 seconds no matter what
+  // Safety: force hide splash after 4 seconds no matter what
   useEffect(() => {
     if (!showSplash) return;
 
-    const safetyTimeout = setTimeout(() => {
-      if (showSplash) {
-        console.warn('[App] Safety timeout - forcing splash hide after 5s');
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => {
-          setShowSplash(false);
-        });
-      }
-    }, 5000); // Reduced from 8s to 5s
+    const timeout = setTimeout(() => {
+      console.warn('[App] Safety timeout - forcing splash hide');
+      setShowSplash(false);
+    }, 4000);
 
-    return () => clearTimeout(safetyTimeout);
-  }, [showSplash, fadeAnim]);
+    return () => clearTimeout(timeout);
+  }, [showSplash]);
 
-  // Determine initial route - only valid once initializing is complete
-  const getInitialRoute = () => {
-    const route = !session ? 'Login' : (isParentAccount ? 'ParentDashboard' : 'Dashboard');
-    console.log('[App] getInitialRoute:', route, '(session:', !!session, 'isParentAccount:', isParentAccount, ')');
-    return route;
-  };
-
-  // Don't render navigator until auth is fully initialized (including account type check)
-  // This prevents the wrong initial route being set
+  // While initializing, show splash
   if (initializing) {
     return (
       <View style={styles.container}>
@@ -256,6 +178,8 @@ function AppContent() {
     );
   }
 
+  const initialRoute = !session ? 'Login' : (isParentAccount ? 'ParentDashboard' : 'Dashboard');
+
   return (
     <View style={styles.container}>
       <SafeAreaProvider>
@@ -264,11 +188,9 @@ function AppContent() {
           <Stack.Navigator
             screenOptions={{
               headerShown: false,
-              contentStyle: {
-                backgroundColor: '#0A0A0A',
-              },
+              contentStyle: { backgroundColor: '#0A0A0A' },
             }}
-            initialRouteName={getInitialRoute()}
+            initialRouteName={initialRoute}
           >
             <Stack.Screen name="Login" component={LoginScreen} />
             <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
@@ -304,7 +226,6 @@ function AppContent() {
         </NavigationContainer>
       </SafeAreaProvider>
 
-      {/* Custom splash screen overlay */}
       {showSplash && (
         <Animated.View style={[styles.splashOverlay, { opacity: fadeAnim }]}>
           <View style={styles.splashContainer}>
