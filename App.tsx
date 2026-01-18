@@ -68,7 +68,7 @@ import { StatusBar } from 'expo-status-bar';
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
-  const { session, initializing, isParentAccount } = useAuth();
+  const { session, initializing, isParentAccount, appReady } = useAuth();
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -137,10 +137,13 @@ function AppContent() {
     }
   }, [session]);
 
-  // Hide splash when auth init is done - SIMPLE
+  // Hide splash when:
+  // 1. Auth is done initializing AND
+  // 2. Either: no session (going to login) OR app is ready (dashboard loaded)
   useEffect(() => {
-    if (!initializing && showSplash) {
-      console.log('[App] Auth done, hiding splash');
+    const shouldHideSplash = !initializing && (!session || appReady);
+
+    if (shouldHideSplash && showSplash) {
       Animated.timing(fadeAnim, {
         toValue: 0,
         duration: 300,
@@ -149,34 +152,7 @@ function AppContent() {
         setShowSplash(false);
       });
     }
-  }, [initializing, showSplash, fadeAnim]);
-
-  // Safety: force hide splash after 4 seconds no matter what
-  useEffect(() => {
-    if (!showSplash) return;
-
-    const timeout = setTimeout(() => {
-      console.warn('[App] Safety timeout - forcing splash hide');
-      setShowSplash(false);
-    }, 4000);
-
-    return () => clearTimeout(timeout);
-  }, [showSplash]);
-
-  // While initializing, show splash
-  if (initializing) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.splashContainer}>
-          <Image
-            source={require('./assets/splash-logo.png')}
-            style={styles.splashLogo}
-            resizeMode="contain"
-          />
-        </View>
-      </View>
-    );
-  }
+  }, [initializing, session, appReady, showSplash]);
 
   const initialRoute = !session ? 'Login' : (isParentAccount ? 'ParentDashboard' : 'Dashboard');
 
@@ -226,6 +202,7 @@ function AppContent() {
         </NavigationContainer>
       </SafeAreaProvider>
 
+      {/* Custom splash screen overlay */}
       {showSplash && (
         <Animated.View style={[styles.splashOverlay, { opacity: fadeAnim }]}>
           <View style={styles.splashContainer}>

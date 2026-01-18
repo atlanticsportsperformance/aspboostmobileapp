@@ -19,6 +19,7 @@ import { supabase } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAthlete } from '../contexts/AthleteContext';
+import { useAuth } from '../contexts/AuthContext';
 import AthletePickerModal from '../components/AthletePickerModal';
 import FABMenu from '../components/FABMenu';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
@@ -122,6 +123,7 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
 };
 
 export default function ParentDashboardScreen({ navigation }: any) {
+  const { setAppReady } = useAuth();
   const {
     parentName,
     linkedAthletes,
@@ -378,6 +380,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
       clearTimeout(timeoutId);
       setLoading(false);
       setRefreshing(false);
+      setAppReady(true);
     }
   }
 

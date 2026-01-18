@@ -414,7 +414,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
 });
 
 export default function DashboardScreen({ navigation }: any) {
-  const { session, loading: authLoading, isParentAccount } = useAuth();
+  const { session, loading: authLoading, isParentAccount, setAppReady } = useAuth();
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -1694,6 +1694,7 @@ export default function DashboardScreen({ navigation }: any) {
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
+        setAppReady(true);
       }
       isLoadingRef.current = false;
     }

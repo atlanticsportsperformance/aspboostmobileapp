@@ -9,6 +9,8 @@ interface AuthContextType {
   loading: boolean;
   initializing: boolean;
   isParentAccount: boolean;
+  appReady: boolean;
+  setAppReady: (ready: boolean) => void;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshSession: () => Promise<void>;
@@ -22,6 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [initializing, setInitializing] = useState(true);
   const [isParentAccount, setIsParentAccount] = useState(false);
+  const [appReady, setAppReady] = useState(false);
   const appState = useRef(AppState.currentState);
   const isRefreshing = useRef(false);
 
@@ -74,7 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     } catch {
-      // Session refresh failed - don't do anything
+      // Session refresh failed
     } finally {
       isRefreshing.current = false;
     }
@@ -133,6 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(null);
             setIsParentAccount(false);
             setLoading(false);
+            setAppReady(false);
             break;
           case 'SIGNED_IN':
             if (newSession) {
@@ -185,6 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = async () => {
     try {
       setLoading(true);
+      setAppReady(false);
       await supabase.auth.signOut();
     } catch {
       // Sign out error
@@ -193,6 +198,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const handleSetAppReady = useCallback((ready: boolean) => {
+    setAppReady(ready);
+  }, []);
+
   return (
     <AuthContext.Provider value={{
       session,
@@ -200,6 +209,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       initializing,
       isParentAccount,
+      appReady,
+      setAppReady: handleSetAppReady,
       signIn,
       signOut,
       refreshSession
