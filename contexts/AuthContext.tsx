@@ -11,6 +11,7 @@ interface AuthContextType {
   isParentAccount: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
+  refreshSession: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -18,14 +19,14 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [initializing, setInitializing] = useState(true);
   const [isParentAccount, setIsParentAccount] = useState(false);
   const appState = useRef(AppState.currentState);
-  const initCompleted = useRef(false);
+  const isRefreshing = useRef(false);
 
-  // Check if user is a parent account - fire and forget, don't block anything
-  const checkAccountType = useCallback(async (userId: string) => {
+  // Check account type
+  const checkAccountType = async (userId: string) => {
     try {
       const { data: profile } = await supabase
         .from('profiles')
@@ -39,158 +40,158 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       console.log('[Auth] checkAccountType error:', e);
     }
-  }, []);
+  };
 
-  // Background token refresh - doesn't block UI but logs out if token is truly expired
-  const refreshInBackground = useCallback(() => {
-    supabase.auth.refreshSession().then(({ data, error }) => {
-      if (!error && data.session) {
-        console.log('[Auth] Background refresh successful');
-        setSession(data.session);
-        setUser(data.session.user);
-      } else if (error) {
-        console.log('[Auth] Background refresh failed:', error.message);
+  // Refresh session - used when app comes back to foreground
+  const refreshSession = async () => {
+    if (isRefreshing.current) return;
+    isRefreshing.current = true;
 
-        // Check if this is a real auth failure (expired token) vs network error
-        const isAuthError = error.message?.includes('refresh_token') ||
-                           error.message?.includes('invalid') ||
-                           error.message?.includes('expired') ||
-                           error.status === 401 ||
-                           error.status === 403;
+    try {
+      const { data: { session: currentSession }, error } = await supabase.auth.getSession();
 
-        if (isAuthError) {
-          // Token is actually expired - log the user out
-          console.log('[Auth] Token expired, logging out');
-          setSession(null);
-          setUser(null);
-          setIsParentAccount(false);
+      if (error) {
+        if (error.message?.includes('network') || error.message?.includes('fetch')) {
+          isRefreshing.current = false;
+          return;
         }
-        // For network errors, keep the session - user might just be offline temporarily
       }
-    }).catch(e => {
-      console.log('[Auth] Background refresh exception:', e);
-      // On exception, assume network error and keep session
-    });
-  }, []);
 
-  // Handle app state changes - refresh token in background when resuming
+      if (currentSession) {
+        const expiresAt = currentSession.expires_at;
+        const now = Math.floor(Date.now() / 1000);
+        const fiveMinutes = 5 * 60;
+
+        if (expiresAt && expiresAt - now < fiveMinutes) {
+          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError && refreshData.session) {
+            setSession(refreshData.session);
+            setUser(refreshData.session.user);
+          }
+        } else {
+          setSession(currentSession);
+          setUser(currentSession.user);
+        }
+      }
+    } catch {
+      // Session refresh failed - don't do anything
+    } finally {
+      isRefreshing.current = false;
+    }
+  };
+
+  // Handle app state changes (foreground/background)
   useEffect(() => {
     const handleAppStateChange = (nextAppState: AppStateStatus) => {
       if (
         appState.current.match(/inactive|background/) &&
         nextAppState === 'active'
       ) {
-        console.log('[Auth] App resumed from background');
-        // Only refresh if we have a session
-        if (session) {
-          refreshInBackground();
-        }
+        refreshSession();
       }
       appState.current = nextAppState;
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
-  }, [session, refreshInBackground]);
+  }, []);
 
-  // ONE-TIME initial session load
+  // Initial session load
   useEffect(() => {
-    // Prevent running twice
-    if (initCompleted.current) return;
-    initCompleted.current = true;
+    let mounted = true;
 
     const initializeAuth = async () => {
-      console.log('[Auth] Initializing...');
       try {
         const { data: { session: initialSession } } = await supabase.auth.getSession();
 
-        if (initialSession) {
-          console.log('[Auth] Found session for:', initialSession.user.email);
-          setSession(initialSession);
-          setUser(initialSession.user);
-          // Check account type in background
-          checkAccountType(initialSession.user.id);
-        } else {
-          console.log('[Auth] No session');
+        if (mounted) {
+          if (initialSession) {
+            setSession(initialSession);
+            setUser(initialSession.user);
+            checkAccountType(initialSession.user.id);
+          }
+          setLoading(false);
+          setInitializing(false);
         }
-      } catch (e) {
-        console.log('[Auth] Init error:', e);
-      } finally {
-        // ALWAYS set initializing to false
-        console.log('[Auth] Init complete, setting initializing=false');
-        setInitializing(false);
+      } catch {
+        if (mounted) {
+          setLoading(false);
+          setInitializing(false);
+        }
       }
     };
 
-    // Safety timeout - ALWAYS complete init within 3 seconds
-    const safetyTimeout = setTimeout(() => {
-      console.warn('[Auth] Safety timeout triggered');
-      setInitializing(false);
-    }, 3000);
+    initializeAuth();
 
-    initializeAuth().finally(() => {
-      clearTimeout(safetyTimeout);
-    });
-
-    // Listen for auth state changes (sign in, sign out, token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, newSession) => {
-        console.log('[Auth] State change:', event);
+        if (!mounted) return;
 
-        if (event === 'SIGNED_OUT') {
-          setSession(null);
-          setUser(null);
-          setIsParentAccount(false);
-        } else if (event === 'SIGNED_IN' && newSession) {
-          setSession(newSession);
-          setUser(newSession.user);
-          checkAccountType(newSession.user.id);
-        } else if (event === 'TOKEN_REFRESHED' && newSession) {
-          setSession(newSession);
-          setUser(newSession.user);
+        switch (event) {
+          case 'SIGNED_OUT':
+            setSession(null);
+            setUser(null);
+            setIsParentAccount(false);
+            setLoading(false);
+            break;
+          case 'SIGNED_IN':
+            if (newSession) {
+              setSession(newSession);
+              setUser(newSession.user);
+              checkAccountType(newSession.user.id);
+            }
+            setLoading(false);
+            break;
+          case 'TOKEN_REFRESHED':
+            if (newSession) {
+              setSession(newSession);
+              setUser(newSession.user);
+            }
+            setLoading(false);
+            break;
+          case 'USER_UPDATED':
+            if (newSession) {
+              setSession(newSession);
+              setUser(newSession.user);
+            }
+            break;
+          default:
+            break;
         }
       }
     );
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
-  }, [checkAccountType]);
+  }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    setLoading(true);
+  const signIn = async (email: string, password: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-
-      if (error) {
-        setLoading(false);
-        return { error: error as Error };
-      }
-
-      if (data.session) {
-        setSession(data.session);
-        setUser(data.session.user);
-        await checkAccountType(data.session.user.id);
-      }
-
-      setLoading(false);
+      setLoading(true);
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) throw error;
       return { error: null };
     } catch (error) {
       setLoading(false);
       return { error: error as Error };
     }
-  }, [checkAccountType]);
+  };
 
-  const signOut = useCallback(async () => {
-    setLoading(true);
+  const signOut = async () => {
     try {
+      setLoading(true);
       await supabase.auth.signOut();
-    } catch (e) {
-      console.log('[Auth] Sign out error:', e);
+    } catch {
+      // Sign out error
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   return (
     <AuthContext.Provider value={{
@@ -201,6 +202,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isParentAccount,
       signIn,
       signOut,
+      refreshSession
     }}>
       {children}
     </AuthContext.Provider>
