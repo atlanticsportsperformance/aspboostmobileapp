@@ -487,6 +487,7 @@ export default function DashboardScreen({ navigation }: any) {
   const lastLoadTimeRef = useRef<number>(0);
   const mountedRef = useRef(true);
   const initialFetchDone = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
 
   // Track component mount/unmount
   useEffect(() => {
@@ -495,6 +496,29 @@ export default function DashboardScreen({ navigation }: any) {
       mountedRef.current = false;
     };
   }, []);
+
+  // Reload data when app comes back from background
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active' &&
+        session &&
+        initialFetchDone.current
+      ) {
+        const timeSinceLastLoad = Date.now() - lastLoadTimeRef.current;
+        // Reload if more than 30 seconds since last load
+        if (timeSinceLastLoad > 30000 && !isLoadingRef.current) {
+          console.log('[Dashboard] App came to foreground, refreshing data');
+          loadDashboard();
+        }
+      }
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [session]);
 
 
   // Redirect to login if not authenticated
@@ -512,6 +536,22 @@ export default function DashboardScreen({ navigation }: any) {
       loadDashboard();
     }
   }, [session]);
+
+  // FAILSAFE: Never show "Loading your dashboard..." forever
+  // If loading takes more than 15 seconds, force it to show the dashboard anyway
+  useEffect(() => {
+    if (!loading) return;
+
+    const failsafe = setTimeout(() => {
+      if (loading && mountedRef.current) {
+        console.log('[Dashboard] FAILSAFE: Loading took too long, forcing dashboard to show');
+        setLoading(false);
+        setAppReady(true);
+      }
+    }, 15000);
+
+    return () => clearTimeout(failsafe);
+  }, [loading, setAppReady]);
 
   // useFocusEffect for navigation (coming back from other screens) AND foreground refresh
   // AuthContext handles session refresh, we just need to reload data
@@ -1481,12 +1521,14 @@ export default function DashboardScreen({ navigation }: any) {
     // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
       console.log('[Dashboard] Already loading, skipping');
+      // Don't set appReady here - another load is in progress and will set it
       return;
     }
 
     // Session is managed by AuthContext - if no session, the redirect effect will handle it
     if (!session?.user) {
       console.log('[Dashboard] No session in loadDashboard, waiting for redirect');
+      setAppReady(true); // Allow splash to hide so redirect can happen
       return;
     }
 
@@ -1513,6 +1555,7 @@ export default function DashboardScreen({ navigation }: any) {
         console.log('[Dashboard] No athlete found for user');
         if (mountedRef.current) {
           setLoading(false);
+          setAppReady(true);
           // User is authenticated but has no athlete record
           // Check if they're a parent account and redirect appropriately
           if (isParentAccount) {
@@ -1528,7 +1571,10 @@ export default function DashboardScreen({ navigation }: any) {
       }
 
       // Set athlete state - check mounted before each setState
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        setAppReady(true);
+        return;
+      }
       setAthleteId(athlete.id);
       setUserId(user.id);
       setFirstName(athlete.first_name || '');
@@ -1691,11 +1737,13 @@ export default function DashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('[Dashboard] Error:', error);
     } finally {
+      console.log('[Dashboard] Finally block - setting appReady=true');
       if (mountedRef.current) {
         setLoading(false);
         setRefreshing(false);
-        setAppReady(true);
       }
+      // Always set appReady to hide splash, even if unmounted
+      setAppReady(true);
       isLoadingRef.current = false;
     }
   }

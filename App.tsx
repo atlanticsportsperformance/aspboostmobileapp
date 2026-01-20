@@ -63,15 +63,17 @@ import MembershipsPackagesScreen from './screens/MembershipsPackagesScreen';
 import BillingScreen from './screens/BillingScreen';
 import PublicBookingScreen from './screens/PublicBookingScreen';
 import WaiversScreen from './screens/WaiversScreen';
+import LoadingScreen from './screens/LoadingScreen';
 import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
-  const { session, initializing, isParentAccount, appReady } = useAuth();
+  const { session, initializing, isParentAccount } = useAuth();
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  const splashHiddenOnce = useRef(false);
 
   // Hide native splash screen on mount
   useEffect(() => {
@@ -137,13 +139,11 @@ function AppContent() {
     }
   }, [session]);
 
-  // Hide splash when:
-  // 1. Auth is done initializing AND
-  // 2. Either: no session (going to login) OR app is ready (dashboard loaded)
+  // Hide splash ONCE when auth first finishes. Never show it again.
   useEffect(() => {
-    const shouldHideSplash = !initializing && (!session || appReady);
-
-    if (shouldHideSplash && showSplash) {
+    if (!initializing && !splashHiddenOnce.current && showSplash) {
+      splashHiddenOnce.current = true;
+      console.log('[App] Auth done, hiding splash (first time only)');
       Animated.timing(fadeAnim, {
         toValue: 0,
         duration: 300,
@@ -152,9 +152,7 @@ function AppContent() {
         setShowSplash(false);
       });
     }
-  }, [initializing, session, appReady, showSplash]);
-
-  const initialRoute = !session ? 'Login' : (isParentAccount ? 'ParentDashboard' : 'Dashboard');
+  }, [initializing, showSplash]);
 
   return (
     <View style={styles.container}>
@@ -166,8 +164,9 @@ function AppContent() {
               headerShown: false,
               contentStyle: { backgroundColor: '#0A0A0A' },
             }}
-            initialRouteName={initialRoute}
+            initialRouteName="Loading"
           >
+            <Stack.Screen name="Loading" component={LoadingScreen} />
             <Stack.Screen name="Login" component={LoginScreen} />
             <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
             <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
@@ -202,7 +201,7 @@ function AppContent() {
         </NavigationContainer>
       </SafeAreaProvider>
 
-      {/* Custom splash screen overlay */}
+      {/* Custom splash screen overlay - only shown on initial app open */}
       {showSplash && (
         <Animated.View style={[styles.splashOverlay, { opacity: fadeAnim }]}>
           <View style={styles.splashContainer}>

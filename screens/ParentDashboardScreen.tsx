@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   Animated,
   Modal,
   Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -23,6 +25,10 @@ import { useAuth } from '../contexts/AuthContext';
 import AthletePickerModal from '../components/AthletePickerModal';
 import FABMenu from '../components/FABMenu';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
+import HittingCard from '../components/dashboard/HittingCard';
+import ForceProfileCard from '../components/dashboard/ForceProfileCard';
+import ArmCareCard from '../components/dashboard/ArmCareCard';
+import PitchingCard from '../components/dashboard/PitchingCard';
 import { cancelBooking } from '../lib/bookingApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -98,6 +104,64 @@ interface UpcomingEvent {
   };
 }
 
+interface ForceProfile {
+  composite_score: number;
+  percentile_rank: number;
+  best_metric: { name: string; percentile: number; value: number } | null;
+  worst_metric: { name: string; percentile: number; value: number } | null;
+}
+
+interface HittingData {
+  latest: {
+    bat_speed?: number;
+    exit_velocity?: number;
+    distance?: number;
+    timestamp?: string;
+  };
+  prs: {
+    bat_speed?: { value: number; date: string };
+    exit_velocity?: { value: number; date: string };
+    distance?: { value: number; date: string };
+  };
+}
+
+interface ArmCareData {
+  latest: {
+    arm_score: number;
+    total_strength: number;
+    avg_strength_30d: number;
+    tests_30d: number;
+  };
+  pr: {
+    arm_score: number;
+    date: string;
+  };
+}
+
+interface StuffPlusByPitch {
+  pitchType: string;
+  stuffPlus: number;
+  date: string;
+}
+
+interface PitchingData {
+  prs: {
+    max_velo: { value: number; date: string } | null;
+  };
+  latest: {
+    max_velo: number | null;
+    avg_velo_30d: number | null;
+    avg_velo_recent: number | null;
+    timestamp: string | null;
+  };
+  stuffPlus: {
+    allTimeBest: StuffPlusByPitch[];
+    recentSession: StuffPlusByPitch[];
+    overallBest: number | null;
+    overallRecent: number | null;
+  } | null;
+}
+
 const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; button: string; label: string } } = {
   hitting: {
     bg: '#7f1d1d',
@@ -121,6 +185,187 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
     label: 'Strength & Conditioning',
   },
 };
+
+// Memoized Snapshot Carousel component to prevent remounting when parent state changes
+const SnapshotCarousel = React.memo(function SnapshotCarousel({
+  scrollX,
+  snapshotIndex,
+  setSnapshotIndex,
+  valdProfileId,
+  forceProfile,
+  latestPrediction,
+  batSpeedPrediction,
+  bodyweightData,
+  armCareData,
+  hittingData,
+  pitchingData,
+  upcomingEvents,
+  onEventPress,
+}: {
+  scrollX: Animated.Value;
+  snapshotIndex: number;
+  setSnapshotIndex: (index: number) => void;
+  valdProfileId: string | null;
+  forceProfile: ForceProfile | null;
+  latestPrediction: { predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null;
+  batSpeedPrediction: { predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null;
+  bodyweightData: { current: number; previous: number | null; date: string } | null;
+  armCareData: ArmCareData | null;
+  hittingData: HittingData | null;
+  pitchingData: PitchingData | null;
+  upcomingEvents: UpcomingEvent[];
+  onEventPress?: (event: UpcomingEvent) => void;
+}) {
+  let cardIndex = 0;
+  const cards = [];
+
+  // Filter upcoming events (only future events)
+  const futureEvents = upcomingEvents.filter((event) => {
+    const eventDate = new Date(event.event?.start_time);
+    return eventDate >= new Date();
+  });
+
+  /*
+   * CAROUSEL CARD HIERARCHY (priority order):
+   * 1. Upcoming Events - Most actionable/time-sensitive (bookings, sessions)
+   * 2. Pitching Performance - Sport-specific performance metrics
+   * 3. Hitting Performance - Sport-specific performance metrics
+   * 4. Force Profile - Athletic foundation/strength metrics
+   * 5. ArmCare - Injury prevention/maintenance metrics
+   */
+
+  // 1. Upcoming Events Card - FIRST card if there are upcoming events
+  if (futureEvents.length > 0) {
+    const thisIndex = cardIndex++;
+    cards.push(
+      <View key="upcoming-events" style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <UpcomingEventsCard events={futureEvents} isActive={snapshotIndex === thisIndex} onEventPress={onEventPress} />
+      </View>
+    );
+  }
+
+  // 2. Pitching Performance Card
+  if (pitchingData) {
+    const thisIndex = cardIndex++;
+    const pitchingKey = `pitching-${pitchingData.latest?.timestamp || 'default'}`;
+    cards.push(
+      <View key={pitchingKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Pitching Performance</Text>
+        <PitchingCard data={pitchingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // 3. Hitting Performance Card
+  if (hittingData) {
+    const thisIndex = cardIndex++;
+    const hittingKey = `hitting-${hittingData.latest?.timestamp || 'default'}`;
+    cards.push(
+      <View key={hittingKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Hitting Performance</Text>
+        <HittingCard data={hittingData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  // 4. Force Profile Card
+  if (valdProfileId && forceProfile) {
+    const thisIndex = cardIndex++;
+    const forceKey = `force-profile-${forceProfile.composite_score || 'default'}`;
+    cards.push(
+      <View key={forceKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>Force Profile</Text>
+        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} />
+      </View>
+    );
+  }
+
+  // 5. ArmCare Card
+  if (armCareData) {
+    const thisIndex = cardIndex++;
+    const armCareKey = `arm-care-${armCareData.latest?.arm_score || 'default'}`;
+    cards.push(
+      <View key={armCareKey} style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGloss}
+        />
+        <Text style={styles.cardTitle}>ArmCare</Text>
+        <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
+      </View>
+    );
+  }
+
+  const totalCards = cards.length;
+  const showLeftArrow = snapshotIndex > 0;
+  const showRightArrow = snapshotIndex < totalCards - 1;
+
+  if (cards.length === 0) {
+    return null;
+  }
+
+  return (
+    <View style={styles.carouselWrapper}>
+      {/* Left swipe indicator */}
+      {showLeftArrow && (
+        <View style={styles.swipeIndicatorLeft}>
+          <Text style={styles.swipeArrow}>‹</Text>
+        </View>
+      )}
+
+      <ScrollView
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+          { useNativeDriver: false }
+        )}
+        onMomentumScrollEnd={(event) => {
+          const offsetX = event.nativeEvent.contentOffset.x;
+          const index = Math.round(offsetX / CARD_WIDTH);
+          setSnapshotIndex(index);
+        }}
+        scrollEventThrottle={16}
+      >
+        {cards}
+      </ScrollView>
+
+      {/* Right swipe indicator */}
+      {showRightArrow && (
+        <View style={styles.swipeIndicatorRight}>
+          <Text style={styles.swipeArrow}>›</Text>
+        </View>
+      )}
+    </View>
+  );
+});
 
 export default function ParentDashboardScreen({ navigation }: any) {
   const { setAppReady } = useAuth();
@@ -164,6 +409,16 @@ export default function ParentDashboardScreen({ navigation }: any) {
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
 
+  // Performance data state for carousel cards
+  const [forceProfile, setForceProfile] = useState<ForceProfile | null>(null);
+  const [hittingData, setHittingData] = useState<HittingData | null>(null);
+  const [armCareData, setArmCareData] = useState<ArmCareData | null>(null);
+  const [pitchingData, setPitchingData] = useState<PitchingData | null>(null);
+  const [valdProfileId, setValdProfileId] = useState<string | null>(null);
+  const [latestPrediction, setLatestPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
+  const [batSpeedPrediction, setBatSpeedPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
+  const [bodyweightData, setBodyweightData] = useState<{ current: number; previous: number | null; date: string } | null>(null);
+
   // Cancel booking modal state
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [bookingToCancel, setBookingToCancel] = useState<Booking | null>(null);
@@ -171,7 +426,30 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   // Use JSON stringified athlete IDs as dependency to properly trigger when athletes load/change
   const athleteIdsKey = linkedAthletes.map(a => a.athlete_id).join(',');
+  const appStateRef = useRef(AppState.currentState);
+  const lastLoadTimeRef = useRef<number>(0);
 
+  // Reload data when app comes back from background
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active' &&
+        linkedAthletes.length > 0
+      ) {
+        const timeSinceLastLoad = Date.now() - lastLoadTimeRef.current;
+        // Reload if more than 30 seconds since last load
+        if (timeSinceLastLoad > 30000) {
+          console.log('[ParentDashboard] App came to foreground, refreshing data');
+          loadDashboard(linkedAthletes);
+        }
+      }
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [linkedAthletes]);
 
   useFocusEffect(
     useCallback(() => {
@@ -185,11 +463,14 @@ export default function ParentDashboardScreen({ navigation }: any) {
   );
 
   async function loadDashboard(athletes = linkedAthletes) {
+    lastLoadTimeRef.current = Date.now();
+
     // Set a timeout to prevent infinite loading - force stop after 10 seconds
     const timeoutId = setTimeout(() => {
       console.warn('Parent dashboard load timed out after 10 seconds');
       setLoading(false);
       setRefreshing(false);
+      setAppReady(true);
     }, 10000);
 
     try {
@@ -200,6 +481,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         console.log('[ParentDashboard] No athlete IDs, returning early');
         clearTimeout(timeoutId);
         setLoading(false);
+        setAppReady(true);
         return;
       }
 
@@ -374,6 +656,13 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       // Fetch data presence for FAB (check what data types exist for linked athletes)
       await fetchDataPresence(athleteIds);
+
+      // Fetch performance data for the first linked athlete (for the carousel cards)
+      // Parents see performance data for their first athlete by default
+      if (athleteIds.length > 0) {
+        console.log('[ParentDashboard] Fetching performance data for athlete:', athleteIds[0]);
+        await fetchPerformanceDataForAthlete(athleteIds[0]);
+      }
     } catch (error) {
       console.error('Error loading dashboard:', error);
     } finally {
@@ -425,6 +714,572 @@ export default function ParentDashboardScreen({ navigation }: any) {
       setHasForceData((forceCount || 0) > 0);
     } catch (error) {
       console.error('Error fetching data presence:', error);
+    }
+  }
+
+  // Helper function to get display names for metrics (matches web app format)
+  function getMetricDisplayName(testType: string, metric: string): string {
+    const displayMap: Record<string, string> = {
+      'imtp|net_peak_vertical_force_trial_value': 'IMTP Net Force',
+      'imtp|relative_strength_trial_value': 'IMTP Relative',
+      'sj|peak_takeoff_power_trial_value': 'SJ Power',
+      'cmj|bodymass_relative_takeoff_power_trial_value': 'CMJ Power/BM',
+      'ppu|peak_takeoff_force_trial_value': 'PPU Force',
+      'hj|hop_mean_rsi_trial_value': 'HJ RSI',
+      'cmj|peak_takeoff_power_trial_value': 'CMJ Power',
+      'cmj|jump_height_trial_value': 'CMJ Height',
+      'sj|jump_height_trial_value': 'SJ Height',
+      'hj|contact_time_trial_value': 'HJ Contact',
+      'ppu|peak_takeoff_force_bm_trial_value': 'PPU Force/BM',
+    };
+    const key = `${testType}|${metric}`;
+    return displayMap[key] || metric.replace('_trial_value', '').replace(/_/g, ' ');
+  }
+
+  // Fetch performance data for the first/selected linked athlete
+  async function fetchPerformanceDataForAthlete(athleteId: string) {
+    try {
+      // Get athlete info for VALD profile ID
+      const { data: athlete } = await supabase
+        .from('athletes')
+        .select('id, vald_profile_id, org_id, play_level')
+        .eq('id', athleteId)
+        .single();
+
+      if (!athlete) return;
+
+      // Fetch all performance data in parallel
+      await Promise.all([
+        fetchForceProfile(athleteId, athlete.vald_profile_id, athlete.org_id),
+        fetchHittingData(athleteId),
+        fetchArmCareData(athleteId),
+        fetchPitchingData(athleteId),
+        fetchPredictions(athleteId),
+        fetchBodyweightData(athleteId),
+      ]);
+    } catch (error) {
+      console.error('[ParentDashboard] Error fetching performance data:', error);
+    }
+  }
+
+  async function fetchForceProfile(athleteIdParam: string, valdProfileIdParam: string | null, orgId: string | null) {
+    if (!orgId) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    // Get the org's default composite config
+    let { data: compositeConfig } = await supabase
+      .from('composite_score_configs')
+      .select('*')
+      .eq('org_id', orgId)
+      .eq('is_default', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (!compositeConfig) {
+      const { data: anyConfig } = await supabase
+        .from('composite_score_configs')
+        .select('*')
+        .eq('org_id', orgId)
+        .limit(1)
+        .maybeSingle();
+      compositeConfig = anyConfig;
+    }
+
+    if (!compositeConfig) {
+      compositeConfig = {
+        name: 'Overall Athleticism',
+        metrics: [
+          { test_type: 'imtp', metric: 'net_peak_vertical_force_trial_value' },
+          { test_type: 'imtp', metric: 'relative_strength_trial_value' },
+          { test_type: 'sj', metric: 'peak_takeoff_power_trial_value' },
+          { test_type: 'cmj', metric: 'bodymass_relative_takeoff_power_trial_value' },
+          { test_type: 'ppu', metric: 'peak_takeoff_force_trial_value' },
+          { test_type: 'hj', metric: 'hop_mean_rsi_trial_value' },
+        ],
+      };
+    }
+
+    const metrics = compositeConfig.metrics || [];
+    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+
+    for (const metricSpec of metrics) {
+      const { data: percentileData, error } = await supabase
+        .from('force_plate_percentiles')
+        .select('test_id, test_date, percentiles')
+        .eq('athlete_id', athleteIdParam)
+        .eq('test_type', metricSpec.test_type)
+        .order('test_date', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (!error && percentileData?.percentiles) {
+        const metricPercentile = percentileData.percentiles[metricSpec.metric];
+        if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
+          let rawValue = 0;
+          const { data: testData } = await supabase
+            .from(`${metricSpec.test_type}_tests`)
+            .select(metricSpec.metric)
+            .eq('test_id', percentileData.test_id)
+            .single();
+
+          if (testData && testData[metricSpec.metric] !== undefined) {
+            rawValue = Number(testData[metricSpec.metric]) || 0;
+          }
+
+          const displayName = getMetricDisplayName(metricSpec.test_type, metricSpec.metric);
+          percentiles.push({
+            name: displayName,
+            percentile: Math.round(metricPercentile),
+            value: rawValue,
+            test_type: metricSpec.test_type,
+            metric: metricSpec.metric,
+          });
+        }
+      }
+    }
+
+    if (percentiles.length === 0) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    const compositeScore = Math.round(
+      (percentiles.reduce((sum, p) => sum + p.percentile, 0) / percentiles.length) * 10
+    ) / 10;
+
+    percentiles.sort((a, b) => b.percentile - a.percentile);
+    const best = percentiles[0];
+    const worst = percentiles[percentiles.length - 1];
+
+    setValdProfileId(valdProfileIdParam || 'has_force_data');
+    setForceProfile({
+      composite_score: compositeScore,
+      percentile_rank: compositeScore,
+      best_metric: best,
+      worst_metric: worst,
+    });
+  }
+
+  async function fetchHittingData(athleteIdParam: string) {
+    const { data: blastSwings } = await supabase
+      .from('blast_swings')
+      .select('*')
+      .eq('athlete_id', athleteIdParam)
+      .order('recorded_date', { ascending: false })
+      .order('recorded_time', { ascending: false });
+
+    const { data: hittraxSessions } = await supabase
+      .from('hittrax_sessions')
+      .select('id, session_date')
+      .eq('athlete_id', athleteIdParam)
+      .order('session_date', { ascending: false });
+
+    const hittraxSessionIds = hittraxSessions?.map((s) => s.id) || [];
+    const { data: hittraxSwings } = hittraxSessionIds.length > 0
+      ? await supabase
+          .from('hittrax_swings')
+          .select('*')
+          .in('session_id', hittraxSessionIds)
+          .order('swing_timestamp', { ascending: false })
+      : { data: null };
+
+    let maxBatSpeed = { value: 0, date: '' };
+    let maxExitVelo = { value: 0, date: '' };
+    let maxDistance = { value: 0, date: '' };
+
+    if (blastSwings && blastSwings.length > 0) {
+      for (const swing of blastSwings) {
+        const batSpeed = parseFloat(swing.metrics?.swing_speed?.value || '0');
+        if (batSpeed > maxBatSpeed.value) {
+          maxBatSpeed = { value: batSpeed, date: swing.recorded_date };
+        }
+      }
+    }
+
+    if (hittraxSwings && hittraxSwings.length > 0) {
+      for (const swing of hittraxSwings) {
+        const exitVelo = parseFloat(swing.exit_velocity || '0');
+        const distance = parseFloat(swing.distance || '0');
+
+        if (exitVelo > maxExitVelo.value) {
+          const session = hittraxSessions?.find((s) => s.id === swing.session_id);
+          maxExitVelo = { value: exitVelo, date: session?.session_date || '' };
+        }
+        if (distance > maxDistance.value) {
+          const session = hittraxSessions?.find((s) => s.id === swing.session_id);
+          maxDistance = { value: distance, date: session?.session_date || '' };
+        }
+      }
+    }
+
+    const latestBatSpeed = blastSwings && blastSwings.length > 0
+      ? parseFloat(blastSwings[0].metrics?.swing_speed?.value || '0')
+      : 0;
+    const latestExitVelo = hittraxSwings && hittraxSwings.length > 0
+      ? parseFloat(hittraxSwings[0].exit_velocity || '0')
+      : 0;
+    const latestDistance = hittraxSwings && hittraxSwings.length > 0
+      ? parseFloat(hittraxSwings[0].distance || '0')
+      : 0;
+
+    const latestTimestamp = blastSwings && blastSwings.length > 0
+      ? `${blastSwings[0].recorded_date} ${blastSwings[0].recorded_time}`
+      : hittraxSwings && hittraxSwings.length > 0
+        ? hittraxSwings[0].swing_timestamp
+        : null;
+
+    const hasAnyHittingData = maxBatSpeed.value > 0 || maxExitVelo.value > 0 || maxDistance.value > 0;
+
+    if (hasAnyHittingData) {
+      setHittingData({
+        prs: {
+          bat_speed: maxBatSpeed.value > 0 ? maxBatSpeed : undefined,
+          exit_velocity: maxExitVelo.value > 0 ? maxExitVelo : undefined,
+          distance: maxDistance.value > 0 ? maxDistance : undefined,
+        },
+        latest: {
+          bat_speed: latestBatSpeed || undefined,
+          exit_velocity: latestExitVelo || undefined,
+          distance: latestDistance || undefined,
+          timestamp: latestTimestamp || undefined,
+        },
+      });
+    } else {
+      setHittingData(null);
+    }
+  }
+
+  async function fetchArmCareData(athleteIdParam: string) {
+    const { data: sessions } = await supabase
+      .from('armcare_sessions')
+      .select('*')
+      .eq('athlete_id', athleteIdParam)
+      .order('exam_date', { ascending: false })
+      .order('exam_time', { ascending: false });
+
+    if (!sessions || sessions.length === 0) {
+      setArmCareData(null);
+      return;
+    }
+
+    let maxArmScore = { value: 0, date: '' };
+    for (const session of sessions) {
+      const armScore = session.arm_score || 0;
+      if (armScore > maxArmScore.value) {
+        maxArmScore = { value: armScore, date: session.exam_date };
+      }
+    }
+
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const recentSessions = sessions.filter((session) => {
+      const sessionDate = new Date(session.exam_date);
+      return sessionDate >= ninetyDaysAgo;
+    });
+
+    let avg90DayArmScore = 0;
+    let avg90DayTotalStrength = 0;
+
+    if (recentSessions.length > 0) {
+      const totalArmScore = recentSessions.reduce((sum, session) => sum + (session.arm_score || 0), 0);
+      const totalStrength = recentSessions.reduce((sum, session) => sum + (session.total_strength || 0), 0);
+      avg90DayArmScore = totalArmScore / recentSessions.length;
+      avg90DayTotalStrength = totalStrength / recentSessions.length;
+    } else {
+      avg90DayArmScore = sessions[0].arm_score || 0;
+      avg90DayTotalStrength = sessions[0].total_strength || 0;
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const tests30d = sessions.filter((session) => {
+      const sessionDate = new Date(session.exam_date);
+      return sessionDate >= thirtyDaysAgo;
+    }).length;
+
+    setArmCareData({
+      pr: maxArmScore.value > 0 ? { arm_score: maxArmScore.value, date: maxArmScore.date } : { arm_score: 0, date: '' },
+      latest: {
+        arm_score: avg90DayArmScore,
+        total_strength: avg90DayTotalStrength,
+        avg_strength_30d: avg90DayTotalStrength,
+        tests_30d: tests30d,
+      },
+    });
+  }
+
+  async function fetchPitchingData(athleteIdParam: string) {
+    const BATCH_SIZE = 1000;
+    const allPitches: any[] = [];
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: pitchBatch, error } = await supabase
+        .from('trackman_pitch_data')
+        .select('*')
+        .eq('athlete_id', athleteIdParam)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + BATCH_SIZE - 1);
+
+      if (error) break;
+
+      if (pitchBatch && pitchBatch.length > 0) {
+        allPitches.push(...pitchBatch);
+        offset += BATCH_SIZE;
+        hasMore = pitchBatch.length === BATCH_SIZE;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    const { data: stuffPlusGrades } = await supabase
+      .from('pitch_stuff_plus')
+      .select('pitch_uid, stuff_plus, pitch_type_group, graded_at')
+      .eq('athlete_id', athleteIdParam);
+
+    const stuffPlusMap = new Map<string, { stuff_plus: number; pitch_type_group: string; graded_at: string }>();
+    if (stuffPlusGrades) {
+      for (const grade of stuffPlusGrades) {
+        stuffPlusMap.set(grade.pitch_uid, {
+          stuff_plus: grade.stuff_plus,
+          pitch_type_group: grade.pitch_type_group,
+          graded_at: grade.graded_at,
+        });
+      }
+    }
+
+    const pitches = allPitches.map(p => ({
+      ...p,
+      stuff_plus: stuffPlusMap.get(p.pitch_uid) || null,
+    }));
+
+    if (!pitches || pitches.length === 0) {
+      setPitchingData(null);
+      return;
+    }
+
+    const uniqueSessionIds = [...new Set(pitches.map(p => p.session_id))];
+
+    const { data: sessions } = await supabase
+      .from('trackman_session')
+      .select('id, game_date_utc')
+      .in('id', uniqueSessionIds)
+      .order('game_date_utc', { ascending: false });
+
+    if (!sessions || sessions.length === 0) {
+      setPitchingData(null);
+      return;
+    }
+
+    let maxVelo = { value: 0, date: '' };
+    for (const pitch of pitches) {
+      const velo = parseFloat(pitch.rel_speed || '0');
+      if (velo > maxVelo.value) {
+        const session = sessions.find(s => s.id === pitch.session_id);
+        maxVelo = { value: velo, date: session?.game_date_utc || pitch.created_at };
+      }
+    }
+
+    const mostRecentSession = sessions[0];
+    const recentPitches = pitches.filter(p => p.session_id === mostRecentSession.id);
+
+    let recentMax = 0;
+    let recentSum = 0;
+    for (const pitch of recentPitches) {
+      const velo = parseFloat(pitch.rel_speed || '0');
+      if (velo > recentMax) recentMax = velo;
+      recentSum += velo;
+    }
+    const recentAvg = recentPitches.length > 0 ? recentSum / recentPitches.length : 0;
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const last30DaySessions = sessions.filter(s => new Date(s.game_date_utc) >= thirtyDaysAgo);
+    const last30DaySessionIds = last30DaySessions.map(s => s.id);
+    const last30DayPitches = pitches.filter(p => last30DaySessionIds.includes(p.session_id));
+
+    let sum30d = 0;
+    for (const pitch of last30DayPitches) {
+      sum30d += parseFloat(pitch.rel_speed || '0');
+    }
+    const avg30d = last30DayPitches.length > 0 ? sum30d / last30DayPitches.length : 0;
+
+    let stuffPlusData: {
+      allTimeBest: StuffPlusByPitch[];
+      recentSession: StuffPlusByPitch[];
+      overallBest: number | null;
+      overallRecent: number | null;
+    } | null = null;
+
+    const pitchesWithStuffPlus = pitches
+      .filter(p => {
+        if (!p.tagged_pitch_type) return false;
+        if (!p.stuff_plus || p.stuff_plus.stuff_plus == null) return false;
+        return true;
+      })
+      .map(p => {
+        const session = sessions.find(s => s.id === p.session_id);
+        return {
+          pitch_uid: p.pitch_uid,
+          stuff_plus: p.stuff_plus.stuff_plus as number,
+          pitch_type_group: p.tagged_pitch_type as string,
+          graded_at: p.stuff_plus.graded_at as string,
+          session_id: p.session_id,
+          session_date: session?.game_date_utc || p.created_at,
+        };
+      });
+
+    if (pitchesWithStuffPlus.length > 0) {
+      const recentSessionPitchUids = new Set(recentPitches.map(p => p.pitch_uid).filter(Boolean));
+
+      const bestByPitchType = new Map<string, { stuffPlus: number; date: string }>();
+      for (const grade of pitchesWithStuffPlus) {
+        const pitchType = grade.pitch_type_group;
+        const current = bestByPitchType.get(pitchType);
+        if (!current || grade.stuff_plus > current.stuffPlus) {
+          bestByPitchType.set(pitchType, { stuffPlus: grade.stuff_plus, date: grade.session_date });
+        }
+      }
+
+      const recentByPitchType = new Map<string, { stuffPlus: number; date: string }>();
+      for (const grade of pitchesWithStuffPlus) {
+        if (recentSessionPitchUids.has(grade.pitch_uid)) {
+          const pitchType = grade.pitch_type_group;
+          const current = recentByPitchType.get(pitchType);
+          if (!current || grade.stuff_plus > current.stuffPlus) {
+            recentByPitchType.set(pitchType, { stuffPlus: grade.stuff_plus, date: mostRecentSession.game_date_utc });
+          }
+        }
+      }
+
+      const allTimeBest: StuffPlusByPitch[] = Array.from(bestByPitchType.entries()).map(([pitchType, data]) => ({
+        pitchType,
+        stuffPlus: data.stuffPlus,
+        date: data.date,
+      }));
+
+      const recentSession: StuffPlusByPitch[] = Array.from(recentByPitchType.entries()).map(([pitchType, data]) => ({
+        pitchType,
+        stuffPlus: data.stuffPlus,
+        date: data.date,
+      }));
+
+      const overallBest = allTimeBest.length > 0 ? Math.max(...allTimeBest.map(p => p.stuffPlus)) : null;
+      const overallRecent = recentSession.length > 0 ? Math.max(...recentSession.map(p => p.stuffPlus)) : null;
+
+      stuffPlusData = {
+        allTimeBest,
+        recentSession,
+        overallBest,
+        overallRecent,
+      };
+    }
+
+    setPitchingData({
+      prs: {
+        max_velo: maxVelo.value > 0 ? maxVelo : null,
+      },
+      latest: {
+        max_velo: recentMax || null,
+        avg_velo_30d: avg30d || null,
+        avg_velo_recent: recentAvg || null,
+        timestamp: mostRecentSession.game_date_utc,
+      },
+      stuffPlus: stuffPlusData,
+    });
+  }
+
+  async function fetchPredictions(athleteIdParam: string) {
+    try {
+      const { data, error } = await supabase
+        .from('predictions')
+        .select('predicted_value, predicted_value_low, predicted_value_high, predicted_at, model_id, prediction_models!inner(model_name)')
+        .eq('athlete_id', athleteIdParam)
+        .order('predicted_at', { ascending: false });
+
+      if (error) {
+        setLatestPrediction(null);
+        setBatSpeedPrediction(null);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const pitchPrediction = data.find((p: any) => p.prediction_models?.model_name === 'pitch_velocity');
+        if (pitchPrediction) {
+          setLatestPrediction({
+            predicted_value: pitchPrediction.predicted_value,
+            predicted_value_low: pitchPrediction.predicted_value_low,
+            predicted_value_high: pitchPrediction.predicted_value_high,
+          });
+        } else {
+          setLatestPrediction(null);
+        }
+
+        const batPrediction = data.find((p: any) => p.prediction_models?.model_name === 'bat_speed');
+        if (batPrediction) {
+          setBatSpeedPrediction({
+            predicted_value: batPrediction.predicted_value,
+            predicted_value_low: batPrediction.predicted_value_low,
+            predicted_value_high: batPrediction.predicted_value_high,
+          });
+        } else {
+          setBatSpeedPrediction(null);
+        }
+      } else {
+        setLatestPrediction(null);
+        setBatSpeedPrediction(null);
+      }
+    } catch {
+      setLatestPrediction(null);
+      setBatSpeedPrediction(null);
+    }
+  }
+
+  async function fetchBodyweightData(athleteIdParam: string) {
+    try {
+      const { data: cmjTests, error } = await supabase
+        .from('cmj_tests')
+        .select('*')
+        .eq('athlete_id', athleteIdParam)
+        .order('created_at', { ascending: false })
+        .limit(2);
+
+      if (error) {
+        setBodyweightData(null);
+        return;
+      }
+
+      if (cmjTests && cmjTests.length > 0) {
+        const test = cmjTests[0];
+        const currentWeight = test.body_weight_trial_value;
+
+        if (!currentWeight) {
+          setBodyweightData(null);
+          return;
+        }
+
+        const previousTest = cmjTests.length > 1 ? cmjTests[1] : null;
+        const previousWeight = previousTest?.body_weight_trial_value || null;
+
+        const currentLbs = currentWeight * 2.20462;
+        const previousLbs = previousWeight ? previousWeight * 2.20462 : null;
+
+        setBodyweightData({
+          current: currentLbs,
+          previous: previousLbs,
+          date: cmjTests[0].created_at,
+        });
+      } else {
+        setBodyweightData(null);
+      }
+    } catch {
+      setBodyweightData(null);
     }
   }
 
@@ -771,40 +1626,24 @@ export default function ParentDashboardScreen({ navigation }: any) {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
           }
         >
-          {/* Upcoming Events Carousel - ABOVE calendar like athlete dashboard */}
-          {upcomingEvents.length > 0 && (
+          {/* Performance Carousel - ABOVE calendar like athlete dashboard */}
+          {(upcomingEvents.length > 0 || hittingData || pitchingData || (forceProfile && valdProfileId) || armCareData) && (
             <View style={styles.snapshotContainer}>
-              <View style={styles.carouselWrapper}>
-                <ScrollView
-                  horizontal
-                  pagingEnabled
-                  showsHorizontalScrollIndicator={false}
-                  onScroll={Animated.event(
-                    [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-                    { useNativeDriver: false }
-                  )}
-                  onMomentumScrollEnd={(event) => {
-                    const offsetX = event.nativeEvent.contentOffset.x;
-                    const index = Math.round(offsetX / CARD_WIDTH);
-                    setSnapshotIndex(index);
-                  }}
-                  scrollEventThrottle={16}
-                >
-                  <View style={[styles.snapshotCard, { width: CARD_WIDTH }]}>
-                    <LinearGradient
-                      colors={['rgba(255,255,255,0.1)', 'transparent', 'rgba(0,0,0,0.3)']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.cardGloss}
-                    />
-                    <UpcomingEventsCard
-                      events={upcomingEvents}
-                      isActive={snapshotIndex === 0}
-                      onEventPress={() => navigation.navigate('Booking')}
-                    />
-                  </View>
-                </ScrollView>
-              </View>
+              <SnapshotCarousel
+                scrollX={scrollX}
+                snapshotIndex={snapshotIndex}
+                setSnapshotIndex={setSnapshotIndex}
+                valdProfileId={valdProfileId}
+                forceProfile={forceProfile}
+                latestPrediction={latestPrediction}
+                batSpeedPrediction={batSpeedPrediction}
+                bodyweightData={bodyweightData}
+                armCareData={armCareData}
+                hittingData={hittingData}
+                pitchingData={pitchingData}
+                upcomingEvents={upcomingEvents}
+                onEventPress={() => navigation.navigate('Booking')}
+              />
             </View>
           )}
 
@@ -1347,6 +2186,42 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     borderRadius: 24,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  swipeIndicatorLeft: {
+    position: 'absolute',
+    left: 4,
+    top: '50%',
+    transform: [{ translateY: -20 }],
+    zIndex: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 20,
+    width: 24,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  swipeIndicatorRight: {
+    position: 'absolute',
+    right: 4,
+    top: '50%',
+    transform: [{ translateY: -20 }],
+    zIndex: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 20,
+    width: 24,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  swipeArrow: {
+    fontSize: 24,
+    color: 'rgba(255, 255, 255, 0.8)',
   },
   calendarContainer: {
     paddingHorizontal: 16,
