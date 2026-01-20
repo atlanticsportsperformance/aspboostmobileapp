@@ -28,8 +28,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const appState = useRef(AppState.currentState);
   const isRefreshing = useRef(false);
 
-  // Check account type
-  const checkAccountType = async (userId: string) => {
+  // Check account type - fire and forget, never blocks
+  const checkAccountType = useCallback(async (userId: string) => {
     try {
       const { data: profile } = await supabase
         .from('profiles')
@@ -43,45 +43,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       console.log('[Auth] checkAccountType error:', e);
     }
-  };
+  }, []);
 
   // Refresh session - used when app comes back to foreground
-  const refreshSession = async () => {
+  const refreshSession = useCallback(async () => {
     if (isRefreshing.current) return;
     isRefreshing.current = true;
 
     try {
-      const { data: { session: currentSession }, error } = await supabase.auth.getSession();
+      const { data, error } = await supabase.auth.getSession();
 
       if (error) {
-        if (error.message?.includes('network') || error.message?.includes('fetch')) {
-          isRefreshing.current = false;
-          return;
-        }
+        console.log('[Auth] refresh getSession error:', error.message);
+        return;
       }
 
-      if (currentSession) {
-        const expiresAt = currentSession.expires_at;
-        const now = Math.floor(Date.now() / 1000);
-        const fiveMinutes = 5 * 60;
+      const current = data.session;
+      if (!current) return;
 
-        if (expiresAt && expiresAt - now < fiveMinutes) {
-          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-          if (!refreshError && refreshData.session) {
-            setSession(refreshData.session);
-            setUser(refreshData.session.user);
-          }
+      const expiresAt = current.expires_at ?? 0;
+      const now = Math.floor(Date.now() / 1000);
+      const fiveMinutes = 5 * 60;
+
+      if (expiresAt - now < fiveMinutes) {
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed.session) {
+          setSession(refreshed.session);
+          setUser(refreshed.session.user);
         } else {
-          setSession(currentSession);
-          setUser(currentSession.user);
+          console.log('[Auth] refreshSession failed:', refreshErr?.message);
+          // DO NOT block UI or kick user out here
         }
+      } else {
+        setSession(current);
+        setUser(current.user);
       }
-    } catch {
-      // Session refresh failed
+    } catch (e) {
+      console.log('[Auth] refreshSession exception:', e);
     } finally {
       isRefreshing.current = false;
     }
-  };
+  }, []);
 
   // Handle app state changes (foreground/background)
   useEffect(() => {
@@ -97,30 +99,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
-  }, []);
+  }, [refreshSession]);
 
   // Initial session load
   useEffect(() => {
     let mounted = true;
 
-    const initializeAuth = async () => {
-      try {
-        const { data: { session: initialSession } } = await supabase.auth.getSession();
+    // FAILSAFE: Never allow infinite splash - force continue after 8 seconds
+    const failSafe = setTimeout(() => {
+      if (mounted && initializing) {
+        console.log('[Auth] FAILSAFE: auth init taking too long, forcing continue');
+        setLoading(false);
+        setInitializing(false);
+      }
+    }, 8000);
 
-        if (mounted) {
-          if (initialSession) {
-            setSession(initialSession);
-            setUser(initialSession.user);
-            checkAccountType(initialSession.user.id);
-          }
-          setLoading(false);
-          setInitializing(false);
+    const initializeAuth = async () => {
+      console.log('[Auth] initializeAuth starting...');
+      try {
+        // getSession reads from persisted storage (AsyncStorage) internally
+        // With noOpLock in supabase.ts, this should NOT hang anymore
+        const { data, error } = await supabase.auth.getSession();
+
+        if (error) {
+          console.log('[Auth] getSession error:', error.message);
         }
-      } catch {
-        if (mounted) {
-          setLoading(false);
-          setInitializing(false);
+
+        const initialSession = data.session ?? null;
+
+        console.log('[Auth] getSession result:', { hasSession: !!initialSession });
+
+        if (!mounted) return;
+
+        setSession(initialSession);
+        setUser(initialSession?.user ?? null);
+
+        if (initialSession?.user?.id) {
+          // Don't block init on account type check
+          checkAccountType(initialSession.user.id).catch(() => {});
         }
+
+        setLoading(false);
+        setInitializing(false);
+      } catch (e) {
+        console.log('[Auth] initializeAuth exception:', e);
+        if (!mounted) return;
+        setLoading(false);
+        setInitializing(false);
+      } finally {
+        clearTimeout(failSafe);
       }
     };
 
@@ -130,46 +157,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       (event, newSession) => {
         if (!mounted) return;
 
-        switch (event) {
-          case 'SIGNED_OUT':
-            setSession(null);
-            setUser(null);
-            setIsParentAccount(false);
-            setLoading(false);
-            setAppReady(false);
-            break;
-          case 'SIGNED_IN':
-            if (newSession) {
-              setSession(newSession);
-              setUser(newSession.user);
-              checkAccountType(newSession.user.id);
-            }
-            setLoading(false);
-            break;
-          case 'TOKEN_REFRESHED':
-            if (newSession) {
-              setSession(newSession);
-              setUser(newSession.user);
-            }
-            setLoading(false);
-            break;
-          case 'USER_UPDATED':
-            if (newSession) {
-              setSession(newSession);
-              setUser(newSession.user);
-            }
-            break;
-          default:
-            break;
+        console.log('[Auth] onAuthStateChange:', event, !!newSession);
+
+        // Handle INITIAL_SESSION - important for mobile resume/cold starts
+        if (event === 'INITIAL_SESSION') {
+          setSession(newSession);
+          setUser(newSession?.user ?? null);
+          setLoading(false);
+          setInitializing(false);
+          if (newSession?.user?.id) {
+            checkAccountType(newSession.user.id).catch(() => {});
+          }
+          clearTimeout(failSafe);
+          return;
+        }
+
+        if (event === 'SIGNED_OUT') {
+          setSession(null);
+          setUser(null);
+          setIsParentAccount(false);
+          setLoading(false);
+          setAppReady(false);
+          return;
+        }
+
+        if (event === 'SIGNED_IN') {
+          if (newSession) {
+            setSession(newSession);
+            setUser(newSession.user);
+            checkAccountType(newSession.user.id).catch(() => {});
+          }
+          setLoading(false);
+          return;
+        }
+
+        if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (newSession) {
+            setSession(newSession);
+            setUser(newSession.user);
+          }
+          setLoading(false);
+          return;
         }
       }
     );
 
     return () => {
       mounted = false;
+      clearTimeout(failSafe);
       subscription.unsubscribe();
     };
-  }, []);
+  }, [checkAccountType]);
 
   const signIn = async (email: string, password: string) => {
     try {
