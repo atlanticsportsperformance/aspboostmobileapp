@@ -1548,7 +1548,25 @@ export default function DashboardScreen({ navigation }: any) {
         .eq('user_id', user.id)
         .single();
 
-      console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message });
+      console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
+
+      // CRITICAL: Check for auth errors - means token is invalid
+      if (athleteError?.message?.includes('JWT') ||
+          athleteError?.message?.includes('token') ||
+          athleteError?.message?.includes('unauthorized') ||
+          athleteError?.code === 'PGRST301' ||
+          athleteError?.code === '401' ||
+          athleteError?.code === '403') {
+        console.log('[Dashboard] AUTH ERROR - token is invalid, forcing logout');
+        if (mountedRef.current) {
+          setLoading(false);
+          setAppReady(true);
+          await supabase.auth.signOut();
+          navigation.replace('Login');
+        }
+        isLoadingRef.current = false;
+        return;
+      }
 
       // If athlete query failed, this user shouldn't be on athlete dashboard
       if (!athlete) {
