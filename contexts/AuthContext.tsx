@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { AppState } from 'react-native';
+import { AppState, AppStateStatus } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
@@ -14,179 +14,177 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Check if token is expired or about to expire (within 5 minutes)
-function isTokenExpiredOrExpiring(session: Session | null): boolean {
-  if (!session?.expires_at) return true;
-  const now = Math.floor(Date.now() / 1000);
-  const fiveMinutes = 5 * 60;
-  return session.expires_at - now < fiveMinutes;
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isParentAccount, setIsParentAccount] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const isRefreshing = useRef(false);
 
-  // Check account type - non-blocking
-  const checkAccountType = useCallback(async (userId: string) => {
-    try {
-      const { data } = await supabase
-        .from('profiles')
-        .select('account_type')
-        .eq('id', userId)
-        .single();
-      if (data) {
-        setIsParentAccount(data.account_type === 'parent');
-      }
-    } catch (e) {
-      console.log('[Auth] checkAccountType error:', e);
-    }
-  }, []);
+  // Use refs to avoid dependency issues
+  const mountedRef = useRef(true);
+  const isRefreshingRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
-  // Force refresh the token - call this when token is expired/expiring
-  const forceRefreshToken = useCallback(async (): Promise<Session | null> => {
-    if (isRefreshing.current) return session;
-    isRefreshing.current = true;
-
-    try {
-      console.log('[Auth] Force refreshing token...');
-      const { data, error } = await supabase.auth.refreshSession();
-
-      if (error) {
-        console.log('[Auth] Token refresh failed:', error.message);
-        // Token refresh failed - user needs to re-login
-        setSession(null);
-        setUser(null);
-        setIsParentAccount(false);
-        return null;
-      }
-
-      if (data.session) {
-        console.log('[Auth] Token refreshed successfully');
-        setSession(data.session);
-        setUser(data.session.user);
-        return data.session;
-      }
-
-      return null;
-    } catch (e) {
-      console.log('[Auth] Token refresh exception:', e);
-      return null;
-    } finally {
-      isRefreshing.current = false;
-    }
-  }, [session]);
-
+  // ONE-TIME initialization effect - no dependencies that change
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    let initDone = false;
 
-    // FAILSAFE: No matter what, we're ready in 5 seconds
-    const failsafe = setTimeout(() => {
-      if (mounted && !isReady) {
-        console.log('[Auth] FAILSAFE triggered - forcing ready state');
+    const markReady = () => {
+      if (!initDone && mountedRef.current) {
+        initDone = true;
         setIsReady(true);
       }
-    }, 5000);
+    };
 
-    const init = async () => {
+    // FAILSAFE: Always ready after 5 seconds
+    const failsafe = setTimeout(markReady, 5000);
+
+    const checkAccountType = async (userId: string) => {
       try {
-        console.log('[Auth] Initializing...');
-        const { data: { session: storedSession } } = await supabase.auth.getSession();
+        const { data } = await supabase
+          .from('profiles')
+          .select('account_type')
+          .eq('id', userId)
+          .single();
+        if (data && mountedRef.current) {
+          setIsParentAccount(data.account_type === 'parent');
+        }
+      } catch (e) {
+        console.log('[Auth] checkAccountType error:', e);
+      }
+    };
 
-        if (!mounted) return;
+    const refreshToken = async (): Promise<Session | null> => {
+      if (isRefreshingRef.current) return null;
+      isRefreshingRef.current = true;
 
-        if (storedSession) {
-          // CRITICAL: Check if token is expired or expiring
-          if (isTokenExpiredOrExpiring(storedSession)) {
-            console.log('[Auth] Stored session is expired/expiring, refreshing...');
-            const refreshedSession = await forceRefreshToken();
+      try {
+        console.log('[Auth] Refreshing token...');
+        const { data, error } = await supabase.auth.refreshSession();
 
-            if (!refreshedSession) {
-              console.log('[Auth] Could not refresh, user must re-login');
-              setIsReady(true);
-              clearTimeout(failsafe);
-              return;
-            }
-
-            // Use refreshed session
-            checkAccountType(refreshedSession.user.id);
-          } else {
-            // Token is still valid
-            console.log('[Auth] Stored session is valid');
-            setSession(storedSession);
-            setUser(storedSession.user);
-            checkAccountType(storedSession.user.id);
+        if (error || !data.session) {
+          console.log('[Auth] Refresh failed:', error?.message);
+          if (mountedRef.current) {
+            setSession(null);
+            setUser(null);
+            setIsParentAccount(false);
           }
+          return null;
         }
 
-        setIsReady(true);
+        console.log('[Auth] Token refreshed OK');
+        if (mountedRef.current) {
+          setSession(data.session);
+          setUser(data.session.user);
+        }
+        return data.session;
+      } catch (e) {
+        console.log('[Auth] Refresh exception:', e);
+        return null;
+      } finally {
+        isRefreshingRef.current = false;
+      }
+    };
+
+    const isExpiredOrExpiring = (sess: Session | null): boolean => {
+      if (!sess?.expires_at) return true;
+      const now = Math.floor(Date.now() / 1000);
+      return sess.expires_at - now < 300; // 5 minutes
+    };
+
+    // Initialize
+    const init = async () => {
+      try {
+        console.log('[Auth] Init starting...');
+        const { data: { session: stored } } = await supabase.auth.getSession();
+
+        if (!mountedRef.current) return;
+
+        if (stored) {
+          console.log('[Auth] Found stored session, expires_at:', stored.expires_at, 'now:', Math.floor(Date.now() / 1000));
+
+          if (isExpiredOrExpiring(stored)) {
+            console.log('[Auth] Session expired/expiring, refreshing...');
+            const refreshed = await refreshToken();
+            if (refreshed) {
+              checkAccountType(refreshed.user.id);
+            }
+          } else {
+            console.log('[Auth] Session valid');
+            setSession(stored);
+            setUser(stored.user);
+            checkAccountType(stored.user.id);
+          }
+        } else {
+          console.log('[Auth] No stored session');
+        }
+
         clearTimeout(failsafe);
+        markReady();
       } catch (e) {
         console.log('[Auth] Init error:', e);
-        if (mounted) setIsReady(true);
         clearTimeout(failsafe);
+        markReady();
       }
     };
 
     init();
 
-    // Listen for auth changes
+    // Auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
-      if (!mounted) return;
-
-      console.log('[Auth] State change:', event);
+      if (!mountedRef.current) return;
+      console.log('[Auth] onAuthStateChange:', event);
 
       if (event === 'SIGNED_OUT') {
         setSession(null);
         setUser(null);
         setIsParentAccount(false);
-      } else if (event === 'TOKEN_REFRESHED' && newSession) {
-        console.log('[Auth] Token was refreshed by Supabase');
-        setSession(newSession);
-        setUser(newSession.user);
       } else if (newSession) {
         setSession(newSession);
         setUser(newSession.user);
-
         if (event === 'SIGNED_IN') {
           checkAccountType(newSession.user.id);
         }
       }
 
-      if (!isReady) setIsReady(true);
+      markReady();
     });
 
-    // CRITICAL: Handle app coming to foreground - must refresh token
-    const appStateSub = AppState.addEventListener('change', async (state) => {
-      if (state === 'active' && mounted) {
-        console.log('[Auth] App became active, checking token...');
+    // App state listener - handle resume from background
+    const handleAppState = async (nextState: AppStateStatus) => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      appStateRef.current = nextState;
 
-        // Get current session
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (wasBackground && nextState === 'active' && mountedRef.current) {
+        console.log('[Auth] App resumed from background');
 
-        if (currentSession) {
-          // Check if token needs refresh
-          if (isTokenExpiredOrExpiring(currentSession)) {
-            console.log('[Auth] Token expired/expiring on resume, forcing refresh...');
-            await forceRefreshToken();
-          } else {
-            // Update state with current session (might have been refreshed by Supabase)
-            setSession(currentSession);
-            setUser(currentSession.user);
+        try {
+          const { data: { session: current } } = await supabase.auth.getSession();
+
+          if (current && isExpiredOrExpiring(current)) {
+            console.log('[Auth] Token needs refresh on resume');
+            await refreshToken();
+          } else if (current && mountedRef.current) {
+            // Update state even if not expired - ensures fresh reference
+            setSession(current);
+            setUser(current.user);
           }
+        } catch (e) {
+          console.log('[Auth] Resume check error:', e);
         }
       }
-    });
+    };
+
+    const appStateSub = AppState.addEventListener('change', handleAppState);
 
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       clearTimeout(failsafe);
       subscription.unsubscribe();
       appStateSub.remove();
     };
-  }, [checkAccountType, forceRefreshToken, isReady]);
+  }, []); // Empty deps - runs once
 
   const signIn = useCallback(async (email: string, password: string) => {
     try {
@@ -203,14 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{
-      session,
-      user,
-      isParentAccount,
-      isReady,
-      signIn,
-      signOut,
-    }}>
+    <AuthContext.Provider value={{ session, user, isParentAccount, isReady, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );
@@ -222,13 +213,12 @@ export function useAuth() {
     throw new Error('useAuth must be used within an AuthProvider');
   }
 
-  // Backwards compatibility
   return {
     ...context,
     loading: !context.isReady,
     initializing: !context.isReady,
     appReady: context.isReady,
-    setAppReady: (_ready: boolean) => {},  // No-op, app ready is managed internally
+    setAppReady: (_ready: boolean) => {},
     refreshSession: async () => {},
   };
 }

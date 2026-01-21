@@ -497,28 +497,35 @@ export default function DashboardScreen({ navigation }: any) {
     };
   }, []);
 
-  // Reload data when app comes back from background
+  // Reload data when app comes back from background after being away for 5+ minutes
   useEffect(() => {
-    const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active' &&
-        session &&
-        initialFetchDone.current
-      ) {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      appStateRef.current = nextAppState;
+
+      if (wasBackground && nextAppState === 'active') {
         const timeSinceLastLoad = Date.now() - lastLoadTimeRef.current;
-        // Reload if more than 30 seconds since last load
-        if (timeSinceLastLoad > 30000 && !isLoadingRef.current) {
-          console.log('[Dashboard] App came to foreground, refreshing data');
-          loadDashboard();
+        const fiveMinutes = 5 * 60 * 1000;
+
+        console.log('[Dashboard] App came to foreground, time since last load:', timeSinceLastLoad);
+
+        // If it's been more than 5 minutes, force a full reload
+        if (timeSinceLastLoad > fiveMinutes && !isLoadingRef.current) {
+          console.log('[Dashboard] Been away 5+ minutes, forcing full reload');
+          // Small delay to let auth context refresh token first
+          setTimeout(() => {
+            if (mountedRef.current && !isLoadingRef.current) {
+              setLoading(true);
+              loadDashboard();
+            }
+          }, 1000);
         }
       }
-      appStateRef.current = nextAppState;
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
-  }, [session]);
+  }, []);
 
 
   // Redirect to login if not authenticated
@@ -529,13 +536,28 @@ export default function DashboardScreen({ navigation }: any) {
     }
   }, [authLoading, session, navigation]);
 
-  // Initial fetch when session is available
+  // Track session access token to detect when it changes (token refresh)
+  const lastAccessToken = useRef<string | null>(null);
+
+  // Load dashboard when session becomes available or token refreshes
   useEffect(() => {
-    if (session && !initialFetchDone.current) {
+    if (!session?.access_token) return;
+
+    const tokenChanged = lastAccessToken.current !== session.access_token;
+    const isFirstLoad = !initialFetchDone.current;
+
+    if (isFirstLoad || tokenChanged) {
+      console.log('[Dashboard] Session available/changed, loading dashboard...', {
+        isFirstLoad,
+        tokenChanged,
+      });
+      lastAccessToken.current = session.access_token;
       initialFetchDone.current = true;
+      // Reset loading state for fresh load
+      setLoading(true);
       loadDashboard();
     }
-  }, [session]);
+  }, [session?.access_token]);
 
   // FAILSAFE: Never show "Loading your dashboard..." forever
   // If loading takes more than 15 seconds, force it to show the dashboard anyway
