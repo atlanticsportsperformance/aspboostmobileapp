@@ -1589,6 +1589,23 @@ export default function DashboardScreen({ navigation }: any) {
     const user = session.user;
 
     try {
+      // NETWORK WAKE-UP: Force network reconnection after app resume
+      // iOS can have stale network connections after long background periods
+      setLoadStage('WAKING NETWORK...');
+      console.log('[Dashboard] Waking up network...');
+      try {
+        const wakeController = new AbortController();
+        const wakeTimeout = setTimeout(() => wakeController.abort(), 2000);
+        await fetch('https://www.google.com/generate_204', {
+          method: 'HEAD',
+          signal: wakeController.signal,
+        }).catch(() => {}); // Ignore errors - just waking up the network
+        clearTimeout(wakeTimeout);
+        console.log('[Dashboard] Network wake complete');
+      } catch (e) {
+        console.log('[Dashboard] Network wake failed (continuing anyway):', e);
+      }
+
       setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
 
