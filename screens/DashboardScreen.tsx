@@ -1912,11 +1912,49 @@ export default function DashboardScreen({ navigation }: any) {
     navigation.replace('Login');
   }
 
+  // DEBUG: Add visible debug state
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const debugStartTime = useRef(Date.now());
+
+  const addDebugLog = useCallback((msg: string) => {
+    const time = ((Date.now() - debugStartTime.current) / 1000).toFixed(1);
+    const logMsg = `[${time}s] ${msg}`;
+    console.log(`[Dashboard DEBUG] ${logMsg}`);
+    setDebugLogs(prev => [...prev.slice(-20), logMsg]); // Keep last 20 logs
+  }, []);
+
+  // Log when we enter loading state
+  useEffect(() => {
+    if (loading) {
+      addDebugLog(`LOADING STATE: loading=${loading}, session=${!!session}, athleteId=${athleteId}`);
+      if (session) {
+        const expiresAt = session.expires_at || 0;
+        const now = Math.floor(Date.now() / 1000);
+        addDebugLog(`TOKEN: expires_in=${expiresAt - now}s`);
+      }
+    }
+  }, [loading, session, athleteId, addDebugLog]);
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#9BDDFF" />
         <Text style={styles.loadingText}>Loading your dashboard...</Text>
+
+        {/* DEBUG INFO */}
+        <View style={{ marginTop: 30, padding: 15, backgroundColor: '#1a1a2e', borderRadius: 10, width: '100%' }}>
+          <Text style={{ color: '#ff6b6b', fontWeight: 'bold', marginBottom: 10 }}>DEBUG INFO:</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>Session: {session ? 'YES' : 'NO'}</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>User: {session?.user?.email || 'none'}</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>Token expires: {session?.expires_at ? `${Math.floor((session.expires_at - Date.now()/1000))}s` : 'N/A'}</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>Athlete ID: {athleteId || 'not loaded'}</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>isLoadingRef: {isLoadingRef.current ? 'true' : 'false'}</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>initialFetchDone: {initialFetchDone.current ? 'true' : 'false'}</Text>
+          <Text style={{ color: '#888', fontSize: 12, marginTop: 10 }}>Last 5 logs:</Text>
+          {debugLogs.slice(-5).map((log, i) => (
+            <Text key={i} style={{ color: '#4ade80', fontSize: 10, fontFamily: 'monospace' }}>{log}</Text>
+          ))}
+        </View>
       </View>
     );
   }
