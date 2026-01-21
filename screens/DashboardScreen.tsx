@@ -1592,49 +1592,76 @@ export default function DashboardScreen({ navigation }: any) {
       setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
 
-      // Fetch athlete with strict timeout using AbortController
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.log('[Dashboard] Aborting athlete query after 8s');
-        controller.abort();
-      }, 8000);
+      // Helper function to fetch athlete with timeout
+      const fetchAthleteWithTimeout = async (attempt: number): Promise<{ data: any; error: any }> => {
+        const controller = new AbortController();
+        const timeoutMs = attempt === 1 ? 5000 : 4000; // 5s first try, 4s retry
+        const timeoutId = setTimeout(() => {
+          console.log(`[Dashboard] Aborting athlete query (attempt ${attempt}) after ${timeoutMs}ms`);
+          controller.abort();
+        }, timeoutMs);
 
+        try {
+          console.log(`[Dashboard] Starting athlete query (attempt ${attempt})...`);
+          const startTime = Date.now();
+
+          const result = await supabase
+            .from('athletes')
+            .select('id, first_name, last_name, vald_profile_id')
+            .eq('user_id', user.id)
+            .abortSignal(controller.signal)
+            .single();
+
+          clearTimeout(timeoutId);
+          const elapsed = Date.now() - startTime;
+          console.log(`[Dashboard] Athlete query (attempt ${attempt}) completed in ${elapsed}ms`);
+
+          return result;
+        } catch (e: any) {
+          clearTimeout(timeoutId);
+          console.log(`[Dashboard] Athlete query (attempt ${attempt}) exception:`, e.name, e.message);
+
+          if (e.name === 'AbortError' || e.message?.includes('abort')) {
+            return { data: null, error: { message: 'TIMEOUT', code: 'TIMEOUT' } };
+          }
+          return { data: null, error: { message: e.message } };
+        }
+      };
+
+      // Try up to 2 times
       let athlete, athleteError;
-      try {
-        console.log('[Dashboard] Starting athlete query...');
-        const startTime = Date.now();
-
-        const result = await supabase
-          .from('athletes')
-          .select('id, first_name, last_name, vald_profile_id')
-          .eq('user_id', user.id)
-          .abortSignal(controller.signal)
-          .single();
-
-        clearTimeout(timeoutId);
-        const elapsed = Date.now() - startTime;
-        console.log('[Dashboard] Athlete query completed in', elapsed, 'ms');
-
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        setLoadStage(`FETCHING ATHLETE (attempt ${attempt})...`);
+        const result = await fetchAthleteWithTimeout(attempt);
         athlete = result.data;
         athleteError = result.error;
-      } catch (e: any) {
-        clearTimeout(timeoutId);
-        console.log('[Dashboard] Athlete query exception:', e.name, e.message);
 
-        if (e.name === 'AbortError' || e.message?.includes('abort')) {
-          setLoadStage('ATHLETE QUERY TIMED OUT (8s)!');
-          console.log('[Dashboard] ATHLETE QUERY TIMED OUT - aborting');
-          // Force show empty dashboard after timeout
-          if (mountedRef.current) {
-            setLoading(false);
-            setAppReady(true);
-          }
-          isLoadingRef.current = false;
-          return;
+        if (athlete) {
+          console.log(`[Dashboard] Got athlete on attempt ${attempt}`);
+          break;
         }
-        // Other errors - log and continue
-        console.log('[Dashboard] Query error (non-timeout):', e);
-        athleteError = { message: e.message };
+
+        if (athleteError?.code === 'TIMEOUT' && attempt < 2) {
+          console.log('[Dashboard] Attempt 1 timed out, retrying...');
+          setLoadStage('RETRY: Network may be slow...');
+          await new Promise(resolve => setTimeout(resolve, 500)); // Brief pause before retry
+          continue;
+        }
+
+        // Non-timeout error or final attempt - stop retrying
+        break;
+      }
+
+      // If both attempts timed out, show empty dashboard
+      if (athleteError?.code === 'TIMEOUT') {
+        setLoadStage('QUERY TIMED OUT - showing empty dashboard');
+        console.log('[Dashboard] All attempts timed out');
+        if (mountedRef.current) {
+          setLoading(false);
+          setAppReady(true);
+        }
+        isLoadingRef.current = false;
+        return;
       }
 
       setLoadStage(`ATHLETE RESULT: ${athlete ? athlete.first_name : 'NULL'}, error: ${athleteError?.message || 'none'}`);
