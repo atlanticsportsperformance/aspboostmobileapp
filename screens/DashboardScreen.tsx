@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, recreateSupabaseClient } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -1610,7 +1610,8 @@ export default function DashboardScreen({ navigation }: any) {
       console.log('[Dashboard] User:', user.id);
 
       // Helper function to fetch athlete with timeout
-      const fetchAthleteWithTimeout = async (attempt: number): Promise<{ data: any; error: any }> => {
+      // On attempt 2, recreate the Supabase client to fix stale connections
+      const fetchAthleteWithTimeout = async (attempt: number, client: any): Promise<{ data: any; error: any }> => {
         const controller = new AbortController();
         const timeoutMs = attempt === 1 ? 5000 : 4000; // 5s first try, 4s retry
         const timeoutId = setTimeout(() => {
@@ -1622,7 +1623,7 @@ export default function DashboardScreen({ navigation }: any) {
           console.log(`[Dashboard] Starting athlete query (attempt ${attempt})...`);
           const startTime = Date.now();
 
-          const result = await supabase
+          const result = await client
             .from('athletes')
             .select('id, first_name, last_name, vald_profile_id')
             .eq('user_id', user.id)
@@ -1645,11 +1646,12 @@ export default function DashboardScreen({ navigation }: any) {
         }
       };
 
-      // Try up to 2 times
+      // Try up to 2 times - on second attempt, recreate the Supabase client
       let athlete, athleteError;
+      let currentClient = supabase;
       for (let attempt = 1; attempt <= 2; attempt++) {
         setLoadStage(`FETCHING ATHLETE (attempt ${attempt})...`);
-        const result = await fetchAthleteWithTimeout(attempt);
+        const result = await fetchAthleteWithTimeout(attempt, currentClient);
         athlete = result.data;
         athleteError = result.error;
 
@@ -1659,9 +1661,11 @@ export default function DashboardScreen({ navigation }: any) {
         }
 
         if (athleteError?.code === 'TIMEOUT' && attempt < 2) {
-          console.log('[Dashboard] Attempt 1 timed out, retrying...');
-          setLoadStage('RETRY: Network may be slow...');
-          await new Promise(resolve => setTimeout(resolve, 500)); // Brief pause before retry
+          console.log('[Dashboard] Attempt 1 timed out, RECREATING SUPABASE CLIENT...');
+          setLoadStage('RECREATING CLIENT...');
+          // CRITICAL: Recreate the Supabase client to fix stale connection
+          currentClient = recreateSupabaseClient();
+          await new Promise(resolve => setTimeout(resolve, 300)); // Brief pause
           continue;
         }
 

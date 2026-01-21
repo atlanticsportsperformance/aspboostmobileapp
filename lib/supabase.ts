@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
@@ -16,12 +16,34 @@ const noOpLock = async <R>(
   return await fn();
 };
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
-    lock: noOpLock,
-  },
-});
+const createSupabaseClient = () => {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      storage: AsyncStorage,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+      lock: noOpLock,
+    },
+  });
+};
+
+// Main client instance
+let _supabase: SupabaseClient = createSupabaseClient();
+
+// Export the client
+export const supabase = _supabase;
+
+// CRITICAL: Recreate Supabase client to fix stale connections after app resume
+// Call this when queries are hanging after returning from background
+export const recreateSupabaseClient = (): SupabaseClient => {
+  console.log('[Supabase] Recreating client to fix stale connection');
+  _supabase = createSupabaseClient();
+  // Note: We can't reassign the exported 'supabase', so callers must use the returned client
+  return _supabase;
+};
+
+// Get fresh client - use this for queries that might fail due to stale connections
+export const getFreshSupabase = (): SupabaseClient => {
+  return _supabase;
+};
