@@ -1539,37 +1539,68 @@ export default function DashboardScreen({ navigation }: any) {
     return dates;
   }
 
+  // DEBUG: UI-visible log function
+  const [loadStage, setLoadStage] = useState<string>('not started');
+
   async function loadDashboard() {
     // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
       console.log('[Dashboard] Already loading, skipping');
-      // Don't set appReady here - another load is in progress and will set it
+      setLoadStage('SKIPPED - already loading');
       return;
     }
 
     // Session is managed by AuthContext - if no session, the redirect effect will handle it
     if (!session?.user) {
       console.log('[Dashboard] No session in loadDashboard, waiting for redirect');
-      setAppReady(true); // Allow splash to hide so redirect can happen
+      setLoadStage('NO SESSION');
+      setAppReady(true);
       return;
     }
 
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
+    setLoadStage('STARTING...');
     console.log('[Dashboard] Starting load...');
 
     const user = session.user;
 
     try {
+      setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
 
-      // Fetch athlete
-      const { data: athlete, error: athleteError } = await supabase
+      // Fetch athlete with timeout
+      const athletePromise = supabase
         .from('athletes')
         .select('id, first_name, last_name, vald_profile_id')
         .eq('user_id', user.id)
         .single();
 
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('ATHLETE_QUERY_TIMEOUT')), 10000)
+      );
+
+      let athlete, athleteError;
+      try {
+        const result = await Promise.race([athletePromise, timeoutPromise]) as any;
+        athlete = result.data;
+        athleteError = result.error;
+      } catch (e: any) {
+        if (e.message === 'ATHLETE_QUERY_TIMEOUT') {
+          setLoadStage('ATHLETE QUERY TIMED OUT AFTER 10s!');
+          console.log('[Dashboard] ATHLETE QUERY TIMED OUT');
+          // Still try to show dashboard after timeout
+          if (mountedRef.current) {
+            setLoading(false);
+            setAppReady(true);
+          }
+          isLoadingRef.current = false;
+          return;
+        }
+        throw e;
+      }
+
+      setLoadStage(`ATHLETE RESULT: ${athlete ? athlete.first_name : 'NULL'}, error: ${athleteError?.message || 'none'}`);
       console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
 
       // CRITICAL: Check for auth errors - means token is invalid
@@ -1944,6 +1975,7 @@ export default function DashboardScreen({ navigation }: any) {
         {/* DEBUG INFO */}
         <View style={{ marginTop: 30, padding: 15, backgroundColor: '#1a1a2e', borderRadius: 10, width: '100%' }}>
           <Text style={{ color: '#ff6b6b', fontWeight: 'bold', marginBottom: 10 }}>DEBUG INFO:</Text>
+          <Text style={{ color: '#ffd43b', fontSize: 14, fontWeight: 'bold', marginBottom: 8 }}>STAGE: {loadStage}</Text>
           <Text style={{ color: '#888', fontSize: 12 }}>Session: {session ? 'YES' : 'NO'}</Text>
           <Text style={{ color: '#888', fontSize: 12 }}>User: {session?.user?.email || 'none'}</Text>
           <Text style={{ color: '#888', fontSize: 12 }}>Token expires: {session?.expires_at ? `${Math.floor((session.expires_at - Date.now()/1000))}s` : 'N/A'}</Text>
