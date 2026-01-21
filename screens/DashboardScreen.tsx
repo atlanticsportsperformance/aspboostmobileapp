@@ -543,23 +543,41 @@ export default function DashboardScreen({ navigation }: any) {
   // Track session access token to detect when it changes (token refresh)
   const lastAccessToken = useRef<string | null>(null);
 
-  // Load dashboard when session becomes available or token refreshes
+  // Load dashboard when session becomes available
+  // CRITICAL: Session starts null, then arrives ~0.4s later
+  // We MUST reload when session changes from null to valid
   useEffect(() => {
-    if (!session?.access_token) return;
+    console.log('[Dashboard] Session effect:', {
+      hasSession: !!session,
+      accessToken: session?.access_token ? 'yes' : 'no',
+      lastToken: lastAccessToken.current ? 'yes' : 'no',
+      initialFetchDone: initialFetchDone.current,
+      isLoading: isLoadingRef.current,
+    });
 
+    // No session yet - wait for it
+    if (!session?.access_token) {
+      console.log('[Dashboard] Waiting for session...');
+      return;
+    }
+
+    // Session is available - check if we need to load
+    const hadNoTokenBefore = lastAccessToken.current === null;
     const tokenChanged = lastAccessToken.current !== session.access_token;
-    const isFirstLoad = !initialFetchDone.current;
 
-    if (isFirstLoad || tokenChanged) {
-      console.log('[Dashboard] Session available/changed, loading dashboard...', {
-        isFirstLoad,
-        tokenChanged,
-      });
+    console.log('[Dashboard] Session check:', { hadNoTokenBefore, tokenChanged });
+
+    // Load if: first time getting token OR token changed
+    if (hadNoTokenBefore || tokenChanged) {
+      console.log('[Dashboard] LOADING NOW - session just became available or changed');
       lastAccessToken.current = session.access_token;
       initialFetchDone.current = true;
-      // Reset loading state for fresh load
-      setLoading(true);
-      loadDashboard();
+
+      // Only set loading true if not already loading
+      if (!isLoadingRef.current) {
+        setLoading(true);
+        loadDashboard();
+      }
     }
   }, [session?.access_token]);
 
