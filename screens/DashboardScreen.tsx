@@ -582,17 +582,18 @@ export default function DashboardScreen({ navigation }: any) {
   }, [session?.access_token]);
 
   // FAILSAFE: Never show "Loading your dashboard..." forever
-  // If loading takes more than 15 seconds, force it to show the dashboard anyway
+  // If loading takes more than 10 seconds, force it to show the dashboard anyway
   useEffect(() => {
     if (!loading) return;
 
     const failsafe = setTimeout(() => {
       if (loading && mountedRef.current) {
-        console.log('[Dashboard] FAILSAFE: Loading took too long, forcing dashboard to show');
+        console.log('[Dashboard] FAILSAFE: Loading took 10s, forcing dashboard to show');
+        setLoadStage('FAILSAFE TRIGGERED (10s)');
         setLoading(false);
         setAppReady(true);
       }
-    }, 15000);
+    }, 10000);
 
     return () => clearTimeout(failsafe);
   }, [loading, setAppReady]);
@@ -1591,27 +1592,39 @@ export default function DashboardScreen({ navigation }: any) {
       setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
 
-      // Fetch athlete with timeout
-      const athletePromise = supabase
-        .from('athletes')
-        .select('id, first_name, last_name, vald_profile_id')
-        .eq('user_id', user.id)
-        .single();
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('ATHLETE_QUERY_TIMEOUT')), 10000)
-      );
+      // Fetch athlete with strict timeout using AbortController
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('[Dashboard] Aborting athlete query after 8s');
+        controller.abort();
+      }, 8000);
 
       let athlete, athleteError;
       try {
-        const result = await Promise.race([athletePromise, timeoutPromise]) as any;
+        console.log('[Dashboard] Starting athlete query...');
+        const startTime = Date.now();
+
+        const result = await supabase
+          .from('athletes')
+          .select('id, first_name, last_name, vald_profile_id')
+          .eq('user_id', user.id)
+          .abortSignal(controller.signal)
+          .single();
+
+        clearTimeout(timeoutId);
+        const elapsed = Date.now() - startTime;
+        console.log('[Dashboard] Athlete query completed in', elapsed, 'ms');
+
         athlete = result.data;
         athleteError = result.error;
       } catch (e: any) {
-        if (e.message === 'ATHLETE_QUERY_TIMEOUT') {
-          setLoadStage('ATHLETE QUERY TIMED OUT AFTER 10s!');
-          console.log('[Dashboard] ATHLETE QUERY TIMED OUT');
-          // Still try to show dashboard after timeout
+        clearTimeout(timeoutId);
+        console.log('[Dashboard] Athlete query exception:', e.name, e.message);
+
+        if (e.name === 'AbortError' || e.message?.includes('abort')) {
+          setLoadStage('ATHLETE QUERY TIMED OUT (8s)!');
+          console.log('[Dashboard] ATHLETE QUERY TIMED OUT - aborting');
+          // Force show empty dashboard after timeout
           if (mountedRef.current) {
             setLoading(false);
             setAppReady(true);
@@ -1619,7 +1632,9 @@ export default function DashboardScreen({ navigation }: any) {
           isLoadingRef.current = false;
           return;
         }
-        throw e;
+        // Other errors - log and continue
+        console.log('[Dashboard] Query error (non-timeout):', e);
+        athleteError = { message: e.message };
       }
 
       setLoadStage(`ATHLETE RESULT: ${athlete ? athlete.first_name : 'NULL'}, error: ${athleteError?.message || 'none'}`);
