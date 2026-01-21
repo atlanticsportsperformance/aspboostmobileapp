@@ -415,6 +415,10 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
 
 export default function DashboardScreen({ navigation }: any) {
   const { session, loading: authLoading, isParentAccount, setAppReady } = useAuth();
+
+  // DEBUG: Log session on every render
+  console.log('[Dashboard RENDER] session:', session ? `YES (${session.user?.email})` : 'NO', 'authLoading:', authLoading);
+
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
