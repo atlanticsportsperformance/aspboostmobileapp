@@ -1589,18 +1589,99 @@ export default function DashboardScreen({ navigation }: any) {
     const user = session.user;
 
     try {
-      // Standard Supabase query - simplified like ghost-mobile
+      // Try standard Supabase query with timeout, fallback to REST API
       setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
+      console.log('[Dashboard] Attempting supabase.from() query...');
 
-      const { data: athlete, error: athleteError } = await supabase
-        .from('athletes')
-        .select('id, first_name, last_name, vald_profile_id')
-        .eq('user_id', user.id)
-        .single();
+      let athlete = null;
+      let athleteError = null;
 
-      setLoadStage(athlete ? `GOT ATHLETE: ${athlete.first_name}` : 'NO ATHLETE');
-      console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
+      // Helper: Promise with timeout
+      const withTimeout = <T,>(promise: Promise<T>, ms: number, name: string): Promise<T> => {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            console.log(`[Dashboard] ${name} TIMED OUT after ${ms}ms`);
+            reject(new Error(`${name} timed out after ${ms}ms`));
+          }, ms);
+          promise
+            .then((result) => {
+              clearTimeout(timer);
+              console.log(`[Dashboard] ${name} completed`);
+              resolve(result);
+            })
+            .catch((err) => {
+              clearTimeout(timer);
+              console.log(`[Dashboard] ${name} failed:`, err.message);
+              reject(err);
+            });
+        });
+      };
+
+      // Try standard Supabase client with 5s timeout
+      try {
+        console.log('[Dashboard] Starting supabase.from() with 5s timeout...');
+        const startTime = Date.now();
+
+        const supabaseQuery = supabase
+          .from('athletes')
+          .select('id, first_name, last_name, vald_profile_id')
+          .eq('user_id', user.id)
+          .single();
+
+        const result = await withTimeout(
+          Promise.resolve(supabaseQuery),
+          5000,
+          'Supabase query'
+        ) as { data: any; error: any };
+
+        const elapsed = Date.now() - startTime;
+        console.log(`[Dashboard] Supabase query returned in ${elapsed}ms`);
+        athlete = result.data;
+        athleteError = result.error;
+      } catch (timeoutErr: any) {
+        console.log('[Dashboard] Supabase client timed out, falling back to REST API...');
+        setLoadStage('SUPABASE TIMEOUT - TRYING REST API...');
+
+        // Fallback: Direct REST API call
+        const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+        const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+        const accessToken = session.access_token;
+
+        try {
+          const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
+          console.log('[Dashboard] REST API fetch:', url);
+
+          const response = await withTimeout(
+            fetch(url, {
+              method: 'GET',
+              headers: {
+                'apikey': supabaseKey!,
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/vnd.pgrst.object+json',
+              },
+            }),
+            5000,
+            'REST API fetch'
+          );
+
+          if (response.ok) {
+            athlete = await response.json();
+            console.log('[Dashboard] REST API got athlete:', athlete?.first_name);
+          } else {
+            const errorText = await response.text();
+            console.log('[Dashboard] REST API error:', response.status, errorText);
+            athleteError = { message: `HTTP ${response.status}`, code: response.status.toString() };
+          }
+        } catch (restErr: any) {
+          console.log('[Dashboard] REST API also failed:', restErr.message);
+          athleteError = { message: restErr.message };
+        }
+      }
+
+      setLoadStage(athlete ? `GOT ATHLETE: ${athlete.first_name}` : `FAILED: ${athleteError?.message || 'Unknown'}`);
+      console.log('[Dashboard] Athlete query result:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
 
       // CRITICAL: Check for auth errors - means token is invalid
       if (athleteError?.message?.includes('JWT') ||
