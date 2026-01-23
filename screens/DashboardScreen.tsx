@@ -1589,94 +1589,74 @@ export default function DashboardScreen({ navigation }: any) {
     const user = session.user;
 
     try {
-      // NETWORK WAKE-UP: Force network reconnection after app resume
-      // iOS can have stale network connections after long background periods
-      setLoadStage('WAKING NETWORK...');
-      console.log('[Dashboard] Waking up network...');
-      try {
-        const wakeController = new AbortController();
-        const wakeTimeout = setTimeout(() => wakeController.abort(), 2000);
-        await fetch('https://www.google.com/generate_204', {
-          method: 'HEAD',
-          signal: wakeController.signal,
-        }).catch(() => {}); // Ignore errors - just waking up the network
-        clearTimeout(wakeTimeout);
-        console.log('[Dashboard] Network wake complete');
-      } catch (e) {
-        console.log('[Dashboard] Network wake failed (continuing anyway):', e);
-      }
-
-      setLoadStage('FETCHING ATHLETE...');
+      // BYPASS SUPABASE CLIENT ENTIRELY - Use direct REST API call
+      // The Supabase JS client is broken on React Native after app resume
+      setLoadStage('FETCHING ATHLETE (direct API)...');
       console.log('[Dashboard] User:', user.id);
+      console.log('[Dashboard] Using DIRECT REST API - bypassing Supabase client');
 
-      // Helper function to fetch athlete with timeout
-      // On attempt 2, recreate the Supabase client to fix stale connections
-      const fetchAthleteWithTimeout = async (attempt: number, client: any): Promise<{ data: any; error: any }> => {
-        const controller = new AbortController();
-        const timeoutMs = attempt === 1 ? 5000 : 4000; // 5s first try, 4s retry
-        const timeoutId = setTimeout(() => {
-          console.log(`[Dashboard] Aborting athlete query (attempt ${attempt}) after ${timeoutMs}ms`);
-          controller.abort();
-        }, timeoutMs);
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+      const accessToken = session.access_token;
 
-        try {
-          console.log(`[Dashboard] Starting athlete query (attempt ${attempt})...`);
-          const startTime = Date.now();
+      let athlete = null;
+      let athleteError = null;
 
-          const result = await client
-            .from('athletes')
-            .select('id, first_name, last_name, vald_profile_id')
-            .eq('user_id', user.id)
-            .abortSignal(controller.signal)
-            .single();
+      // Try direct fetch with 6 second timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('[Dashboard] Direct API timeout after 6s');
+        controller.abort();
+      }, 6000);
 
-          clearTimeout(timeoutId);
-          const elapsed = Date.now() - startTime;
-          console.log(`[Dashboard] Athlete query (attempt ${attempt}) completed in ${elapsed}ms`);
+      try {
+        const startTime = Date.now();
+        const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
 
-          return result;
-        } catch (e: any) {
-          clearTimeout(timeoutId);
-          console.log(`[Dashboard] Athlete query (attempt ${attempt}) exception:`, e.name, e.message);
+        console.log('[Dashboard] Fetching:', url);
 
-          if (e.name === 'AbortError' || e.message?.includes('abort')) {
-            return { data: null, error: { message: 'TIMEOUT', code: 'TIMEOUT' } };
-          }
-          return { data: null, error: { message: e.message } };
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'apikey': supabaseKey!,
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.pgrst.object+json', // Returns single object instead of array
+          },
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+        const elapsed = Date.now() - startTime;
+        console.log(`[Dashboard] Direct API response in ${elapsed}ms, status: ${response.status}`);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.log('[Dashboard] API error:', response.status, errorText);
+          athleteError = { message: `HTTP ${response.status}: ${errorText}`, code: response.status.toString() };
+        } else {
+          athlete = await response.json();
+          console.log('[Dashboard] Got athlete:', athlete?.first_name);
         }
-      };
+      } catch (e: any) {
+        clearTimeout(timeoutId);
+        console.log('[Dashboard] Direct API exception:', e.name, e.message);
 
-      // Try up to 2 times - on second attempt, recreate the Supabase client
-      let athlete, athleteError;
-      let currentClient = supabase;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        setLoadStage(`FETCHING ATHLETE (attempt ${attempt})...`);
-        const result = await fetchAthleteWithTimeout(attempt, currentClient);
-        athlete = result.data;
-        athleteError = result.error;
-
-        if (athlete) {
-          console.log(`[Dashboard] Got athlete on attempt ${attempt}`);
-          break;
+        if (e.name === 'AbortError') {
+          athleteError = { message: 'TIMEOUT', code: 'TIMEOUT' };
+          setLoadStage('DIRECT API TIMED OUT (6s)');
+        } else {
+          athleteError = { message: e.message };
         }
-
-        if (athleteError?.code === 'TIMEOUT' && attempt < 2) {
-          console.log('[Dashboard] Attempt 1 timed out, RECREATING SUPABASE CLIENT...');
-          setLoadStage('RECREATING CLIENT...');
-          // CRITICAL: Recreate the Supabase client to fix stale connection
-          currentClient = recreateSupabaseClient();
-          await new Promise(resolve => setTimeout(resolve, 300)); // Brief pause
-          continue;
-        }
-
-        // Non-timeout error or final attempt - stop retrying
-        break;
       }
 
-      // If both attempts timed out, show empty dashboard
-      if (athleteError?.code === 'TIMEOUT') {
-        setLoadStage('QUERY TIMED OUT - showing empty dashboard');
-        console.log('[Dashboard] All attempts timed out');
+      // If direct API failed, show empty dashboard
+      if (!athlete) {
+        setLoadStage(`FAILED: ${athleteError?.message || 'Unknown error'}`);
+        console.log('[Dashboard] Direct API failed:', athleteError);
+
+        // Still show dashboard after 2 second delay
+        await new Promise(resolve => setTimeout(resolve, 2000));
         if (mountedRef.current) {
           setLoading(false);
           setAppReady(true);
@@ -1685,7 +1665,7 @@ export default function DashboardScreen({ navigation }: any) {
         return;
       }
 
-      setLoadStage(`ATHLETE RESULT: ${athlete ? athlete.first_name : 'NULL'}, error: ${athleteError?.message || 'none'}`);
+      setLoadStage(`GOT ATHLETE: ${athlete.first_name}`);
       console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
 
       // CRITICAL: Check for auth errors - means token is invalid
