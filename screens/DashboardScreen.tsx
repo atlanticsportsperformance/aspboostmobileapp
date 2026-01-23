@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase, recreateSupabaseClient } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -1589,83 +1589,17 @@ export default function DashboardScreen({ navigation }: any) {
     const user = session.user;
 
     try {
-      // BYPASS SUPABASE CLIENT ENTIRELY - Use direct REST API call
-      // The Supabase JS client is broken on React Native after app resume
-      setLoadStage('FETCHING ATHLETE (direct API)...');
+      // Standard Supabase query - simplified like ghost-mobile
+      setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
-      console.log('[Dashboard] Using DIRECT REST API - bypassing Supabase client');
 
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-      const accessToken = session.access_token;
+      const { data: athlete, error: athleteError } = await supabase
+        .from('athletes')
+        .select('id, first_name, last_name, vald_profile_id')
+        .eq('user_id', user.id)
+        .single();
 
-      let athlete = null;
-      let athleteError = null;
-
-      // Try direct fetch with 6 second timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.log('[Dashboard] Direct API timeout after 6s');
-        controller.abort();
-      }, 6000);
-
-      try {
-        const startTime = Date.now();
-        const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
-
-        console.log('[Dashboard] Fetching:', url);
-
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'apikey': supabaseKey!,
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/vnd.pgrst.object+json', // Returns single object instead of array
-          },
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-        const elapsed = Date.now() - startTime;
-        console.log(`[Dashboard] Direct API response in ${elapsed}ms, status: ${response.status}`);
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.log('[Dashboard] API error:', response.status, errorText);
-          athleteError = { message: `HTTP ${response.status}: ${errorText}`, code: response.status.toString() };
-        } else {
-          athlete = await response.json();
-          console.log('[Dashboard] Got athlete:', athlete?.first_name);
-        }
-      } catch (e: any) {
-        clearTimeout(timeoutId);
-        console.log('[Dashboard] Direct API exception:', e.name, e.message);
-
-        if (e.name === 'AbortError') {
-          athleteError = { message: 'TIMEOUT', code: 'TIMEOUT' };
-          setLoadStage('DIRECT API TIMED OUT (6s)');
-        } else {
-          athleteError = { message: e.message };
-        }
-      }
-
-      // If direct API failed, show empty dashboard
-      if (!athlete) {
-        setLoadStage(`FAILED: ${athleteError?.message || 'Unknown error'}`);
-        console.log('[Dashboard] Direct API failed:', athleteError);
-
-        // Still show dashboard after 2 second delay
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        if (mountedRef.current) {
-          setLoading(false);
-          setAppReady(true);
-        }
-        isLoadingRef.current = false;
-        return;
-      }
-
-      setLoadStage(`GOT ATHLETE: ${athlete.first_name}`);
+      setLoadStage(athlete ? `GOT ATHLETE: ${athlete.first_name}` : 'NO ATHLETE');
       console.log('[Dashboard] Athlete query:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
 
       // CRITICAL: Check for auth errors - means token is invalid
@@ -1718,12 +1652,8 @@ export default function DashboardScreen({ navigation }: any) {
       setValdProfileId(athlete.vald_profile_id);
       console.log('[Dashboard] Athlete state set:', athlete.first_name);
 
-      // CRITICAL: Recreate Supabase client before loading rest of data
-      // The direct REST API worked for athlete, but we need a fresh client
-      // for all other queries since the old client is broken after app resume
-      console.log('[Dashboard] Recreating Supabase client for remaining queries...');
-      setLoadStage('REFRESHING CONNECTION...');
-      const freshClient = recreateSupabaseClient();
+      // Use standard supabase client (simplified like ghost-mobile)
+      const freshClient = supabase;
 
       // Load rest of data using fresh client
       {
