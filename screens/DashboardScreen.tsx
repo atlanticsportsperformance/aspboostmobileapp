@@ -1718,10 +1718,18 @@ export default function DashboardScreen({ navigation }: any) {
       setValdProfileId(athlete.vald_profile_id);
       console.log('[Dashboard] Athlete state set:', athlete.first_name);
 
-      // Load rest of data
+      // CRITICAL: Recreate Supabase client before loading rest of data
+      // The direct REST API worked for athlete, but we need a fresh client
+      // for all other queries since the old client is broken after app resume
+      console.log('[Dashboard] Recreating Supabase client for remaining queries...');
+      setLoadStage('REFRESHING CONNECTION...');
+      const freshClient = recreateSupabaseClient();
+
+      // Load rest of data using fresh client
       {
 
-        // Fetch all initial data in parallel for faster loading
+        // Fetch all initial data in parallel using FRESH client
+        setLoadStage('LOADING DATA...');
         const [
           trackmanPitchesResult,
           commandSessionsResult,
@@ -1732,16 +1740,16 @@ export default function DashboardScreen({ navigation }: any) {
           bookingsResult,
         ] = await Promise.all([
           // Check for pitching data
-          supabase.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
-          supabase.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
+          freshClient.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
+          freshClient.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
           // Check for resources data
-          supabase.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
+          freshClient.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
           // Get last viewed resources timestamp
-          supabase.from('athletes').select('last_viewed_resources_at').eq('id', athlete.id).single(),
+          freshClient.from('athletes').select('last_viewed_resources_at').eq('id', athlete.id).single(),
           // Fetch user's conversation participants for unread count calculation
-          supabase.from('conversation_participants').select('conversation_id, last_read_at').eq('user_id', user.id).eq('is_archived', false),
+          freshClient.from('conversation_participants').select('conversation_id, last_read_at').eq('user_id', user.id).eq('is_archived', false),
           // Load workout instances with full routine details
-          supabase.from('workout_instances').select(`
+          freshClient.from('workout_instances').select(`
             id,
             scheduled_date,
             status,
@@ -1774,7 +1782,7 @@ export default function DashboardScreen({ navigation }: any) {
             )
           `).eq('athlete_id', athlete.id).order('scheduled_date'),
           // Load bookings - only active ones (booked/confirmed/waitlisted)
-          supabase.from('scheduling_bookings').select(`
+          freshClient.from('scheduling_bookings').select(`
             id,
             status,
             event:scheduling_events (

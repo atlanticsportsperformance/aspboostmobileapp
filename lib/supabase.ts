@@ -28,22 +28,27 @@ const createSupabaseClient = () => {
   });
 };
 
-// Main client instance
+// Main client instance - mutable so we can recreate it
 let _supabase: SupabaseClient = createSupabaseClient();
 
-// Export the client
-export const supabase = _supabase;
+// Export a getter that always returns the current client
+// This allows recreateSupabaseClient() to affect all code using supabase
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(_, prop) {
+    return (_supabase as any)[prop];
+  },
+});
 
 // CRITICAL: Recreate Supabase client to fix stale connections after app resume
 // Call this when queries are hanging after returning from background
+// Returns the new client AND updates the global supabase export
 export const recreateSupabaseClient = (): SupabaseClient => {
   console.log('[Supabase] Recreating client to fix stale connection');
   _supabase = createSupabaseClient();
-  // Note: We can't reassign the exported 'supabase', so callers must use the returned client
   return _supabase;
 };
 
-// Get fresh client - use this for queries that might fail due to stale connections
-export const getFreshSupabase = (): SupabaseClient => {
+// Get the current client directly (not proxied)
+export const getSupabaseClient = (): SupabaseClient => {
   return _supabase;
 };
