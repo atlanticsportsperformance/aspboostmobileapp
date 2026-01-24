@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, recreateSupabaseClient } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -1589,10 +1589,9 @@ export default function DashboardScreen({ navigation }: any) {
     const user = session.user;
 
     try {
-      // Try standard Supabase query with timeout, fallback to REST API
+      // Try standard Supabase query with timeout, recreate client if stale
       setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
-      console.log('[Dashboard] Attempting supabase.from() query...');
 
       let athlete = null;
       let athleteError = null;
@@ -1623,14 +1622,14 @@ export default function DashboardScreen({ navigation }: any) {
         console.log('[Dashboard] Starting supabase.from() with 5s timeout...');
         const startTime = Date.now();
 
-        const supabaseQuery = supabase
-          .from('athletes')
-          .select('id, first_name, last_name, vald_profile_id')
-          .eq('user_id', user.id)
-          .single();
-
         const result = await withTimeout(
-          Promise.resolve(supabaseQuery),
+          Promise.resolve(
+            supabase
+              .from('athletes')
+              .select('id, first_name, last_name, vald_profile_id')
+              .eq('user_id', user.id)
+              .single()
+          ),
           5000,
           'Supabase query'
         ) as { data: any; error: any };
@@ -1640,20 +1639,45 @@ export default function DashboardScreen({ navigation }: any) {
         athlete = result.data;
         athleteError = result.error;
       } catch (timeoutErr: any) {
-        console.log('[Dashboard] Supabase client timed out, falling back to REST API...');
-        setLoadStage('SUPABASE TIMEOUT - TRYING REST API...');
+        // Client is stale - recreate it and try again
+        console.log('[Dashboard] Supabase client STALE - recreating...');
+        setLoadStage('RECREATING CONNECTION...');
 
-        // Fallback: Direct REST API call
-        const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-        const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-        const accessToken = session.access_token;
+        // Recreate the client (this replaces the global instance via Proxy)
+        recreateSupabaseClient();
 
+        // Now try again with fresh client
         try {
-          const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
-          console.log('[Dashboard] REST API fetch:', url);
+          console.log('[Dashboard] Retrying with fresh client...');
+          setLoadStage('RETRYING ATHLETE QUERY...');
 
-          const response = await withTimeout(
-            fetch(url, {
+          const result = await withTimeout(
+            Promise.resolve(
+              supabase
+                .from('athletes')
+                .select('id, first_name, last_name, vald_profile_id')
+                .eq('user_id', user.id)
+                .single()
+            ),
+            5000,
+            'Fresh Supabase query'
+          ) as { data: any; error: any };
+
+          athlete = result.data;
+          athleteError = result.error;
+          console.log('[Dashboard] Fresh client query succeeded:', athlete?.first_name);
+        } catch (retryErr: any) {
+          console.log('[Dashboard] Fresh client also failed, trying REST API...');
+          setLoadStage('TRYING REST API...');
+
+          // Final fallback: Direct REST API
+          const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+          const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+          const accessToken = session.access_token;
+
+          try {
+            const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
+            const response = await fetch(url, {
               method: 'GET',
               headers: {
                 'apikey': supabaseKey!,
@@ -1661,22 +1685,17 @@ export default function DashboardScreen({ navigation }: any) {
                 'Content-Type': 'application/json',
                 'Accept': 'application/vnd.pgrst.object+json',
               },
-            }),
-            5000,
-            'REST API fetch'
-          );
+            });
 
-          if (response.ok) {
-            athlete = await response.json();
-            console.log('[Dashboard] REST API got athlete:', athlete?.first_name);
-          } else {
-            const errorText = await response.text();
-            console.log('[Dashboard] REST API error:', response.status, errorText);
-            athleteError = { message: `HTTP ${response.status}`, code: response.status.toString() };
+            if (response.ok) {
+              athlete = await response.json();
+              console.log('[Dashboard] REST API got athlete:', athlete?.first_name);
+            } else {
+              athleteError = { message: `HTTP ${response.status}` };
+            }
+          } catch (restErr: any) {
+            athleteError = { message: restErr.message };
           }
-        } catch (restErr: any) {
-          console.log('[Dashboard] REST API also failed:', restErr.message);
-          athleteError = { message: restErr.message };
         }
       }
 
@@ -1733,7 +1752,8 @@ export default function DashboardScreen({ navigation }: any) {
       setValdProfileId(athlete.vald_profile_id);
       console.log('[Dashboard] Athlete state set:', athlete.first_name);
 
-      // Use standard supabase client (simplified like ghost-mobile)
+      // Use supabase client - if it was stale, it's already been recreated above
+      // The Proxy pattern means this always points to the current (fresh) instance
       const freshClient = supabase;
 
       // Load rest of data using fresh client
