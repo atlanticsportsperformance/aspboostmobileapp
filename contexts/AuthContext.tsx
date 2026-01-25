@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { supabase, recreateSupabaseClient } from '../lib/supabase';
 
 interface AuthContextType {
   session: Session | null;
@@ -24,6 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const mountedRef = useRef(true);
   const isRefreshingRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const backgroundTimestampRef = useRef<number | null>(null);
 
   // ONE-TIME initialization effect - no dependencies that change
   useEffect(() => {
@@ -154,10 +155,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // App state listener - handle resume from background
     const handleAppState = async (nextState: AppStateStatus) => {
       const wasBackground = appStateRef.current.match(/inactive|background/);
+      const isGoingToBackground = nextState.match(/inactive|background/);
+
+      // Track when app goes to background
+      if (!wasBackground && isGoingToBackground) {
+        backgroundTimestampRef.current = Date.now();
+        console.log('[Auth] App going to background, timestamp saved');
+      }
+
       appStateRef.current = nextState;
 
       if (wasBackground && nextState === 'active' && mountedRef.current) {
         console.log('[Auth] App resumed from background');
+
+        // Check how long we were in background
+        const backgroundTime = backgroundTimestampRef.current;
+        const now = Date.now();
+        const thirtyMinutes = 30 * 60 * 1000;
+
+        if (backgroundTime && (now - backgroundTime) > thirtyMinutes) {
+          // App was in background for > 30 minutes - recreate Supabase client
+          console.log('[Auth] Was in background for', Math.round((now - backgroundTime) / 60000), 'minutes - recreating Supabase client');
+          recreateSupabaseClient();
+        }
+
+        backgroundTimestampRef.current = null;
 
         try {
           const { data: { session: current } } = await supabase.auth.getSession();
