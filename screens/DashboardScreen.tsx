@@ -417,9 +417,6 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
 export default function DashboardScreen({ navigation }: any) {
   const { session, loading: authLoading, isParentAccount, setAppReady } = useAuth();
 
-  // DEBUG: Log session on every render
-  console.log('[Dashboard RENDER] session:', session ? `YES (${session.user?.email})` : 'NO', 'authLoading:', authLoading);
-
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -590,7 +587,6 @@ export default function DashboardScreen({ navigation }: any) {
     const failsafe = setTimeout(() => {
       if (loading && mountedRef.current) {
         console.log('[Dashboard] FAILSAFE: Loading took 10s, forcing dashboard to show');
-        setLoadStage('FAILSAFE TRIGGERED (10s)');
         setLoading(false);
         setAppReady(true);
       }
@@ -1563,35 +1559,28 @@ export default function DashboardScreen({ navigation }: any) {
     return dates;
   }
 
-  // DEBUG: UI-visible log function
-  const [loadStage, setLoadStage] = useState<string>('not started');
-
   async function loadDashboard() {
     // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
       console.log('[Dashboard] Already loading, skipping');
-      setLoadStage('SKIPPED - already loading');
       return;
     }
 
     // Session is managed by AuthContext - if no session, the redirect effect will handle it
     if (!session?.user) {
       console.log('[Dashboard] No session in loadDashboard, waiting for redirect');
-      setLoadStage('NO SESSION');
       setAppReady(true);
       return;
     }
 
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
-    setLoadStage('STARTING...');
     console.log('[Dashboard] Starting load...');
 
     const user = session.user;
 
     try {
       // Try standard Supabase query with timeout, recreate client if stale
-      setLoadStage('FETCHING ATHLETE...');
       console.log('[Dashboard] User:', user.id);
 
       let athlete = null;
@@ -1642,7 +1631,6 @@ export default function DashboardScreen({ navigation }: any) {
       } catch (timeoutErr: any) {
         // Client is stale - recreate it and try again
         console.log('[Dashboard] Supabase client STALE - recreating...');
-        setLoadStage('RECREATING CONNECTION...');
 
         // Recreate the client (this replaces the global instance via Proxy)
         recreateSupabaseClient();
@@ -1650,7 +1638,6 @@ export default function DashboardScreen({ navigation }: any) {
         // Now try again with fresh client
         try {
           console.log('[Dashboard] Retrying with fresh client...');
-          setLoadStage('RETRYING ATHLETE QUERY...');
 
           const result = await withTimeout(
             Promise.resolve(
@@ -1669,7 +1656,6 @@ export default function DashboardScreen({ navigation }: any) {
           console.log('[Dashboard] Fresh client query succeeded:', athlete?.first_name);
         } catch (retryErr: any) {
           console.log('[Dashboard] Fresh client also failed, trying REST API...');
-          setLoadStage('TRYING REST API...');
 
           // Final fallback: Direct REST API
           const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -1700,7 +1686,6 @@ export default function DashboardScreen({ navigation }: any) {
         }
       }
 
-      setLoadStage(athlete ? `GOT ATHLETE: ${athlete.first_name}` : `FAILED: ${athleteError?.message || 'Unknown'}`);
       console.log('[Dashboard] Athlete query result:', { found: !!athlete, error: athleteError?.message, code: athleteError?.code });
 
       // CRITICAL: Check for auth errors - means token is invalid
@@ -1760,8 +1745,7 @@ export default function DashboardScreen({ navigation }: any) {
       // Load rest of data using fresh client
       {
 
-        // Fetch all initial data in parallel using FRESH client
-        setLoadStage('LOADING DATA...');
+        // Fetch all initial data in parallel
         const [
           trackmanPitchesResult,
           commandSessionsResult,
@@ -2056,7 +2040,7 @@ export default function DashboardScreen({ navigation }: any) {
           style={{ width: 120, height: 120, marginBottom: 30 }}
           resizeMode="contain"
         />
-        <ActivityIndicator size="large" color="#ef4444" />
+        <ActivityIndicator size="large" color="#38BDF8" />
         <Text style={styles.loadingText}>Preparing your training...</Text>
         <Text style={{ color: '#666', fontSize: 12, marginTop: 15, textAlign: 'center', paddingHorizontal: 40 }}>
           Track progress. Train smarter. Get faster.
