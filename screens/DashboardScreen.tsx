@@ -14,6 +14,7 @@ import {
   Alert,
   AppState,
   AppStateStatus,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -2047,34 +2048,19 @@ export default function DashboardScreen({ navigation }: any) {
     navigation.replace('Login');
   }
 
-  // DEBUG: Add visible debug state
-  const [debugLogs, setDebugLogs] = useState<string[]>([]);
-  const debugStartTime = useRef(Date.now());
-
-  const addDebugLog = useCallback((msg: string) => {
-    const time = ((Date.now() - debugStartTime.current) / 1000).toFixed(1);
-    const logMsg = `[${time}s] ${msg}`;
-    console.log(`[Dashboard DEBUG] ${logMsg}`);
-    setDebugLogs(prev => [...prev.slice(-20), logMsg]); // Keep last 20 logs
-  }, []);
-
-  // Log when we enter loading state
-  useEffect(() => {
-    if (loading) {
-      addDebugLog(`LOADING STATE: loading=${loading}, session=${!!session}, athleteId=${athleteId}`);
-      if (session) {
-        const expiresAt = session.expires_at || 0;
-        const now = Math.floor(Date.now() / 1000);
-        addDebugLog(`TOKEN: expires_in=${expiresAt - now}s`);
-      }
-    }
-  }, [loading, session, athleteId, addDebugLog]);
-
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#9BDDFF" />
-        <Text style={styles.loadingText}>Loading your dashboard...</Text>
+        <Image
+          source={require('../assets/splash-logo.png')}
+          style={{ width: 120, height: 120, marginBottom: 30 }}
+          resizeMode="contain"
+        />
+        <ActivityIndicator size="large" color="#ef4444" />
+        <Text style={styles.loadingText}>Preparing your training...</Text>
+        <Text style={{ color: '#666', fontSize: 12, marginTop: 15, textAlign: 'center', paddingHorizontal: 40 }}>
+          Track progress. Train smarter. Get faster.
+        </Text>
       </View>
     );
   }
