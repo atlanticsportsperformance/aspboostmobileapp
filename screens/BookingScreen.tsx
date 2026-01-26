@@ -41,6 +41,7 @@ import { PendingWaiver } from '../types/waiver';
 type RootStackParamList = {
   Booking: { athleteId?: string };
   Dashboard: undefined;
+  MembershipsPackages: { athleteId?: string | null };
 };
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -786,8 +787,7 @@ export default function BookingScreen() {
         onReserve={handleReserve}
         onViewMemberships={() => {
           setSelectedEvent(null);
-          // Could navigate to a memberships screen
-          Alert.alert('Info', 'Memberships & Packages coming soon');
+          navigation.navigate('MembershipsPackages', { athleteId: selectedAthleteId });
         }}
         onPaymentSuccess={() => {
           // Refresh events after successful payment
