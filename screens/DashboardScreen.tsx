@@ -1949,8 +1949,17 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   function getBookingsForDate(date: Date): Booking[] {
-    const dateStr = date.toISOString().split('T')[0];
-    return bookings.filter(b => b.event.start_time.startsWith(dateStr));
+    // Compare in local time to handle UTC offset correctly
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const day = date.getDate();
+
+    return bookings.filter(b => {
+      const bookingDate = new Date(b.event.start_time);
+      return bookingDate.getFullYear() === year &&
+             bookingDate.getMonth() === month &&
+             bookingDate.getDate() === day;
+    });
   }
 
   function getRemindersForDate(date: Date): ReminderInstance[] {
