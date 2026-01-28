@@ -70,6 +70,15 @@ interface UsageCounter {
   period_end: string;
 }
 
+interface ServiceGrouping {
+  type: string;           // "category" or "template"
+  id: string;
+  name: string;
+  color?: string;
+  visits_allocated: string;  // "8" or "unlimited"
+  is_unlimited: boolean;
+}
+
 interface Membership {
   id: string;
   membership_type_id: string;
@@ -83,6 +92,7 @@ interface Membership {
   membership_type: MembershipType;
   membership_usage_counters?: UsageCounter[];
   usage_counters?: UsageCounter[]; // API returns this format
+  service_groupings_override?: ServiceGrouping[]; // Per-membership service overrides
 }
 
 interface PackageType {
@@ -1193,48 +1203,109 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                               </View>
                             )}
 
-                            {/* Usage Counters */}
-                            {usageCounters.length > 0 && (
-                              <View style={styles.usageCountersContainer}>
-                                {usageCounters.map((counter) => {
-                                  const isUnlimited = counter.visits_allocated === -1;
-                                  const remaining = isUnlimited ? '∞' : (counter.visits_allocated - counter.visits_used);
-                                  const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.visits_used / counter.visits_allocated) * 100);
-                                  return (
-                                    <View key={counter.id} style={styles.usageCounterRow}>
-                                      <View style={styles.usageCounterInfo}>
-                                        <Text style={styles.usageCounterName} numberOfLines={1}>
-                                          {counter.scope_name || 'All Classes'}
-                                        </Text>
-                                        <Text style={styles.usageCounterStats}>
-                                          {isUnlimited ? (
-                                            <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> used</Text>
-                                          ) : (
-                                            <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> / {counter.visits_allocated} used</Text>
-                                          )}
-                                        </Text>
-                                      </View>
-                                      <View style={styles.usageCounterRight}>
-                                        {isUnlimited ? (
-                                          <Text style={styles.usageUnlimited}>∞</Text>
-                                        ) : (
-                                          <>
-                                            <Text style={styles.usageRemaining}>{remaining}</Text>
-                                            <Text style={styles.usageRemainingLabel}>left</Text>
-                                          </>
-                                        )}
-                                      </View>
-                                      {/* Progress bar for limited */}
-                                      {!isUnlimited && (
-                                        <View style={styles.usageProgressBar}>
-                                          <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                            {/* Services This Period */}
+                            {(() => {
+                              const typeGroupings = (membership.membership_type?.metadata?.service_groupings || []) as ServiceGrouping[];
+                              const overrideGroupings = membership.service_groupings_override || [];
+
+                              // If no service groupings, fall back to usage counters display
+                              if (typeGroupings.length === 0 && usageCounters.length > 0) {
+                                return (
+                                  <View style={styles.usageCountersContainer}>
+                                    {usageCounters.map((counter) => {
+                                      const isUnlimited = counter.visits_allocated === -1;
+                                      const remaining = isUnlimited ? -1 : (counter.visits_allocated - counter.visits_used);
+                                      return (
+                                        <View key={counter.id} style={styles.usageCounterRow}>
+                                          <View style={styles.usageCounterInfo}>
+                                            <Text style={styles.usageCounterName} numberOfLines={1}>
+                                              {counter.scope_name || 'All Classes'}
+                                            </Text>
+                                          </View>
+                                          <View style={styles.usageCounterRight}>
+                                            <Text style={[
+                                              styles.usageRemaining,
+                                              isUnlimited && { color: '#9BDDFF' },
+                                              !isUnlimited && remaining === 0 && { color: '#EF4444' },
+                                            ]}>
+                                              {isUnlimited ? '∞' : `${remaining}/${counter.visits_allocated}`}
+                                            </Text>
+                                          </View>
                                         </View>
-                                      )}
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            )}
+                                      );
+                                    })}
+                                  </View>
+                                );
+                              }
+
+                              if (typeGroupings.length === 0) return null;
+
+                              return (
+                                <View style={styles.usageCountersContainer}>
+                                  {typeGroupings.map((typeGrouping, idx) => {
+                                    // Check for per-membership override
+                                    const override = overrideGroupings.find(
+                                      o => o.type === typeGrouping.type && o.id === typeGrouping.id
+                                    );
+                                    const effectiveGrouping = override || typeGrouping;
+                                    const hasCustomLimit = !!override;
+
+                                    // Determine unlimited status
+                                    const isUnlimited = effectiveGrouping.is_unlimited ||
+                                                        effectiveGrouping.visits_allocated === 'unlimited';
+
+                                    // Get allocated amount
+                                    const allocated = isUnlimited ? -1 : (parseInt(effectiveGrouping.visits_allocated) || 0);
+
+                                    // Find usage counter for this service
+                                    const counter = usageCounters.find(
+                                      c => c.scope_type === effectiveGrouping.type && c.scope_id === effectiveGrouping.id
+                                    );
+                                    const used = counter?.visits_used || 0;
+                                    const remaining = isUnlimited ? -1 : Math.max(0, allocated - used);
+
+                                    return (
+                                      <View key={`${effectiveGrouping.type}-${effectiveGrouping.id}-${idx}`} style={styles.usageCounterRow}>
+                                        <View style={styles.usageCounterInfo}>
+                                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                            {effectiveGrouping.color && (
+                                              <View style={{
+                                                width: 10,
+                                                height: 10,
+                                                borderRadius: 5,
+                                                backgroundColor: effectiveGrouping.color,
+                                              }} />
+                                            )}
+                                            <Text style={styles.usageCounterName} numberOfLines={1}>
+                                              {effectiveGrouping.name}
+                                            </Text>
+                                            {hasCustomLimit && (
+                                              <View style={{
+                                                backgroundColor: 'rgba(168, 85, 247, 0.2)',
+                                                paddingHorizontal: 6,
+                                                paddingVertical: 2,
+                                                borderRadius: 4,
+                                              }}>
+                                                <Text style={{ color: '#A855F7', fontSize: 10, fontWeight: '600' }}>Custom</Text>
+                                              </View>
+                                            )}
+                                          </View>
+                                        </View>
+                                        <View style={styles.usageCounterRight}>
+                                          <Text style={[
+                                            styles.usageRemaining,
+                                            isUnlimited && { color: '#9BDDFF' },
+                                            !isUnlimited && remaining === 0 && { color: '#EF4444' },
+                                          ]}>
+                                            {isUnlimited ? '∞' : `${remaining}/${allocated}`}
+                                          </Text>
+                                        </View>
+                                      </View>
+                                    );
+                                  })}
+                                </View>
+                              );
+                            })()}
 
                             {/* Manage Menu */}
                             {showManageMenu === membership.id && (
@@ -1434,48 +1505,109 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             </View>
                           )}
 
-                          {/* Usage Counters */}
-                          {usageCounters.length > 0 && (
-                            <View style={styles.usageCountersContainer}>
-                              {usageCounters.map((counter) => {
-                                const isUnlimited = counter.visits_allocated === -1;
-                                const remaining = isUnlimited ? '∞' : (counter.visits_allocated - counter.visits_used);
-                                const progressPercent = isUnlimited ? 0 : Math.min(100, (counter.visits_used / counter.visits_allocated) * 100);
-                                return (
-                                  <View key={counter.id} style={styles.usageCounterRow}>
-                                    <View style={styles.usageCounterInfo}>
-                                      <Text style={styles.usageCounterName} numberOfLines={1}>
-                                        {counter.scope_name || 'All Classes'}
-                                      </Text>
-                                      <Text style={styles.usageCounterStats}>
-                                        {isUnlimited ? (
-                                          <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> used</Text>
-                                        ) : (
-                                          <Text><Text style={styles.usageUsed}>{counter.visits_used}</Text> / {counter.visits_allocated} used</Text>
-                                        )}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.usageCounterRight}>
-                                      {isUnlimited ? (
-                                        <Text style={styles.usageUnlimited}>∞</Text>
-                                      ) : (
-                                        <>
-                                          <Text style={styles.usageRemaining}>{remaining}</Text>
-                                          <Text style={styles.usageRemainingLabel}>left</Text>
-                                        </>
-                                      )}
-                                    </View>
-                                    {/* Progress bar for limited */}
-                                    {!isUnlimited && (
-                                      <View style={styles.usageProgressBar}>
-                                        <View style={[styles.usageProgressFill, { width: `${progressPercent}%` }]} />
+                          {/* Services This Period */}
+                          {(() => {
+                            const typeGroupings = (membership.membership_type?.metadata?.service_groupings || []) as ServiceGrouping[];
+                            const overrideGroupings = membership.service_groupings_override || [];
+
+                            // If no service groupings, fall back to usage counters display
+                            if (typeGroupings.length === 0 && usageCounters.length > 0) {
+                              return (
+                                <View style={styles.usageCountersContainer}>
+                                  {usageCounters.map((counter) => {
+                                    const isUnlimited = counter.visits_allocated === -1;
+                                    const remaining = isUnlimited ? -1 : (counter.visits_allocated - counter.visits_used);
+                                    return (
+                                      <View key={counter.id} style={styles.usageCounterRow}>
+                                        <View style={styles.usageCounterInfo}>
+                                          <Text style={styles.usageCounterName} numberOfLines={1}>
+                                            {counter.scope_name || 'All Classes'}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.usageCounterRight}>
+                                          <Text style={[
+                                            styles.usageRemaining,
+                                            isUnlimited && { color: '#9BDDFF' },
+                                            !isUnlimited && remaining === 0 && { color: '#EF4444' },
+                                          ]}>
+                                            {isUnlimited ? '∞' : `${remaining}/${counter.visits_allocated}`}
+                                          </Text>
+                                        </View>
                                       </View>
-                                    )}
-                                  </View>
-                                );
-                              })}
-                            </View>
-                          )}
+                                    );
+                                  })}
+                                </View>
+                              );
+                            }
+
+                            if (typeGroupings.length === 0) return null;
+
+                            return (
+                              <View style={styles.usageCountersContainer}>
+                                {typeGroupings.map((typeGrouping, idx) => {
+                                  // Check for per-membership override
+                                  const override = overrideGroupings.find(
+                                    o => o.type === typeGrouping.type && o.id === typeGrouping.id
+                                  );
+                                  const effectiveGrouping = override || typeGrouping;
+                                  const hasCustomLimit = !!override;
+
+                                  // Determine unlimited status
+                                  const isUnlimited = effectiveGrouping.is_unlimited ||
+                                                      effectiveGrouping.visits_allocated === 'unlimited';
+
+                                  // Get allocated amount
+                                  const allocated = isUnlimited ? -1 : (parseInt(effectiveGrouping.visits_allocated) || 0);
+
+                                  // Find usage counter for this service
+                                  const counter = usageCounters.find(
+                                    c => c.scope_type === effectiveGrouping.type && c.scope_id === effectiveGrouping.id
+                                  );
+                                  const used = counter?.visits_used || 0;
+                                  const remaining = isUnlimited ? -1 : Math.max(0, allocated - used);
+
+                                  return (
+                                    <View key={`${effectiveGrouping.type}-${effectiveGrouping.id}-${idx}`} style={styles.usageCounterRow}>
+                                      <View style={styles.usageCounterInfo}>
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                          {effectiveGrouping.color && (
+                                            <View style={{
+                                              width: 10,
+                                              height: 10,
+                                              borderRadius: 5,
+                                              backgroundColor: effectiveGrouping.color,
+                                            }} />
+                                          )}
+                                          <Text style={styles.usageCounterName} numberOfLines={1}>
+                                            {effectiveGrouping.name}
+                                          </Text>
+                                          {hasCustomLimit && (
+                                            <View style={{
+                                              backgroundColor: 'rgba(168, 85, 247, 0.2)',
+                                              paddingHorizontal: 6,
+                                              paddingVertical: 2,
+                                              borderRadius: 4,
+                                            }}>
+                                              <Text style={{ color: '#A855F7', fontSize: 10, fontWeight: '600' }}>Custom</Text>
+                                            </View>
+                                          )}
+                                        </View>
+                                      </View>
+                                      <View style={styles.usageCounterRight}>
+                                        <Text style={[
+                                          styles.usageRemaining,
+                                          isUnlimited && { color: '#9BDDFF' },
+                                          !isUnlimited && remaining === 0 && { color: '#EF4444' },
+                                        ]}>
+                                          {isUnlimited ? '∞' : `${remaining}/${allocated}`}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            );
+                          })()}
 
                           {/* Manage Menu */}
                           {showManageMenu === membership.id && (

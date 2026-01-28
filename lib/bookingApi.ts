@@ -470,138 +470,43 @@ export async function getPaymentMethods(
   athleteId: string,
   eventId: string
 ): Promise<PaymentMethod[]> {
-  const methods: PaymentMethod[] = [];
+  try {
+    // Get auth token
+    const { data: { session } } = await supabase.auth.getSession();
 
-  // Get event details to determine template and category
-  const { data: event } = await supabase
-    .from('scheduling_events')
-    .select(`
-      event_template_id,
-      template:scheduling_templates(
-        id,
-        category_id
-      )
-    `)
-    .eq('id', eventId)
-    .single();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
 
-  const templateId = event?.event_template_id;
-  // Handle template - could be object or array depending on Supabase response
-  const rawTemplate = event?.template;
-  const templateData = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
-  const categoryId = templateData?.category_id;
-
-  // Get active memberships with service_groupings from metadata
-  const { data: memberships, error: membershipsError } = await supabase
-    .from('memberships')
-    .select(`
-      id,
-      status,
-      current_period_end,
-      membership_type:membership_types(
-        id,
-        name,
-        metadata
-      )
-    `)
-    .eq('athlete_id', athleteId)
-    .in('status', ['active', 'trialing']);
-
-  if (membershipsError) {
-    console.error('[getPaymentMethods] Error fetching memberships:', membershipsError);
-  }
-
-  // Filter memberships that cover this event based on service_groupings
-  const filteredMemberships = (memberships || []).filter((m: any) => {
-    const metadata = m.membership_type?.metadata as any;
-    const serviceGroupings = metadata?.service_groupings || [];
-
-    // If no service groupings defined, membership doesn't cover specific events
-    if (serviceGroupings.length === 0) {
-      return false;
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
     }
 
-    // Check if any service grouping covers this event
-    return serviceGroupings.some((sg: any) => {
-      const categoryMatch = sg.type === 'category' && sg.id === categoryId;
-      const templateMatch = sg.type === 'template' && sg.id === templateId;
-      return categoryMatch || templateMatch;
-    });
-  });
+    const response = await fetch(
+      `${API_URL}/api/schedule/athlete-payment-options?event_id=${eventId}&athlete_id=${athleteId}`,
+      { headers }
+    );
 
-  filteredMemberships.forEach((m: any) => {
-    const type = m.membership_type as any;
-    const expiryDate = m.current_period_end ? new Date(m.current_period_end) : null;
+    if (!response.ok) {
+      console.error('[getPaymentMethods] API error:', response.status);
+      return [];
+    }
 
-    methods.push({
-      id: m.id,
-      type: 'membership',
-      name: type?.name || 'Membership',
-      subtitle: expiryDate
-        ? `Expires ${expiryDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-        : 'Active',
-      expiryDate,
-      remainingSessions: null,
-    });
-  });
+    const options = await response.json();
 
-  // Get active packages with entitlement_rules
-  const { data: packages } = await supabase
-    .from('packages')
-    .select(`
-      id,
-      status,
-      uses_remaining,
-      is_unlimited,
-      expiry_date,
-      package_type:package_types(
-        id,
-        name,
-        entitlement_rules(
-          scope,
-          category_id,
-          template_id
-        )
-      )
-    `)
-    .eq('athlete_id', athleteId)
-    .eq('status', 'active');
-
-  // Filter packages that cover this event AND have uses remaining
-  (packages || []).filter((p: any) => {
-    // Check if package has uses left
-    const hasUsesLeft = p.is_unlimited || p.uses_remaining === null || p.uses_remaining > 0;
-    if (!hasUsesLeft) return false;
-
-    // Check if package has expired
-    if (p.expiry_date && new Date(p.expiry_date) < new Date()) return false;
-
-    // Check entitlement rules - package must be entitled to book this event
-    const rules = p.package_type?.entitlement_rules || [];
-    if (rules.length === 0) return false;
-
-    return rules.some((rule: any) => {
-      if (rule.scope === 'any') return true;
-      if (rule.scope === 'category' && rule.category_id === categoryId) return true;
-      if (rule.scope === 'template' && rule.template_id === templateId) return true;
-      return false;
-    });
-  }).forEach((p: any) => {
-    const type = p.package_type as any;
-    const isUnlimited = p.is_unlimited === true;
-    const remaining = p.uses_remaining;
-
-    methods.push({
-      id: p.id,
-      type: 'package',
-      name: type?.name || 'Package',
-      subtitle: isUnlimited ? 'Unlimited sessions' : `${remaining} session${remaining === 1 ? '' : 's'} remaining`,
-      expiryDate: p.expiry_date ? new Date(p.expiry_date) : null,
-      remainingSessions: isUnlimited ? null : remaining,
-    });
-  });
-
-  return methods;
+    // Map API response to PaymentMethod interface
+    return (options || []).map((opt: any) => ({
+      id: opt.id,
+      type: opt.type as 'membership' | 'package' | 'drop_in',
+      name: opt.label || opt.name || 'Unknown',
+      subtitle: opt.description || '',  // "7 of 8 visits remaining" or "Unlimited visits"
+      expiryDate: null,
+      remainingSessions: opt.remaining_visits ?? null,  // -1 = unlimited, null = unknown
+    }));
+  } catch (error) {
+    console.error('[getPaymentMethods] Error:', error);
+    return [];
+  }
 }
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
