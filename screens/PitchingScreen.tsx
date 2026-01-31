@@ -220,12 +220,13 @@ export default function PitchingScreen({ navigation, route }: any) {
 
   async function fetchFabDataAvailability(athleteIdParam: string, userIdParam: string) {
     try {
-      // Check for hitting data (Blast + HitTrax)
-      const [blastSwings, hittraxSessions] = await Promise.all([
+      // Check for hitting data (Blast + HitTrax + Full Swing)
+      const [blastSwings, hittraxSessions, fullSwingSessions] = await Promise.all([
         supabase.from('blast_swings').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteIdParam),
         supabase.from('hittrax_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteIdParam),
+        supabase.from('fullswing_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteIdParam),
       ]);
-      setHittingData((blastSwings.count || 0) > 0 || (hittraxSessions.count || 0) > 0);
+      setHittingData((blastSwings.count || 0) > 0 || (hittraxSessions.count || 0) > 0 || (fullSwingSessions.count || 0) > 0);
 
       // Check for arm care data
       const { count: armCareCount } = await supabase

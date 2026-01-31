@@ -191,6 +191,13 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
       recorded_date: string;
     }
 
+    interface FullSwingSession {
+      session_date: string;
+      avg_bat_speed: number | null;
+      max_bat_speed: number | null;
+      total_swings: number;
+    }
+
     const blastSwings = await fetchAllPaginated<BlastSwing>(
       () => supabase.from('blast_swings'),
       'bat_speed, attack_angle, connection_at_impact, early_connection, recorded_date',
@@ -199,33 +206,60 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
       true
     );
 
-    if (!blastSwings || blastSwings.length === 0) {
+    // Fetch Full Swing sessions for bat speed trends
+    const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
+      () => supabase.from('fullswing_sessions'),
+      'session_date, avg_bat_speed, max_bat_speed, total_swings',
+      [{ column: 'athlete_id', value: id }],
+      'session_date',
+      true
+    );
+
+    // If no data from either source, return
+    if ((!blastSwings || blastSwings.length === 0) && (!fullSwingSessions || fullSwingSessions.length === 0)) {
       setLoading(false);
       return;
     }
 
-    const groupedByDate = blastSwings.reduce((acc: { [key: string]: { batSpeeds: number[], attackAngles: number[], connectionAtImpacts: number[], earlyConnections: number[] } }, swing) => {
+    const groupedByDate: { [key: string]: { batSpeeds: number[], attackAngles: number[], connectionAtImpacts: number[], earlyConnections: number[], fullSwingAvgBatSpeed?: number, fullSwingMaxBatSpeed?: number, fullSwingSwingCount?: number } } = {};
+
+    // Process Blast swings
+    (blastSwings || []).forEach(swing => {
       const date = swing.recorded_date.split('T')[0];
-      if (!acc[date]) acc[date] = { batSpeeds: [], attackAngles: [], connectionAtImpacts: [], earlyConnections: [] };
+      if (!groupedByDate[date]) groupedByDate[date] = { batSpeeds: [], attackAngles: [], connectionAtImpacts: [], earlyConnections: [] };
 
       if (swing.bat_speed !== null && swing.bat_speed > 0) {
-        acc[date].batSpeeds.push(swing.bat_speed);
+        groupedByDate[date].batSpeeds.push(swing.bat_speed);
       }
       if (swing.attack_angle !== null) {
-        acc[date].attackAngles.push(swing.attack_angle);
+        groupedByDate[date].attackAngles.push(swing.attack_angle);
       }
       if (swing.connection_at_impact !== null) {
-        acc[date].connectionAtImpacts.push(swing.connection_at_impact);
+        groupedByDate[date].connectionAtImpacts.push(swing.connection_at_impact);
       }
       if (swing.early_connection !== null) {
-        acc[date].earlyConnections.push(swing.early_connection);
+        groupedByDate[date].earlyConnections.push(swing.early_connection);
       }
-      return acc;
-    }, {});
+    });
+
+    // Process Full Swing sessions - merge bat speed data
+    (fullSwingSessions || []).forEach(session => {
+      const date = session.session_date.split('T')[0];
+      if (!groupedByDate[date]) groupedByDate[date] = { batSpeeds: [], attackAngles: [], connectionAtImpacts: [], earlyConnections: [] };
+
+      // Store Full Swing bat speed data
+      if (session.avg_bat_speed !== null) {
+        groupedByDate[date].fullSwingAvgBatSpeed = session.avg_bat_speed;
+      }
+      if (session.max_bat_speed !== null) {
+        groupedByDate[date].fullSwingMaxBatSpeed = session.max_bat_speed;
+      }
+      groupedByDate[date].fullSwingSwingCount = session.total_swings;
+    });
 
     const trends: SessionData[] = Object.keys(groupedByDate)
       .map(date => {
-        const { batSpeeds, attackAngles, connectionAtImpacts, earlyConnections } = groupedByDate[date];
+        const { batSpeeds, attackAngles, connectionAtImpacts, earlyConnections, fullSwingAvgBatSpeed, fullSwingMaxBatSpeed, fullSwingSwingCount } = groupedByDate[date];
 
         let attackAngleStdDev = null;
         if (attackAngles.length > 1) {
@@ -234,15 +268,32 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
           attackAngleStdDev = Math.sqrt(variance);
         }
 
+        // Combine bat speeds from Blast and Full Swing
+        const blastAvgBatSpeed = batSpeeds.length > 0 ? batSpeeds.reduce((sum, s) => sum + s, 0) / batSpeeds.length : null;
+        const blastMaxBatSpeed = batSpeeds.length > 0 ? Math.max(...batSpeeds) : null;
+
+        // Use combined average/max - prefer higher value if both exist
+        let avgBatSpeed = blastAvgBatSpeed;
+        let maxBatSpeed = blastMaxBatSpeed;
+
+        if (fullSwingAvgBatSpeed !== undefined) {
+          avgBatSpeed = avgBatSpeed !== null ? Math.max(avgBatSpeed, fullSwingAvgBatSpeed) : fullSwingAvgBatSpeed;
+        }
+        if (fullSwingMaxBatSpeed !== undefined) {
+          maxBatSpeed = maxBatSpeed !== null ? Math.max(maxBatSpeed, fullSwingMaxBatSpeed) : fullSwingMaxBatSpeed;
+        }
+
+        const totalSwingCount = batSpeeds.length + (fullSwingSwingCount || 0);
+
         return {
           date,
-          avgBatSpeed: batSpeeds.length > 0 ? batSpeeds.reduce((sum, s) => sum + s, 0) / batSpeeds.length : null,
-          maxBatSpeed: batSpeeds.length > 0 ? Math.max(...batSpeeds) : null,
+          avgBatSpeed,
+          maxBatSpeed,
           avgAttackAngle: attackAngles.length > 0 ? attackAngles.reduce((sum, a) => sum + a, 0) / attackAngles.length : null,
           attackAngleStdDev,
           avgConnectionAtImpact: connectionAtImpacts.length > 0 ? connectionAtImpacts.reduce((sum, c) => sum + c, 0) / connectionAtImpacts.length : null,
           avgEarlyConnection: earlyConnections.length > 0 ? earlyConnections.reduce((sum, e) => sum + e, 0) / earlyConnections.length : null,
-          swingCount: Math.max(batSpeeds.length, attackAngles.length, connectionAtImpacts.length, earlyConnections.length),
+          swingCount: totalSwingCount > 0 ? totalSwingCount : Math.max(attackAngles.length, connectionAtImpacts.length, earlyConnections.length),
         };
       })
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());

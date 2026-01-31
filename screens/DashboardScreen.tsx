@@ -896,7 +896,14 @@ export default function DashboardScreen({ navigation }: any) {
           .order('swing_timestamp', { ascending: false })
       : { data: null };
 
-    // Calculate PRs for bat speed (from Blast), exit velocity and distance (from HitTrax)
+    // Query Full Swing sessions for combined bat speed + exit velocity + distance
+    const { data: fullSwingSessions } = await supabase
+      .from('fullswing_sessions')
+      .select('id, session_date, max_bat_speed, max_exit_velocity, max_distance')
+      .eq('athlete_id', athleteIdParam)
+      .order('session_date', { ascending: false });
+
+    // Calculate PRs for bat speed (from Blast + Full Swing), exit velocity and distance (from HitTrax + Full Swing)
     let maxBatSpeed = { value: 0, date: '' };
     let maxExitVelo = { value: 0, date: '' };
     let maxDistance = { value: 0, date: '' };
@@ -929,22 +936,49 @@ export default function DashboardScreen({ navigation }: any) {
       }
     }
 
+    // Process Full Swing sessions for bat speed, exit velocity, and distance
+    if (fullSwingSessions && fullSwingSessions.length > 0) {
+      for (const session of fullSwingSessions) {
+        const batSpeed = session.max_bat_speed || 0;
+        const exitVelo = session.max_exit_velocity || 0;
+        const distance = session.max_distance || 0;
+
+        if (batSpeed > maxBatSpeed.value) {
+          maxBatSpeed = { value: batSpeed, date: session.session_date };
+        }
+        if (exitVelo > maxExitVelo.value) {
+          maxExitVelo = { value: exitVelo, date: session.session_date };
+        }
+        if (distance > maxDistance.value) {
+          maxDistance = { value: distance, date: session.session_date };
+        }
+      }
+    }
+
     // Get latest values
     const latestBatSpeed = blastSwings && blastSwings.length > 0
       ? parseFloat(blastSwings[0].metrics?.swing_speed?.value || '0')
-      : 0;
+      : fullSwingSessions && fullSwingSessions.length > 0
+        ? fullSwingSessions[0].max_bat_speed || 0
+        : 0;
     const latestExitVelo = hittraxSwings && hittraxSwings.length > 0
       ? parseFloat(hittraxSwings[0].exit_velocity || '0')
-      : 0;
+      : fullSwingSessions && fullSwingSessions.length > 0
+        ? fullSwingSessions[0].max_exit_velocity || 0
+        : 0;
     const latestDistance = hittraxSwings && hittraxSwings.length > 0
       ? parseFloat(hittraxSwings[0].distance || '0')
-      : 0;
+      : fullSwingSessions && fullSwingSessions.length > 0
+        ? fullSwingSessions[0].max_distance || 0
+        : 0;
 
     const latestTimestamp = blastSwings && blastSwings.length > 0
       ? `${blastSwings[0].recorded_date} ${blastSwings[0].recorded_time}`
       : hittraxSwings && hittraxSwings.length > 0
         ? hittraxSwings[0].swing_timestamp
-        : null;
+        : fullSwingSessions && fullSwingSessions.length > 0
+          ? fullSwingSessions[0].session_date
+          : null;
 
     // Only set hitting data if there's at least one valid value
     const hasAnyHittingData = maxBatSpeed.value > 0 || maxExitVelo.value > 0 || maxDistance.value > 0;

@@ -106,6 +106,7 @@ interface SessionData {
   maxDistance: number | null;
   avgDistance: number | null;
   swingCount: number;
+  source: 'hittrax' | 'fullswing';
 }
 
 interface HitTraxSwing {
@@ -121,13 +122,70 @@ interface HitTraxSwing {
   poi_z: number | null;
 }
 
+interface FullSwingSession {
+  id: string;
+  session_date: string;
+  avg_exit_velocity: number | null;
+  max_exit_velocity: number | null;
+  avg_launch_angle: number | null;
+  avg_distance: number | null;
+  max_distance: number | null;
+  total_swings: number;
+}
+
+interface FullSwingSwing {
+  id: string;
+  session_id: string;
+  exit_velocity: number | null;
+  launch_angle: number | null;
+  spray_angle: number | null;
+  distance: number | null;
+}
+
+// Unified swing interface for spray chart (combines HitTrax and Full Swing)
+interface SpraySwing {
+  id: string;
+  session_id: string;
+  exit_velocity: number;
+  launch_angle: number | null;
+  distance: number | null;
+  spray_chart_x: number;
+  spray_chart_z: number;
+  poi_x: number | null;
+  poi_y: number | null;
+  poi_z: number | null;
+  source: 'hittrax' | 'fullswing';
+}
+
+// Convert Full Swing spray_angle + distance to x/z coordinates
+function convertFullSwingToSpray(swing: FullSwingSwing): SpraySwing | null {
+  if (swing.spray_angle === null || swing.distance === null || swing.exit_velocity === null) {
+    return null;
+  }
+
+  const radians = (swing.spray_angle * Math.PI) / 180;
+  return {
+    id: swing.id,
+    session_id: swing.session_id,
+    exit_velocity: swing.exit_velocity,
+    launch_angle: swing.launch_angle,
+    distance: swing.distance,
+    spray_chart_x: swing.distance * Math.sin(radians),
+    spray_chart_z: swing.distance * Math.cos(radians),
+    poi_x: null,
+    poi_y: null,
+    poi_z: null,
+    source: 'fullswing',
+  };
+}
+
 type TimeFilter = '1month' | '3months' | '6months' | 'all';
 
 export default function BattedBallTrendsScreen({ navigation, route }: any) {
   const [allSessionData, setAllSessionData] = useState<SessionData[]>([]);
   const [filteredData, setFilteredData] = useState<SessionData[]>([]);
-  const [allSwings, setAllSwings] = useState<HitTraxSwing[]>([]);
-  const [filteredSwings, setFilteredSwings] = useState<HitTraxSwing[]>([]);
+  const [allSwings, setAllSwings] = useState<SpraySwing[]>([]);
+  const [filteredSwings, setFilteredSwings] = useState<SpraySwing[]>([]);
   const [playingLevel, setPlayingLevel] = useState<string>('high-school');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
@@ -247,14 +305,12 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
       total_swings: number | null;
     }
 
-    // Use existing HitTraxSwing interface for type compatibility
-
     interface DistanceSwing {
       session_id: string;
       distance: number | null;
     }
 
-    // Use paginated fetch to get ALL sessions (bypasses 1000 row limit)
+    // Fetch HitTrax sessions
     const hittraxSessions = await fetchAllPaginated<HittraxSession>(
       () => supabase.from('hittrax_sessions'),
       'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, max_distance, total_swings',
@@ -263,49 +319,97 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
       true
     );
 
-    if (!hittraxSessions || hittraxSessions.length === 0) {
+    // Fetch Full Swing sessions
+    const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
+      () => supabase.from('fullswing_sessions'),
+      'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, total_swings',
+      [{ column: 'athlete_id', value: id }],
+      'session_date',
+      true
+    );
+
+    // Check if we have any data
+    const hasHittrax = hittraxSessions && hittraxSessions.length > 0;
+    const hasFullSwing = fullSwingSessions && fullSwingSessions.length > 0;
+
+    if (!hasHittrax && !hasFullSwing) {
       setLoading(false);
       setAllSessionData([]);
       setAllSwings([]);
       return;
     }
 
-    const sessionIds = hittraxSessions.map(s => s.id);
+    // Collect all spray swings from both sources
+    let allSpraySwings: SpraySwing[] = [];
 
-    // Use paginated fetch for swings with spray chart data (using existing HitTraxSwing interface)
-    const swings = await fetchAllPaginated<HitTraxSwing>(
-      () => supabase.from('hittrax_swings'),
-      'id, session_id, exit_velocity, launch_angle, distance, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z',
-      [{ column: 'session_id', value: sessionIds, operator: 'in' }],
-      'id',
-      true,
-      (q) => q.not('spray_chart_x', 'is', null).not('spray_chart_z', 'is', null)
-    );
+    // Process HitTrax swings
+    if (hasHittrax) {
+      const hittraxSessionIds = hittraxSessions.map(s => s.id);
 
-    const allSwingsData = swings || [];
-    setAllSwings(allSwingsData);
+      const hittraxSwings = await fetchAllPaginated<HitTraxSwing>(
+        () => supabase.from('hittrax_swings'),
+        'id, session_id, exit_velocity, launch_angle, distance, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z',
+        [{ column: 'session_id', value: hittraxSessionIds, operator: 'in' }],
+        'id',
+        true,
+        (q) => q.not('spray_chart_x', 'is', null).not('spray_chart_z', 'is', null)
+      );
 
-    // Use paginated fetch for distance data
-    const allSwingsForDistance = await fetchAllPaginated<DistanceSwing>(
-      () => supabase.from('hittrax_swings'),
-      'session_id, distance',
-      [{ column: 'session_id', value: sessionIds, operator: 'in' }],
-      'id',
-      true
-    );
+      // Convert HitTrax swings to SpraySwing format
+      const hittraxSpraySwings: SpraySwing[] = (hittraxSwings || []).map(s => ({
+        ...s,
+        source: 'hittrax' as const,
+      }));
+      allSpraySwings = [...allSpraySwings, ...hittraxSpraySwings];
+    }
 
-    const sessionDistances: { [sessionId: string]: number[] } = {};
-    (allSwingsForDistance || []).forEach(swing => {
-      if (swing.distance !== null && swing.distance > 0) {
-        if (!sessionDistances[swing.session_id]) {
-          sessionDistances[swing.session_id] = [];
+    // Process Full Swing swings
+    if (hasFullSwing) {
+      const fullSwingSessionIds = fullSwingSessions.map(s => s.id);
+
+      const fullSwingSwings = await fetchAllPaginated<FullSwingSwing>(
+        () => supabase.from('fullswing_swings'),
+        'id, session_id, exit_velocity, launch_angle, spray_angle, distance',
+        [{ column: 'session_id', value: fullSwingSessionIds, operator: 'in' }],
+        'id',
+        true,
+        (q) => q.not('spray_angle', 'is', null).not('distance', 'is', null)
+      );
+
+      // Convert Full Swing swings to SpraySwing format
+      const fullSwingSpraySwings = (fullSwingSwings || [])
+        .map(convertFullSwingToSpray)
+        .filter((s): s is SpraySwing => s !== null);
+      allSpraySwings = [...allSpraySwings, ...fullSwingSpraySwings];
+    }
+
+    setAllSwings(allSpraySwings);
+
+    // Build session distance maps for HitTrax
+    const hittraxDistances: { [sessionId: string]: number[] } = {};
+    if (hasHittrax) {
+      const hittraxSessionIds = hittraxSessions.map(s => s.id);
+      const allSwingsForDistance = await fetchAllPaginated<DistanceSwing>(
+        () => supabase.from('hittrax_swings'),
+        'session_id, distance',
+        [{ column: 'session_id', value: hittraxSessionIds, operator: 'in' }],
+        'id',
+        true
+      );
+
+      (allSwingsForDistance || []).forEach(swing => {
+        if (swing.distance !== null && swing.distance > 0) {
+          if (!hittraxDistances[swing.session_id]) {
+            hittraxDistances[swing.session_id] = [];
+          }
+          hittraxDistances[swing.session_id].push(swing.distance);
         }
-        sessionDistances[swing.session_id].push(swing.distance);
-      }
-    });
+      });
+    }
 
-    const trends = hittraxSessions.map(session => {
-      const distances = sessionDistances[session.id] || [];
+    // Build session trends combining both sources
+    const hittraxTrends: SessionData[] = (hittraxSessions || []).map(session => {
+      const distances = hittraxDistances[session.id] || [];
       const avgDistance = distances.length > 0
         ? distances.reduce((sum, d) => sum + d, 0) / distances.length
         : null;
@@ -319,10 +423,27 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
         maxDistance: session.max_distance,
         avgDistance: avgDistance,
         swingCount: session.total_swings || 0,
+        source: 'hittrax' as const,
       };
     });
 
-    setAllSessionData(trends);
+    const fullSwingTrends: SessionData[] = (fullSwingSessions || []).map(session => ({
+      date: session.session_date.split('T')[0],
+      sessionId: session.id,
+      avgExitVelo: session.avg_exit_velocity,
+      maxExitVelo: session.max_exit_velocity,
+      avgLaunchAngle: session.avg_launch_angle,
+      maxDistance: session.max_distance,
+      avgDistance: session.avg_distance,
+      swingCount: session.total_swings || 0,
+      source: 'fullswing' as const,
+    }));
+
+    // Combine and sort by date
+    const allTrends = [...hittraxTrends, ...fullSwingTrends]
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    setAllSessionData(allTrends);
     setLoading(false);
   }
 
@@ -410,7 +531,7 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
         {allSessionData.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>No batted ball data available</Text>
-            <Text style={styles.emptySubtext}>Complete HitTrax sessions to track your trends</Text>
+            <Text style={styles.emptySubtext}>Complete HitTrax or Full Swing sessions to track your trends</Text>
           </View>
         ) : filteredData.length === 0 ? (
           <View style={styles.emptyState}>
@@ -536,25 +657,30 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
             </View>
             <View style={styles.tableContainer}>
               <View style={styles.tableHeader}>
-                <Text style={[styles.tableHeaderCell, { flex: 1.2 }]}>Date</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 0.8 }]}>Swings</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Avg EV</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Max EV</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Max Dist</Text>
+                <Text style={[styles.tableHeaderCell, { flex: 1.4 }]}>Date</Text>
+                <Text style={[styles.tableHeaderCell, { flex: 0.7 }]}>Swings</Text>
+                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Avg EV</Text>
+                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Max EV</Text>
+                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Max Dist</Text>
               </View>
               {[...filteredData].reverse().slice(0, 10).map((session, idx) => (
                 <View key={idx} style={[styles.tableRow, idx % 2 === 0 && styles.tableRowAlt]}>
-                  <Text style={[styles.tableCell, { flex: 1.2 }]}>
-                    {new Date(session.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </Text>
-                  <Text style={[styles.tableCell, { flex: 0.8 }]}>{session.swingCount}</Text>
-                  <Text style={[styles.tableCell, { flex: 1, color: COLORS.primary }]}>
+                  <View style={{ flex: 1.4, flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={styles.tableCell}>
+                      {new Date(session.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </Text>
+                    <Text style={[styles.sourceTag, session.source === 'fullswing' ? styles.sourceTagFullSwing : styles.sourceTagHittrax]}>
+                      {session.source === 'fullswing' ? 'FS' : 'HT'}
+                    </Text>
+                  </View>
+                  <Text style={[styles.tableCell, { flex: 0.7 }]}>{session.swingCount}</Text>
+                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.primary }]}>
                     {session.avgExitVelo !== null ? `${session.avgExitVelo.toFixed(1)}` : '-'}
                   </Text>
-                  <Text style={[styles.tableCell, { flex: 1, color: COLORS.secondary }]}>
+                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.secondary }]}>
                     {session.maxExitVelo !== null ? `${session.maxExitVelo.toFixed(1)}` : '-'}
                   </Text>
-                  <Text style={[styles.tableCell, { flex: 1, color: COLORS.primary }]}>
+                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.primary }]}>
                     {session.maxDistance !== null ? `${session.maxDistance.toFixed(0)}` : '-'}
                   </Text>
                 </View>
@@ -980,7 +1106,7 @@ function DistanceChart({ sessionData }: { sessionData: SessionData[] }) {
 }
 
 // Exit Velocity Heatmap Component (Spray Chart)
-function ExitVeloHeatmap({ swings, playingLevel }: { swings: HitTraxSwing[]; playingLevel: string }) {
+function ExitVeloHeatmap({ swings, playingLevel }: { swings: SpraySwing[]; playingLevel: string }) {
   const svgWidth = SCREEN_WIDTH - 32;
   const svgHeight = svgWidth * 0.8;
   const viewBox = "20 100 360 280";
@@ -1071,7 +1197,7 @@ function ExitVeloHeatmap({ swings, playingLevel }: { swings: HitTraxSwing[]; pla
 }
 
 // Field Zones Component
-function FieldZones({ swings }: { swings: HitTraxSwing[] }) {
+function FieldZones({ swings }: { swings: SpraySwing[] }) {
   const svgWidth = SCREEN_WIDTH - 32;
   const svgHeight = svgWidth * 0.8;
   const viewBox = "20 100 360 280";
@@ -1178,7 +1304,7 @@ function FieldZones({ swings }: { swings: HitTraxSwing[] }) {
 }
 
 // Strike Zone Heatmap Component
-function StrikeZoneHeatmap({ swings, playingLevel }: { swings: HitTraxSwing[]; playingLevel: string }) {
+function StrikeZoneHeatmap({ swings, playingLevel }: { swings: SpraySwing[]; playingLevel: string }) {
   const svgWidth = SCREEN_WIDTH - 32;
   const svgHeight = svgWidth * 1.25;
 
@@ -1385,7 +1511,7 @@ function StrikeZoneHeatmap({ swings, playingLevel }: { swings: HitTraxSwing[]; p
 }
 
 // Launch Angle Strike Zone Component
-function LaunchAngleStrikeZone({ swings }: { swings: HitTraxSwing[] }) {
+function LaunchAngleStrikeZone({ swings }: { swings: SpraySwing[] }) {
   const svgWidth = SCREEN_WIDTH - 32;
   const svgHeight = svgWidth * 1.25;
 
@@ -1854,6 +1980,23 @@ const styles = StyleSheet.create({
   tableCell: {
     fontSize: 12,
     color: COLORS.white,
+  },
+  sourceTag: {
+    fontSize: 8,
+    fontWeight: '600',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: 3,
+    marginLeft: 4,
+    overflow: 'hidden',
+  },
+  sourceTagHittrax: {
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    color: '#22c55e',
+  },
+  sourceTagFullSwing: {
+    backgroundColor: 'rgba(168, 85, 247, 0.2)',
+    color: '#a855f7',
   },
   strikeZoneContainer: {
     alignItems: 'center',

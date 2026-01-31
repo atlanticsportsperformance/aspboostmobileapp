@@ -92,7 +92,7 @@ interface Session {
   max_exit_velocity: number;
   max_distance: number;
   hard_hit_count: number;
-  source: 'hittrax' | 'blast';
+  source: 'hittrax' | 'blast' | 'fullswing';
   isPaired?: boolean;
   blast_swings_count?: number;
   hittrax_swings_count?: number;
@@ -100,6 +100,25 @@ interface Session {
   avg_bat_speed?: number;
   avg_attack_angle?: number;
   avg_on_plane_efficiency?: number;
+}
+
+interface FullSwingSession {
+  id: string;
+  athlete_id: string;
+  session_date: string;
+  total_swings: number;
+  contact_swings: number;
+  avg_exit_velocity: number | null;
+  max_exit_velocity: number | null;
+  avg_launch_angle: number | null;
+  avg_distance: number | null;
+  max_distance: number | null;
+  avg_bat_speed: number | null;
+  max_bat_speed: number | null;
+  avg_smash_factor: number | null;
+  squared_up_rate: number | null;
+  hard_hit_count: number;
+  hard_hit_rate: number | null;
 }
 
 export default function HittingPerformanceScreen({ navigation, route }: any) {
@@ -317,6 +336,15 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
     const sessionIds = hittraxSessions?.map(s => s.id) || [];
 
+    // Get ALL Full Swing sessions with pagination
+    const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
+      () => supabase.from('fullswing_sessions'),
+      'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_distance, max_distance, hard_hit_count',
+      [{ column: 'athlete_id', value: id }],
+      'session_date',
+      false
+    );
+
     let hittraxTotalSwingsAllTime = 0;
     let hittraxMaxExitVelocity: number | null = null;
     let hittraxAvgExitVelocityLast30Days: number | null = null;
@@ -342,12 +370,18 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         const allContactSwings = allHittraxSwings.filter(s => s.exit_velocity && s.exit_velocity > 0);
 
         if (allContactSwings.length > 0) {
-          const allExitVelocities = allContactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
+          // Combine HitTrax + Full Swing exit velocities for PR
+          const hittraxExitVelos = allContactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
+          const fullSwingExitVelos = fullSwingSessions?.filter(s => s.max_exit_velocity !== null).map(s => s.max_exit_velocity!) || [];
+          const allExitVelocities = [...hittraxExitVelos, ...fullSwingExitVelos];
           if (allExitVelocities.length > 0) {
             hittraxMaxExitVelocity = Math.max(...allExitVelocities);
           }
 
-          const allDistances = allContactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
+          // Combine HitTrax + Full Swing distances for PR
+          const hittraxDistances = allContactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
+          const fullSwingDistances = fullSwingSessions?.filter(s => s.max_distance !== null).map(s => s.max_distance!) || [];
+          const allDistances = [...hittraxDistances, ...fullSwingDistances];
           if (allDistances.length > 0) {
             hittraxMaxDistance = Math.max(...allDistances);
           }
@@ -395,6 +429,18 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       }
     }
 
+    // If no HitTrax data, still check Full Swing for exit velo and distance PRs
+    if (sessionIds.length === 0 && fullSwingSessions && fullSwingSessions.length > 0) {
+      const fullSwingExitVelos = fullSwingSessions.filter(s => s.max_exit_velocity !== null).map(s => s.max_exit_velocity!);
+      if (fullSwingExitVelos.length > 0) {
+        hittraxMaxExitVelocity = Math.max(...fullSwingExitVelos);
+      }
+      const fullSwingDistances = fullSwingSessions.filter(s => s.max_distance !== null).map(s => s.max_distance!);
+      if (fullSwingDistances.length > 0) {
+        hittraxMaxDistance = Math.max(...fullSwingDistances);
+      }
+    }
+
     // Calculate Blast stats
     const last30Swings = blastSwings?.filter(s => {
       const swingDate = new Date(s.recorded_date);
@@ -403,8 +449,10 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
     const totalSwingsLast30Days = last30Swings.length;
 
-    // Get highest bat speed PR (all time)
-    const allBatSpeeds = blastSwings?.filter(s => s.bat_speed !== null).map(s => s.bat_speed!) || [];
+    // Get highest bat speed PR (all time) - combine Blast + Full Swing
+    const blastBatSpeeds = blastSwings?.filter(s => s.bat_speed !== null).map(s => s.bat_speed!) || [];
+    const fullSwingBatSpeeds = fullSwingSessions?.filter(s => s.max_bat_speed !== null).map(s => s.max_bat_speed!) || [];
+    const allBatSpeeds = [...blastBatSpeeds, ...fullSwingBatSpeeds];
     const highestBatSpeedPR = allBatSpeeds.length > 0 ? Math.max(...allBatSpeeds) : 0;
 
     // Average bat speed last 30 days
@@ -589,6 +637,15 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         );
       }
 
+      // Get ALL Full Swing sessions with pagination
+      const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
+        () => supabase.from('fullswing_sessions'),
+        'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_distance, max_distance, hard_hit_count',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        false
+      );
+
       // Match swings by timestamp (7-second window)
       const swingPairs = matchSwingsByTime(blastSwings || [], hittraxSwings, 7);
 
@@ -680,6 +737,24 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
           });
         }
       });
+
+      // Add Full Swing sessions
+      if (fullSwingSessions && fullSwingSessions.length > 0) {
+        fullSwingSessions.forEach(fs => {
+          allSessions.push({
+            id: fs.id,
+            session_date: fs.session_date,
+            total_swings: fs.total_swings,
+            contact_swings: fs.contact_swings,
+            avg_exit_velocity: fs.avg_exit_velocity || 0,
+            max_exit_velocity: fs.max_exit_velocity || 0,
+            max_distance: fs.max_distance || 0,
+            hard_hit_count: fs.hard_hit_count,
+            source: 'fullswing',
+            avg_bat_speed: fs.avg_bat_speed || undefined,
+          });
+        });
+      }
 
       // Sort by date
       allSessions.sort((a, b) => new Date(b.session_date).getTime() - new Date(a.session_date).getTime());
@@ -891,7 +966,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={session.id}
                 style={styles.sessionCard}
-                onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId })}
+                onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId, source: session.source })}
               >
                 <View style={styles.sessionHeader}>
                   <View style={styles.sessionHeaderLeft}>
@@ -916,6 +991,8 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
                     </>
                   ) : session.source === 'hittrax' ? (
                     <><Text style={styles.hittraxLabel}>HitTrax</Text> Only <Text style={styles.sessionSourceMuted}>({session.total_swings} swings)</Text></>
+                  ) : session.source === 'fullswing' ? (
+                    <><Text style={styles.fullswingLabel}>Full Swing</Text> <Text style={styles.sessionSourceMuted}>({session.total_swings} swings)</Text></>
                   ) : (
                     <><Text style={styles.blastLabel}>Blast</Text> Only <Text style={styles.sessionSourceMuted}>({session.blast_swings_count} swings)</Text></>
                   )}
@@ -946,6 +1023,27 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
                           {session.avg_on_plane_efficiency ? session.avg_on_plane_efficiency.toFixed(1) : '--'}%
                         </Text>
                         <Text style={styles.sessionStatLabel}>On-Plane %</Text>
+                      </View>
+                    </>
+                  ) : session.source === 'fullswing' ? (
+                    <>
+                      <View style={styles.sessionStat}>
+                        <Text style={styles.sessionStatValueSpeed}>
+                          {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
+                        </Text>
+                        <Text style={styles.sessionStatLabel}>Bat Speed</Text>
+                      </View>
+                      <View style={styles.sessionStat}>
+                        <Text style={styles.sessionStatValueSpeed}>
+                          {session.max_exit_velocity?.toFixed(1) || '--'}
+                        </Text>
+                        <Text style={styles.sessionStatLabel}>Max EV</Text>
+                      </View>
+                      <View style={styles.sessionStat}>
+                        <Text style={styles.sessionStatValueDistance}>
+                          {Math.round(session.max_distance) || '--'}
+                        </Text>
+                        <Text style={styles.sessionStatLabel}>Max Dist</Text>
                       </View>
                     </>
                   ) : (
@@ -1093,6 +1191,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   hittraxLabel: {
+    color: '#9CA3AF',
+    fontWeight: '600',
+  },
+  fullswingLabel: {
     color: '#9CA3AF',
     fontWeight: '600',
   },
