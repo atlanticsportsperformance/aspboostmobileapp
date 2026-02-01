@@ -429,15 +429,59 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       }
     }
 
-    // If no HitTrax data, still check Full Swing for exit velo and distance PRs
-    if (sessionIds.length === 0 && fullSwingSessions && fullSwingSessions.length > 0) {
+    // Include Full Swing in PRs and last 30 days calculations
+    if (fullSwingSessions && fullSwingSessions.length > 0) {
+      // Full Swing PRs (combine with HitTrax)
       const fullSwingExitVelos = fullSwingSessions.filter(s => s.max_exit_velocity !== null).map(s => s.max_exit_velocity!);
       if (fullSwingExitVelos.length > 0) {
-        hittraxMaxExitVelocity = Math.max(...fullSwingExitVelos);
+        const fsMaxEV = Math.max(...fullSwingExitVelos);
+        hittraxMaxExitVelocity = hittraxMaxExitVelocity !== null ? Math.max(hittraxMaxExitVelocity, fsMaxEV) : fsMaxEV;
       }
       const fullSwingDistances = fullSwingSessions.filter(s => s.max_distance !== null).map(s => s.max_distance!);
       if (fullSwingDistances.length > 0) {
-        hittraxMaxDistance = Math.max(...fullSwingDistances);
+        const fsMaxDist = Math.max(...fullSwingDistances);
+        hittraxMaxDistance = hittraxMaxDistance !== null ? Math.max(hittraxMaxDistance, fsMaxDist) : fsMaxDist;
+      }
+
+      // Full Swing last 30 days averages
+      const fullSwingLast30 = fullSwingSessions.filter(s => new Date(s.session_date) >= last30DaysStart);
+      if (fullSwingLast30.length > 0) {
+        // Exit velocity - weighted by contact swings
+        const fsEVData = fullSwingLast30.filter(s => s.avg_exit_velocity !== null && s.contact_swings > 0);
+        if (fsEVData.length > 0) {
+          const totalContactSwings = fsEVData.reduce((sum, s) => sum + s.contact_swings, 0);
+          const weightedEV = fsEVData.reduce((sum, s) => sum + (s.avg_exit_velocity! * s.contact_swings), 0) / totalContactSwings;
+          if (hittraxAvgExitVelocityLast30Days !== null) {
+            // Combine with HitTrax (simple average of both averages for now)
+            hittraxAvgExitVelocityLast30Days = (hittraxAvgExitVelocityLast30Days + weightedEV) / 2;
+          } else {
+            hittraxAvgExitVelocityLast30Days = weightedEV;
+          }
+        }
+
+        // Distance
+        const fsDistData = fullSwingLast30.filter(s => s.avg_distance !== null && s.contact_swings > 0);
+        if (fsDistData.length > 0) {
+          const totalContactSwings = fsDistData.reduce((sum, s) => sum + s.contact_swings, 0);
+          const weightedDist = fsDistData.reduce((sum, s) => sum + (s.avg_distance! * s.contact_swings), 0) / totalContactSwings;
+          if (hittraxAvgDistanceLast30Days !== null) {
+            hittraxAvgDistanceLast30Days = (hittraxAvgDistanceLast30Days + weightedDist) / 2;
+          } else {
+            hittraxAvgDistanceLast30Days = weightedDist;
+          }
+        }
+
+        // Launch angle
+        const fsLAData = fullSwingLast30.filter(s => s.avg_launch_angle !== null && s.contact_swings > 0);
+        if (fsLAData.length > 0) {
+          const totalContactSwings = fsLAData.reduce((sum, s) => sum + s.contact_swings, 0);
+          const weightedLA = fsLAData.reduce((sum, s) => sum + (s.avg_launch_angle! * s.contact_swings), 0) / totalContactSwings;
+          if (hittraxAvgLaunchAngleLast30Days !== null) {
+            hittraxAvgLaunchAngleLast30Days = (hittraxAvgLaunchAngleLast30Days + weightedLA) / 2;
+          } else {
+            hittraxAvgLaunchAngleLast30Days = weightedLA;
+          }
+        }
       }
     }
 
@@ -447,7 +491,12 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       return swingDate >= last30DaysStart;
     }) || [];
 
-    const totalSwingsLast30Days = last30Swings.length;
+    // Full Swing last 30 days for bat speed
+    const fullSwingLast30ForBatSpeed = fullSwingSessions?.filter(s =>
+      new Date(s.session_date) >= last30DaysStart && s.avg_bat_speed !== null
+    ) || [];
+
+    const totalSwingsLast30Days = last30Swings.length + fullSwingLast30ForBatSpeed.reduce((sum, s) => sum + s.total_swings, 0);
 
     // Get highest bat speed PR (all time) - combine Blast + Full Swing
     const blastBatSpeeds = blastSwings?.filter(s => s.bat_speed !== null).map(s => s.bat_speed!) || [];
@@ -455,11 +504,20 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     const allBatSpeeds = [...blastBatSpeeds, ...fullSwingBatSpeeds];
     const highestBatSpeedPR = allBatSpeeds.length > 0 ? Math.max(...allBatSpeeds) : 0;
 
-    // Average bat speed last 30 days
-    const batSpeedsLast30 = last30Swings.filter(s => s.bat_speed !== null).map(s => s.bat_speed!);
-    const avgBatSpeedLast30Days = batSpeedsLast30.length > 0
-      ? batSpeedsLast30.reduce((sum, speed) => sum + speed, 0) / batSpeedsLast30.length
-      : 0;
+    // Average bat speed last 30 days - combine Blast + Full Swing
+    const blastBatSpeedsLast30 = last30Swings.filter(s => s.bat_speed !== null).map(s => s.bat_speed!);
+    const fullSwingAvgBatSpeedsLast30 = fullSwingLast30ForBatSpeed.map(s => ({ avg: s.avg_bat_speed!, count: s.total_swings }));
+
+    let avgBatSpeedLast30Days = 0;
+    const totalBlastBatSpeedSwings = blastBatSpeedsLast30.length;
+    const totalFSBatSpeedSwings = fullSwingAvgBatSpeedsLast30.reduce((sum, s) => sum + s.count, 0);
+    const totalBatSpeedSwings = totalBlastBatSpeedSwings + totalFSBatSpeedSwings;
+
+    if (totalBatSpeedSwings > 0) {
+      const blastSum = blastBatSpeedsLast30.reduce((sum, speed) => sum + speed, 0);
+      const fsSum = fullSwingAvgBatSpeedsLast30.reduce((sum, s) => sum + (s.avg * s.count), 0);
+      avgBatSpeedLast30Days = (blastSum + fsSum) / totalBatSpeedSwings;
+    }
 
     // Average attack angle last 30 days
     const attackAnglesLast30 = last30Swings.filter(s => s.attack_angle !== null).map(s => s.attack_angle!);
