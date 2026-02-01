@@ -1493,7 +1493,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         )}
 
         {/* Full Swing: Smash Factor Distribution */}
-        {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
+        {sessionType === 'fullswing' && (fullSwingSwings.length > 0 || fullSwingSession?.avg_smash_factor) && (
           <View style={styles.chartSection}>
             <Text style={styles.chartTitle}>Smash Factor Distribution</Text>
             <Text style={styles.chartDescription}>
@@ -1502,7 +1502,41 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
             {(() => {
               const validSwings = fullSwingSwings.filter(s => s.bat_speed && s.exit_velocity);
-              if (validSwings.length === 0) return <Text style={styles.noDataText}>No data available</Text>;
+
+              // Fallback to session-level data when swing-level data is missing
+              if (validSwings.length === 0) {
+                if (fullSwingSession?.avg_smash_factor) {
+                  const avgSmash = fullSwingSession.avg_smash_factor;
+                  const maxSmash = fullSwingSession.max_smash_factor || avgSmash;
+
+                  // Estimate distribution based on avg smash factor
+                  const estimatedLevel = avgSmash >= 1.3 ? 'Elite' : avgSmash >= 1.2 ? 'Excellent' : avgSmash >= 1.1 ? 'Good' : avgSmash >= 1.0 ? 'Average' : 'Below';
+                  const levelColor = avgSmash >= 1.3 ? '#9BDDFF' : avgSmash >= 1.2 ? '#6BB8DB' : avgSmash >= 1.1 ? '#4A8FAD' : avgSmash >= 1.0 ? '#6b7280' : '#3d4f5f';
+
+                  return (
+                    <View>
+                      <View style={styles.barChartContainer}>
+                        <Svg viewBox="0 0 360 200" style={styles.barChart}>
+                          <Rect width="360" height="200" fill="#000000" />
+
+                          {/* Session Average Display */}
+                          <SvgText x="180" y="40" fill="#9ca3af" fontSize="12" textAnchor="middle">Session Averages</SvgText>
+
+                          <SvgText x="180" y="80" fill={levelColor} fontSize="48" fontWeight="bold" textAnchor="middle">{avgSmash.toFixed(2)}</SvgText>
+                          <SvgText x="180" y="100" fill="#9ca3af" fontSize="11" textAnchor="middle">Average Smash Factor</SvgText>
+
+                          <SvgText x="100" y="140" fill="#9ca3af" fontSize="10" textAnchor="middle">Max</SvgText>
+                          <SvgText x="100" y="160" fill="#ffffff" fontSize="16" fontWeight="600" textAnchor="middle">{maxSmash.toFixed(2)}</SvgText>
+
+                          <SvgText x="260" y="140" fill="#9ca3af" fontSize="10" textAnchor="middle">Level</SvgText>
+                          <SvgText x="260" y="160" fill={levelColor} fontSize="14" fontWeight="600" textAnchor="middle">{estimatedLevel}</SvgText>
+                        </Svg>
+                      </View>
+                    </View>
+                  );
+                }
+                return <Text style={styles.noDataText}>No data available</Text>;
+              }
 
               const smashFactors = validSwings.map(s => s.smash_factor || (s.exit_velocity! / s.bat_speed!));
               const avgSmash = smashFactors.reduce((a, b) => a + b, 0) / smashFactors.length;
@@ -1569,7 +1603,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         )}
 
         {/* Full Swing: Squared Up Analysis */}
-        {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
+        {sessionType === 'fullswing' && (fullSwingSwings.length > 0 || fullSwingSession?.squared_up_rate !== null) && (
           <View style={styles.chartSection}>
             <Text style={styles.chartTitle}>Squared Up Analysis</Text>
             <Text style={styles.chartDescription}>
@@ -1584,7 +1618,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 const sessionSquaredRate = fullSwingSession.squared_up_rate > 1
                   ? fullSwingSession.squared_up_rate
                   : fullSwingSession.squared_up_rate * 100;
-                const totalSwings = fullSwingStats.totalSwings;
+                // Use session contact_swings when swing-level data is missing
+                const totalSwings = fullSwingSwings.length > 0 ? fullSwingStats.totalSwings : (fullSwingSession.contact_swings || fullSwingSession.total_swings || 0);
                 const squaredCount = Math.round((sessionSquaredRate / 100) * totalSwings);
                 const notSquaredCount = totalSwings - squaredCount;
 
@@ -1593,9 +1628,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 const squaredSwings = validSwings.filter(s => s.squared_up! >= 80);
                 const notSquaredSwings = validSwings.filter(s => s.squared_up! < 80);
 
+                // Use swing-level data if available, otherwise use session average
                 const avgEVSquared = squaredSwings.length > 0
                   ? squaredSwings.filter(s => s.exit_velocity).reduce((a, s) => a + s.exit_velocity!, 0) / squaredSwings.filter(s => s.exit_velocity).length
-                  : 0;
+                  : (fullSwingSession.avg_exit_velocity || 0);
                 const avgEVNotSquared = notSquaredSwings.length > 0
                   ? notSquaredSwings.filter(s => s.exit_velocity).reduce((a, s) => a + s.exit_velocity!, 0) / notSquaredSwings.filter(s => s.exit_velocity).length
                   : 0;

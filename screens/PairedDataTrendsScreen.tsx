@@ -122,7 +122,23 @@ interface SquaredUpDataPoint {
   squaredUpRate: number;
   totalPairedSwings: number;
   squaredUpCount: number;
+  source?: 'paired' | 'fullswing';
+  avgSmashFactor?: number;
 }
+
+interface FullSwingSession {
+  id: string;
+  session_date: string;
+  avg_smash_factor: number | null;
+  max_smash_factor: number | null;
+  squared_up_rate: number | null;
+  avg_bat_speed: number | null;
+  avg_exit_velocity: number | null;
+  contact_swings: number;
+  total_swings: number;
+}
+
+type SourceFilter = 'all' | 'paired' | 'fullswing';
 
 interface TrajectoryData {
   pitchSpeed: number;
@@ -240,6 +256,10 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
   const [squaredUpData, setSquaredUpData] = useState<SquaredUpDataPoint[]>([]);
   const [squaredUpLoading, setSquaredUpLoading] = useState(true);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
+  const [fullSwingData, setFullSwingData] = useState<SquaredUpDataPoint[]>([]);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [hasFullSwingData, setHasFullSwingData] = useState(false);
+  const [hasPairedData, setHasPairedData] = useState(false);
 
   useEffect(() => {
     loadAthleteAndData();
@@ -249,6 +269,7 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     if (athleteId) {
       fetchAthleteData(athleteId);
       fetchSquaredUpData(athleteId);
+      fetchFullSwingTrendData(athleteId);
     }
   }, [athleteId, timeFilter]);
 
@@ -620,21 +641,87 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
         }
 
         if (totalPairedSwings > 0) {
+          // Calculate smash factor for paired data (avg EV / avg bat speed for the day)
+          const avgBatSpeed = blastOnDate.reduce((sum, b) => sum + b.bat_speed, 0) / blastOnDate.length;
+          const matchedHittraxSwings = hittraxOnDate.filter(h => matchedHittraxIds.has(h.id));
+          const avgExitVelo = matchedHittraxSwings.length > 0
+            ? matchedHittraxSwings.reduce((sum, h) => sum + h.exit_velocity, 0) / matchedHittraxSwings.length
+            : 0;
+          const avgSmashFactor = avgBatSpeed > 0 ? avgExitVelo / avgBatSpeed : undefined;
+
           dataPoints.push({
             date,
             squaredUpRate: (squaredUpCount / totalPairedSwings) * 100,
             totalPairedSwings,
             squaredUpCount,
+            source: 'paired',
+            avgSmashFactor,
           });
         }
       }
 
       dataPoints.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       setSquaredUpData(dataPoints);
+      setHasPairedData(dataPoints.length > 0);
     } catch (error) {
       console.error('Error fetching squared up data:', error);
     } finally {
       setSquaredUpLoading(false);
+    }
+  }
+
+  async function fetchFullSwingTrendData(id: string) {
+    try {
+      const startDateObj = getDateRange();
+      const startDate = startDateObj ? startDateObj.toISOString().split('T')[0] : null;
+
+      // Fetch Full Swing sessions with smash factor and squared up data
+      const sessions = await fetchAllPaginated<FullSwingSession>(
+        () => supabase.from('fullswing_sessions'),
+        'id, session_date, avg_smash_factor, max_smash_factor, squared_up_rate, contact_swings, total_swings, avg_bat_speed, avg_exit_velocity',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        true
+      );
+
+      if (!sessions || sessions.length === 0) {
+        setFullSwingData([]);
+        setHasFullSwingData(false);
+        return;
+      }
+
+      const dataPoints: SquaredUpDataPoint[] = sessions
+        .filter(session => {
+          // Filter by date range
+          if (startDate && session.session_date < startDate) return false;
+          // Must have either squared up rate or smash factor
+          return session.squared_up_rate !== null || session.avg_smash_factor !== null;
+        })
+        .map(session => {
+          // Handle squared_up_rate which may be stored as decimal (0.78) or percentage (78)
+          const squaredUpRate = session.squared_up_rate !== null
+            ? (session.squared_up_rate > 1 ? session.squared_up_rate : session.squared_up_rate * 100)
+            : 0;
+          const contactSwings = session.contact_swings || session.total_swings || 0;
+          const squaredUpCount = Math.round((squaredUpRate / 100) * contactSwings);
+
+          return {
+            date: session.session_date,
+            squaredUpRate,
+            totalPairedSwings: contactSwings,
+            squaredUpCount,
+            source: 'fullswing' as const,
+            avgSmashFactor: session.avg_smash_factor || undefined,
+          };
+        });
+
+      dataPoints.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      setFullSwingData(dataPoints);
+      setHasFullSwingData(dataPoints.length > 0);
+    } catch (error) {
+      console.error('Error fetching Full Swing trend data:', error);
+      setFullSwingData([]);
+      setHasFullSwingData(false);
     }
   }
 
@@ -660,6 +747,26 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     });
   }, [athleteData, pitchSpeedCohorts]);
 
+  // Combine paired and Full Swing data based on source filter
+  const combinedSquaredUpData = useMemo(() => {
+    let combined: SquaredUpDataPoint[] = [];
+
+    if (sourceFilter === 'all' || sourceFilter === 'paired') {
+      combined = [...combined, ...squaredUpData];
+    }
+    if (sourceFilter === 'all' || sourceFilter === 'fullswing') {
+      combined = [...combined, ...fullSwingData];
+    }
+
+    // Sort by date
+    return combined.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [squaredUpData, fullSwingData, sourceFilter]);
+
+  // Get smash factor data for trend chart (only from sessions with smash factor)
+  const smashFactorTrendData = useMemo(() => {
+    return combinedSquaredUpData.filter(d => d.avgSmashFactor !== undefined && d.avgSmashFactor > 0);
+  }, [combinedSquaredUpData]);
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -680,11 +787,47 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
             <Ionicons name="arrow-back" size={20} color={COLORS.gray400} />
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>Paired Data Trends</Text>
+          <Text style={styles.title}>Contact Quality Trends</Text>
           <Text style={styles.subtitle}>
-            Analyze relationships between Blast Motion and HitTrax data
+            Track smash factor and squared up rate from paired sessions and Full Swing
           </Text>
         </View>
+
+        {/* Source Filter Buttons */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.filterScrollView}
+          contentContainerStyle={styles.filterContainer}
+        >
+          {([
+            { key: 'all', label: 'All Sources' },
+            { key: 'paired', label: 'Blast + HitTrax' },
+            { key: 'fullswing', label: 'Full Swing' },
+          ] as { key: SourceFilter; label: string }[]).map(({ key, label }) => {
+            const isDisabled = (key === 'paired' && !hasPairedData) || (key === 'fullswing' && !hasFullSwingData);
+            return (
+              <TouchableOpacity
+                key={key}
+                style={[
+                  styles.filterButton,
+                  sourceFilter === key && styles.filterButtonActive,
+                  isDisabled && styles.filterButtonDisabled,
+                ]}
+                onPress={() => !isDisabled && setSourceFilter(key)}
+                disabled={isDisabled}
+              >
+                <Text style={[
+                  styles.filterButtonText,
+                  sourceFilter === key && styles.filterButtonTextActive,
+                  isDisabled && styles.filterButtonTextDisabled,
+                ]}>
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
 
         {/* Time Filter Buttons */}
         <ScrollView
@@ -767,6 +910,17 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
           )}
         </View>
 
+        {/* Smash Factor Trend Section */}
+        {smashFactorTrendData.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Smash Factor Trend</Text>
+            <Text style={styles.sectionSubtitle}>
+              Energy transfer efficiency (Exit Velo ÷ Bat Speed) over time. Elite: 1.3+, Good: 1.2+
+            </Text>
+            <SmashFactorChart data={smashFactorTrendData} />
+          </View>
+        )}
+
         {/* Squared Up Rate Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Squared Up Rate</Text>
@@ -778,15 +932,33 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
             <View style={styles.chartLoading}>
               <ActivityIndicator size="small" color={COLORS.primary} />
             </View>
-          ) : squaredUpData.length > 0 ? (
-            <SquaredUpChart data={squaredUpData} />
+          ) : combinedSquaredUpData.length > 0 ? (
+            <SquaredUpChart data={combinedSquaredUpData} />
           ) : (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>No paired session data available</Text>
-              <Text style={styles.emptySubtext}>Complete sessions with both Blast Motion and HitTrax</Text>
+              <Text style={styles.emptyText}>No contact quality data available</Text>
+              <Text style={styles.emptySubtext}>Complete sessions with Blast + HitTrax or Full Swing</Text>
             </View>
           )}
         </View>
+
+        {/* Source Legend */}
+        {(hasPairedData || hasFullSwingData) && combinedSquaredUpData.length > 0 && (
+          <View style={styles.sourceLegend}>
+            {hasPairedData && (sourceFilter === 'all' || sourceFilter === 'paired') && (
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: COLORS.cyan400 }]} />
+                <Text style={styles.legendText}>Blast + HitTrax</Text>
+              </View>
+            )}
+            {hasFullSwingData && (sourceFilter === 'all' || sourceFilter === 'fullswing') && (
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+                <Text style={styles.legendText}>Full Swing</Text>
+              </View>
+            )}
+          </View>
+        )}
 
         <View style={{ height: 100 }} />
       </ScrollView>
@@ -1028,8 +1200,6 @@ function SquaredUpChart({ data }: { data: SquaredUpDataPoint[] }) {
   const avgSquaredUpRate = data.length > 0
     ? data.reduce((sum, d) => sum + d.squaredUpRate, 0) / data.length
     : 0;
-  const totalSwings = data.reduce((sum, d) => sum + d.totalPairedSwings, 0);
-  const totalSquaredUp = data.reduce((sum, d) => sum + d.squaredUpCount, 0);
 
   const maxRate = Math.max(100, ...data.map(d => d.squaredUpRate));
   const minRate = 0;
@@ -1081,10 +1251,6 @@ function SquaredUpChart({ data }: { data: SquaredUpDataPoint[] }) {
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>Average Rate</Text>
           <Text style={styles.statValue}>{avgSquaredUpRate.toFixed(1)}%</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Total Squared Up</Text>
-          <Text style={styles.statValueWhite}>{totalSquaredUp}/{totalSwings}</Text>
         </View>
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>Sessions</Text>
@@ -1152,70 +1318,87 @@ function SquaredUpChart({ data }: { data: SquaredUpDataPoint[] }) {
             strokeLinejoin="round"
           />
 
-          {/* Data points */}
-          {data.map((d, i) => (
-            <Circle
-              key={i}
-              cx={xScale(i)}
-              cy={yScale(d.squaredUpRate)}
-              r={selectedPoint === i ? 6 : 4}
-              fill={selectedPoint === i ? COLORS.cyan400 : '#1E3A5F'}
-              stroke={COLORS.cyan400}
-              strokeWidth={2}
-            />
-          ))}
+          {/* Data points - color-coded by source */}
+          {data.map((d, i) => {
+            const pointColor = d.source === 'fullswing' ? '#10B981' : COLORS.cyan400;
+            return (
+              <Circle
+                key={i}
+                cx={xScale(i)}
+                cy={yScale(d.squaredUpRate)}
+                r={selectedPoint === i ? 6 : 4}
+                fill={selectedPoint === i ? pointColor : '#1E3A5F'}
+                stroke={pointColor}
+                strokeWidth={2}
+              />
+            );
+          })}
 
           {/* Tooltip */}
-          {selectedPoint !== null && data[selectedPoint] && (
-            <G>
-              <Line
-                x1={xScale(selectedPoint)}
-                y1={padding.top}
-                x2={xScale(selectedPoint)}
-                y2={chartHeight - padding.bottom}
-                stroke="rgba(34, 211, 238, 0.3)"
-                strokeDasharray="4,4"
-              />
-              <Rect
-                x={Math.min(xScale(selectedPoint), chartWidth - 90) - 40}
-                y={Math.max(yScale(data[selectedPoint].squaredUpRate) - 55, padding.top)}
-                width={80}
-                height={50}
-                fill="rgba(0,0,0,0.9)"
-                stroke="rgba(34, 211, 238, 0.5)"
-                strokeWidth={1}
-                rx={4}
-              />
-              <SvgText
-                x={Math.min(xScale(selectedPoint), chartWidth - 90)}
-                y={Math.max(yScale(data[selectedPoint].squaredUpRate) - 55, padding.top) + 15}
-                textAnchor="middle"
-                fontSize={12}
-                fill={COLORS.cyan400}
-                fontWeight="bold"
-              >
-                {data[selectedPoint].squaredUpRate.toFixed(1)}%
-              </SvgText>
-              <SvgText
-                x={Math.min(xScale(selectedPoint), chartWidth - 90)}
-                y={Math.max(yScale(data[selectedPoint].squaredUpRate) - 55, padding.top) + 30}
-                textAnchor="middle"
-                fontSize={10}
-                fill="rgba(255,255,255,0.7)"
-              >
-                {data[selectedPoint].squaredUpCount}/{data[selectedPoint].totalPairedSwings} swings
-              </SvgText>
-              <SvgText
-                x={Math.min(xScale(selectedPoint), chartWidth - 90)}
-                y={Math.max(yScale(data[selectedPoint].squaredUpRate) - 55, padding.top) + 43}
-                textAnchor="middle"
-                fontSize={9}
-                fill="rgba(255,255,255,0.5)"
-              >
-                {formatDate(data[selectedPoint].date)}
-              </SvgText>
-            </G>
-          )}
+          {selectedPoint !== null && data[selectedPoint] && (() => {
+            const selectedData = data[selectedPoint];
+            const tooltipColor = selectedData.source === 'fullswing' ? '#10B981' : COLORS.cyan400;
+            const sourceLabel = selectedData.source === 'fullswing' ? 'Full Swing' : 'Paired';
+            return (
+              <G>
+                <Line
+                  x1={xScale(selectedPoint)}
+                  y1={padding.top}
+                  x2={xScale(selectedPoint)}
+                  y2={chartHeight - padding.bottom}
+                  stroke={`${tooltipColor}50`}
+                  strokeDasharray="4,4"
+                />
+                <Rect
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90) - 40}
+                  y={Math.max(yScale(selectedData.squaredUpRate) - 65, padding.top)}
+                  width={80}
+                  height={60}
+                  fill="rgba(0,0,0,0.9)"
+                  stroke={`${tooltipColor}80`}
+                  strokeWidth={1}
+                  rx={4}
+                />
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(selectedData.squaredUpRate) - 65, padding.top) + 12}
+                  textAnchor="middle"
+                  fontSize={8}
+                  fill={tooltipColor}
+                >
+                  {sourceLabel}
+                </SvgText>
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(selectedData.squaredUpRate) - 65, padding.top) + 27}
+                  textAnchor="middle"
+                  fontSize={12}
+                  fill={tooltipColor}
+                  fontWeight="bold"
+                >
+                  {selectedData.squaredUpRate.toFixed(1)}%
+                </SvgText>
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(selectedData.squaredUpRate) - 65, padding.top) + 42}
+                  textAnchor="middle"
+                  fontSize={10}
+                  fill="rgba(255,255,255,0.7)"
+                >
+                  {selectedData.squaredUpCount}/{selectedData.totalPairedSwings} swings
+                </SvgText>
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(selectedData.squaredUpRate) - 65, padding.top) + 55}
+                  textAnchor="middle"
+                  fontSize={9}
+                  fill="rgba(255,255,255,0.5)"
+                >
+                  {formatDate(selectedData.date)}
+                </SvgText>
+              </G>
+            );
+          })()}
         </Svg>
 
         {/* Touch targets */}
@@ -1227,6 +1410,246 @@ function SquaredUpChart({ data }: { data: SquaredUpDataPoint[] }) {
               {
                 left: xScale(i) - 15,
                 top: yScale(data[i].squaredUpRate) - 15,
+              },
+            ]}
+            onPress={() => setSelectedPoint(selectedPoint === i ? null : i)}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// Smash Factor Trend Chart Component
+function SmashFactorChart({ data }: { data: SquaredUpDataPoint[] }) {
+  const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
+
+  const chartWidth = SCREEN_WIDTH - 32;
+  const chartHeight = 200;
+  const padding = { top: 20, right: 20, bottom: 40, left: 45 };
+
+  const innerWidth = chartWidth - padding.left - padding.right;
+  const innerHeight = chartHeight - padding.top - padding.bottom;
+
+  // Filter to only include data points with smash factor
+  const validData = data.filter(d => d.avgSmashFactor !== undefined && d.avgSmashFactor > 0);
+
+  if (validData.length === 0) {
+    return (
+      <View style={styles.emptyState}>
+        <Text style={styles.emptyText}>No smash factor data available</Text>
+      </View>
+    );
+  }
+
+  // Summary stats
+  const avgSmashFactor = validData.reduce((sum, d) => sum + (d.avgSmashFactor || 0), 0) / validData.length;
+  const maxSmashFactor = Math.max(...validData.map(d => d.avgSmashFactor || 0));
+
+  // Y-axis range: 0.8 to 1.5 (typical smash factor range)
+  const minSF = 0.8;
+  const maxSF = Math.max(1.5, maxSmashFactor + 0.1);
+
+  const xScale = (index: number) => padding.left + (index / Math.max(validData.length - 1, 1)) * innerWidth;
+  const yScale = (sf: number) => chartHeight - padding.bottom - ((sf - minSF) / (maxSF - minSF)) * innerHeight;
+
+  const generateLinePath = (): string => {
+    if (validData.length === 0) return '';
+    if (validData.length === 1) {
+      return `M ${xScale(0)},${yScale(validData[0].avgSmashFactor || 0)}`;
+    }
+    const points = validData.map((d, i) => `${xScale(i)},${yScale(d.avgSmashFactor || 0)}`);
+    return `M ${points.join(' L ')}`;
+  };
+
+  const formatDate = (dateStr: string): string => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const getXAxisLabels = (): { index: number; label: string }[] => {
+    if (validData.length <= 5) {
+      return validData.map((d, i) => ({ index: i, label: formatDate(d.date) }));
+    }
+    const labels: { index: number; label: string }[] = [];
+    const step = Math.floor(validData.length / 4);
+    for (let i = 0; i < validData.length; i += step) {
+      labels.push({ index: i, label: formatDate(validData[i].date) });
+    }
+    if (labels[labels.length - 1].index !== validData.length - 1) {
+      labels.push({ index: validData.length - 1, label: formatDate(validData[validData.length - 1].date) });
+    }
+    return labels;
+  };
+
+  // Determine level color
+  const getLevelColor = (sf: number) => {
+    if (sf >= 1.3) return '#9BDDFF'; // Elite
+    if (sf >= 1.2) return '#6BB8DB'; // Excellent
+    if (sf >= 1.1) return '#4A8FAD'; // Good
+    return '#6b7280'; // Average
+  };
+
+  return (
+    <View>
+      {/* Summary Stats */}
+      <View style={styles.statsRow}>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Average</Text>
+          <Text style={[styles.statValue, { color: getLevelColor(avgSmashFactor) }]}>{avgSmashFactor.toFixed(2)}</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Best Session</Text>
+          <Text style={[styles.statValue, { color: getLevelColor(maxSmashFactor) }]}>{maxSmashFactor.toFixed(2)}</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Sessions</Text>
+          <Text style={styles.statValueWhite}>{validData.length}</Text>
+        </View>
+      </View>
+
+      {/* Chart */}
+      <View style={styles.chartContainer}>
+        <Svg width={chartWidth} height={chartHeight}>
+          {/* Reference lines */}
+          {[1.0, 1.1, 1.2, 1.3, 1.4].filter(v => v >= minSF && v <= maxSF).map(sf => (
+            <G key={sf}>
+              <Line
+                x1={padding.left}
+                y1={yScale(sf)}
+                x2={chartWidth - padding.right}
+                y2={yScale(sf)}
+                stroke={sf === 1.2 || sf === 1.3 ? 'rgba(155,221,255,0.3)' : 'rgba(255,255,255,0.1)'}
+                strokeDasharray="4,4"
+              />
+              <SvgText
+                x={padding.left - 8}
+                y={yScale(sf) + 4}
+                textAnchor="end"
+                fontSize={10}
+                fill={sf === 1.3 ? '#9BDDFF' : sf === 1.2 ? '#6BB8DB' : COLORS.gray500}
+              >
+                {sf.toFixed(1)}
+              </SvgText>
+              {sf === 1.3 && (
+                <SvgText x={chartWidth - padding.right - 5} y={yScale(sf) + 4} textAnchor="end" fontSize={8} fill="#9BDDFF">Elite</SvgText>
+              )}
+              {sf === 1.2 && (
+                <SvgText x={chartWidth - padding.right - 5} y={yScale(sf) + 4} textAnchor="end" fontSize={8} fill="#6BB8DB">Good</SvgText>
+              )}
+            </G>
+          ))}
+
+          {/* X-axis labels */}
+          {getXAxisLabels().map(({ index, label }) => (
+            <SvgText
+              key={index}
+              x={xScale(index)}
+              y={chartHeight - padding.bottom + 20}
+              textAnchor="middle"
+              fontSize={10}
+              fill={COLORS.gray500}
+            >
+              {label}
+            </SvgText>
+          ))}
+
+          {/* Line */}
+          <Path
+            d={generateLinePath()}
+            fill="none"
+            stroke={COLORS.primary}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+
+          {/* Data points - color-coded by source */}
+          {validData.map((d, i) => {
+            const pointColor = d.source === 'fullswing' ? '#10B981' : COLORS.cyan400;
+            return (
+              <Circle
+                key={i}
+                cx={xScale(i)}
+                cy={yScale(d.avgSmashFactor || 0)}
+                r={selectedPoint === i ? 6 : 4}
+                fill={selectedPoint === i ? pointColor : '#1E3A5F'}
+                stroke={pointColor}
+                strokeWidth={2}
+              />
+            );
+          })}
+
+          {/* Tooltip */}
+          {selectedPoint !== null && validData[selectedPoint] && (() => {
+            const selectedData = validData[selectedPoint];
+            const sf = selectedData.avgSmashFactor || 0;
+            const tooltipColor = selectedData.source === 'fullswing' ? '#10B981' : COLORS.cyan400;
+            const sourceLabel = selectedData.source === 'fullswing' ? 'Full Swing' : 'Paired';
+            return (
+              <G>
+                <Line
+                  x1={xScale(selectedPoint)}
+                  y1={padding.top}
+                  x2={xScale(selectedPoint)}
+                  y2={chartHeight - padding.bottom}
+                  stroke={`${tooltipColor}50`}
+                  strokeDasharray="4,4"
+                />
+                <Rect
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90) - 40}
+                  y={Math.max(yScale(sf) - 50, padding.top)}
+                  width={80}
+                  height={45}
+                  fill="rgba(0,0,0,0.9)"
+                  stroke={`${tooltipColor}80`}
+                  strokeWidth={1}
+                  rx={4}
+                />
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(sf) - 50, padding.top) + 12}
+                  textAnchor="middle"
+                  fontSize={8}
+                  fill={tooltipColor}
+                >
+                  {sourceLabel}
+                </SvgText>
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(sf) - 50, padding.top) + 27}
+                  textAnchor="middle"
+                  fontSize={14}
+                  fill={getLevelColor(sf)}
+                  fontWeight="bold"
+                >
+                  {sf.toFixed(2)}
+                </SvgText>
+                <SvgText
+                  x={Math.min(xScale(selectedPoint), chartWidth - 90)}
+                  y={Math.max(yScale(sf) - 50, padding.top) + 40}
+                  textAnchor="middle"
+                  fontSize={9}
+                  fill="rgba(255,255,255,0.5)"
+                >
+                  {formatDate(selectedData.date)}
+                </SvgText>
+              </G>
+            );
+          })()}
+        </Svg>
+
+        {/* Touch targets */}
+        {validData.map((_, i) => (
+          <TouchableOpacity
+            key={i}
+            style={[
+              styles.touchTarget,
+              {
+                left: xScale(i) - 15,
+                top: padding.top,
+                height: innerHeight,
               },
             ]}
             onPress={() => setSelectedPoint(selectedPoint === i ? null : i)}
@@ -1301,6 +1724,32 @@ const styles = StyleSheet.create({
   },
   filterButtonTextActive: {
     color: COLORS.primary,
+  },
+  filterButtonDisabled: {
+    opacity: 0.4,
+  },
+  filterButtonTextDisabled: {
+    color: COLORS.gray600,
+  },
+  filterScrollView: {
+    marginBottom: 8,
+  },
+  sourceLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 24,
+    marginBottom: 16,
+    paddingVertical: 8,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   section: {
     backgroundColor: 'rgba(255,255,255,0.02)',
