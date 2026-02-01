@@ -77,10 +77,10 @@ interface OverviewStats {
   hittraxAvgExitVelocityLast30Days: number | null;
   hittraxMaxDistance: number | null;
   hittraxAvgDistanceLast30Days: number | null;
-  avgAttackAngleLast30Days: number;
+  avgAttackAngleLast30Days: number | null;  // Blast-only - null when no Blast data
   hittraxAvgLaunchAngleLast30Days: number | null;
   hittraxAvgHorizontalAngleLast30Days: number | null;
-  avgOnPlaneEfficiencyLast30Days: number;
+  avgOnPlaneEfficiencyLast30Days: number | null;  // Blast-only - null when no Blast data
 }
 
 interface Session {
@@ -339,7 +339,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     // Get ALL Full Swing sessions with pagination
     const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
       () => supabase.from('fullswing_sessions'),
-      'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_distance, max_distance, hard_hit_count',
+      'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, hard_hit_count',
       [{ column: 'athlete_id', value: id }],
       'session_date',
       false
@@ -519,17 +519,17 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       avgBatSpeedLast30Days = (blastSum + fsSum) / totalBatSpeedSwings;
     }
 
-    // Average attack angle last 30 days
+    // Average attack angle last 30 days (Blast-only metric)
     const attackAnglesLast30 = last30Swings.filter(s => s.attack_angle !== null).map(s => s.attack_angle!);
     const avgAttackAngleLast30Days = attackAnglesLast30.length > 0
       ? attackAnglesLast30.reduce((sum, angle) => sum + angle, 0) / attackAnglesLast30.length
-      : 0;
+      : null;  // Return null when no Blast data
 
-    // Average on-plane efficiency last 30 days
+    // Average on-plane efficiency last 30 days (Blast-only metric)
     const onPlaneEfficiencyLast30 = last30Swings.filter(s => s.on_plane_efficiency !== null).map(s => s.on_plane_efficiency!);
     const avgOnPlaneEfficiencyLast30Days = onPlaneEfficiencyLast30.length > 0
       ? onPlaneEfficiencyLast30.reduce((sum, eff) => sum + eff, 0) / onPlaneEfficiencyLast30.length
-      : 0;
+      : null;  // Return null when no Blast data
 
     setOverviewStats({
       totalSwingsAllTime: totalBlastSwings || 0,
@@ -946,11 +946,19 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
               {/* Row 2 */}
               <View style={styles.avgRow}>
                 <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.avgAttackAngleLast30Days)}°</Text>
+                  <Text style={styles.avgValue}>
+                    {overviewStats.avgAttackAngleLast30Days !== null
+                      ? `${formatMetric(overviewStats.avgAttackAngleLast30Days)}°`
+                      : '--'}
+                  </Text>
                   <Text style={styles.avgLabel}>Attack Angle</Text>
                 </View>
                 <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.hittraxAvgLaunchAngleLast30Days)}°</Text>
+                  <Text style={styles.avgValue}>
+                    {overviewStats.hittraxAvgLaunchAngleLast30Days !== null
+                      ? `${formatMetric(overviewStats.hittraxAvgLaunchAngleLast30Days)}°`
+                      : '--'}
+                  </Text>
                   <Text style={styles.avgLabel}>Launch Angle</Text>
                 </View>
                 <View style={styles.avgItemSmall}>
@@ -972,7 +980,11 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
                   <Text style={styles.avgLabel}>Spray Direction</Text>
                 </View>
                 <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.avgOnPlaneEfficiencyLast30Days)}%</Text>
+                  <Text style={styles.avgValue}>
+                    {overviewStats.avgOnPlaneEfficiencyLast30Days !== null
+                      ? `${formatMetric(overviewStats.avgOnPlaneEfficiencyLast30Days)}%`
+                      : '--'}
+                  </Text>
                   <Text style={styles.avgLabel}>On-Plane %</Text>
                 </View>
               </View>
