@@ -177,6 +177,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // App was in background for > 30 minutes - recreate Supabase client
           console.log('[Auth] Was in background for', Math.round((now - backgroundTime) / 60000), 'minutes - recreating Supabase client');
           recreateSupabaseClient();
+          // Pre-warm: force a network roundtrip so Dashboard queries don't pay TCP connection cost
+          supabase.auth.refreshSession().catch(() => {});
         }
 
         backgroundTimestampRef.current = null;
@@ -186,7 +188,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           if (current && isExpiredOrExpiring(current)) {
             console.log('[Auth] Token needs refresh on resume');
-            await refreshToken();
+            // Timeout prevents indefinite hang if Supabase auth is slow
+            await Promise.race([
+              refreshToken(),
+              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Token refresh timeout')), 5000))
+            ]).catch(() => {
+              console.log('[Auth] Token refresh timed out, using existing session');
+            });
           } else if (current && mountedRef.current) {
             // Update state even if not expired - ensures fresh reference
             setSession(current);

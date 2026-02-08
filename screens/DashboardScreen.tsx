@@ -729,15 +729,8 @@ export default function DashboardScreen({ navigation }: any) {
     }
   }
 
-  async function fetchForceProfile(athleteIdParam: string, valdProfileIdParam: string | null) {
-    // Get athlete's org_id for composite config
-    const { data: athlete, error: athleteError } = await supabase
-      .from('athletes')
-      .select('org_id, play_level')
-      .eq('id', athleteIdParam)
-      .single();
-
-    if (!athlete?.org_id) {
+  async function fetchForceProfile(athleteIdParam: string, valdProfileIdParam: string | null, orgId: string | null) {
+    if (!orgId) {
       setValdProfileId(null);
       setForceProfile(null);
       return;
@@ -745,24 +738,23 @@ export default function DashboardScreen({ navigation }: any) {
 
     // Get the org's default composite config (matches web app logic)
     // First try default, then fall back to any config for the org
-    let { data: compositeConfig, error: configError } = await supabase
+    let { data: compositeConfig } = await supabase
       .from('composite_score_configs')
       .select('*')
-      .eq('org_id', athlete.org_id)
+      .eq('org_id', orgId)
       .eq('is_default', true)
       .limit(1)
       .maybeSingle();
 
     // If no default, try any config for this org
     if (!compositeConfig) {
-      const { data: anyConfig, error: anyErr } = await supabase
+      const { data: anyConfig } = await supabase
         .from('composite_score_configs')
         .select('*')
-        .eq('org_id', athlete.org_id)
+        .eq('org_id', orgId)
         .limit(1)
         .maybeSingle();
       compositeConfig = anyConfig;
-      configError = anyErr;
     }
 
     // If still no config, use hardcoded default (same as seed script)
@@ -782,44 +774,74 @@ export default function DashboardScreen({ navigation }: any) {
 
     // Calculate composite score from force_plate_percentiles (matches web app calculateCompositeScore)
     const metrics = compositeConfig.metrics || [];
-    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+    const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
 
+    // BATCHED: Fetch ALL percentiles in one query instead of 6 sequential queries
+    const { data: allPercentiles } = await supabase
+      .from('force_plate_percentiles')
+      .select('test_id, test_date, test_type, percentiles')
+      .eq('athlete_id', athleteIdParam)
+      .in('test_type', uniqueTestTypes)
+      .order('test_date', { ascending: false });
+
+    if (!allPercentiles || allPercentiles.length === 0) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    // Pick latest entry per test_type in-memory (already sorted by test_date DESC)
+    const latestByType: Record<string, any> = {};
+    for (const p of allPercentiles) {
+      if (!latestByType[p.test_type]) {
+        latestByType[p.test_type] = p;
+      }
+    }
+
+    // Find metrics that have valid percentiles
+    const validMetrics: Array<{ metricSpec: any; percentileData: any; metricPercentile: number }> = [];
     for (const metricSpec of metrics) {
-      const { data: percentileData, error } = await supabase
-        .from('force_plate_percentiles')
-        .select('test_id, test_date, percentiles')
-        .eq('athlete_id', athleteIdParam)
-        .eq('test_type', metricSpec.test_type)
-        .order('test_date', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (!error && percentileData?.percentiles) {
+      const percentileData = latestByType[metricSpec.test_type];
+      if (percentileData?.percentiles) {
         const metricPercentile = percentileData.percentiles[metricSpec.metric];
         if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
-          // Fetch the actual raw value from the test table
-          let rawValue = 0;
-          const { data: testData } = await supabase
-            .from(`${metricSpec.test_type}_tests`)
-            .select(metricSpec.metric)
-            .eq('test_id', percentileData.test_id)
-            .single();
-
-          if (testData && testData[metricSpec.metric] !== undefined) {
-            rawValue = Number(testData[metricSpec.metric]) || 0;
-          }
-
-          // Get display name for the metric
-          const displayName = getMetricDisplayName(metricSpec.test_type, metricSpec.metric);
-          percentiles.push({
-            name: displayName,
-            percentile: Math.round(metricPercentile),
-            value: rawValue,
-            test_type: metricSpec.test_type,
-            metric: metricSpec.metric,
-          });
+          validMetrics.push({ metricSpec, percentileData, metricPercentile });
         }
       }
+    }
+
+    if (validMetrics.length === 0) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    // BATCHED: Fetch ALL raw values in parallel instead of 6 sequential queries
+    const rawValues = await Promise.all(
+      validMetrics.map(({ metricSpec, percentileData }) =>
+        supabase
+          .from(`${metricSpec.test_type}_tests`)
+          .select(metricSpec.metric)
+          .eq('test_id', percentileData.test_id)
+          .single()
+      )
+    );
+
+    // Build percentiles array
+    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+    for (let i = 0; i < validMetrics.length; i++) {
+      const { metricSpec, metricPercentile } = validMetrics[i];
+      const testData = rawValues[i].data;
+      const rawValue = (testData && testData[metricSpec.metric] !== undefined)
+        ? Number(testData[metricSpec.metric]) || 0
+        : 0;
+      percentiles.push({
+        name: getMetricDisplayName(metricSpec.test_type, metricSpec.metric),
+        percentile: Math.round(metricPercentile),
+        value: rawValue,
+        test_type: metricSpec.test_type,
+        metric: metricSpec.metric,
+      });
     }
 
     if (percentiles.length === 0) {
@@ -1650,7 +1672,7 @@ export default function DashboardScreen({ navigation }: any) {
           Promise.resolve(
             supabase
               .from('athletes')
-              .select('id, first_name, last_name, vald_profile_id')
+              .select('id, first_name, last_name, vald_profile_id, org_id')
               .eq('user_id', user.id)
               .single()
           ),
@@ -1677,7 +1699,7 @@ export default function DashboardScreen({ navigation }: any) {
             Promise.resolve(
               supabase
                 .from('athletes')
-                .select('id, first_name, last_name, vald_profile_id')
+                .select('id, first_name, last_name, vald_profile_id, org_id')
                 .eq('user_id', user.id)
                 .single()
             ),
@@ -1697,7 +1719,7 @@ export default function DashboardScreen({ navigation }: any) {
           const accessToken = session.access_token;
 
           try {
-            const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id`;
+            const url = `${supabaseUrl}/rest/v1/athletes?user_id=eq.${user.id}&select=id,first_name,last_name,vald_profile_id,org_id`;
             const response = await fetch(url, {
               method: 'GET',
               headers: {
@@ -1883,22 +1905,34 @@ export default function DashboardScreen({ navigation }: any) {
         setBookings(normalizedBookings);
 
         // Calculate unread messages count using conversation_participants.last_read_at
-        // This matches how the web app calculates unread count
+        // BATCHED: Single query instead of 1 per conversation
         // Run in background to not block initial render
         (async () => {
           try {
-            let totalUnread = 0;
             const participants = conversationParticipantsResult.data || [];
-            for (const participant of participants) {
-              const lastReadAt = participant.last_read_at || '1970-01-01';
-              const { count } = await supabase
-                .from('messages')
-                .select('*', { count: 'exact', head: true })
-                .eq('conversation_id', participant.conversation_id)
-                .eq('is_deleted', false)
-                .neq('sender_id', user.id)
-                .gt('created_at', lastReadAt);
-              totalUnread += count || 0;
+            if (participants.length === 0) {
+              setUnreadMessagesCount(0);
+              return;
+            }
+
+            const conversationIds = participants.map(p => p.conversation_id);
+
+            // Fetch all messages for all conversations in one query
+            const { data: allMessages } = await supabase
+              .from('messages')
+              .select('conversation_id, created_at')
+              .in('conversation_id', conversationIds)
+              .eq('is_deleted', false)
+              .neq('sender_id', user.id);
+
+            // Count unread by filtering in-memory based on last_read_at
+            let totalUnread = 0;
+            for (const msg of allMessages || []) {
+              const participant = participants.find(p => p.conversation_id === msg.conversation_id);
+              const lastReadAt = participant?.last_read_at || '1970-01-01';
+              if (msg.created_at > lastReadAt) {
+                totalUnread++;
+              }
             }
             setUnreadMessagesCount(totalUnread);
           } catch (err) {
@@ -1919,7 +1953,7 @@ export default function DashboardScreen({ navigation }: any) {
 
         // Load all performance data in parallel for faster loading
         await Promise.all([
-          fetchForceProfile(athlete.id, athlete.vald_profile_id),
+          fetchForceProfile(athlete.id, athlete.vald_profile_id, athlete.org_id),
           fetchHittingData(athlete.id),
           fetchArmCareData(athlete.id),
           fetchPitchingData(athlete.id),

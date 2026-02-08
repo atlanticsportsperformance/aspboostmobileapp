@@ -542,6 +542,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         .select(`
           id,
           athlete_id,
+          status,
           event:scheduling_events (
             id,
             start_time,
@@ -585,39 +586,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       setBookings(bookingsWithAthleteInfo);
 
-      // Fetch upcoming events for the UpcomingEventsCard (need full event details)
-      console.log('[ParentDashboard] Fetching upcoming events for athleteIds:', athleteIds);
-      const { data: upcomingEventsData, error: upcomingEventsError } = await supabase
-        .from('scheduling_bookings')
-        .select(`
-          id,
-          status,
-          event:scheduling_events (
-            id,
-            start_time,
-            end_time,
-            title,
-            scheduling_templates (
-              name,
-              scheduling_categories (
-                name,
-                color
-              )
-            )
-          )
-        `)
-        .in('athlete_id', athleteIds)
-        .in('status', ['booked', 'confirmed', 'waitlisted']);
-
-      console.log('[ParentDashboard] Upcoming events raw data:', JSON.stringify(upcomingEventsData, null, 2));
-      if (upcomingEventsError) {
-        console.error('[ParentDashboard] Upcoming events error:', upcomingEventsError);
-      }
-
-      // Transform to match UpcomingEvent interface
-      // Note: Supabase may return event as array or object depending on relationship
+      // Transform bookings to UpcomingEvent interface (reuse bookingsData instead of duplicate query)
+      console.log('[ParentDashboard] Formatting upcoming events from bookingsData');
       const formattedEvents: UpcomingEvent[] = [];
-      for (const e of upcomingEventsData || []) {
+      for (const e of bookingsData || []) {
         // Handle event being an array (Supabase FK relationship)
         const rawEvent = Array.isArray(e.event) ? e.event[0] : e.event;
         if (!rawEvent?.start_time) continue;
@@ -803,42 +775,74 @@ export default function ParentDashboardScreen({ navigation }: any) {
     }
 
     const metrics = compositeConfig.metrics || [];
-    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+    const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
 
+    // BATCHED: Fetch ALL percentiles in one query instead of 6 sequential queries
+    const { data: allPercentiles } = await supabase
+      .from('force_plate_percentiles')
+      .select('test_id, test_date, test_type, percentiles')
+      .eq('athlete_id', athleteIdParam)
+      .in('test_type', uniqueTestTypes)
+      .order('test_date', { ascending: false });
+
+    if (!allPercentiles || allPercentiles.length === 0) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    // Pick latest entry per test_type in-memory (already sorted by test_date DESC)
+    const latestByType: Record<string, any> = {};
+    for (const p of allPercentiles) {
+      if (!latestByType[p.test_type]) {
+        latestByType[p.test_type] = p;
+      }
+    }
+
+    // Find metrics that have valid percentiles
+    const validMetrics: Array<{ metricSpec: any; percentileData: any; metricPercentile: number }> = [];
     for (const metricSpec of metrics) {
-      const { data: percentileData, error } = await supabase
-        .from('force_plate_percentiles')
-        .select('test_id, test_date, percentiles')
-        .eq('athlete_id', athleteIdParam)
-        .eq('test_type', metricSpec.test_type)
-        .order('test_date', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (!error && percentileData?.percentiles) {
+      const percentileData = latestByType[metricSpec.test_type];
+      if (percentileData?.percentiles) {
         const metricPercentile = percentileData.percentiles[metricSpec.metric];
         if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
-          let rawValue = 0;
-          const { data: testData } = await supabase
-            .from(`${metricSpec.test_type}_tests`)
-            .select(metricSpec.metric)
-            .eq('test_id', percentileData.test_id)
-            .single();
-
-          if (testData && testData[metricSpec.metric] !== undefined) {
-            rawValue = Number(testData[metricSpec.metric]) || 0;
-          }
-
-          const displayName = getMetricDisplayName(metricSpec.test_type, metricSpec.metric);
-          percentiles.push({
-            name: displayName,
-            percentile: Math.round(metricPercentile),
-            value: rawValue,
-            test_type: metricSpec.test_type,
-            metric: metricSpec.metric,
-          });
+          validMetrics.push({ metricSpec, percentileData, metricPercentile });
         }
       }
+    }
+
+    if (validMetrics.length === 0) {
+      setValdProfileId(null);
+      setForceProfile(null);
+      return;
+    }
+
+    // BATCHED: Fetch ALL raw values in parallel instead of 6 sequential queries
+    const rawValues = await Promise.all(
+      validMetrics.map(({ metricSpec, percentileData }) =>
+        supabase
+          .from(`${metricSpec.test_type}_tests`)
+          .select(metricSpec.metric)
+          .eq('test_id', percentileData.test_id)
+          .single()
+      )
+    );
+
+    // Build percentiles array
+    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
+    for (let i = 0; i < validMetrics.length; i++) {
+      const { metricSpec, metricPercentile } = validMetrics[i];
+      const testData = rawValues[i].data;
+      const rawValue = (testData && testData[metricSpec.metric] !== undefined)
+        ? Number(testData[metricSpec.metric]) || 0
+        : 0;
+      percentiles.push({
+        name: getMetricDisplayName(metricSpec.test_type, metricSpec.metric),
+        percentile: Math.round(metricPercentile),
+        value: rawValue,
+        test_type: metricSpec.test_type,
+        metric: metricSpec.metric,
+      });
     }
 
     if (percentiles.length === 0) {
