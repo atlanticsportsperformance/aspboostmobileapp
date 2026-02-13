@@ -68,7 +68,7 @@ export interface BookingResult {
 export async function getPublicOrganizations(): Promise<Organization[]> {
   // Return ASP org with slug as ID - we'll use org_slug in the events API
   return [{
-    id: 'asp', // Using slug as ID, getPublicEvents will handle it
+    id: 'atlantic-sports-performance',
     name: 'Atlantic Sports Performance',
     logo_url: null,
   }];

@@ -18,6 +18,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { supabase } from '../lib/supabase';
+import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -151,6 +152,14 @@ export default function ResourcesScreen({ navigation, route }: any) {
 
   async function fetchResources(userIdParam: string, athleteIdParam: string) {
     try {
+      // Get athlete's org_id for security filtering
+      const orgId = await getOrgIdForAthlete(athleteIdParam);
+      if (!orgId) {
+        console.error('[ResourcesScreen] No org_id found for athlete');
+        setResources([]);
+        return;
+      }
+
       // Get athlete's group IDs
       const { data: groupMemberships } = await supabase
         .from('group_members')
@@ -159,13 +168,14 @@ export default function ResourcesScreen({ navigation, route }: any) {
 
       const groupIds = groupMemberships?.map(g => g.group_id) || [];
 
-      // Build query for resources
+      // Build query for resources with org_id filtering
       let query = supabase
         .from('resources')
         .select(`
           *,
           uploaded_by_profile:profiles!uploaded_by(first_name, last_name)
         `)
+        .eq('org_id', orgId) // SECURITY: Filter by org to prevent cross-org access
         .neq('visibility', 'coaches_only')
         .order('pinned', { ascending: false })
         .order('created_at', { ascending: false });

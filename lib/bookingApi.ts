@@ -492,10 +492,13 @@ export async function getPaymentMethods(
       return [];
     }
 
-    const options = await response.json();
+    const data = await response.json();
+
+    // API may return an array directly or an object with an options/data property
+    const options = Array.isArray(data) ? data : (Array.isArray(data?.options) ? data.options : []);
 
     // Map API response to PaymentMethod interface
-    return (options || []).map((opt: any) => ({
+    return options.map((opt: any) => ({
       id: opt.id,
       type: opt.type as 'membership' | 'package' | 'drop_in',
       name: opt.label || opt.name || 'Unknown',

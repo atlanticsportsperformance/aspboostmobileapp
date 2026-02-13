@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 
@@ -220,6 +221,13 @@ export default function PitchingScreen({ navigation, route }: any) {
 
   async function fetchFabDataAvailability(athleteIdParam: string, userIdParam: string) {
     try {
+      // Get org_id for security filtering
+      const orgId = await getOrgIdForAthlete(athleteIdParam);
+      if (!orgId) {
+        console.error('[PitchingScreen] No org_id found for athlete');
+        return;
+      }
+
       // Check for hitting data (Blast + HitTrax + Full Swing)
       const [blastSwings, hittraxSessions, fullSwingSessions] = await Promise.all([
         supabase.from('blast_swings').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteIdParam),
@@ -246,6 +254,7 @@ export default function PitchingScreen({ navigation, route }: any) {
       const { count: resourcesCount } = await supabase
         .from('resources')
         .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
         .eq('athlete_id', userIdParam);
       setHasResourcesData((resourcesCount || 0) > 0);
 
@@ -260,6 +269,7 @@ export default function PitchingScreen({ navigation, route }: any) {
         const { count: newCount } = await supabase
           .from('resources')
           .select('id', { count: 'exact', head: true })
+          .eq('org_id', orgId)
           .eq('athlete_id', userIdParam)
           .gt('created_at', athleteWithLastViewed.last_viewed_resources_at);
         setNewResourcesCount(newCount || 0);

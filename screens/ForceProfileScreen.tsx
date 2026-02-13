@@ -13,6 +13,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Line, Polygon, Text as SvgText, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 
@@ -126,6 +127,13 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       if (!user) return;
       setUserId(user.id);
 
+      // Get org_id for security filtering
+      const orgId = await getOrgIdForAthlete(athleteId);
+      if (!orgId) {
+        console.error('[ForceProfileScreen] No org_id found for athlete');
+        return;
+      }
+
       // Check for hitting data (Blast + HitTrax)
       const [blastSwings, hittraxSessions] = await Promise.all([
         supabase.from('blast_swings').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteId),
@@ -151,6 +159,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       const { count: resourcesCount } = await supabase
         .from('resources')
         .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
         .eq('athlete_id', user.id);
       setHasResourcesData((resourcesCount || 0) > 0);
 
@@ -165,6 +174,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         const { count: newCount } = await supabase
           .from('resources')
           .select('id', { count: 'exact', head: true })
+          .eq('org_id', orgId)
           .eq('athlete_id', user.id)
           .gt('created_at', athleteWithLastViewed.last_viewed_resources_at);
         setNewResourcesCount(newCount || 0);

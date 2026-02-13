@@ -12,6 +12,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 
@@ -222,6 +223,13 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
   async function fetchFabData(athleteId: string, currentUserId: string) {
     try {
+      // Get org_id for security filtering
+      const orgId = await getOrgIdForAthlete(athleteId);
+      if (!orgId) {
+        console.error('[HittingPerformanceScreen] No org_id found for athlete');
+        return;
+      }
+
       // Check for pitching data
       const { count: pitchingCount } = await supabase
         .from('trackman_sessions')
@@ -247,6 +255,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       const { count: resourcesCount } = await supabase
         .from('resources')
         .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
         .eq('athlete_id', currentUserId);
       setHasResourcesData((resourcesCount || 0) > 0);
 
@@ -271,6 +280,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
           const { count: newCount } = await supabase
             .from('resources')
             .select('id', { count: 'exact', head: true })
+            .eq('org_id', orgId)
             .eq('athlete_id', currentUserId)
             .gt('created_at', lastViewed);
           setNewResourcesCount(newCount || 0);

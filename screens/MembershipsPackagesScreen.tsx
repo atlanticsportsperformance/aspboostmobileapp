@@ -509,7 +509,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
           };
 
       console.log('[Checkout] Calling endpoint:', endpoint);
-      console.log('[Checkout] Body params:', bodyParams);
+      console.log('[Checkout] Body params:', JSON.stringify(bodyParams));
+      console.log('[Checkout] Auth user ID:', session.user?.id);
+      console.log('[Checkout] Auth user email:', session.user?.email);
+      console.log('[Checkout] Token preview:', session.access_token?.substring(0, 20) + '...');
+      console.log('[Checkout] Selected item type:', selectedItemType);
+      console.log('[Checkout] Selected item:', JSON.stringify({ id: selectedItem.id, name: selectedItem.name }));
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -520,9 +525,18 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         body: JSON.stringify(bodyParams),
       });
 
-      const data = await response.json();
+      const responseText = await response.text();
       console.log('[Checkout] Response status:', response.status);
-      console.log('[Checkout] Response data:', data);
+      console.log('[Checkout] Response headers:', JSON.stringify(Object.fromEntries(response.headers.entries())));
+      console.log('[Checkout] Raw response body:', responseText);
+
+      let data: any;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(`Non-JSON response (${response.status}): ${responseText.substring(0, 200)}`);
+      }
+      console.log('[Checkout] Parsed response:', JSON.stringify(data));
 
       if (!response.ok) {
         throw new Error(data.error || data.message || `HTTP ${response.status}: Failed to create checkout`);

@@ -14,6 +14,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Line, Path, Text as SvgText, G, Polygon, Polyline, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 
@@ -126,6 +127,13 @@ export default function ArmCareScreen({ navigation, route }: any) {
   }
 
   async function checkDataPresence(athId: string, currentUserId: string) {
+    // Get org_id for security filtering
+    const orgId = await getOrgIdForAthlete(athId);
+    if (!orgId) {
+      console.error('[ArmCareScreen] No org_id found for athlete');
+      return;
+    }
+
     const [
       blastSwings,
       hittraxSessions,
@@ -138,7 +146,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
       supabase.from('hittrax_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athId),
       supabase.from('trackman_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athId),
       supabase.from('cmj_tests').select('id', { count: 'exact', head: true }).eq('athlete_id', athId),
-      supabase.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', currentUserId),
+      supabase.from('resources').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('athlete_id', currentUserId),
       supabase.from('messages').select('id', { count: 'exact', head: true }).eq('recipient_id', currentUserId).eq('read', false),
     ]);
 
@@ -161,6 +169,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
         const { count: newCount } = await supabase
           .from('resources')
           .select('id', { count: 'exact', head: true })
+          .eq('org_id', orgId)
           .eq('athlete_id', currentUserId)
           .gt('created_at', lastViewed);
         setNewResourcesCount(newCount || 0);

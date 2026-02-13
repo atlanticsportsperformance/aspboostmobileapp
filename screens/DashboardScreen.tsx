@@ -1769,12 +1769,22 @@ export default function DashboardScreen({ navigation }: any) {
           setLoading(false);
           setAppReady(true);
           // User is authenticated but has no athlete record
-          // Check if they're a parent account and redirect appropriately
-          if (isParentAccount) {
-            console.log('[Dashboard] User is a parent, redirecting to ParentDashboard');
+          // Query account_type directly (don't rely on AuthContext which may have a race condition)
+          const { data: profileCheck } = await supabase
+            .from('profiles')
+            .select('account_type')
+            .eq('id', user.id)
+            .maybeSingle();
+
+          if (profileCheck?.account_type === 'parent') {
+            console.log('[Dashboard] User is a parent (direct DB check), redirecting to ParentDashboard');
             navigation.replace('ParentDashboard');
+          } else if (profileCheck) {
+            console.log('[Dashboard] User has profile but no athlete record, redirecting to Login');
+            navigation.replace('Login');
           } else {
-            console.log('[Dashboard] Unknown account type, redirecting to Login');
+            console.log('[Dashboard] No profile found - signing out orphaned session');
+            await supabase.auth.signOut();
             navigation.replace('Login');
           }
         }

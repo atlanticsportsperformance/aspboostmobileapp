@@ -357,12 +357,7 @@ export default function LoginScreen({ navigation }: any) {
               <Text style={styles.securityText}>Secured with industry-standard encryption</Text>
             </View>
 
-            <View style={styles.newHereContainer}>
-              <Text style={styles.newHereText}>New here? </Text>
-              <TouchableOpacity onPress={() => navigation.navigate('PublicBooking')} disabled={loading}>
-                <Text style={styles.newHereLink}>Book a session</Text>
-              </TouchableOpacity>
-            </View>
+            {/* Public booking button removed - users book from dashboard after signing in */}
           </View>
 
           <Text style={styles.footer}>© 2025 Atlantic Sports Performance. All rights reserved.</Text>
