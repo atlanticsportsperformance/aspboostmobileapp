@@ -497,8 +497,11 @@ export async function getPaymentMethods(
     // API may return an array directly or an object with an options/data property
     const options = Array.isArray(data) ? data : (Array.isArray(data?.options) ? data.options : []);
 
-    // Map API response to PaymentMethod interface
-    return options.map((opt: any) => ({
+    // Filter to only membership/package types — drop-in pricing is handled
+    // separately via checkEligibility() from the event template
+    return options
+    .filter((opt: any) => opt.type === 'membership' || opt.type === 'package')
+    .map((opt: any) => ({
       id: opt.id,
       type: opt.type as 'membership' | 'package' | 'drop_in',
       name: opt.label || opt.name || 'Unknown',
