@@ -339,6 +339,185 @@ export async function getBookableEvents(
 }
 
 /**
+ * Get bookable events for an entire week in a single batched call
+ * Replaces calling getBookableEvents() 7 times sequentially
+ */
+export async function getBookableEventsForWeek(
+  athleteId: string,
+  weekDates: Date[]
+): Promise<BookableEvent[]> {
+  if (weekDates.length === 0) return [];
+
+  // Compute week date range
+  const sortedDates = [...weekDates].sort((a, b) => a.getTime() - b.getTime());
+  const firstDate = sortedDates[0];
+  const lastDate = sortedDates[sortedDates.length - 1];
+
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const startOfWeek = `${fmt(firstDate)}T00:00:00`;
+  const endOfWeek = `${fmt(lastDate)}T23:59:59`;
+
+  // Query 1: Athlete data (ONCE, not 7 times)
+  const { data: athlete } = await supabase
+    .from('athletes')
+    .select('org_id, restriction_tag_ids')
+    .eq('id', athleteId)
+    .single();
+
+  if (!athlete?.org_id) {
+    console.error('Could not find athlete org');
+    return [];
+  }
+
+  // Query 2: ALL events for the entire week in one shot
+  const { data: events, error } = await supabase
+    .from('scheduling_events')
+    .select(`
+      id,
+      title,
+      start_time,
+      end_time,
+      capacity,
+      location_id,
+      resource_id,
+      event_template_id,
+      staff_id,
+      template:scheduling_templates(
+        id,
+        name,
+        category_id,
+        required_restriction_tag_ids,
+        booking_window_hours,
+        max_booking_days_ahead,
+        category:scheduling_categories(
+          id,
+          name
+        )
+      )
+    `)
+    .eq('org_id', athlete.org_id)
+    .eq('status', 'scheduled')
+    .gte('start_time', startOfWeek)
+    .lte('start_time', endOfWeek)
+    .order('start_time', { ascending: true });
+
+  if (error) {
+    console.error('Error fetching week events:', error);
+    return [];
+  }
+
+  const allEvents = events || [];
+  if (allEvents.length === 0) return [];
+
+  // Collect unique IDs across ALL events
+  const eventIds = allEvents.map((e: any) => e.id);
+  const staffIds = [...new Set(allEvents.map((e: any) => e.staff_id).filter(Boolean))];
+  const locationIds = [...new Set(allEvents.map((e: any) => e.location_id).filter(Boolean))];
+  const resourceIds = [...new Set(allEvents.map((e: any) => e.resource_id).filter(Boolean))];
+
+  // Queries 3-6: Staff, locations, resources, bookings — ALL in parallel
+  const [staffResult, locationResult, resourceResult, bookingsResult] = await Promise.all([
+    staffIds.length > 0
+      ? supabase.from('staff').select('id, user_id, profiles:profiles!user_id(first_name, last_name, avatar_url)').in('id', staffIds)
+      : Promise.resolve({ data: [] as any[] }),
+    locationIds.length > 0
+      ? supabase.from('scheduling_locations').select('id, name').in('id', locationIds)
+      : Promise.resolve({ data: [] as any[] }),
+    resourceIds.length > 0
+      ? supabase.from('scheduling_resources').select('id, name').in('id', resourceIds)
+      : Promise.resolve({ data: [] as any[] }),
+    supabase.from('scheduling_bookings').select('event_id, athlete_id').in('event_id', eventIds).in('status', ['booked', 'confirmed', 'waitlisted']),
+  ]);
+
+  // Build lookup maps
+  const staffMap: Record<string, any> = {};
+  (staffResult.data || []).forEach((s: any) => {
+    const profile = s.profiles;
+    staffMap[s.id] = {
+      first_name: profile?.first_name || '',
+      last_name: profile?.last_name || '',
+      avatar_url: profile?.avatar_url || null,
+    };
+  });
+
+  const locationMap: Record<string, any> = {};
+  (locationResult.data || []).forEach((l: any) => { locationMap[l.id] = l; });
+
+  const resourceMap: Record<string, any> = {};
+  (resourceResult.data || []).forEach((r: any) => { resourceMap[r.id] = r; });
+
+  const bookingCounts: Record<string, number> = {};
+  const athleteBookings: Set<string> = new Set();
+  (bookingsResult.data || []).forEach((b: any) => {
+    bookingCounts[b.event_id] = (bookingCounts[b.event_id] || 0) + 1;
+    if (b.athlete_id === athleteId) {
+      athleteBookings.add(b.event_id);
+    }
+  });
+
+  // Map to BookableEvent[] (same logic as getBookableEvents)
+  const now = new Date();
+
+  return allEvents.map((event: any) => {
+    const startTime = new Date(event.start_time);
+    const endTime = new Date(event.end_time);
+    const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
+
+    const staff = event.staff_id ? staffMap[event.staff_id] : null;
+    const rawTemplate = event.template;
+    const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+    const location = event.location_id ? locationMap[event.location_id] : null;
+    const resource = event.resource_id ? resourceMap[event.resource_id] : null;
+
+    const rawCategory = template?.category;
+    const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+
+    let bookingWindowBlocked = false;
+    let bookingWindowReason: string | null = null;
+
+    const bookingWindowHours = template?.booking_window_hours;
+    const maxBookingDaysAhead = template?.max_booking_days_ahead;
+
+    if (bookingWindowHours !== null && bookingWindowHours !== undefined && bookingWindowHours > 0) {
+      const cutoffTime = new Date(startTime.getTime() - bookingWindowHours * 60 * 60 * 1000);
+      if (now >= cutoffTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings close ${bookingWindowHours}h before`;
+      }
+    }
+
+    if (!bookingWindowBlocked && maxBookingDaysAhead !== null && maxBookingDaysAhead !== undefined && maxBookingDaysAhead > 0) {
+      const openTime = new Date(startTime.getTime() - maxBookingDaysAhead * 24 * 60 * 60 * 1000);
+      if (now < openTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings open ${maxBookingDaysAhead} days before`;
+      }
+    }
+
+    return {
+      id: event.id,
+      title: event.title || template?.name || 'Class',
+      startTime,
+      endTime,
+      coachName: staff ? `${staff.first_name || ''} ${staff.last_name || ''}`.trim() : 'Staff',
+      coachAvatar: staff?.avatar_url || null,
+      location: location?.name || 'Main Facility',
+      resource: resource?.name || null,
+      category: category?.name || null,
+      durationMinutes,
+      capacity: event.capacity || 10,
+      bookedCount: bookingCounts[event.id] || 0,
+      isBooked: athleteBookings.has(event.id),
+      isEligible: true,
+      eventTemplateId: event.event_template_id,
+      categoryId: template?.category_id || null,
+      bookingWindowBlocked,
+      bookingWindowReason,
+    };
+  });
+}
+
+/**
  * Get categories for filter pills
  */
 export async function getCategories(orgId: string): Promise<SchedulingCategory[]> {

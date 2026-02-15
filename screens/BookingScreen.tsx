@@ -17,6 +17,7 @@ import {
   getLinkedAthletes,
   getAthleteId,
   getBookableEvents,
+  getBookableEventsForWeek,
   getCategories,
   checkEligibility,
   getPaymentMethods,
@@ -273,14 +274,8 @@ export default function BookingScreen() {
 
     if (isMountedRef.current) setLoadingListEvents(true);
     try {
-      // Fetch events for all days in the week
-      const allEvents: BookableEvent[] = [];
-
-      for (const date of weekDates) {
-        if (!isMountedRef.current) break;
-        const dayEvents = await getBookableEvents(selectedAthleteId, date);
-        allEvents.push(...dayEvents);
-      }
+      // Fetch all events for the week in a single batched call
+      const allEvents = await getBookableEventsForWeek(selectedAthleteId, weekDates);
 
       if (!isMountedRef.current) return;
 
