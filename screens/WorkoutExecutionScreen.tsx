@@ -564,6 +564,81 @@ export default function WorkoutExecutionScreen() {
     await AsyncStorage.setItem(`workout_${instanceId}`, JSON.stringify(state));
   }
 
+  async function completeWorkout() {
+    if (!instance || !athleteId) return;
+
+    try {
+      // Collect all exercise logs to insert
+      const logs: any[] = [];
+
+      for (const routine of routines) {
+        for (const re of (routine.routine_exercises || [])) {
+          if (re.exercises?.is_placeholder) continue;
+
+          const inputs = exerciseInputs[re.id] || [];
+          inputs.forEach((input, setIdx) => {
+            // Only save sets that have some data entered
+            if (!input || (!input.reps && !input.weight && !Object.keys(input).some(k => k !== 'reps' && k !== 'weight' && input[k]))) return;
+
+            // Separate standard fields from custom metric data
+            const { reps, weight, ...customMetrics } = input;
+
+            logs.push({
+              workout_instance_id: instanceId,
+              routine_exercise_id: re.id,
+              athlete_id: athleteId,
+              exercise_id: re.exercise_id,
+              set_number: setIdx + 1,
+              actual_reps: reps ? parseInt(String(reps), 10) || null : null,
+              actual_weight: weight ? parseFloat(String(weight)) || null : null,
+              metric_data: Object.keys(customMetrics).length > 0 ? customMetrics : null,
+              is_complete: true,
+            });
+          });
+        }
+      }
+
+      // Insert all exercise logs in one batch
+      if (logs.length > 0) {
+        const { error: logsError } = await supabase
+          .from('exercise_logs')
+          .insert(logs);
+
+        if (logsError) {
+          console.error('Error saving exercise logs:', logsError);
+          Alert.alert('Error', 'Failed to save workout data. Please try again.');
+          return;
+        }
+      }
+
+      // Update workout instance status to completed
+      const { error: updateError } = await supabase
+        .from('workout_instances')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', instanceId);
+
+      if (updateError) {
+        console.error('Error updating workout status:', updateError);
+        Alert.alert('Error', 'Failed to update workout status. Please try again.');
+        return;
+      }
+
+      // Clean up local state
+      await AsyncStorage.removeItem(`workout_${instanceId}`);
+      setTimerActive(false);
+
+      Alert.alert('Success', 'Workout completed!', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (err) {
+      console.error('Error completing workout:', err);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
+    }
+  }
+
   async function startWorkout() {
     try {
       // Update instance status
@@ -1746,11 +1821,7 @@ export default function WorkoutExecutionScreen() {
               'Are you sure you want to finish this workout?',
               [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Complete', style: 'default', onPress: () => {
-                  // TODO: Implement complete workout logic
-                  Alert.alert('Success', 'Workout completed!');
-                  navigation.goBack();
-                }},
+                { text: 'Complete', style: 'default', onPress: completeWorkout },
               ]
             );
           }}
