@@ -1445,7 +1445,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    navigation.replace('Login');
+    navigation.replace('Login', { skipAutoLogin: true });
   }
 
   // FAB navigation with athlete picker logic

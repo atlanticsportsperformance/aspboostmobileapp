@@ -1756,7 +1756,7 @@ export default function DashboardScreen({ navigation }: any) {
           setLoading(false);
           setAppReady(true);
           await supabase.auth.signOut();
-          navigation.replace('Login');
+          navigation.replace('Login', { skipAutoLogin: true });
         }
         isLoadingRef.current = false;
         return;
@@ -1785,7 +1785,7 @@ export default function DashboardScreen({ navigation }: any) {
           } else {
             console.log('[Dashboard] No profile found - signing out orphaned session');
             await supabase.auth.signOut();
-            navigation.replace('Login');
+            navigation.replace('Login', { skipAutoLogin: true });
           }
         }
         isLoadingRef.current = false;
@@ -2116,7 +2116,7 @@ export default function DashboardScreen({ navigation }: any) {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    navigation.replace('Login');
+    navigation.replace('Login', { skipAutoLogin: true });
   }
 
   if (loading) {

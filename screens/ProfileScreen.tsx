@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 import { unregisterPushToken } from '../lib/pushNotifications';
 
@@ -966,8 +967,10 @@ export default function ProfileScreen({ navigation, route }: any) {
                     onPress: async () => {
                       // Unregister push token before signing out
                       await unregisterPushToken();
+                      // Clear biometric credentials so auto-login doesn't fire
+                      await SecureStore.deleteItemAsync('faceIdEnabled');
                       await supabase.auth.signOut();
-                      navigation.replace('Login');
+                      navigation.replace('Login', { skipAutoLogin: true });
                     },
                   },
                 ]

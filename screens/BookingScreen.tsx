@@ -102,6 +102,7 @@ export default function BookingScreen() {
   const isInitializingRef = useRef(false);
   const isFetchingEventsRef = useRef(false);
   const isFetchingListEventsRef = useRef(false);
+  const listFetchIdRef = useRef(0);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -132,7 +133,7 @@ export default function BookingScreen() {
 
   // Fetch list events when in list mode or week changes
   useEffect(() => {
-    if (selectedAthleteId && viewMode === 'list' && !isFetchingListEventsRef.current) {
+    if (selectedAthleteId && viewMode === 'list') {
       fetchListEvents();
     }
   }, [selectedAthleteId, weekDates, viewMode]);
@@ -269,7 +270,10 @@ export default function BookingScreen() {
   };
 
   const fetchListEvents = async () => {
-    if (!selectedAthleteId || weekDates.length === 0 || isFetchingListEventsRef.current) return;
+    if (!selectedAthleteId || weekDates.length === 0) return;
+
+    // Increment fetch ID so stale responses are discarded
+    const fetchId = ++listFetchIdRef.current;
     isFetchingListEventsRef.current = true;
 
     if (isMountedRef.current) setLoadingListEvents(true);
@@ -277,7 +281,8 @@ export default function BookingScreen() {
       // Fetch all events for the week in a single batched call
       const allEvents = await getBookableEventsForWeek(selectedAthleteId, weekDates);
 
-      if (!isMountedRef.current) return;
+      // Discard if a newer fetch was started (user navigated to another week)
+      if (!isMountedRef.current || fetchId !== listFetchIdRef.current) return;
 
       // Sort by date/time
       allEvents.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
@@ -285,8 +290,11 @@ export default function BookingScreen() {
     } catch (error) {
       console.error('Error fetching list events:', error);
     } finally {
-      isFetchingListEventsRef.current = false;
-      if (isMountedRef.current) setLoadingListEvents(false);
+      // Only clear loading if this is still the latest fetch
+      if (fetchId === listFetchIdRef.current) {
+        isFetchingListEventsRef.current = false;
+        if (isMountedRef.current) setLoadingListEvents(false);
+      }
     }
   };
 
@@ -443,8 +451,9 @@ export default function BookingScreen() {
     const newDate = new Date(selectedDate);
     newDate.setDate(selectedDate.getDate() + (direction === 'next' ? 7 : -7));
     setSelectedDate(newDate);
-    // Clear day selections when navigating to a new week
+    // Clear day selections and stale events when navigating to a new week
     setSelectedDays([]);
+    setListEvents([]);
   };
 
   const isToday = (date: Date) => {

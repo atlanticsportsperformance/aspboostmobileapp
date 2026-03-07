@@ -19,7 +19,7 @@ import { supabase } from '../lib/supabase';
 import { setupPushNotifications } from '../lib/pushNotifications';
 import { useAuth } from '../contexts/AuthContext';
 
-export default function LoginScreen({ navigation }: any) {
+export default function LoginScreen({ navigation, route }: any) {
   const { session, isParentAccount, signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -77,6 +77,9 @@ export default function LoginScreen({ navigation }: any) {
         setHasSavedCredentials(true);
         setEmail(savedEmail);
         setEnableFaceId(true);
+
+        // Don't auto-trigger biometric login if user just signed out
+        if (route?.params?.skipAutoLogin) return;
 
         const compatible = await LocalAuthentication.hasHardwareAsync();
         const enrolled = await LocalAuthentication.isEnrolledAsync();
@@ -171,10 +174,14 @@ export default function LoginScreen({ navigation }: any) {
           setError('');
           try {
             const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-              redirectTo: 'https://aspboostapp.vercel.app/update-password',
+              redirectTo: 'https://aspboostapp.vercel.app/auth/reset-password',
             });
             if (resetError) throw resetError;
-            Alert.alert('Check Your Email', 'If an account exists with this email, you will receive a password reset link shortly.', [{ text: 'OK' }]);
+            Alert.alert(
+              'Check Your Email',
+              'We\'ve sent a password reset link to your email. Open the link to reset your password, then return here to sign in with your new password.',
+              [{ text: 'OK' }]
+            );
           } catch (err: any) {
             setError(err.message || 'Failed to send reset email');
           } finally {
