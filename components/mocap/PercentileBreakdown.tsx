@@ -6,12 +6,16 @@ import {
   Animated,
   Dimensions,
   TouchableOpacity,
+  Modal,
+  ScrollView,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import Svg, { Path, Line, Circle, Polygon, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
 import {
   type PercentileTable,
   type RowData,
   GROUPS,
+  computeScore,
   INDUSTRY_MEDIAN,
   computeGroupData,
   getMetricData,
@@ -85,15 +89,15 @@ function ringPath(pct: number) {
   }).join(' ') + ' Z';
 }
 
-function RadarChart({ groupAvgs, overallPct }: { groupAvgs: number[]; overallPct: number }) {
+function RadarChart({ groupScores, overallScore }: { groupScores: number[]; overallScore: number }) {
   const scaleAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.spring(scaleAnim, { toValue: 1, damping: 16, stiffness: 70, delay: 200, useNativeDriver: true }).start();
   }, []);
 
-  const pts = groupAvgs.map((pct, i) => rp(AXES[i].angle, pct));
+  const pts = groupScores.map((pct, i) => rp(AXES[i].angle, pct));
   const athletePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') + ' Z';
-  const oc = zoneColor(overallPct);
+  const oc = zoneColor(overallScore);
 
   // Label positions pushed further out with alignment adjustments
   const labelPositions = AXES.map((a, i) => {
@@ -109,8 +113,8 @@ function RadarChart({ groupAvgs, overallPct }: { groupAvgs: number[]; overallPct
           {/* Grid rings at 25/50/75/100 */}
           {[25, 50, 75, 100].map(p => (
             <Path key={p} d={ringPath(p)} fill="none"
-              stroke={p === 50 ? 'rgba(255,255,255,0.18)' : p === 75 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.08)'}
-              strokeWidth={p === 50 ? 1.5 : 1}
+              stroke={p === 50 ? 'rgba(255,255,255,0.40)' : p === 75 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.20)'}
+              strokeWidth={p === 50 ? 2 : 1}
               strokeDasharray={p === 100 ? '4 4' : undefined} />
           ))}
 
@@ -118,39 +122,39 @@ function RadarChart({ groupAvgs, overallPct }: { groupAvgs: number[]; overallPct
           {AXES.map((a, i) => {
             const tip = rp(a.angle, 105);
             return <Line key={i} x1={CX} y1={CY} x2={tip.x} y2={tip.y}
-              stroke="rgba(255,255,255,0.1)" strokeWidth="1" />;
+              stroke="rgba(255,255,255,0.25)" strokeWidth="1" />;
           })}
 
           {/* Athlete fill + stroke */}
           <Defs>
             <LinearGradient id="radarGrad" x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor={ACCENT} stopOpacity="0.25" />
-              <Stop offset="1" stopColor={ACCENT} stopOpacity="0.04" />
+              <Stop offset="0" stopColor={ACCENT} stopOpacity="0.45" />
+              <Stop offset="1" stopColor={ACCENT} stopOpacity="0.12" />
             </LinearGradient>
           </Defs>
-          <Path d={athletePath} fill="url(#radarGrad)" stroke={ACCENT} strokeWidth="2" strokeLinejoin="round" />
+          <Path d={athletePath} fill="url(#radarGrad)" stroke={ACCENT} strokeWidth="2.5" strokeLinejoin="round" />
 
           {/* Vertex dots */}
           {pts.map((p, i) => (
-            <Circle key={i} cx={p.x} cy={p.y} r={5} fill={zoneColor(groupAvgs[i])}
+            <Circle key={i} cx={p.x} cy={p.y} r={6} fill={zoneColor(groupScores[i])}
               stroke="#0A0A0A" strokeWidth="2" />
           ))}
 
           {/* Center score */}
           <SvgText x={CX} y={CY + 12} textAnchor="middle"
-            fontSize="34" fontWeight="900" fill={oc}>{Math.round(overallPct)}</SvgText>
+            fontSize="34" fontWeight="900" fill={oc}>{Math.round(overallScore)}</SvgText>
 
           {/* Vertex labels + scores rendered in SVG for perfect positioning */}
           {AXES.map((a, i) => {
             const lp = rp(a.angle, 122);
-            const c = zoneColor(groupAvgs[i]);
+            const c = zoneColor(groupScores[i]);
             const anchor = a.angle === 0 ? 'start' : a.angle === 180 ? 'end' : 'middle';
             const dy = a.angle === -90 ? -8 : a.angle === 90 ? 18 : 0;
             const dx = a.angle === 0 ? 8 : a.angle === 180 ? -8 : 0;
             return (
               <React.Fragment key={i}>
                 <SvgText x={lp.x + dx} y={lp.y + dy} textAnchor={anchor}
-                  fontSize="20" fontWeight="900" fill={c}>{Math.round(groupAvgs[i])}</SvgText>
+                  fontSize="20" fontWeight="900" fill={c}>{Math.round(groupScores[i])}</SvgText>
                 <SvgText x={lp.x + dx} y={lp.y + dy + 14} textAnchor={anchor}
                   fontSize="9" fontWeight="600" fill="rgba(255,255,255,0.3)"
                   letterSpacing={1}>{a.label.toUpperCase()}</SvgText>
@@ -193,20 +197,117 @@ function DistributionSvg({ percKey, athleteValue, athletePct, delay, percentileD
       <Svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`}>
         <Defs>
           <LinearGradient id={`df-${percKey}`} x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0" stopColor={color} stopOpacity="0.18" />
-            <Stop offset="1" stopColor={color} stopOpacity="0.01" />
+            <Stop offset="0" stopColor={color} stopOpacity="0.50" />
+            <Stop offset="1" stopColor={color} stopOpacity="0.08" />
           </LinearGradient>
         </Defs>
-        <Path d={path} fill={`url(#df-${percKey})`} stroke="rgba(255,255,255,0.08)" strokeWidth="0.5" />
-        <Line x1={p50X} y1={0} x2={p50X} y2={CHART_H} stroke="rgba(74,222,128,0.2)" strokeWidth="1" strokeDasharray="2 2" />
+        <Path d={path} fill={`url(#df-${percKey})`} stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
+        <Line x1={p50X} y1={0} x2={p50X} y2={CHART_H} stroke="rgba(74,222,128,0.5)" strokeWidth="1.5" strokeDasharray="3 2" />
         {athleteX != null && (
           <>
-            <Line x1={athleteX} y1={2} x2={athleteX} y2={CHART_H} stroke={color} strokeWidth="1.5" />
-            <Circle cx={athleteX} cy={3} r={3} fill={color} />
+            <Line x1={athleteX} y1={2} x2={athleteX} y2={CHART_H} stroke={color} strokeWidth="2.5" />
+            <Circle cx={athleteX} cy={3} r={5} fill={color} />
           </>
         )}
       </Svg>
     </Animated.View>
+  );
+}
+
+// ─── Metric Detail Modal ─────────────────────────────────────────────────────
+
+function MetricDetailModal({ metric, visible, onClose, percentileData }: {
+  metric: RowData | null; visible: boolean; onClose: () => void;
+  percentileData: PercentileTable | null;
+}) {
+  if (!metric) return null;
+
+  const color = zoneColor(metric.pct);
+  const zone = zoneLabel(metric.pct);
+  const md = getMetricData(metric.percKey, percentileData);
+  const eliteP50 = md?.percentiles['50'];
+  const industry = INDUSTRY_MEDIAN[metric.key];
+  const scoringType = metric.scoring === 'higher' ? 'Higher is better' : 'Optimal near elite median';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={modalStyles.overlay}>
+        <View style={modalStyles.container}>
+          <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+            {/* Header */}
+            <View style={modalStyles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={[modalStyles.percentile, { color }]}>p{Math.round(metric.pct)}</Text>
+                <Text style={modalStyles.title}>{metric.axisLabel}</Text>
+                {metric.timing && (
+                  <Text style={modalStyles.timing}>{metric.timing}</Text>
+                )}
+              </View>
+              <TouchableOpacity onPress={onClose} style={modalStyles.closeButton}>
+                <Ionicons name="close" size={22} color="rgba(255,255,255,0.5)" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Zone + scoring type */}
+            <View style={modalStyles.tagRow}>
+              <View style={[modalStyles.tag, { borderColor: `${color}40` }]}>
+                <View style={[modalStyles.tagDot, { backgroundColor: color }]} />
+                <Text style={[modalStyles.tagText, { color }]}>{zone}</Text>
+              </View>
+              <View style={[modalStyles.tag, { borderColor: 'rgba(255,255,255,0.1)' }]}>
+                <Ionicons name={metric.scoring === 'higher' ? 'arrow-up' : 'swap-horizontal'} size={12} color="rgba(255,255,255,0.4)" />
+                <Text style={modalStyles.tagTextSubtle}>{scoringType}</Text>
+              </View>
+            </View>
+
+            {/* Values */}
+            <View style={modalStyles.valuesGrid}>
+              <View style={modalStyles.valueCell}>
+                <Text style={modalStyles.valueCellLabel}>YOUR VALUE</Text>
+                <Text style={[modalStyles.valueCellNumber, { color }]}>
+                  {metric.raw != null ? metric.raw.toFixed(1) : '--'}
+                </Text>
+                <Text style={modalStyles.valueCellUnit}>{metric.unit}</Text>
+              </View>
+              {eliteP50 != null && (
+                <View style={modalStyles.valueCell}>
+                  <Text style={[modalStyles.valueCellLabel, { color: 'rgba(74,222,128,0.6)' }]}>ELITE P50</Text>
+                  <Text style={[modalStyles.valueCellNumber, { color: 'rgba(74,222,128,0.7)' }]}>
+                    {eliteP50.toFixed(1)}
+                  </Text>
+                  <Text style={[modalStyles.valueCellUnit, { color: 'rgba(74,222,128,0.4)' }]}>{metric.unit}</Text>
+                </View>
+              )}
+              {industry && (
+                <View style={modalStyles.valueCell}>
+                  <Text style={[modalStyles.valueCellLabel, { color: 'rgba(251,191,36,0.6)' }]}>INDUSTRY</Text>
+                  <Text style={[modalStyles.valueCellNumber, { color: 'rgba(251,191,36,0.7)' }]}>
+                    {industry.value}
+                  </Text>
+                  <Text style={[modalStyles.valueCellUnit, { color: 'rgba(251,191,36,0.4)' }]}>{metric.unit}</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Divider */}
+            <View style={modalStyles.divider} />
+
+            {/* Detail text */}
+            <Text style={modalStyles.detailTitle}>What is this?</Text>
+            <Text style={modalStyles.detailText}>{metric.detail}</Text>
+
+            {/* Score explanation */}
+            <View style={modalStyles.divider} />
+            <Text style={modalStyles.detailTitle}>How is this scored?</Text>
+            <Text style={modalStyles.detailText}>
+              {metric.scoring === 'higher'
+                ? 'This is a power/velocity metric where higher values directly contribute to performance. Your percentile rank is your score — the higher the better.'
+                : 'This is a positional metric where the elite median (p50) represents the optimal value. Being too far above or below the elite average can indicate inefficiency or injury risk. Your score is based on how close you are to the optimal range.'}
+            </Text>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -215,6 +316,7 @@ function DistributionSvg({ percKey, athleteValue, athletePct, delay, percentileD
 function MetricRow({ d, delay, percentileData }: {
   d: RowData; delay: number; percentileData: PercentileTable | null;
 }) {
+  const [showDetail, setShowDetail] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
   const barAnim = useRef(new Animated.Value(0)).current;
@@ -255,10 +357,16 @@ function MetricRow({ d, delay, percentileData }: {
         </Text>
       </View>
 
-      {/* Metric name with colored left accent */}
+      {/* Metric name with colored left accent + info button */}
       <View style={[styles.metricNameRow, { borderLeftColor: color }]}>
         <Text style={styles.metricName}>{d.axisLabel}</Text>
+        <TouchableOpacity onPress={() => setShowDetail(true)} style={styles.infoButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Ionicons name="information-circle-outline" size={18} color="rgba(255,255,255,0.3)" />
+        </TouchableOpacity>
       </View>
+
+      {/* Detail modal */}
+      <MetricDetailModal metric={d} visible={showDetail} onClose={() => setShowDetail(false)} percentileData={percentileData} />
 
       {/* Bar */}
       <View style={styles.barTrack}>
@@ -313,9 +421,9 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
   }
 
   const allGroupData = GROUPS.map(g => computeGroupData(g, scalarMetrics, percentileData));
-  const groupAvgs = allGroupData.map(data => data.reduce((s, d) => s + d.pct, 0) / data.length);
+  const groupScores = allGroupData.map(data => data.reduce((s, d) => s + d.score, 0) / data.length);
   const allData = allGroupData.flat();
-  const overallPct = allData.reduce((s, d) => s + d.pct, 0) / allData.length;
+  const overallScore = allData.reduce((s, d) => s + d.score, 0) / allData.length;
 
   const switchGroup = (idx: number) => {
     if (idx === activeGroup) return;
@@ -326,7 +434,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
   };
 
   const activeData = allGroupData[activeGroup];
-  const activeAvg = groupAvgs[activeGroup];
+  const activeAvg = groupScores[activeGroup];
   const activeColor = zoneColor(activeAvg);
 
   // Short tab labels
@@ -336,7 +444,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
     <View style={styles.container}>
 
       {/* ── Hero Radar ── */}
-      <RadarChart groupAvgs={groupAvgs} overallPct={overallPct} />
+      <RadarChart groupScores={groupScores} overallScore={overallScore} />
 
       {/* ── Zone Legend ── */}
       <View style={styles.zoneLegend}>
@@ -362,7 +470,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
       <View style={styles.tabRow}>
         {GROUPS.map((g, i) => {
           const isActive = i === activeGroup;
-          const tc = zoneColor(groupAvgs[i]);
+          const tc = zoneColor(groupScores[i]);
           return (
             <TouchableOpacity
               key={g.title}
@@ -371,7 +479,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
               activeOpacity={0.7}
             >
               <Text style={[styles.tabScore, { color: isActive ? tc : 'rgba(255,255,255,0.2)' }]}>
-                {Math.round(groupAvgs[i])}
+                {Math.round(groupScores[i])}
               </Text>
               <Text style={[styles.tabLabel, isActive && { color: 'rgba(255,255,255,0.7)' }]}>
                 {TAB_LABELS[i]}
@@ -450,19 +558,69 @@ const styles = StyleSheet.create({
   metricRow: {},
   metricTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 },
   heroPercentile: { fontSize: 32, fontWeight: '900' },
-  rawValue: { fontSize: 14, fontFamily: 'Courier', fontWeight: '600', color: 'rgba(255,255,255,0.45)' },
-  rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.2)' },
+  rawValue: { fontSize: 14, fontFamily: 'Courier', fontWeight: '600', color: 'rgba(255,255,255,0.6)' },
+  rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.35)' },
 
-  metricNameRow: { borderLeftWidth: 2, paddingLeft: 10, marginBottom: 10 },
-  metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.65)' },
+  metricNameRow: { borderLeftWidth: 2, paddingLeft: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center' },
+  metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.8)', flex: 1 },
+  infoButton: { padding: 4 },
 
-  barTrack: { height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.05)', overflow: 'hidden', position: 'relative', marginBottom: 6 },
-  barP50: { position: 'absolute', left: '50%', top: 0, width: 1, height: '100%', backgroundColor: 'rgba(74,222,128,0.25)', zIndex: 10 },
+  barTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.15)', overflow: 'hidden', position: 'relative', marginBottom: 6 },
+  barP50: { position: 'absolute', left: '50%', top: 0, width: 2, height: '100%', backgroundColor: 'rgba(74,222,128,0.55)', zIndex: 10 },
   barFill: { position: 'absolute', top: 0, left: 0, height: '100%', borderRadius: 3 },
 
   compRow: { flexDirection: 'row', marginBottom: 8 },
-  compElite: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(74,222,128,0.45)' },
-  compIndustry: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(251,191,36,0.4)' },
+  compElite: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(74,222,128,0.6)' },
+  compIndustry: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(251,191,36,0.55)' },
 
-  explanation: { fontSize: 11, color: 'rgba(255,255,255,0.2)', lineHeight: 16, marginTop: 6 },
+  explanation: { fontSize: 11, color: 'rgba(255,255,255,0.35)', lineHeight: 16, marginTop: 6 },
+});
+
+const modalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'flex-end',
+  },
+  container: {
+    backgroundColor: '#111111',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    maxHeight: '80%', paddingBottom: 40,
+  },
+  header: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    padding: 24, paddingBottom: 16,
+  },
+  percentile: { fontSize: 36, fontWeight: '900', marginBottom: 4 },
+  title: { fontSize: 18, fontWeight: '700', color: '#FFFFFF' },
+  timing: { fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 4, fontStyle: 'italic' },
+  closeButton: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+
+  tagRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 24, marginBottom: 20 },
+  tag: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1,
+  },
+  tagDot: { width: 7, height: 7, borderRadius: 4 },
+  tagText: { fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  tagTextSubtle: { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.4)' },
+
+  valuesGrid: {
+    flexDirection: 'row', paddingHorizontal: 24, gap: 12, marginBottom: 20,
+  },
+  valueCell: {
+    flex: 1, backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 12, padding: 14, alignItems: 'center',
+  },
+  valueCellLabel: { fontSize: 8, fontWeight: '800', letterSpacing: 1.5, color: 'rgba(155,221,255,0.6)', marginBottom: 6 },
+  valueCellNumber: { fontSize: 24, fontWeight: '900' },
+  valueCellUnit: { fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 },
+
+  divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.06)', marginHorizontal: 24, marginVertical: 16 },
+
+  detailTitle: { fontSize: 13, fontWeight: '800', color: 'rgba(255,255,255,0.6)', paddingHorizontal: 24, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
+  detailText: { fontSize: 14, color: 'rgba(255,255,255,0.55)', lineHeight: 22, paddingHorizontal: 24 },
 });

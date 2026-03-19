@@ -41,6 +41,7 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
   const [playSpeed, setPlaySpeed] = useState(0.25);
 
   const skeletonViewerRef = useRef<any>(null);
+  const [scrollEnabled, setScrollEnabled] = useState(true);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -141,6 +142,7 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        scrollEnabled={scrollEnabled}
       >
         {/* Header */}
         <View style={styles.header}>
@@ -201,7 +203,9 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
               style={styles.scrubberContainer}
               onStartShouldSetResponder={() => true}
               onMoveShouldSetResponder={() => true}
+              onResponderTerminationRequest={() => false}
               onResponderGrant={(e) => {
+                setScrollEnabled(false);
                 if (isPlaying) setIsPlaying(false);
                 const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
                 seekToFrame(Math.round(fraction * totalFrames));
@@ -210,6 +214,8 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
                 const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
                 seekToFrame(Math.round(fraction * totalFrames));
               }}
+              onResponderRelease={() => setScrollEnabled(true)}
+              onResponderTerminate={() => setScrollEnabled(true)}
             >
               <View style={styles.scrubberTrack}>
                 <View style={[styles.scrubberFill, { width: `${scrubberPosition * 100}%` }]} />
