@@ -408,6 +408,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
+  const [hasMocapData, setHasMocapData] = useState(false);
 
   // Performance data state for carousel cards
   const [forceProfile, setForceProfile] = useState<ForceProfile | null>(null);
@@ -684,6 +685,14 @@ export default function ParentDashboardScreen({ navigation }: any) {
         .in('athlete_id', athleteIds);
 
       setHasForceData((forceCount || 0) > 0);
+
+      // Check for mocap data
+      const { count: mocapCount } = await supabase
+        .from('mocap_pitches')
+        .select('id', { count: 'exact', head: true })
+        .in('athlete_id', athleteIds)
+        .not('r2_uploaded_at', 'is', null);
+      setHasMocapData((mocapCount || 0) > 0);
     } catch (error) {
       console.error('Error fetching data presence:', error);
     }
@@ -2107,6 +2116,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
           { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('HittingPerformance') }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
+          ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => handleFabNavigate('MocapSessions') }] : []),
           ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('ArmCare') }] : []),
           ...(hasForceData ? [{ id: 'force', label: 'Force Profile', icon: 'trending-up', onPress: () => handleFabNavigate('ForceProfile') }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', onPress: () => handleFabNavigate('Resources') },

@@ -109,6 +109,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
   const [hasHittingData, setHasHittingData] = useState(false);
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasArmCareData, setHasArmCareData] = useState(false);
+  const [hasMocapData, setHasMocapData] = useState(false);
   const [hasResourcesData, setHasResourcesData] = useState(false);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [newResourcesCount, setNewResourcesCount] = useState(0);
@@ -154,6 +155,14 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         .select('id', { count: 'exact', head: true })
         .eq('athlete_id', athleteId);
       setHasArmCareData((armCareCount || 0) > 0);
+
+      // Check for mocap data
+      const { count: mocapCount } = await supabase
+        .from('mocap_pitches')
+        .select('id', { count: 'exact', head: true })
+        .eq('athlete_id', athleteId)
+        .not('r2_uploaded_at', 'is', null);
+      setHasMocapData((mocapCount || 0) > 0);
 
       // Check for resources data
       const { count: resourcesCount } = await supabase
@@ -508,6 +517,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
           { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
           ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           { id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId }) },

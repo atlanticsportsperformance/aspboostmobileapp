@@ -443,6 +443,7 @@ export default function DashboardScreen({ navigation }: any) {
 
   // Additional data presence flags for FAB (matching web app)
   const [hasPitchingData, setHasPitchingData] = useState(false);
+  const [hasMocapData, setHasMocapData] = useState(false);
   const [hasResourcesData, setHasResourcesData] = useState(false);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [newResourcesCount, setNewResourcesCount] = useState(0);
@@ -1815,6 +1816,7 @@ export default function DashboardScreen({ navigation }: any) {
         const [
           trackmanPitchesResult,
           commandSessionsResult,
+          mocapPitchesResult,
           resourcesResult,
           athleteLastViewedResult,
           conversationParticipantsResult,
@@ -1824,6 +1826,8 @@ export default function DashboardScreen({ navigation }: any) {
           // Check for pitching data
           freshClient.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
           freshClient.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
+          // Check for mocap data (only uploaded sessions)
+          freshClient.from('mocap_pitches').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id).not('r2_uploaded_at', 'is', null),
           // Check for resources data
           freshClient.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
           // Get last viewed resources timestamp
@@ -1885,6 +1889,7 @@ export default function DashboardScreen({ navigation }: any) {
 
         // Process results
         setHasPitchingData((trackmanPitchesResult.count || 0) > 0 || (commandSessionsResult.count || 0) > 0);
+        setHasMocapData((mocapPitchesResult.count || 0) > 0);
         setHasResourcesData((resourcesResult.count || 0) > 0);
         setWorkoutInstances((workoutsResult.data as any) || []);
 
@@ -2744,6 +2749,7 @@ export default function DashboardScreen({ navigation }: any) {
           // CONDITIONAL items
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
           ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           ...(forceProfile && valdProfileId ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
           // Notes/Resources with badge

@@ -143,6 +143,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
+  const [hasMocapData, setHasMocapData] = useState(false);
   const [hasResourcesData, setHasResourcesData] = useState(false);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [newResourcesCount, setNewResourcesCount] = useState(0);
@@ -250,6 +251,14 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         .select('*', { count: 'exact', head: true })
         .eq('athlete_id', athleteId);
       setHasForceData((forceCount || 0) > 0);
+
+      // Check for mocap data
+      const { count: mocapCount } = await supabase
+        .from('mocap_pitches')
+        .select('id', { count: 'exact', head: true })
+        .eq('athlete_id', athleteId)
+        .not('r2_uploaded_at', 'is', null);
+      setHasMocapData((mocapCount || 0) > 0);
 
       // Check for resources (using resources table like Dashboard)
       const { count: resourcesCount } = await supabase
@@ -1182,6 +1191,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
           { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           { id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community', isActive: true, onPress: () => {} },
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
           ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           ...(hasForceData ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
