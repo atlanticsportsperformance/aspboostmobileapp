@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
+import { useAuth } from './AuthContext';
 
 interface LinkedAthlete {
   id: string; // user_id from profiles
@@ -40,6 +41,7 @@ const LAST_SELECTED_ATHLETE_KEY = 'aspboost_last_selected_athlete';
 const AthleteContext = createContext<AthleteContextType | undefined>(undefined);
 
 export function AthleteProvider({ children }: { children: ReactNode }) {
+  const { session, isParentAccount, initializing } = useAuth();
   const [isParent, setIsParent] = useState(false);
   const [parentId, setParentId] = useState<string | null>(null);
   const [parentName, setParentName] = useState('');
@@ -48,52 +50,47 @@ export function AthleteProvider({ children }: { children: ReactNode }) {
   const [selectedAthleteName, setSelectedAthleteName] = useState<string | null>(null);
   const [selectedAthleteColor, setSelectedAthleteColor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const lastUserId = useRef<string | null>(null);
 
-  // Check auth state and load parent data on mount and auth changes
+  // React to AuthContext state — no redundant getSession or account_type queries
   useEffect(() => {
-    checkAuthAndLoadData();
+    if (initializing) return;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session) {
-        await checkAuthAndLoadData();
-      } else {
-        resetContext();
-        setLoading(false);
-      }
-    });
+    if (!session) {
+      resetContext();
+      setLoading(false);
+      lastUserId.current = null;
+      return;
+    }
 
-    return () => subscription.unsubscribe();
-  }, []);
+    // Skip if already loaded for this user
+    if (lastUserId.current === session.user.id) return;
+    lastUserId.current = session.user.id;
 
-  async function checkAuthAndLoadData() {
+    if (isParentAccount) {
+      // Only query needed: parent's display name (account_type already known from AuthContext)
+      loadParentContext(session.user.id);
+    } else {
+      setIsParent(false);
+      setParentId(null);
+      setParentName('');
+      setLinkedAthletes([]);
+      setLoading(false);
+    }
+  }, [initializing, session?.user?.id, isParentAccount]);
+
+  async function loadParentContext(userId: string) {
+    setLoading(true);
     try {
-      setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session) {
-        setLoading(false);
-        return;
-      }
-
-      // Check if user is a parent
-      const { data: profile, error: profileError } = await supabase
+      const { data: profile } = await supabase
         .from('profiles')
-        .select('account_type, first_name, last_name')
-        .eq('id', session.user.id)
+        .select('first_name, last_name')
+        .eq('id', userId)
         .single();
 
-      if (profile?.account_type === 'parent') {
-        await loadParentData(session.user.id, profile.first_name || '', profile.last_name || '');
-      } else {
-        // Not a parent, reset
-        setIsParent(false);
-        setParentId(null);
-        setParentName('');
-        setLinkedAthletes([]);
-        setLoading(false);
-      }
+      await loadParentData(userId, profile?.first_name || '', profile?.last_name || '');
     } catch (error) {
-      console.error('Error checking auth:', error);
+      console.error('Error loading parent context:', error);
       setLoading(false);
     }
   }

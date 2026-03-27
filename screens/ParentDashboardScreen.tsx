@@ -18,10 +18,12 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { performLogout } from '../lib/logout';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAthlete } from '../contexts/AthleteContext';
 import { useAuth } from '../contexts/AuthContext';
+import AnimatedLoading from '../components/AnimatedLoading';
 import AthletePickerModal from '../components/AthletePickerModal';
 import FABMenu from '../components/FABMenu';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
@@ -1453,7 +1455,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
   }
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await performLogout();
     navigation.replace('Login', { skipAutoLogin: true });
   }
 
@@ -1528,10 +1530,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
   if (loading || contextLoading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#9BDDFF" />
-        <Text style={styles.loadingText}>Loading your dashboard...</Text>
-      </View>
+      <AnimatedLoading />
     );
   }
 

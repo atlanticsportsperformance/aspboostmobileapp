@@ -19,6 +19,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 import { unregisterPushToken } from '../lib/pushNotifications';
+import { performLogout } from '../lib/logout';
 
 const COLORS = {
   primary: '#9BDDFF',
@@ -965,11 +966,7 @@ export default function ProfileScreen({ navigation, route }: any) {
                     text: 'Sign Out',
                     style: 'destructive',
                     onPress: async () => {
-                      // Unregister push token before signing out
-                      await unregisterPushToken();
-                      // Clear biometric credentials so auto-login doesn't fire
-                      await SecureStore.deleteItemAsync('faceIdEnabled');
-                      await supabase.auth.signOut();
+                      await performLogout();
                       navigation.replace('Login', { skipAutoLogin: true });
                     },
                   },

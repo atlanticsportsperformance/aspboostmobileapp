@@ -38,8 +38,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    // FAILSAFE: Always ready after 5 seconds
-    const failsafe = setTimeout(markReady, 5000);
+    // FAILSAFE: Always ready after 3 seconds
+    const failsafe = setTimeout(markReady, 3000);
 
     const checkAccountType = async (userId: string) => {
       try {
@@ -109,13 +109,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.log('[Auth] Session expired/expiring, refreshing...');
             const refreshed = await refreshToken();
             if (refreshed) {
-              checkAccountType(refreshed.user.id);
+              await checkAccountType(refreshed.user.id);
             }
           } else {
             console.log('[Auth] Session valid');
             setSession(stored);
             setUser(stored.user);
-            checkAccountType(stored.user.id);
+            await checkAccountType(stored.user.id);
           }
         } else {
           console.log('[Auth] No stored session');

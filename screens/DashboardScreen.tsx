@@ -19,6 +19,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase, recreateSupabaseClient } from '../lib/supabase';
+import { performLogout } from '../lib/logout';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -27,6 +28,7 @@ import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
+import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { cancelBooking } from '../lib/bookingApi';
@@ -515,13 +517,10 @@ export default function DashboardScreen({ navigation }: any) {
         // If it's been more than 5 minutes, force a full reload
         if (timeSinceLastLoad > fiveMinutes && !isLoadingRef.current) {
           console.log('[Dashboard] Been away 5+ minutes, forcing full reload');
-          // Small delay to let auth context refresh token first
-          setTimeout(() => {
-            if (mountedRef.current && !isLoadingRef.current) {
-              setLoading(true);
-              loadDashboard();
-            }
-          }, 1000);
+          if (mountedRef.current) {
+            setLoading(true);
+            loadDashboard();
+          }
         }
       }
     };
@@ -587,11 +586,11 @@ export default function DashboardScreen({ navigation }: any) {
 
     const failsafe = setTimeout(() => {
       if (loading && mountedRef.current) {
-        console.log('[Dashboard] FAILSAFE: Loading took 10s, forcing dashboard to show');
+        console.log('[Dashboard] FAILSAFE: Loading took 6s, forcing dashboard to show');
         setLoading(false);
         setAppReady(true);
       }
-    }, 10000);
+    }, 6000);
 
     return () => clearTimeout(failsafe);
   }, [loading, setAppReady]);
@@ -1756,7 +1755,7 @@ export default function DashboardScreen({ navigation }: any) {
         if (mountedRef.current) {
           setLoading(false);
           setAppReady(true);
-          await supabase.auth.signOut();
+          await performLogout();
           navigation.replace('Login', { skipAutoLogin: true });
         }
         isLoadingRef.current = false;
@@ -1785,7 +1784,7 @@ export default function DashboardScreen({ navigation }: any) {
             navigation.replace('Login');
           } else {
             console.log('[Dashboard] No profile found - signing out orphaned session');
-            await supabase.auth.signOut();
+            await performLogout();
             navigation.replace('Login', { skipAutoLogin: true });
           }
         }
@@ -2120,24 +2119,13 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await performLogout();
     navigation.replace('Login', { skipAutoLogin: true });
   }
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <Image
-          source={require('../assets/splash-logo.png')}
-          style={{ width: 120, height: 120, marginBottom: 30 }}
-          resizeMode="contain"
-        />
-        <ActivityIndicator size="large" color="#38BDF8" />
-        <Text style={styles.loadingText}>Preparing your training...</Text>
-        <Text style={{ color: '#666', fontSize: 12, marginTop: 15, textAlign: 'center', paddingHorizontal: 40 }}>
-          Track progress. Train smarter. Get faster.
-        </Text>
-      </View>
+      <AnimatedLoading />
     );
   }
 
