@@ -38,6 +38,9 @@ export interface RowData {
   pct: number
   axisLabel: string
   explanation: string
+  detail: string
+  timing?: string
+  scoring: 'higher' | 'goldilocks'
   unit: string
   percKey: string
 }

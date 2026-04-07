@@ -37,11 +37,12 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
 
   // Playback state — driven by WebView, displayed in RN controls
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentFrame, setCurrentFrame] = useState(0);
+  const [currentFrame, setCurrentFrame] = useState(1);
   const [playSpeed, setPlaySpeed] = useState(0.25);
 
   const skeletonViewerRef = useRef<any>(null);
   const [scrollEnabled, setScrollEnabled] = useState(true);
+  const [activeTab, setActiveTab] = useState<'report' | 'motion'>('report');
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -138,116 +139,138 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        scrollEnabled={scrollEnabled}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-            <Ionicons name="chevron-back" size={20} color="#9CA3AF" />
-          </TouchableOpacity>
-          <View style={styles.headerInfo}>
-            <Text style={styles.headerTitle}>
-              {pitch?.pitchType || 'Pitch'} #{pitch?.pitchNumber || ''}
-            </Text>
-            {pitch?.velocity != null && (
-              <View style={styles.velocityBadge}>
-                <Text style={styles.velocityText}>{pitch.velocity} mph</Text>
-              </View>
-            )}
-          </View>
+      {/* Fixed header + tabs */}
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="chevron-back" size={20} color="#9CA3AF" />
+        </TouchableOpacity>
+        <View style={styles.headerInfo}>
+          <Text style={styles.headerTitle}>
+            {pitch?.pitchType || 'Pitch'} #{pitch?.pitchNumber || ''}
+          </Text>
+          {pitch?.velocity != null && (
+            <View style={styles.velocityBadge}>
+              <Text style={styles.velocityText}>{pitch.velocity} mph</Text>
+            </View>
+          )}
         </View>
+      </View>
 
-        {/* Unified Video + 3D Skeleton Viewer (frame-perfect sync inside WebView) */}
-        <SkeletonViewer3D
-          ref={skeletonViewerRef}
-          c3dData={c3dData ? {
-            positions: Array.from(c3dData.positions),
-            rotations: Array.from(c3dData.rotations),
-            frameCount: c3dData.frameCount,
-            segmentCount: c3dData.segmentCount,
-            frameRate: c3dData.frameRate,
-          } : null}
-          videoUrl={pitchData?.videoUrl || null}
-          currentFrame={Math.round(currentFrame)}
-          isPlaying={isPlaying}
-          playSpeed={playSpeed}
-          height={600}
-          onFrameUpdate={onFrameUpdate}
-          onPlaybackEnd={onPlaybackEnd}
-        />
+      {/* Tab bar */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'report' && styles.tabItemActive]}
+          onPress={() => setActiveTab('report')}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="analytics" size={16} color={activeTab === 'report' ? ACCENT : 'rgba(255,255,255,0.3)'} />
+          <Text style={[styles.tabText, activeTab === 'report' && styles.tabTextActive]}>Report</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'motion' && styles.tabItemActive]}
+          onPress={() => setActiveTab('motion')}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="videocam" size={16} color={activeTab === 'motion' ? ACCENT : 'rgba(255,255,255,0.3)'} />
+          <Text style={[styles.tabText, activeTab === 'motion' && styles.tabTextActive]}>Motion</Text>
+        </TouchableOpacity>
+      </View>
 
-        {/* Playback Controls */}
-        {totalFrames > 0 && (
-          <View style={styles.controls}>
-            <View style={styles.transportRow}>
-              <TouchableOpacity onPress={() => stepFrame(-1)} style={styles.controlButton}>
-                <Ionicons name="play-back" size={18} color="#FFFFFF" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={togglePlay} style={styles.playButton}>
-                <Ionicons name={isPlaying ? 'pause' : 'play'} size={22} color="#000000" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => stepFrame(1)} style={styles.controlButton}>
-                <Ionicons name="play-forward" size={18} color="#FFFFFF" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={changeSpeed} style={styles.speedButton}>
-                <Text style={styles.speedText}>{playSpeed}x</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Scrubber */}
-            <View
-              style={styles.scrubberContainer}
-              onStartShouldSetResponder={() => true}
-              onMoveShouldSetResponder={() => true}
-              onResponderTerminationRequest={() => false}
-              onResponderGrant={(e) => {
-                setScrollEnabled(false);
-                if (isPlaying) setIsPlaying(false);
-                const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
-                seekToFrame(Math.round(fraction * totalFrames));
-              }}
-              onResponderMove={(e) => {
-                const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
-                seekToFrame(Math.round(fraction * totalFrames));
-              }}
-              onResponderRelease={() => setScrollEnabled(true)}
-              onResponderTerminate={() => setScrollEnabled(true)}
-            >
-              <View style={styles.scrubberTrack}>
-                <View style={[styles.scrubberFill, { width: `${scrubberPosition * 100}%` }]} />
-              </View>
-              <View style={styles.scrubberThumb} pointerEvents="none">
-                <View style={[styles.scrubberDot, { left: `${scrubberPosition * 100}%` }]} />
-              </View>
-            </View>
-
-            <View style={styles.frameInfo}>
-              <Text style={styles.frameText}>
-                Frame {Math.round(currentFrame)} / {totalFrames}
-              </Text>
-              <Text style={styles.frameText}>
-                {((currentFrame / frameRate) || 0).toFixed(2)}s / {durationSeconds.toFixed(2)}s
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* Percentile Breakdown */}
-        {pitch?.scalarMetrics && (
-          <PercentileBreakdown
-            scalarMetrics={pitch.scalarMetrics}
-            percentileData={percentileData}
-            velocity={pitch.velocity}
-            pitchType={pitch.pitchType}
+      {/* Tab content */}
+      {activeTab === 'report' ? (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          {pitch?.scalarMetrics && (
+            <PercentileBreakdown
+              scalarMetrics={pitch.scalarMetrics}
+              percentileData={percentileData}
+              velocity={pitch.velocity}
+              pitchType={pitch.pitchType}
+            />
+          )}
+          <View style={{ height: 60 }} />
+        </ScrollView>
+      ) : (
+        <View style={styles.scrollView}>
+          {/* Video + 3D Skeleton */}
+          <SkeletonViewer3D
+            ref={skeletonViewerRef}
+            c3dData={c3dData ? {
+              positions: Array.from(c3dData.positions),
+              rotations: Array.from(c3dData.rotations),
+              frameCount: c3dData.frameCount,
+              segmentCount: c3dData.segmentCount,
+              frameRate: c3dData.frameRate,
+            } : null}
+            videoUrl={pitchData?.videoUrl || null}
+            currentFrame={Math.round(currentFrame)}
+            isPlaying={isPlaying}
+            playSpeed={playSpeed}
+            height={600}
+            onFrameUpdate={onFrameUpdate}
+            onPlaybackEnd={onPlaybackEnd}
           />
-        )}
 
-        <View style={{ height: 60 }} />
-      </ScrollView>
+          {/* Playback Controls */}
+          {totalFrames > 0 && (
+            <View style={styles.controls}>
+              <View style={styles.transportRow}>
+                <TouchableOpacity onPress={() => stepFrame(-1)} style={styles.controlButton}>
+                  <Ionicons name="play-back" size={18} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={togglePlay} style={styles.playButton}>
+                  <Ionicons name={isPlaying ? 'pause' : 'play'} size={22} color="#000000" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => stepFrame(1)} style={styles.controlButton}>
+                  <Ionicons name="play-forward" size={18} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={changeSpeed} style={styles.speedButton}>
+                  <Text style={styles.speedText}>{playSpeed}x</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Scrubber */}
+              <View
+                style={styles.scrubberContainer}
+                onStartShouldSetResponder={() => true}
+                onMoveShouldSetResponder={() => true}
+                onResponderTerminationRequest={() => false}
+                onResponderGrant={(e) => {
+                  setScrollEnabled(false);
+                  if (isPlaying) setIsPlaying(false);
+                  const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
+                  seekToFrame(Math.round(fraction * totalFrames));
+                }}
+                onResponderMove={(e) => {
+                  const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
+                  seekToFrame(Math.round(fraction * totalFrames));
+                }}
+                onResponderRelease={() => setScrollEnabled(true)}
+                onResponderTerminate={() => setScrollEnabled(true)}
+              >
+                <View style={styles.scrubberTrack}>
+                  <View style={[styles.scrubberFill, { width: `${scrubberPosition * 100}%` }]} />
+                </View>
+                <View style={styles.scrubberThumb} pointerEvents="none">
+                  <View style={[styles.scrubberDot, { left: `${scrubberPosition * 100}%` }]} />
+                </View>
+              </View>
+
+              <View style={styles.frameInfo}>
+                <Text style={styles.frameText}>
+                  Frame {Math.round(currentFrame)} / {totalFrames}
+                </Text>
+                <Text style={styles.frameText}>
+                  {((currentFrame / frameRate) || 0).toFixed(2)}s / {durationSeconds.toFixed(2)}s
+                </Text>
+              </View>
+            </View>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -275,6 +298,36 @@ const styles = StyleSheet.create({
     backgroundColor: `${ACCENT}15`, borderWidth: 1, borderColor: `${ACCENT}30`,
   },
   velocityText: { fontSize: 14, fontWeight: '700', color: ACCENT },
+
+  tabBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+    gap: 4,
+  },
+  tabItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'transparent',
+  },
+  tabItemActive: {
+    backgroundColor: 'rgba(155,221,255,0.08)',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.3)',
+  },
+  tabTextActive: {
+    color: ACCENT,
+  },
 
   controls: {
     paddingHorizontal: 16, paddingVertical: 12,

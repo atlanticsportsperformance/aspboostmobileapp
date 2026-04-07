@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,11 +7,11 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle, Line, Polygon, Text as SvgText, Defs, RadialGradient, Stop } from 'react-native-svg';
+import Svg, { Circle, Line, Path, Text as SvgText, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
@@ -436,39 +436,42 @@ export default function ForceProfileScreen({ route, navigation }: any) {
               </View>
             )}
 
-            {/* Main Radar Card */}
+            {/* Main Radar Section — no container box */}
             {compositeScore !== null && availableMetrics.length >= 3 && (
-              <View style={styles.radarCard}>
-                {/* Predicted Velocity - Top Left */}
-                {latestPrediction && (
-                  <View style={styles.predictedVeloContainer}>
-                    <Text style={styles.predictedVeloValue}>
-                      {latestPrediction.predicted_value.toFixed(1)}
-                      <Text style={styles.predictedVeloUnit}> mph</Text>
-                    </Text>
-                    <View style={styles.predictedVeloLabel}>
-                      <Text style={styles.predictedVeloLabelText}>Predicted Velo</Text>
-                      <View style={styles.betaBadge}>
-                        <Text style={styles.betaBadgeText}>BETA</Text>
-                      </View>
-                    </View>
-                    {latestPrediction.predicted_value_low && latestPrediction.predicted_value_high && (
-                      <Text style={styles.predictedVeloRange}>
-                        Range: {latestPrediction.predicted_value_low.toFixed(1)}-{latestPrediction.predicted_value_high.toFixed(1)} mph
+              <View style={{ marginBottom: 24 }}>
+                {/* Stats row above chart */}
+                <View style={styles.radarStatsRow}>
+                  {/* Predicted Velocity */}
+                  {latestPrediction ? (
+                    <View>
+                      <Text style={styles.predictedVeloValue}>
+                        {latestPrediction.predicted_value.toFixed(1)}
+                        <Text style={styles.predictedVeloUnit}> mph</Text>
                       </Text>
-                    )}
-                  </View>
-                )}
+                      <View style={styles.predictedVeloLabel}>
+                        <Text style={styles.predictedVeloLabelText}>Predicted Velo</Text>
+                        <View style={styles.betaBadge}>
+                          <Text style={styles.betaBadgeText}>BETA</Text>
+                        </View>
+                      </View>
+                      {latestPrediction.predicted_value_low && latestPrediction.predicted_value_high && (
+                        <Text style={styles.predictedVeloRange}>
+                          Range: {latestPrediction.predicted_value_low.toFixed(1)}-{latestPrediction.predicted_value_high.toFixed(1)} mph
+                        </Text>
+                      )}
+                    </View>
+                  ) : <View />}
 
-                {/* Composite Score - Top Right */}
-                <View style={styles.compositeContainer}>
-                  <Text style={[styles.compositeValue, { color: getZoneColor(compositeScore) }]}>
-                    {Math.round(compositeScore)}
-                  </Text>
-                  <Text style={styles.compositeLabel}>Composite</Text>
+                  {/* Composite Score */}
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={[styles.compositeValue, { color: getZoneColor(compositeScore) }]}>
+                      {Math.round(compositeScore)}
+                    </Text>
+                    <Text style={styles.compositeLabel}>Composite</Text>
+                  </View>
                 </View>
 
-                {/* Radar Chart */}
+                {/* Radar Chart — floats on background */}
                 <RadarChart data={availableMetrics} />
 
                 {/* Legend */}
@@ -487,20 +490,18 @@ export default function ForceProfileScreen({ route, navigation }: any) {
               </View>
             )}
 
-            {/* Metric Cards Grid */}
+            {/* Individual Metrics */}
             <Text style={styles.sectionTitle}>Individual Metrics</Text>
-            <View style={styles.metricsGrid}>
-              {availableMetrics.map((metric, index) => (
-                <MetricCard
-                  key={metric.name}
-                  metric={metric}
-                  index={index}
-                  onPress={() => {
-                    navigation.navigate('TestDetail', { athleteId, testType: metric.testType });
-                  }}
-                />
-              ))}
-            </View>
+            {availableMetrics.map((metric, index) => (
+              <MetricRow
+                key={metric.name}
+                metric={metric}
+                delay={index * 120}
+                onPress={() => {
+                  navigation.navigate('TestDetail', { athleteId, testType: metric.testType });
+                }}
+              />
+            ))}
           </>
         )}
       </ScrollView>
@@ -528,37 +529,55 @@ export default function ForceProfileScreen({ route, navigation }: any) {
   );
 }
 
-// Radar Chart Component with Tooltip
+// Radar Chart Component — mocap-style layered animation
 function RadarChart({ data }: { data: RadarDataPoint[] }) {
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
   const size = SCREEN_WIDTH - 48;
   const center = size / 2;
   const padding = 45;
   const maxRadius = (size / 2) - padding;
-  const levels = 5;
 
   const angleStep = (2 * Math.PI) / data.length;
 
-  // Build polygon points string
-  const currentPoints = data
-    .filter((d) => d.current)
+  // Animation values — staggered reveal from center outward
+  const gridScale = useRef(new Animated.Value(0)).current;
+  const axisOpacity = useRef(new Animated.Value(0)).current;
+  const polygonScale = useRef(new Animated.Value(0)).current;
+  const dotsOpacity = useRef(new Animated.Value(0)).current;
+  const labelsOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(gridScale, { toValue: 1, duration: 600, delay: 100, useNativeDriver: true }).start();
+    Animated.timing(axisOpacity, { toValue: 1, duration: 400, delay: 300, useNativeDriver: true }).start();
+    Animated.timing(polygonScale, { toValue: 1, duration: 500, delay: 500, useNativeDriver: true }).start();
+    Animated.timing(dotsOpacity, { toValue: 1, duration: 400, delay: 700, useNativeDriver: true }).start();
+    Animated.timing(labelsOpacity, { toValue: 1, duration: 500, delay: 800, useNativeDriver: true }).start();
+  }, []);
+
+  // Build path strings
+  const currentPath = data
     .map((d, i) => {
       const angle = angleStep * i - Math.PI / 2;
       const radius = ((d.current?.percentile || 0) / 100) * maxRadius;
-      return `${center + radius * Math.cos(angle)},${center + radius * Math.sin(angle)}`;
+      const x = center + radius * Math.cos(angle);
+      const y = center + radius * Math.sin(angle);
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
     })
-    .join(' ');
+    .join(' ') + ' Z';
 
-  const previousPoints = data
-    .filter((d) => d.previous)
-    .map((d, i) => {
-      const angle = angleStep * i - Math.PI / 2;
-      const radius = ((d.previous?.percentile || 0) / 100) * maxRadius;
-      return `${center + radius * Math.cos(angle)},${center + radius * Math.sin(angle)}`;
-    })
-    .join(' ');
+  const previousPath = data.some(d => d.previous)
+    ? data
+        .map((d, i) => {
+          const angle = angleStep * i - Math.PI / 2;
+          const radius = ((d.previous?.percentile || 0) / 100) * maxRadius;
+          const x = center + radius * Math.cos(angle);
+          const y = center + radius * Math.sin(angle);
+          return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(' ') + ' Z'
+    : null;
 
-  // Calculate point positions for touch targets
+  // Point positions for touch targets + tooltip
   const pointPositions = data.map((d, i) => {
     if (!d.current) return null;
     const angle = angleStep * i - Math.PI / 2;
@@ -569,28 +588,37 @@ function RadarChart({ data }: { data: RadarDataPoint[] }) {
     };
   });
 
-  // Get selected point data for tooltip
   const selectedData = selectedPoint !== null ? data[selectedPoint] : null;
   const selectedPosition = selectedPoint !== null ? pointPositions[selectedPoint] : null;
 
-  return (
-    <View style={styles.radarChartContainer}>
-      <View style={{ position: 'relative' }}>
-        <Svg width={size} height={size}>
-          {/* Grid circles */}
-          {[...Array(levels)].map((_, i) => (
-            <Circle
-              key={`grid-${i}`}
-              cx={center}
-              cy={center}
-              r={((i + 1) / levels) * maxRadius}
-              stroke="rgba(255,255,255,0.08)"
-              strokeWidth={1}
-              fill="none"
-            />
-          ))}
+  const vb = `0 0 ${size} ${size}`;
 
-          {/* Axis lines */}
+  return (
+    <View style={[styles.radarChartContainer, { width: size, height: size }]}>
+      {/* Layer 1 — Grid rings (scale from center) */}
+      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: gridScale }] }]}>
+        <Svg width={size} height={size} viewBox={vb}>
+          {[25, 50, 75, 100].map(p => {
+            const r = (p / 100) * maxRadius;
+            return (
+              <Circle
+                key={`grid-${p}`}
+                cx={center}
+                cy={center}
+                r={r}
+                fill="none"
+                stroke={p === 50 ? 'rgba(255,255,255,0.40)' : p === 75 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.20)'}
+                strokeWidth={p === 50 ? 2 : 1}
+                strokeDasharray={p === 100 ? '4 4' : undefined}
+              />
+            );
+          })}
+        </Svg>
+      </Animated.View>
+
+      {/* Layer 2 — Axis lines (fade in) */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: axisOpacity }]}>
+        <Svg width={size} height={size} viewBox={vb}>
           {data.map((_, i) => {
             const angle = angleStep * i - Math.PI / 2;
             return (
@@ -598,56 +626,52 @@ function RadarChart({ data }: { data: RadarDataPoint[] }) {
                 key={`axis-${i}`}
                 x1={center}
                 y1={center}
-                x2={center + maxRadius * Math.cos(angle)}
-                y2={center + maxRadius * Math.sin(angle)}
-                stroke="rgba(255,255,255,0.08)"
+                x2={center + maxRadius * 1.05 * Math.cos(angle)}
+                y2={center + maxRadius * 1.05 * Math.sin(angle)}
+                stroke="rgba(255,255,255,0.25)"
                 strokeWidth={1}
               />
             );
           })}
+        </Svg>
+      </Animated.View>
 
+      {/* Layer 3 — Polygons (scale from center) */}
+      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: polygonScale }] }]}>
+        <Svg width={size} height={size} viewBox={vb}>
+          <Defs>
+            <SvgLinearGradient id="fpRadarGrad" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#9BDDFF" stopOpacity="0.45" />
+              <Stop offset="1" stopColor="#9BDDFF" stopOpacity="0.12" />
+            </SvgLinearGradient>
+          </Defs>
           {/* Previous polygon (dashed) */}
-          {previousPoints && (
-            <Polygon
-              points={previousPoints}
+          {previousPath && (
+            <Path
+              d={previousPath}
               fill="none"
-              stroke="rgba(229, 231, 235, 0.35)"
-              strokeWidth={2}
+              stroke="rgba(255,255,255,0.25)"
+              strokeWidth={1.5}
               strokeDasharray="5,5"
             />
           )}
-
           {/* Current polygon */}
-          <Polygon
-            points={currentPoints}
-            fill="rgba(229, 231, 235, 0.1)"
-            stroke="#E5E7EB"
+          <Path
+            d={currentPath}
+            fill="url(#fpRadarGrad)"
+            stroke="#9BDDFF"
             strokeWidth={2.5}
             strokeLinejoin="round"
           />
+        </Svg>
+      </Animated.View>
 
-          {/* Data points */}
-          {data.map((d, i) => {
-            if (!d.current) return null;
-            const angle = angleStep * i - Math.PI / 2;
-            const radius = (d.current.percentile / 100) * maxRadius;
-            const x = center + radius * Math.cos(angle);
-            const y = center + radius * Math.sin(angle);
-            const isSelected = selectedPoint === i;
-            return (
-              <Circle
-                key={`point-${i}`}
-                cx={x}
-                cy={y}
-                r={isSelected ? 8 : 5}
-                fill={getZoneColor(d.current.percentile)}
-                stroke={isSelected ? '#fff' : 'none'}
-                strokeWidth={isSelected ? 2 : 0}
-              />
-            );
-          })}
+      {/* Layer 4 — Touch targets only (no visible dots) */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: dotsOpacity }]} />
 
-          {/* Labels */}
+      {/* Layer 5 — Labels (fade in) */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: labelsOpacity }]}>
+        <Svg width={size} height={size} viewBox={vb}>
           {data.map((d, i) => {
             const angle = angleStep * i - Math.PI / 2;
             const labelRadius = maxRadius + 25;
@@ -658,7 +682,7 @@ function RadarChart({ data }: { data: RadarDataPoint[] }) {
                 key={`label-${i}`}
                 x={x}
                 y={y}
-                fill="#fff"
+                fill="rgba(255,255,255,0.6)"
                 fontSize={10}
                 fontWeight="600"
                 textAnchor="middle"
@@ -669,8 +693,10 @@ function RadarChart({ data }: { data: RadarDataPoint[] }) {
             );
           })}
         </Svg>
+      </Animated.View>
 
-        {/* Touch targets for data points */}
+      {/* Touch targets for data points */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: dotsOpacity }]}>
         {pointPositions.map((pos, i) => {
           if (!pos) return null;
           return (
@@ -689,87 +715,93 @@ function RadarChart({ data }: { data: RadarDataPoint[] }) {
             />
           );
         })}
+      </Animated.View>
 
-        {/* Tooltip */}
-        {selectedData && selectedPosition && selectedData.current && (
+      {/* Tooltip */}
+      {selectedData && selectedPosition && selectedData.current && (
+        <View
+          style={[
+            styles.radarTooltip,
+            {
+              left: Math.min(Math.max(selectedPosition.x - 80, 10), size - 170),
+              top: selectedPosition.y > center ? selectedPosition.y - 95 : selectedPosition.y + 20,
+            },
+          ]}
+        >
           <View
             style={[
-              styles.radarTooltip,
-              {
-                left: Math.min(Math.max(selectedPosition.x - 80, 10), size - 170),
-                top: selectedPosition.y > center ? selectedPosition.y - 95 : selectedPosition.y + 20,
-              },
+              styles.radarTooltipArrow,
+              selectedPosition.y > center
+                ? { bottom: -6, top: 'auto' as any, transform: [{ rotate: '180deg' }] }
+                : { top: -6 },
+              { left: Math.min(Math.max(selectedPosition.x - (Math.min(Math.max(selectedPosition.x - 80, 10), size - 170)) - 6, 10), 140) },
             ]}
-          >
-            {/* Arrow indicator */}
-            <View
-              style={[
-                styles.radarTooltipArrow,
-                selectedPosition.y > center
-                  ? { bottom: -6, top: 'auto' as any, transform: [{ rotate: '180deg' }] }
-                  : { top: -6 },
-                { left: Math.min(Math.max(selectedPosition.x - (Math.min(Math.max(selectedPosition.x - 80, 10), size - 170)) - 6, 10), 140) },
-              ]}
-            />
-            <View style={styles.radarTooltipHeader}>
-              <Text style={styles.radarTooltipTitle}>{selectedData.displayName}</Text>
-              <TouchableOpacity onPress={() => setSelectedPoint(null)} style={styles.radarTooltipClose}>
-                <Ionicons name="close" size={14} color="#9CA3AF" />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.radarTooltipRow}>
-              <View style={styles.radarTooltipCol}>
-                <Text style={styles.radarTooltipLabel}>Percentile</Text>
-                <Text style={[styles.radarTooltipValue, { color: getZoneColor(selectedData.current.percentile) }]}>
-                  {selectedData.current.percentile}th
-                </Text>
-              </View>
-              <View style={styles.radarTooltipCol}>
-                <Text style={styles.radarTooltipLabel}>Raw Value</Text>
-                <Text style={styles.radarTooltipValue}>
-                  {selectedData.current.value.toFixed(1)}{selectedData.unit ? ` ${selectedData.unit}` : ''}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.radarTooltipZoneBadge, { backgroundColor: getZoneBgColor(selectedData.current.percentile), borderColor: getZoneColor(selectedData.current.percentile) + '50' }]}>
-              <Text style={[styles.radarTooltipZoneText, { color: getZoneColor(selectedData.current.percentile) }]}>
-                {getZoneLabel(selectedData.current.percentile)}
+          />
+          <View style={styles.radarTooltipHeader}>
+            <Text style={styles.radarTooltipTitle}>{selectedData.displayName}</Text>
+            <TouchableOpacity onPress={() => setSelectedPoint(null)} style={styles.radarTooltipClose}>
+              <Ionicons name="close" size={14} color="#9CA3AF" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.radarTooltipRow}>
+            <View style={styles.radarTooltipCol}>
+              <Text style={styles.radarTooltipLabel}>Percentile</Text>
+              <Text style={[styles.radarTooltipValue, { color: getZoneColor(selectedData.current.percentile) }]}>
+                {selectedData.current.percentile}th
               </Text>
             </View>
-            {selectedData.previous && (
-              <View style={styles.radarTooltipChange}>
-                <Ionicons
-                  name={selectedData.current.percentile > selectedData.previous.percentile ? 'arrow-up' : selectedData.current.percentile < selectedData.previous.percentile ? 'arrow-down' : 'remove'}
-                  size={12}
-                  color={selectedData.current.percentile > selectedData.previous.percentile ? '#4ADE80' : selectedData.current.percentile < selectedData.previous.percentile ? '#EF4444' : '#9CA3AF'}
-                />
-                <Text style={[
-                  styles.radarTooltipChangeText,
-                  { color: selectedData.current.percentile > selectedData.previous.percentile ? '#4ADE80' : selectedData.current.percentile < selectedData.previous.percentile ? '#EF4444' : '#9CA3AF' }
-                ]}>
-                  {Math.abs(selectedData.current.percentile - selectedData.previous.percentile)} pts from previous
-                </Text>
-              </View>
-            )}
+            <View style={styles.radarTooltipCol}>
+              <Text style={styles.radarTooltipLabel}>Raw Value</Text>
+              <Text style={styles.radarTooltipValue}>
+                {selectedData.current.value.toFixed(1)}{selectedData.unit ? ` ${selectedData.unit}` : ''}
+              </Text>
+            </View>
           </View>
-        )}
-      </View>
+          <View style={[styles.radarTooltipZoneBadge, { backgroundColor: getZoneBgColor(selectedData.current.percentile), borderColor: getZoneColor(selectedData.current.percentile) + '50' }]}>
+            <Text style={[styles.radarTooltipZoneText, { color: getZoneColor(selectedData.current.percentile) }]}>
+              {getZoneLabel(selectedData.current.percentile)}
+            </Text>
+          </View>
+          {selectedData.previous && (
+            <View style={styles.radarTooltipChange}>
+              <Ionicons
+                name={selectedData.current.percentile > selectedData.previous.percentile ? 'arrow-up' : selectedData.current.percentile < selectedData.previous.percentile ? 'arrow-down' : 'remove'}
+                size={12}
+                color={selectedData.current.percentile > selectedData.previous.percentile ? '#4ADE80' : selectedData.current.percentile < selectedData.previous.percentile ? '#EF4444' : '#9CA3AF'}
+              />
+              <Text style={[
+                styles.radarTooltipChangeText,
+                { color: selectedData.current.percentile > selectedData.previous.percentile ? '#4ADE80' : selectedData.current.percentile < selectedData.previous.percentile ? '#EF4444' : '#9CA3AF' }
+              ]}>
+                {Math.abs(selectedData.current.percentile - selectedData.previous.percentile)} pts from previous
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
 
       {/* Tap hint */}
-      {selectedPoint === null && (
-        <Text style={styles.radarTapHint}>Tap a data point for details</Text>
-      )}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: labelsOpacity, bottom: -20, top: undefined }]}>
+        {selectedPoint === null && (
+          <Text style={styles.radarTapHint}>Tap a data point for details</Text>
+        )}
+      </Animated.View>
     </View>
   );
 }
 
-// Metric Card Component (Apple-style gradient)
-function MetricCard({ metric, index, onPress }: { metric: RadarDataPoint; index: number; onPress?: () => void }) {
+// Metric Row — mocap-style full-width animated row
+function MetricRow({ metric, delay, onPress }: { metric: RadarDataPoint; delay: number; onPress?: () => void }) {
   const { current, previous, displayName, unit } = metric;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
+  const barAnim = useRef(new Animated.Value(0)).current;
+  const accentHeight = useRef(new Animated.Value(0)).current;
+
   if (!current) return null;
 
+  const color = getZoneColor(current.percentile);
   const zone = getZoneLabel(current.percentile);
-  const zoneColor = getZoneColor(current.percentile);
   const change = previous ? current.percentile - previous.percentile : 0;
 
   const getDescription = (name: string) => {
@@ -783,92 +815,94 @@ function MetricCard({ metric, index, onPress }: { metric: RadarDataPoint; index:
     return 'Force metric';
   };
 
-  const getGradientColors = (): [string, string, string] => {
-    if (zone === 'ELITE') return ['#000000', 'rgba(5, 46, 22, 0.4)', 'rgba(74, 222, 128, 0.3)'];
-    if (zone === 'OPTIMIZE') return ['#000000', 'rgba(12, 74, 110, 0.4)', 'rgba(155, 221, 255, 0.3)'];
-    if (zone === 'SHARPEN') return ['#000000', 'rgba(113, 63, 18, 0.4)', 'rgba(252, 211, 77, 0.3)'];
-    return ['#000000', 'rgba(127, 29, 29, 0.4)', 'rgba(239, 68, 68, 0.3)'];
-  };
+  useEffect(() => {
+    const t = setTimeout(() => {
+      Animated.parallel([
+        Animated.spring(fadeAnim, { toValue: 1, damping: 20, stiffness: 90, useNativeDriver: true }),
+        Animated.spring(slideAnim, { toValue: 0, damping: 20, stiffness: 90, useNativeDriver: true }),
+      ]).start();
+      setTimeout(() => {
+        Animated.parallel([
+          Animated.spring(barAnim, { toValue: Math.max(current.percentile, 2), damping: 14, stiffness: 50, useNativeDriver: false }),
+          Animated.spring(accentHeight, { toValue: 24, damping: 12, stiffness: 60, useNativeDriver: false }),
+        ]).start();
+      }, 200);
+    }, delay);
+    return () => clearTimeout(t);
+  }, [delay, current.percentile]);
 
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
-  };
+  const barWidth = barAnim.interpolate({ inputRange: [0, 100], outputRange: ['0%', '100%'] });
 
   return (
-    <TouchableOpacity activeOpacity={0.8} onPress={onPress}>
-    <LinearGradient colors={getGradientColors()} style={[styles.metricCard, { borderColor: zoneColor + '40' }]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
-      {/* Header */}
-      <View style={styles.metricHeader}>
-        <View style={styles.metricInfo}>
-          <Text style={styles.metricName}>{displayName}</Text>
-          <Text style={styles.metricDescription}>{getDescription(displayName)}</Text>
+    <TouchableOpacity activeOpacity={0.7} onPress={onPress}>
+      <Animated.View style={[styles.metricRow, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+        {/* Top line: hero percentile + raw value */}
+        <View style={styles.metricTopLine}>
+          <Text style={[styles.heroPercentile, { color }]}>{Math.round(current.percentile)}</Text>
+          <Text style={styles.rawValueMono}>
+            {current.value.toFixed(1)}
+            <Text style={styles.rawUnitMono}> {unit}</Text>
+          </Text>
         </View>
-        <View style={styles.metricPercentileCol}>
-          <View style={styles.metricPercentileRow}>
-            <Text style={[styles.metricPercentile, { color: zoneColor }]}>
-              {Math.round(current.percentile)}
-            </Text>
-            <Text style={styles.metricPercentUnit}>%</Text>
-          </View>
-          <View style={[styles.metricZoneBadge, { backgroundColor: zoneColor + '30' }]}>
-            <Text style={[styles.metricZoneText, { color: zoneColor }]}>{zone}</Text>
-          </View>
-        </View>
-      </View>
 
-      {/* Current Bar */}
-      <View style={styles.barSection}>
-        <View style={styles.barHeader}>
-          <Text style={styles.barDate}>{formatDate(current.date)}</Text>
+        {/* Metric name with accent bar */}
+        <View style={styles.metricNameRow}>
+          <Animated.View style={[styles.metricAccentBar, { height: accentHeight, backgroundColor: color }]} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.metricRowName}>{displayName}</Text>
+            <Text style={styles.metricRowDesc}>{getDescription(displayName)}</Text>
+          </View>
+          <View style={[styles.metricZonePill, { borderColor: color + '40' }]}>
+            <Text style={[styles.metricZonePillText, { color }]}>{zone}</Text>
+          </View>
         </View>
-        <View style={styles.barBg}>
-          <LinearGradient
-            colors={[zoneColor, zoneColor]}
-            style={[styles.barFill, { width: `${current.percentile}%` }]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-          />
-        </View>
-      </View>
 
-      {/* Previous Bar */}
-      {previous && (
-        <View style={styles.barSection}>
-          <View style={styles.barHeader}>
-            <Text style={styles.barDatePrev}>{formatDate(previous.date)}</Text>
-            <View style={styles.changeContainer}>
-              <Ionicons
-                name={change > 0 ? 'arrow-up' : change < 0 ? 'arrow-down' : 'remove'}
-                size={12}
-                color={change > 0 ? '#4ADE80' : change < 0 ? '#EF4444' : '#9CA3AF'}
-              />
-              <Text style={[styles.changeText, { color: change > 0 ? '#4ADE80' : change < 0 ? '#EF4444' : '#9CA3AF' }]}>
-                {Math.abs(change).toFixed(0)}
-              </Text>
+        {/* Current bar with P50 marker */}
+        <View style={styles.metricBarRow}>
+          <Text style={styles.metricBarLabel}>Now</Text>
+          <View style={{ flex: 1 }}>
+            <View style={styles.metricBarTrack}>
+              <View style={styles.metricBarP50} />
+              <Animated.View style={[styles.metricBarFill, { width: barWidth, backgroundColor: color }]} />
             </View>
           </View>
-          <View style={styles.barBg}>
-            <View style={[styles.barFillPrev, { width: `${previous.percentile}%`, backgroundColor: getZoneColor(previous.percentile) + '60' }]} />
-          </View>
+          <Text style={[styles.metricBarValue, { color }]}>{Math.round(current.percentile)}%</Text>
         </View>
-      )}
 
-      {/* Raw Value */}
-      <View style={styles.rawValueSection}>
-        <Text style={styles.rawValueLabel}>Raw Value</Text>
-        <Text style={styles.rawValue}>
-          {current.value.toFixed(1)}
-          {unit && <Text style={styles.rawValueUnit}> {unit}</Text>}
-        </Text>
-      </View>
+        {/* Previous bar */}
+        {previous && (
+          <View style={styles.metricBarRow}>
+            <Text style={styles.metricBarLabel}>Prev</Text>
+            <View style={{ flex: 1 }}>
+              <View style={styles.metricBarTrack}>
+                <View style={styles.metricBarP50} />
+                <View style={[styles.metricBarFillStatic, { width: `${previous.percentile}%`, backgroundColor: getZoneColor(previous.percentile) + '50' }]} />
+              </View>
+            </View>
+            <Text style={styles.metricBarValuePrev}>{Math.round(previous.percentile)}%</Text>
+          </View>
+        )}
 
-      {/* Tap indicator */}
-      <View style={styles.tapIndicator}>
-        <Text style={styles.tapIndicatorText}>View History</Text>
-        <Ionicons name="chevron-forward" size={12} color="rgba(255,255,255,0.4)" />
-      </View>
-    </LinearGradient>
+        {/* Change indicator */}
+        {previous && change !== 0 && (
+          <View style={styles.metricChangeRow}>
+            <Ionicons
+              name={change > 0 ? 'arrow-up' : 'arrow-down'}
+              size={11}
+              color={change > 0 ? '#4ADE80' : '#EF4444'}
+            />
+            <Text style={[styles.metricChangeText, { color: change > 0 ? '#4ADE80' : '#EF4444' }]}>
+              {Math.round(Math.abs(change))} pts
+            </Text>
+          </View>
+        )}
+
+        {/* View History hint */}
+        <View style={styles.metricViewHistory}>
+          <Text style={styles.metricViewHistoryText}>View History</Text>
+          <Ionicons name="chevron-forward" size={12} color="rgba(255,255,255,0.3)" />
+        </View>
+      </Animated.View>
     </TouchableOpacity>
   );
 }
@@ -982,21 +1016,18 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     flex: 1,
   },
-  radarCard: {
-    backgroundColor: '#000',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    position: 'relative',
-    minHeight: 400,
+  radarStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingHorizontal: 4,
+    marginBottom: 8,
   },
-  predictedVeloContainer: {
+  radarSvgLayer: {
     position: 'absolute',
-    top: 16,
-    left: 16,
-    zIndex: 10,
+    top: 0,
+    left: 0,
+    right: 0,
   },
   predictedVeloValue: {
     fontSize: 32,
@@ -1037,11 +1068,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   compositeContainer: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
     alignItems: 'flex-end',
-    zIndex: 10,
   },
   compositeValue: {
     fontSize: 48,
@@ -1053,8 +1080,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   radarChartContainer: {
-    alignItems: 'center',
-    marginTop: 60,
+    alignSelf: 'center',
   },
   radarTapHint: {
     fontSize: 11,
@@ -1181,137 +1207,143 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginBottom: 12,
   },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    paddingBottom: 100, // Extra space for FAB
+  // Metric rows — mocap style
+  metricRow: {
+    marginBottom: 24,
+    paddingBottom: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  metricCard: {
-    width: (SCREEN_WIDTH - 44) / 2,
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-  },
-  metricHeader: {
+  metricTopLine: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  metricInfo: {
-    flex: 1,
-    maxWidth: 90,
-  },
-  metricName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.9)',
-  },
-  metricDescription: {
-    fontSize: 9,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  metricPercentileCol: {
-    alignItems: 'flex-end',
-  },
-  metricPercentileRow: {
-    flexDirection: 'row',
     alignItems: 'baseline',
+    marginBottom: 4,
   },
-  metricPercentile: {
+  heroPercentile: {
     fontSize: 32,
-    fontWeight: '800',
+    fontWeight: '900',
   },
-  metricPercentUnit: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-    marginLeft: 1,
+  rawValueMono: {
+    fontSize: 14,
+    fontFamily: 'Courier',
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.6)',
   },
-  metricZoneBadge: {
+  rawUnitMono: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.35)',
+  },
+  metricNameRow: {
+    paddingLeft: 10,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  metricAccentBar: {
+    width: 2,
+    borderRadius: 1,
+    position: 'absolute' as const,
+    left: 0,
+    top: 0,
+  },
+  metricRowName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.8)',
+  },
+  metricRowDesc: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.35)',
+    marginTop: 1,
+  },
+  metricZonePill: {
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 3,
     borderRadius: 10,
-    marginTop: 4,
+    borderWidth: 1,
   },
-  metricZoneText: {
+  metricZonePillText: {
     fontSize: 8,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-  barSection: {
+  metricBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 6,
   },
-  barHeader: {
+  metricBarLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.35)',
+    width: 28,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  metricBarValue: {
+    fontSize: 11,
+    fontWeight: '700',
+    width: 32,
+    textAlign: 'right',
+  },
+  metricBarValuePrev: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.35)',
+    width: 32,
+    textAlign: 'right',
+  },
+  metricBarFillStatic: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    height: '100%',
+    borderRadius: 3,
+  },
+  metricBarTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    position: 'relative' as const,
+    marginBottom: 8,
+  },
+  metricBarP50: {
+    position: 'absolute' as const,
+    left: '50%',
+    top: 0,
+    width: 2,
+    height: '100%',
+    backgroundColor: 'rgba(74,222,128,0.55)',
+    zIndex: 10,
+  },
+  metricBarFill: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    height: '100%',
+    borderRadius: 3,
+  },
+  metricChangeRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 4,
     marginBottom: 4,
   },
-  barDate: {
-    fontSize: 9,
-    color: 'rgba(255,255,255,0.6)',
-  },
-  barDatePrev: {
-    fontSize: 9,
-    color: 'rgba(255,255,255,0.4)',
-  },
-  barBg: {
-    height: 10,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    borderRadius: 5,
-    overflow: 'hidden',
-  },
-  barFill: {
-    height: '100%',
-    borderRadius: 5,
-  },
-  barFillPrev: {
-    height: '100%',
-    borderRadius: 5,
-  },
-  changeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
-  changeText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  rawValueSection: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
-  },
-  rawValueLabel: {
-    fontSize: 9,
-    color: 'rgba(255,255,255,0.5)',
-  },
-  rawValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.9)',
-    marginTop: 2,
-  },
-  rawValueUnit: {
+  metricChangeText: {
     fontSize: 11,
-    fontWeight: '400',
-    color: 'rgba(255,255,255,0.5)',
+    fontWeight: '600',
   },
-  tapIndicator: {
+  metricViewHistory: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
+    gap: 3,
+    marginTop: 4,
   },
-  tapIndicatorText: {
+  metricViewHistoryText: {
     fontSize: 10,
-    color: 'rgba(255,255,255,0.4)',
+    color: 'rgba(255,255,255,0.3)',
   },
 });

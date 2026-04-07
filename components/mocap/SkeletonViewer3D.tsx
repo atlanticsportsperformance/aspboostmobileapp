@@ -376,6 +376,8 @@ function buildHTML(): string {
           segmentCount: data.segmentCount
         };
         frameRate = data.frameRate || 360;
+        curFrame = 1; // skip crunched T-pose at frame 0
+        updateSkeleton(1);
       }
     } catch(err) {}
   }

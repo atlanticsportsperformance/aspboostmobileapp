@@ -28,7 +28,7 @@ const AMBER = '#FBBF24';
 const RED = '#F87171';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_W = SCREEN_WIDTH - 48;
-const CHART_H = 45;
+const CHART_H = 60;
 
 function zoneColor(pct: number): string {
   if (pct >= 75) return GREEN;
@@ -38,10 +38,10 @@ function zoneColor(pct: number): string {
 }
 
 function zoneLabel(pct: number): string {
-  if (pct >= 75) return 'ELITE';
-  if (pct >= 50) return 'OPTIMIZE';
-  if (pct >= 25) return 'SHARPEN';
-  return 'BUILD';
+  if (pct >= 75) return 'ADVANCED';
+  if (pct >= 50) return 'GOOD';
+  if (pct >= 25) return 'EMERGING';
+  return 'NEEDS WORK';
 }
 
 // ─── Animated Number ─────────────────────────────────────────────────────────
@@ -65,11 +65,11 @@ function CountUp({ value, decimals = 0, delay = 0, prefix = '', style }: {
 
 // ─── Radar Chart ─────────────────────────────────────────────────────────────
 
-const RADAR_W = SCREEN_WIDTH - 24;
-const RADAR_H = 380;
+const RADAR_W = SCREEN_WIDTH - 16;
+const RADAR_H = SCREEN_WIDTH - 16;
 const CX = RADAR_W / 2;
 const CY = RADAR_H / 2;
-const R = 130;
+const R = (SCREEN_WIDTH - 16) / 2 - 62;
 const AXES = [
   { label: 'Drive', angle: -90 },    // top
   { label: 'Posture', angle: 0 },    // right
@@ -82,22 +82,29 @@ function rp(angleDeg: number, pct: number) {
   return { x: CX + (pct / 100) * R * Math.cos(rad), y: CY + (pct / 100) * R * Math.sin(rad) };
 }
 
-function ringPath(pct: number) {
-  return AXES.map((a, i) => {
-    const p = rp(a.angle, pct);
-    return `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-  }).join(' ') + ' Z';
+// Grid rings are true circles — athlete polygon stays straight
+function ringRadius(pct: number) {
+  return (pct / 100) * R;
 }
 
 function RadarChart({ groupScores, overallScore }: { groupScores: number[]; overallScore: number }) {
-  const scaleAnim = useRef(new Animated.Value(0)).current;
+  const gridScale = useRef(new Animated.Value(0)).current;
+  const axisOpacity = useRef(new Animated.Value(0)).current;
+  const athleteScale = useRef(new Animated.Value(0)).current;
+  const dotsOpacity = useRef(new Animated.Value(0)).current;
+  const scoreOpacity = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
-    Animated.spring(scaleAnim, { toValue: 1, damping: 16, stiffness: 70, delay: 200, useNativeDriver: true }).start();
+    // Staggered reveal from center outward — no bouncing, clean fades
+    Animated.timing(gridScale, { toValue: 1, duration: 600, delay: 100, useNativeDriver: true }).start();
+    Animated.timing(axisOpacity, { toValue: 1, duration: 400, delay: 300, useNativeDriver: true }).start();
+    Animated.timing(athleteScale, { toValue: 1, duration: 500, delay: 500, useNativeDriver: true }).start();
+    Animated.timing(dotsOpacity, { toValue: 1, duration: 400, delay: 700, useNativeDriver: true }).start();
+    Animated.timing(scoreOpacity, { toValue: 1, duration: 500, delay: 800, useNativeDriver: true }).start();
   }, []);
 
   const pts = groupScores.map((pct, i) => rp(AXES[i].angle, pct));
   const athletePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') + ' Z';
-  const oc = zoneColor(overallScore);
 
   // Label positions pushed further out with alignment adjustments
   const labelPositions = AXES.map((a, i) => {
@@ -108,24 +115,32 @@ function RadarChart({ groupScores, overallScore }: { groupScores: number[]; over
 
   return (
     <View style={styles.radarContainer}>
-      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+      {/* Grid rings — scale from center */}
+      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: gridScale }] }]}>
         <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          {/* Grid rings at 25/50/75/100 */}
           {[25, 50, 75, 100].map(p => (
-            <Path key={p} d={ringPath(p)} fill="none"
+            <Circle key={p} cx={CX} cy={CY} r={ringRadius(p)} fill="none"
               stroke={p === 50 ? 'rgba(255,255,255,0.40)' : p === 75 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.20)'}
               strokeWidth={p === 50 ? 2 : 1}
               strokeDasharray={p === 100 ? '4 4' : undefined} />
           ))}
+        </Svg>
+      </Animated.View>
 
-          {/* Axis lines */}
+      {/* Axis lines — fade in */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: axisOpacity }]}>
+        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
           {AXES.map((a, i) => {
             const tip = rp(a.angle, 105);
             return <Line key={i} x1={CX} y1={CY} x2={tip.x} y2={tip.y}
               stroke="rgba(255,255,255,0.25)" strokeWidth="1" />;
           })}
+        </Svg>
+      </Animated.View>
 
-          {/* Athlete fill + stroke */}
+      {/* Athlete polygon — spring from center */}
+      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: athleteScale }] }]}>
+        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
           <Defs>
             <LinearGradient id="radarGrad" x1="0" y1="0" x2="0" y2="1">
               <Stop offset="0" stopColor={ACCENT} stopOpacity="0.45" />
@@ -133,30 +148,38 @@ function RadarChart({ groupScores, overallScore }: { groupScores: number[]; over
             </LinearGradient>
           </Defs>
           <Path d={athletePath} fill="url(#radarGrad)" stroke={ACCENT} strokeWidth="2.5" strokeLinejoin="round" />
+        </Svg>
+      </Animated.View>
 
-          {/* Vertex dots */}
+      {/* Dots + scores — fade in last */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: dotsOpacity }]}>
+        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
           {pts.map((p, i) => (
-            <Circle key={i} cx={p.x} cy={p.y} r={6} fill={zoneColor(groupScores[i])}
+            <Circle key={i} cx={p.x} cy={p.y} r={5} fill={ACCENT}
               stroke="#0A0A0A" strokeWidth="2" />
           ))}
+        </Svg>
+      </Animated.View>
 
-          {/* Center score */}
+      {/* Center score — fade in */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: scoreOpacity }]}>
+        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
           <SvgText x={CX} y={CY + 12} textAnchor="middle"
-            fontSize="34" fontWeight="900" fill={oc}>{Math.round(overallScore)}</SvgText>
+            fontSize="34" fontWeight="900" fill="#FFFFFF">{Math.round(overallScore)}</SvgText>
 
           {/* Vertex labels + scores rendered in SVG for perfect positioning */}
           {AXES.map((a, i) => {
-            const lp = rp(a.angle, 122);
-            const c = zoneColor(groupScores[i]);
+            const labelDist = (a.angle === 0 || a.angle === 180) ? 105 : 110;
+            const lp = rp(a.angle, labelDist);
             const anchor = a.angle === 0 ? 'start' : a.angle === 180 ? 'end' : 'middle';
             const dy = a.angle === -90 ? -8 : a.angle === 90 ? 18 : 0;
             const dx = a.angle === 0 ? 8 : a.angle === 180 ? -8 : 0;
             return (
               <React.Fragment key={i}>
                 <SvgText x={lp.x + dx} y={lp.y + dy} textAnchor={anchor}
-                  fontSize="20" fontWeight="900" fill={c}>{Math.round(groupScores[i])}</SvgText>
+                  fontSize="20" fontWeight="900" fill="#FFFFFF">{Math.round(groupScores[i])}</SvgText>
                 <SvgText x={lp.x + dx} y={lp.y + dy + 14} textAnchor={anchor}
-                  fontSize="9" fontWeight="600" fill="rgba(255,255,255,0.3)"
+                  fontSize="9" fontWeight="600" fill="rgba(255,255,255,0.35)"
                   letterSpacing={1}>{a.label.toUpperCase()}</SvgText>
               </React.Fragment>
             );
@@ -173,11 +196,17 @@ function DistributionSvg({ percKey, athleteValue, athletePct, delay, percentileD
   percKey: string; athleteValue: number | null; athletePct: number; delay: number;
   percentileData: PercentileTable | null;
 }) {
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  // Left-to-right reveal: animate the width of a clipping View
+  const revealWidth = useRef(new Animated.Value(0)).current;
+  const markerOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const t = setTimeout(() => {
-      Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+      // Draw left to right over 800ms
+      Animated.timing(revealWidth, { toValue: CHART_W, duration: 800, useNativeDriver: false }).start(() => {
+        // Then pop in the athlete marker
+        Animated.timing(markerOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+      });
     }, delay);
     return () => clearTimeout(t);
   }, [delay]);
@@ -193,24 +222,31 @@ function DistributionSvg({ percKey, athleteValue, athletePct, delay, percentileD
   const color = zoneColor(athletePct);
 
   return (
-    <Animated.View style={{ opacity: fadeAnim }}>
-      <Svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`}>
-        <Defs>
-          <LinearGradient id={`df-${percKey}`} x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0" stopColor={color} stopOpacity="0.50" />
-            <Stop offset="1" stopColor={color} stopOpacity="0.08" />
-          </LinearGradient>
-        </Defs>
-        <Path d={path} fill={`url(#df-${percKey})`} stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
-        <Line x1={p50X} y1={0} x2={p50X} y2={CHART_H} stroke="rgba(74,222,128,0.5)" strokeWidth="1.5" strokeDasharray="3 2" />
-        {athleteX != null && (
-          <>
+    <View style={{ height: CHART_H, overflow: 'hidden' }}>
+      {/* Animated clip — reveals the SVG left to right */}
+      <Animated.View style={{ width: revealWidth, height: CHART_H, overflow: 'hidden' }}>
+        <Svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`}>
+          <Defs>
+            <LinearGradient id={`df-${percKey}`} x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={color} stopOpacity="0.50" />
+              <Stop offset="1" stopColor={color} stopOpacity="0.08" />
+            </LinearGradient>
+          </Defs>
+          <Path d={path} fill={`url(#df-${percKey})`} stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
+          <Line x1={p50X} y1={0} x2={p50X} y2={CHART_H} stroke="rgba(74,222,128,0.5)" strokeWidth="1.5" strokeDasharray="3 2" />
+        </Svg>
+      </Animated.View>
+
+      {/* Athlete marker — pops in after the draw completes */}
+      {athleteX != null && (
+        <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: markerOpacity }}>
+          <Svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`}>
             <Line x1={athleteX} y1={2} x2={athleteX} y2={CHART_H} stroke={color} strokeWidth="2.5" />
             <Circle cx={athleteX} cy={3} r={5} fill={color} />
-          </>
-        )}
-      </Svg>
-    </Animated.View>
+          </Svg>
+        </Animated.View>
+      )}
+    </View>
   );
 }
 
@@ -320,6 +356,7 @@ function MetricRow({ d, delay, percentileData }: {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
   const barAnim = useRef(new Animated.Value(0)).current;
+  const accentHeight = useRef(new Animated.Value(0)).current;
 
   const color = zoneColor(d.pct);
   const md = getMetricData(d.percKey, percentileData);
@@ -333,7 +370,10 @@ function MetricRow({ d, delay, percentileData }: {
         Animated.spring(slideAnim, { toValue: 0, damping: 20, stiffness: 90, useNativeDriver: true }),
       ]).start();
       setTimeout(() => {
-        Animated.spring(barAnim, { toValue: Math.max(d.pct, 2), damping: 14, stiffness: 50, useNativeDriver: false }).start();
+        Animated.parallel([
+          Animated.spring(barAnim, { toValue: Math.max(d.pct, 2), damping: 14, stiffness: 50, useNativeDriver: false }),
+          Animated.spring(accentHeight, { toValue: 20, damping: 12, stiffness: 60, useNativeDriver: false }),
+        ]).start();
       }, 200);
     }, delay);
     return () => clearTimeout(t);
@@ -357,8 +397,9 @@ function MetricRow({ d, delay, percentileData }: {
         </Text>
       </View>
 
-      {/* Metric name with colored left accent + info button */}
-      <View style={[styles.metricNameRow, { borderLeftColor: color }]}>
+      {/* Metric name with animated colored left accent + info button */}
+      <View style={styles.metricNameRow}>
+        <Animated.View style={[styles.metricAccentBar, { height: accentHeight, backgroundColor: color }]} />
         <Text style={styles.metricName}>{d.axisLabel}</Text>
         <TouchableOpacity onPress={() => setShowDetail(true)} style={styles.infoButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Ionicons name="information-circle-outline" size={18} color="rgba(255,255,255,0.3)" />
@@ -425,11 +466,22 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
   const allData = allGroupData.flat();
   const overallScore = allData.reduce((s, d) => s + d.score, 0) / allData.length;
 
+  const slideX = useRef(new Animated.Value(0)).current;
+
   const switchGroup = (idx: number) => {
     if (idx === activeGroup) return;
-    Animated.timing(fadeAnim, { toValue: 0, duration: 120, useNativeDriver: true }).start(() => {
+    const direction = idx > activeGroup ? 1 : -1;
+    // Slide out in direction, swap content, slide in from opposite
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
+      Animated.timing(slideX, { toValue: -direction * 30, duration: 100, useNativeDriver: true }),
+    ]).start(() => {
       setActiveGroup(idx);
-      Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+      slideX.setValue(direction * 30);
+      Animated.parallel([
+        Animated.spring(fadeAnim, { toValue: 1, damping: 20, stiffness: 120, useNativeDriver: true }),
+        Animated.spring(slideX, { toValue: 0, damping: 20, stiffness: 120, useNativeDriver: true }),
+      ]).start();
     });
   };
 
@@ -440,8 +492,31 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
   // Short tab labels
   const TAB_LABELS = ['Drive', 'Posture', 'Block', 'Arm'];
 
+  // Staggered slide-in from left for tabs
+  const tabAnims = useRef(TAB_LABELS.map(() => ({
+    opacity: new Animated.Value(0),
+    translateX: new Animated.Value(-40),
+  }))).current;
+
+  useEffect(() => {
+    tabAnims.forEach((anim, i) => {
+      Animated.parallel([
+        Animated.timing(anim.opacity, { toValue: 1, duration: 400, delay: 900 + i * 120, useNativeDriver: true }),
+        Animated.timing(anim.translateX, { toValue: 0, duration: 400, delay: 900 + i * 120, useNativeDriver: true }),
+      ]).start();
+    });
+  }, []);
+
   return (
     <View style={styles.container}>
+
+      {/* ── Report Header ── */}
+      <View style={styles.reportHeader}>
+        <Text style={styles.reportTitle}>Biomechanics Analysis</Text>
+        <Text style={styles.reportDesc}>
+          Composite scores across 19 metrics ranked against {percentileData.sampleSize} elite pitches at {percentileData.cohort} mph.
+        </Text>
+      </View>
 
       {/* ── Hero Radar ── */}
       <RadarChart groupScores={groupScores} overallScore={overallScore} />
@@ -449,10 +524,10 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
       {/* ── Zone Legend ── */}
       <View style={styles.zoneLegend}>
         {[
-          { label: 'BUILD', color: RED },
-          { label: 'SHARPEN', color: AMBER },
-          { label: 'OPTIMIZE', color: ACCENT },
-          { label: 'ELITE', color: GREEN },
+          { label: 'NEEDS WORK', color: RED },
+          { label: 'EMERGING', color: AMBER },
+          { label: 'GOOD', color: ACCENT },
+          { label: 'ADVANCED', color: GREEN },
         ].map(z => (
           <View key={z.label} style={styles.zoneItem}>
             <View style={[styles.zoneDot, { backgroundColor: z.color }]} />
@@ -461,36 +536,34 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
         ))}
       </View>
 
-      {/* ── Subtitle ── */}
-      <Text style={styles.subtitle}>
-        vs {percentileData.sampleSize} elite pitches ({percentileData.cohort} mph)
-      </Text>
+      {/* ── Spacer to push tabs below fold ── */}
+      <View style={{ height: 32 }} />
 
-      {/* ── Group Tabs ── */}
+      {/* ── Group Tabs — staggered slide from left ── */}
       <View style={styles.tabRow}>
         {GROUPS.map((g, i) => {
           const isActive = i === activeGroup;
-          const tc = zoneColor(groupScores[i]);
           return (
-            <TouchableOpacity
-              key={g.title}
-              style={[styles.tab, isActive && styles.tabActive]}
-              onPress={() => switchGroup(i)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.tabScore, { color: isActive ? tc : 'rgba(255,255,255,0.2)' }]}>
-                {Math.round(groupScores[i])}
-              </Text>
-              <Text style={[styles.tabLabel, isActive && { color: 'rgba(255,255,255,0.7)' }]}>
-                {TAB_LABELS[i]}
-              </Text>
-            </TouchableOpacity>
+            <Animated.View key={g.title} style={{ flex: 1, opacity: tabAnims[i].opacity, transform: [{ translateX: tabAnims[i].translateX }] }}>
+              <TouchableOpacity
+                style={[styles.tab, isActive && styles.tabActive]}
+                onPress={() => switchGroup(i)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.tabScore, { color: isActive ? '#FFFFFF' : 'rgba(255,255,255,0.2)' }]}>
+                  {Math.round(groupScores[i])}
+                </Text>
+                <Text style={[styles.tabLabel, isActive && { color: 'rgba(255,255,255,0.6)' }]}>
+                  {TAB_LABELS[i]}
+                </Text>
+              </TouchableOpacity>
+            </Animated.View>
           );
         })}
       </View>
 
       {/* ── Active Group Content ── */}
-      <Animated.View style={{ opacity: fadeAnim }}>
+      <Animated.View style={{ opacity: fadeAnim, transform: [{ translateX: slideX }] }}>
         {/* Group header */}
         <View style={styles.groupHeader}>
           <Text style={styles.groupTitle}>{GROUPS[activeGroup].title}</Text>
@@ -515,10 +588,20 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
 const styles = StyleSheet.create({
   container: { paddingHorizontal: 20, paddingTop: 24 },
 
+  reportHeader: { alignItems: 'center', marginBottom: 12 },
+  reportTitle: { fontSize: 22, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5, marginBottom: 8 },
+  reportDesc: { fontSize: 12, color: 'rgba(255,255,255,0.35)', textAlign: 'center', lineHeight: 18, paddingHorizontal: 12 },
+
   loadingContainer: { alignItems: 'center', paddingVertical: 48 },
   loadingText: { fontSize: 12, color: 'rgba(255,255,255,0.2)' },
 
   // Radar
+  radarSvgLayer: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+  },
   radarContainer: { alignSelf: 'center', width: RADAR_W, height: RADAR_H, marginBottom: 8 },
 
   // Zone legend
@@ -561,7 +644,8 @@ const styles = StyleSheet.create({
   rawValue: { fontSize: 14, fontFamily: 'Courier', fontWeight: '600', color: 'rgba(255,255,255,0.6)' },
   rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.35)' },
 
-  metricNameRow: { borderLeftWidth: 2, paddingLeft: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center' },
+  metricNameRow: { paddingLeft: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center' },
+  metricAccentBar: { width: 2, borderRadius: 1, position: 'absolute' as const, left: 0, top: 0 },
   metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.8)', flex: 1 },
   infoButton: { padding: 4 },
 
