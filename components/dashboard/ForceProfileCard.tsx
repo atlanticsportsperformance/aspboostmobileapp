@@ -32,32 +32,38 @@ interface ForceProfileCardProps {
   bodyweight?: BodyweightData | null;
 }
 
-export default function ForceProfileCard({ data, latestPrediction, batSpeedPrediction, bodyweight }: ForceProfileCardProps) {
+export default function ForceProfileCard({ data, latestPrediction, batSpeedPrediction, bodyweight, isActive = true }: ForceProfileCardProps & { isActive?: boolean }) {
   const { percentile_rank, best_metric, worst_metric } = data;
 
-  // Track if this is the first mount (for animation)
-  const isFirstMount = useRef(true);
+  const hasAnimated = useRef(false);
 
-  // Animation values - start at final values to prevent reset on re-render
-  // Will be reset to 0 on first mount only for animation
-  const circleAnim = useRef(new Animated.Value(1)).current;
-  const scoreAnim = useRef(new Animated.Value(percentile_rank)).current;
-  const bestSliderAnim = useRef(new Animated.Value(best_metric?.percentile || 0)).current;
-  const worstSliderAnim = useRef(new Animated.Value(worst_metric?.percentile || 0)).current;
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const predictionAnim = useRef(new Animated.Value(1)).current;
+  // Animation values
+  const circleAnim = useRef(new Animated.Value(0)).current;
+  const scoreAnim = useRef(new Animated.Value(0)).current;
+  const bestSliderAnim = useRef(new Animated.Value(0)).current;
+  const worstSliderAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.8)).current;
+  const predictionAnim = useRef(new Animated.Value(0)).current;
 
   // Circle circumference
   const radius = 68;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - percentile_rank / 100);
 
-  // Animate ONCE on first mount only
+  // Reset when card becomes inactive
   useEffect(() => {
-    if (!isFirstMount.current) return;
-    isFirstMount.current = false;
+    if (!isActive) {
+      hasAnimated.current = false;
+    }
+  }, [isActive]);
 
-    // Reset values to 0 for animation
+  // Animate when card becomes active
+  useEffect(() => {
+    if (!isActive) return;
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
+
+    // Reset values
     circleAnim.setValue(0);
     scoreAnim.setValue(0);
     bestSliderAnim.setValue(0);
@@ -73,7 +79,7 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
       useNativeDriver: true,
     }).start();
 
-    // Circle draw animation (starts immediately)
+    // Circle draw animation
     Animated.timing(circleAnim, {
       toValue: 1,
       duration: 1200,
@@ -81,7 +87,7 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
       useNativeDriver: false,
     }).start();
 
-    // Score count up (slightly delayed)
+    // Score count up
     Animated.timing(scoreAnim, {
       toValue: percentile_rank,
       duration: 1000,
@@ -90,7 +96,7 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
       useNativeDriver: false,
     }).start();
 
-    // Best slider with spring (slower, more dramatic)
+    // Best slider with spring
     Animated.spring(bestSliderAnim, {
       toValue: best_metric?.percentile || 0,
       delay: 500,
@@ -99,7 +105,7 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
       useNativeDriver: false,
     }).start();
 
-    // Worst slider with spring (more staggered, slower)
+    // Worst slider with spring
     Animated.spring(worstSliderAnim, {
       toValue: worst_metric?.percentile || 0,
       delay: 800,
@@ -118,7 +124,7 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
         useNativeDriver: true,
       }).start();
     }
-  }, []); // Empty deps - only run once on mount
+  }, [isActive]);
 
   // Interpolate circle stroke
   const animatedStrokeDashoffset = circleAnim.interpolate({

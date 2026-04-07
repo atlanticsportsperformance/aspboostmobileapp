@@ -449,7 +449,7 @@ interface Props {
   pitchType?: string;
 }
 
-export default function PercentileBreakdown({ scalarMetrics, percentileData }: Props) {
+export default function PercentileBreakdown({ scalarMetrics, percentileData, velocity, pitchType }: Props) {
   const [activeGroup, setActiveGroup] = useState(0);
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
@@ -510,12 +510,37 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
   return (
     <View style={styles.container}>
 
-      {/* ── Report Header ── */}
-      <View style={styles.reportHeader}>
-        <Text style={styles.reportTitle}>Biomechanics Analysis</Text>
-        <Text style={styles.reportDesc}>
-          Composite scores across 19 metrics ranked against {percentileData.sampleSize} elite pitches at {percentileData.cohort} mph.
+      {/* ── Zone Badge + Description (mirrors Force Profile) ── */}
+      <View style={styles.zoneHeader}>
+        <View style={[styles.zoneBadge, { backgroundColor: `${zoneColor(overallScore)}15` }]}>
+          <Text style={[styles.zoneBadgeText, { color: zoneColor(overallScore) }]}>
+            {zoneLabel(overallScore)}
+          </Text>
+        </View>
+        <Text style={styles.zoneDescription}>
+          Biomechanics analysis vs {percentileData.sampleSize} elite pitches
         </Text>
+      </View>
+
+      {/* ── Stats Row: Pitch info left + Composite right ── */}
+      <View style={styles.statsRow}>
+        <View>
+          {velocity != null && (
+            <Text style={styles.velocityValue}>
+              {velocity}
+              <Text style={styles.velocityUnit}> mph</Text>
+            </Text>
+          )}
+          <Text style={styles.velocityLabel}>
+            {pitchType || 'Pitch'} · {percentileData.cohort} mph cohort
+          </Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={[styles.compositeValue, { color: zoneColor(overallScore) }]}>
+            {Math.round(overallScore)}
+          </Text>
+          <Text style={styles.compositeLabel}>Composite</Text>
+        </View>
       </View>
 
       {/* ── Hero Radar ── */}
@@ -588,9 +613,17 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData }: P
 const styles = StyleSheet.create({
   container: { paddingHorizontal: 20, paddingTop: 24 },
 
-  reportHeader: { alignItems: 'center', marginBottom: 12 },
-  reportTitle: { fontSize: 22, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5, marginBottom: 8 },
-  reportDesc: { fontSize: 12, color: 'rgba(255,255,255,0.35)', textAlign: 'center', lineHeight: 18, paddingHorizontal: 12 },
+  zoneHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 10 },
+  zoneBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  zoneBadgeText: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  zoneDescription: { fontSize: 13, color: '#9CA3AF', flex: 1 },
+
+  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  velocityValue: { fontSize: 36, fontWeight: '800', color: '#FFFFFF' },
+  velocityUnit: { fontSize: 16, fontWeight: '500', color: 'rgba(255,255,255,0.5)' },
+  velocityLabel: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
+  compositeValue: { fontSize: 48, fontWeight: '800' },
+  compositeLabel: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
 
   loadingContainer: { alignItems: 'center', paddingVertical: 48 },
   loadingText: { fontSize: 12, color: 'rgba(255,255,255,0.2)' },

@@ -81,17 +81,22 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
 
   // Track if animation has already run to prevent re-triggering on parent re-renders
   const hasAnimated = useRef(false);
+  const glowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
 
   // Circle circumference
   const radius = 75;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - latest.arm_score / 100);
 
-  // Reset hasAnimated when card becomes inactive (swiped away)
-  // This allows animation to replay when user swipes back to this card
+  // Reset when card becomes inactive — stop glow loop to save resources
   useEffect(() => {
     if (!isActive) {
       hasAnimated.current = false;
+      if (glowLoopRef.current) {
+        glowLoopRef.current.stop();
+        glowLoopRef.current = null;
+        glowAnim.setValue(0);
+      }
     }
   }, [isActive]);
 
@@ -138,8 +143,8 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
       useNativeDriver: false,
     }).start();
 
-    // Glow pulse
-    Animated.loop(
+    // Glow pulse — store reference to stop when inactive
+    const glowLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(glowAnim, {
           toValue: 1,
@@ -155,7 +160,9 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
           useNativeDriver: true,
         }),
       ])
-    ).start();
+    );
+    glowLoop.start();
+    glowLoopRef.current = glowLoop;
 
     // PR bar spring animation
     Animated.spring(prBarAnim, {

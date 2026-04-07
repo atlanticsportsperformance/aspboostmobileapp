@@ -350,7 +350,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           style={styles.cardGloss}
         />
         <Text style={styles.cardTitle}>Force Profile</Text>
-        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} />
+        <ForceProfileCard data={forceProfile} latestPrediction={latestPrediction} batSpeedPrediction={batSpeedPrediction} bodyweight={bodyweightData} isActive={snapshotIndex === thisIndex} />
       </View>
     );
   }
@@ -473,6 +473,14 @@ export default function DashboardScreen({ navigation }: any) {
   const [showBookingSheet, setShowBookingSheet] = useState(false);
   const [cancellingBooking, setCancellingBooking] = useState(false);
 
+  // ── Entrance animation values ──
+  const headerOpacity = useRef(new Animated.Value(0)).current;
+  const headerTranslateY = useRef(new Animated.Value(-15)).current;
+  const calendarOpacity = useRef(new Animated.Value(0)).current;
+  const calendarTranslateY = useRef(new Animated.Value(20)).current;
+  const dayViewOpacity = useRef(new Animated.Value(0)).current;
+  const dayViewTranslateY = useRef(new Animated.Value(15)).current;
+
   const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
 
   // Check if there are upcoming events (bookings in the future)
@@ -501,6 +509,34 @@ export default function DashboardScreen({ navigation }: any) {
       mountedRef.current = false;
     };
   }, []);
+
+  // ── Entrance animations — fire when loading completes ──
+  useEffect(() => {
+    if (!loading) {
+      // Header slides down
+      Animated.parallel([
+        Animated.timing(headerOpacity, { toValue: 1, duration: 400, delay: 50, useNativeDriver: true }),
+        Animated.timing(headerTranslateY, { toValue: 0, duration: 400, delay: 50, useNativeDriver: true }),
+      ]).start();
+      // Calendar fades up
+      Animated.parallel([
+        Animated.timing(calendarOpacity, { toValue: 1, duration: 500, delay: 300, useNativeDriver: true }),
+        Animated.timing(calendarTranslateY, { toValue: 0, duration: 500, delay: 300, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [loading]);
+
+  // Animate day view entrance when switching to day mode
+  useEffect(() => {
+    if (viewMode === 'day') {
+      dayViewOpacity.setValue(0);
+      dayViewTranslateY.setValue(15);
+      Animated.parallel([
+        Animated.timing(dayViewOpacity, { toValue: 1, duration: 300, useNativeDriver: true }),
+        Animated.timing(dayViewTranslateY, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [viewMode, selectedDate]);
 
   // Reload data when app comes back from background after being away for 5+ minutes
   useEffect(() => {
@@ -2135,16 +2171,17 @@ export default function DashboardScreen({ navigation }: any) {
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
   const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
 
-  const snapshotSlides = [];
+  const snapshotSlides: string[] = [];
+  if (hasUpcomingEvents) snapshotSlides.push('events');
+  if (pitchingData) snapshotSlides.push('pitching');
+  if (hittingData) snapshotSlides.push('hitting');
   if (valdProfileId && forceProfile) snapshotSlides.push('force');
   if (armCareData) snapshotSlides.push('armcare');
-  if (hittingData) snapshotSlides.push('hitting');
-  if (pitchingData) snapshotSlides.push('pitching');
 
   return (
     <View style={styles.container}>
       {/* Header */}
-      <View style={styles.header}>
+      <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}>
         <View>
           <Text style={styles.greeting}>{getGreeting()}, {firstName}</Text>
           <Text style={styles.date}>
@@ -2152,9 +2189,9 @@ export default function DashboardScreen({ navigation }: any) {
           </Text>
         </View>
         <TouchableOpacity onPress={() => setSettingsOpen(true)} style={styles.settingsButton}>
-          <Text style={styles.settingsIcon}>⚙️</Text>
+          <Ionicons name="settings-outline" size={22} color="rgba(255,255,255,0.5)" />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* Settings Dropdown Modal */}
       <Modal
@@ -2273,19 +2310,44 @@ export default function DashboardScreen({ navigation }: any) {
               upcomingEvents={bookings}
               onEventPress={handleBookingPress}
             />
-
+            {/* Pagination Dots */}
+            {snapshotSlides.length > 1 && (
+              <View style={styles.paginationDots}>
+                {snapshotSlides.map((_, i) => {
+                  const dotOpacity = scrollX.interpolate({
+                    inputRange: [(i - 1) * CARD_WIDTH, i * CARD_WIDTH, (i + 1) * CARD_WIDTH],
+                    outputRange: [0.3, 1, 0.3],
+                    extrapolate: 'clamp',
+                  });
+                  const dotScale = scrollX.interpolate({
+                    inputRange: [(i - 1) * CARD_WIDTH, i * CARD_WIDTH, (i + 1) * CARD_WIDTH],
+                    outputRange: [1, 1.4, 1],
+                    extrapolate: 'clamp',
+                  });
+                  return (
+                    <Animated.View
+                      key={i}
+                      style={[
+                        styles.paginationDot,
+                        { opacity: dotOpacity, transform: [{ scale: dotScale }] },
+                      ]}
+                    />
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
 
         {/* Calendar */}
-        <View style={styles.calendarContainer}>
+        <Animated.View style={[styles.calendarContainer, { opacity: calendarOpacity, transform: [{ translateY: calendarTranslateY }] }]}>
           <View style={styles.monthHeader}>
             <TouchableOpacity onPress={handlePrevMonth} style={styles.monthButton}>
-              <Text style={styles.monthButtonText}>‹</Text>
+              <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
             </TouchableOpacity>
             <Text style={styles.monthTitle}>{monthName}</Text>
             <TouchableOpacity onPress={handleNextMonth} style={styles.monthButton}>
-              <Text style={styles.monthButtonText}>›</Text>
+              <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
 
@@ -2339,7 +2401,7 @@ export default function DashboardScreen({ navigation }: any) {
               );
             })}
           </View>
-        </View>
+        </Animated.View>
         </ScrollView>
       ) : (
         <View style={styles.dayViewContainer}>
@@ -2348,20 +2410,21 @@ export default function DashboardScreen({ navigation }: any) {
               {/* Back Button */}
               <View style={styles.dayViewHeader}>
                 <TouchableOpacity onPress={handleBackToMonth} style={styles.backButton}>
-                  <Text style={styles.backButtonText}>‹ Back</Text>
+                  <Ionicons name="chevron-back" size={18} color="#9CA3AF" />
+                  <Text style={styles.backButtonText}>Back</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Week Navigation Header - FIXED */}
+              {/* Week Navigation Header */}
               <View style={styles.weekNavHeader}>
                 <TouchableOpacity onPress={handlePrevDay} style={styles.weekNavButton}>
-                  <Text style={styles.weekNavButtonText}>‹</Text>
+                  <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
                 </TouchableOpacity>
                 <Text style={styles.weekNavTitle}>
                   {selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
                 </Text>
                 <TouchableOpacity onPress={handleNextDay} style={styles.weekNavButton}>
-                  <Text style={styles.weekNavButtonText}>›</Text>
+                  <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
 
@@ -2427,6 +2490,7 @@ export default function DashboardScreen({ navigation }: any) {
               </View>
 
               {/* Workouts for Selected Date - SCROLLABLE */}
+              <Animated.View style={{ flex: 1, opacity: dayViewOpacity, transform: [{ translateY: dayViewTranslateY }] }}>
               <ScrollView style={styles.workoutsScrollView} contentContainerStyle={styles.workoutsContainer}>
                 {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 ? (
                   <View style={styles.emptyDayView}>
@@ -2640,6 +2704,7 @@ export default function DashboardScreen({ navigation }: any) {
                   </>
                 )}
               </ScrollView>
+              </Animated.View>
             </>
           )}
         </View>
@@ -2799,16 +2864,25 @@ const styles = StyleSheet.create({
   settingsButton: {
     padding: 8,
   },
-  settingsIcon: {
-    fontSize: 24,
-  },
   scrollView: {
     flex: 1,
   },
   snapshotContainer: {
-    height: CARD_HEIGHT,
     marginBottom: 0,
     position: 'relative',
+  },
+  paginationDots: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+  },
+  paginationDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#9BDDFF',
   },
   carouselWrapper: {
     flex: 1,
@@ -2888,9 +2962,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   monthTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
   dayHeaders: {
     flexDirection: 'row',
@@ -2915,17 +2990,22 @@ const styles = StyleSheet.create({
   calendarDay: {
     width: CALENDAR_DAY_SIZE,
     height: CALENDAR_DAY_SIZE,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 8,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 2,
   },
   calendarDayToday: {
     borderColor: '#9BDDFF',
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
+    shadowColor: '#9BDDFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
   dayNumber: {
     fontSize: 14,
@@ -2943,9 +3023,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   dayDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 3,
+    elevation: 3,
   },
   dayViewContainer: {
     flex: 1,
@@ -2959,10 +3043,12 @@ const styles = StyleSheet.create({
   backButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
   },
   backButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#9CA3AF',
+    fontWeight: '500',
   },
   dayViewContent: {
     flex: 1,
