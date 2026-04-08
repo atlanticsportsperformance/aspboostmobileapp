@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Modal,
+  Animated,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -92,6 +93,39 @@ interface FullSwingSession {
 }
 
 type SessionType = 'hittrax' | 'blast' | 'paired' | 'fullswing';
+
+// ── Animated Section Wrapper ────────────────────────────────────────────────
+function AnimatedSection({ delay = 0, children }: { delay?: number; children: React.ReactNode }) {
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(20)).current;
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 1, duration: 500, delay, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: 0, duration: 500, delay, useNativeDriver: true }),
+    ]).start();
+  }, []);
+  return (
+    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+      {children}
+    </Animated.View>
+  );
+}
+
+// ── Animated Count-Up ───────────────────────────────────────────────────────
+function CountUp({ value, decimals = 0, delay = 0, style, suffix = '' }: {
+  value: number; decimals?: number; delay?: number; style?: any; suffix?: string;
+}) {
+  const anim = useRef(new Animated.Value(0)).current;
+  const [display, setDisplay] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      Animated.spring(anim, { toValue: value, damping: 22, stiffness: 100, useNativeDriver: false }).start();
+    }, delay);
+    const id = anim.addListener(({ value: v }) => setDisplay(v));
+    return () => { clearTimeout(t); anim.removeListener(id); };
+  }, [value, delay]);
+  return <Text style={style}>{display.toFixed(decimals)}{suffix}</Text>;
+}
 
 export default function HittingSessionScreen({ route, navigation }: any) {
   const { isParent } = useAthlete();
@@ -470,9 +504,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         contentContainerStyle={styles.scrollContent}
       >
         {/* Header */}
+        <AnimatedSection delay={0}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
+            <Ionicons name="chevron-back" size={20} color="#9CA3AF" />
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
           <View style={styles.titleRow}>
@@ -485,10 +520,13 @@ export default function HittingSessionScreen({ route, navigation }: any) {
             )}
           </View>
           <Text style={styles.subtitle}>{formatDate(sessionDate)}</Text>
+          <View style={styles.headerAccent} />
         </View>
+        </AnimatedSection>
 
         {/* Spray Chart (HitTrax & Paired) */}
         {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
+          <AnimatedSection delay={200}>
           <View style={styles.chartSection}>
             <Text style={styles.chartTitle}>Spray Chart</Text>
             <View style={styles.sprayChartContainer}>
@@ -503,9 +541,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 <Path
                   d="M 60 230 Q 100 140 200 136 Q 300 140 340 230"
                   fill="none"
-                  stroke="#6b7280"
+                  stroke="#9BDDFF"
                   strokeWidth="1.5"
-                  opacity={0.8}
+                  opacity={0.3}
                 />
 
                 {/* Infield arc */}
@@ -528,9 +566,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       key={swing.id}
                       cx={Math.max(20, Math.min(380, x))}
                       cy={Math.max(100, Math.min(380, y))}
-                      r="6"
+                      r="8"
                       fill={getColorByEV(swing.exit_velocity)}
-                      opacity={0.9}
+                      opacity={0.85}
                       onPress={() => setSelectedSwing(swing)}
                     />
                   );
@@ -558,6 +596,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               </View>
             </View>
           </View>
+          </AnimatedSection>
         )}
 
         {/* No spray chart message for Blast-only */}
@@ -585,9 +624,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 <Path
                   d="M 60 230 Q 100 140 200 136 Q 300 140 340 230"
                   fill="none"
-                  stroke="#6b7280"
+                  stroke="#9BDDFF"
                   strokeWidth="1.5"
-                  opacity={0.8}
+                  opacity={0.3}
                 />
 
                 {/* Infield arc */}
@@ -652,6 +691,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         )}
 
         {/* Session Summary Stats */}
+        <AnimatedSection delay={400}>
         <View style={styles.summarySection}>
           <Text style={styles.summaryTitle}>SESSION SUMMARY</Text>
 
@@ -817,7 +857,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
             </View>
           )}
         </View>
+        </AnimatedSection>
 
+        <AnimatedSection delay={600}>
         {/* Full Swing: Bat Speed vs Exit Velocity Chart */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
@@ -2809,6 +2851,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
             </View>
           </View>
         )}
+        </AnimatedSection>
       </ScrollView>
 
       {/* Swing Detail Modal */}
@@ -2997,12 +3040,13 @@ const styles = StyleSheet.create({
   backButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
     marginBottom: 16,
   },
   backText: {
     color: '#9CA3AF',
-    fontSize: 14,
-    marginLeft: 8,
+    fontSize: 15,
+    fontWeight: '500',
   },
   titleRow: {
     flexDirection: 'row',
@@ -3011,9 +3055,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
     color: '#FFFFFF',
+    letterSpacing: -0.5,
   },
   pairedBadge: {
     flexDirection: 'row',
@@ -3032,23 +3077,34 @@ const styles = StyleSheet.create({
     color: '#4ADE80',
   },
   subtitle: {
-    fontSize: 14,
-    color: '#9CA3AF',
+    fontSize: 13,
+    color: '#9BDDFF',
+  },
+  headerAccent: {
+    height: 1,
+    backgroundColor: 'rgba(155,221,255,0.15)',
+    marginTop: 16,
   },
   chartSection: {
     paddingHorizontal: 16,
-    paddingBottom: 16,
+    paddingBottom: 24,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   chartTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.4)',
     marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 2,
   },
   chartDescription: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: 'rgba(255,255,255,0.5)',
     marginBottom: 12,
+    lineHeight: 17,
   },
   sprayChartContainer: {
     width: '100%',
@@ -3103,29 +3159,37 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   summaryTitle: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#9CA3AF',
-    letterSpacing: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.35)',
+    letterSpacing: 2,
     marginBottom: 12,
+    textTransform: 'uppercase',
   },
   statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    gap: 8,
   },
   statItem: {
     alignItems: 'center',
     flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 12,
+    paddingHorizontal: 6,
   },
   statValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 20,
+    fontWeight: '800',
     color: '#FFFFFF',
   },
   statLabel: {
-    fontSize: 8,
-    color: '#6B7280',
-    marginTop: 2,
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 4,
+    textAlign: 'center',
   },
   // Compact summary grid for Full Swing sessions
   summaryGrid: {
@@ -3138,27 +3202,28 @@ const styles = StyleSheet.create({
   summaryCard: {
     flex: 1,
     backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
-    paddingVertical: 10,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 12,
     paddingHorizontal: 8,
     alignItems: 'center',
   },
   summaryCardValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 18,
+    fontWeight: '800',
     color: '#FFFFFF',
   },
   summaryCardLabel: {
     fontSize: 9,
-    color: '#9CA3AF',
-    marginTop: 2,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 3,
     textAlign: 'center',
   },
   summaryCardSub: {
     fontSize: 8,
-    color: '#6B7280',
-    marginTop: 1,
+    color: 'rgba(255,255,255,0.3)',
+    marginTop: 2,
   },
   sourceLabel: {
     fontSize: 9,
@@ -3243,28 +3308,30 @@ const styles = StyleSheet.create({
   // Modal styles
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#000000',
+    backgroundColor: '#111111',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
+    paddingBottom: 40,
   },
   modalHandle: {
     width: 48,
     height: 4,
-    backgroundColor: '#4B5563',
+    backgroundColor: 'rgba(255,255,255,0.15)',
     borderRadius: 2,
     alignSelf: 'center',
     marginBottom: 24,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '800',
     color: '#FFFFFF',
     marginBottom: 16,
+    letterSpacing: -0.3,
   },
   modalRow: {
     flexDirection: 'row',
@@ -3272,20 +3339,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.1)',
+    borderBottomColor: 'rgba(255,255,255,0.06)',
   },
   modalLabel: {
-    fontSize: 14,
-    color: '#9CA3AF',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.5)',
   },
   modalValue: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+    fontWeight: '700',
+    color: '#9BDDFF',
   },
   modalCloseButton: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: 'rgba(155,221,255,0.15)',
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.3)',
     paddingVertical: 14,
     marginTop: 24,
     alignItems: 'center',

@@ -1056,107 +1056,107 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
                 key={session.id}
                 style={styles.sessionCard}
                 onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId, source: session.source })}
+                activeOpacity={0.7}
               >
-                <View style={styles.sessionHeader}>
-                  <View style={styles.sessionHeaderLeft}>
-                    <Text style={styles.sessionDate}>{formatDate(session.session_date)}</Text>
-                    {session.isPaired && session.paired_swings_count && session.paired_swings_count > 0 && (
-                      <View style={styles.pairedBadge}>
-                        <Ionicons name="link" size={10} color="#9BDDFF" style={{ marginRight: 3 }} />
-                        <Text style={styles.pairedBadgeText}>{session.paired_swings_count} Paired</Text>
+                {/* Left accent bar */}
+                <View style={[styles.sessionAccent, {
+                  backgroundColor: session.source === 'fullswing' ? '#22D3EE' : session.source === 'hittrax' ? '#9BDDFF' : session.isPaired ? '#A78BFA' : '#6B7280'
+                }]} />
+
+                <View style={styles.sessionBody}>
+                  {/* Top row: date + source badge + chevron */}
+                  <View style={styles.sessionHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sessionDate}>{formatDate(session.session_date)}</Text>
+                      <View style={styles.sessionSourceRow}>
+                        <Text style={styles.sessionSource}>
+                          {session.isPaired ? 'HITTRAX + BLAST' : session.source === 'hittrax' ? 'HITTRAX' : session.source === 'fullswing' ? 'FULL SWING' : 'BLAST'}
+                        </Text>
+                        <Text style={styles.sessionSwingCount}>
+                          {session.isPaired ? `${session.paired_swings_count} paired` : `${session.total_swings || session.blast_swings_count} swings`}
+                        </Text>
+                        {session.isPaired && session.paired_swings_count && session.paired_swings_count > 0 && (
+                          <View style={styles.pairedBadge}>
+                            <Ionicons name="link" size={9} color="#A78BFA" />
+                          </View>
+                        )}
                       </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
+                  </View>
+
+                  {/* Stats */}
+                  <View style={styles.sessionStats}>
+                    <View style={styles.sessionStat}>
+                      <Text style={styles.sessionStatValue}>{session.total_swings}</Text>
+                      <Text style={styles.sessionStatLabel}>Swings</Text>
+                    </View>
+
+                    {session.source === 'blast' ? (
+                      <>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValueAccent}>
+                            {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Bat Speed</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>
+                            {session.avg_attack_angle ? session.avg_attack_angle.toFixed(1) : '--'}°
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Attack Angle</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>
+                            {session.avg_on_plane_efficiency ? session.avg_on_plane_efficiency.toFixed(1) : '--'}%
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>On-Plane %</Text>
+                        </View>
+                      </>
+                    ) : session.source === 'fullswing' ? (
+                      <>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValueAccent}>
+                            {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Bat Speed</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValueAccent}>
+                            {session.max_exit_velocity?.toFixed(1) || '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Max EV</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>
+                            {Math.round(session.max_distance) || '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Max Dist</Text>
+                        </View>
+                      </>
+                    ) : (
+                      <>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValueAccent}>
+                            {session.max_exit_velocity?.toFixed(1) || '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Max EV</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>
+                            {Math.round(session.max_distance) || '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Max Dist</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValueAccent}>
+                            {session.avg_exit_velocity?.toFixed(1) || '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Avg EV</Text>
+                        </View>
+                      </>
                     )}
                   </View>
-                  <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
-                </View>
-
-                <Text style={styles.sessionSource}>
-                  {session.isPaired ? (
-                    <>
-                      <Text style={styles.hittraxLabel}>HitTrax</Text> + <Text style={styles.blastLabel}>Blast</Text> Session
-                      <Text style={styles.sessionSourceMuted}>
-                        {` (${session.paired_swings_count} paired)`}
-                      </Text>
-                    </>
-                  ) : session.source === 'hittrax' ? (
-                    <><Text style={styles.hittraxLabel}>HitTrax</Text> Only <Text style={styles.sessionSourceMuted}>({session.total_swings} swings)</Text></>
-                  ) : session.source === 'fullswing' ? (
-                    <><Text style={styles.fullswingLabel}>Full Swing</Text> <Text style={styles.sessionSourceMuted}>({session.total_swings} swings)</Text></>
-                  ) : (
-                    <><Text style={styles.blastLabel}>Blast</Text> Only <Text style={styles.sessionSourceMuted}>({session.blast_swings_count} swings)</Text></>
-                  )}
-                </Text>
-
-                <View style={styles.sessionStats}>
-                  <View style={styles.sessionStat}>
-                    <Text style={styles.sessionStatValue}>{session.total_swings}</Text>
-                    <Text style={styles.sessionStatLabel}>Swings</Text>
-                  </View>
-
-                  {session.source === 'blast' ? (
-                    <>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueSpeed}>
-                          {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Bat Speed</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValue}>
-                          {session.avg_attack_angle ? session.avg_attack_angle.toFixed(1) : '--'}°
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Attack Angle</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueEfficiency}>
-                          {session.avg_on_plane_efficiency ? session.avg_on_plane_efficiency.toFixed(1) : '--'}%
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>On-Plane %</Text>
-                      </View>
-                    </>
-                  ) : session.source === 'fullswing' ? (
-                    <>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueSpeed}>
-                          {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Bat Speed</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueSpeed}>
-                          {session.max_exit_velocity?.toFixed(1) || '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Max EV</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueDistance}>
-                          {Math.round(session.max_distance) || '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Max Dist</Text>
-                      </View>
-                    </>
-                  ) : (
-                    <>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueSpeed}>
-                          {session.max_exit_velocity?.toFixed(1) || '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Max EV</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueDistance}>
-                          {Math.round(session.max_distance) || '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Max Dist</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValueSpeed}>
-                          {session.avg_exit_velocity?.toFixed(1) || '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Avg EV</Text>
-                      </View>
-                    </>
-                  )}
                 </View>
               </TouchableOpacity>
             ))
@@ -1402,28 +1402,40 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sessionCard: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    flexDirection: 'row',
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
+    borderColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  sessionAccent: {
+    width: 3,
+  },
+  sessionBody: {
+    flex: 1,
+    padding: 14,
   },
   sessionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
-  },
-  sessionHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    marginBottom: 10,
   },
   sessionDate: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#FFFFFF',
+    marginBottom: 3,
+  },
+  sessionSourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  sessionSwingCount: {
+    fontSize: 10,
+    color: '#6B7280',
   },
   pairedBadge: {
     flexDirection: 'row',
@@ -1459,28 +1471,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sessionStatValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '800',
     color: '#FFFFFF',
   },
-  sessionStatValueSpeed: {
-    fontSize: 16,
-    fontWeight: 'bold',
+  sessionStatValueAccent: {
+    fontSize: 17,
+    fontWeight: '800',
     color: '#9BDDFF',
   },
-  sessionStatValueDistance: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  sessionStatValueEfficiency: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
   sessionStatLabel: {
-    fontSize: 7,
+    fontSize: 8,
     color: '#6B7280',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 2,
   },
   emptyState: {
     alignItems: 'center',
