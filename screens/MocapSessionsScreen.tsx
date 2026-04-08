@@ -205,6 +205,7 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
                 <TouchableOpacity
                   key={`${session.id}-${pitch?.id || idx}`}
                   style={styles.sessionCard}
+                  activeOpacity={0.7}
                   onPress={() => {
                     if (pitch) {
                       navigation.navigate('MocapPitchDetail', {
@@ -215,55 +216,59 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
                     }
                   }}
                 >
-                  <View style={styles.sessionCardHeader}>
-                    <View style={styles.sessionCardHeaderLeft}>
-                      <View style={styles.sessionCardDateRow}>
+                  {/* Left accent bar */}
+                  <View style={styles.sessionAccent} />
+
+                  <View style={styles.sessionBody}>
+                    {/* Header: date + badges + chevron */}
+                    <View style={styles.sessionCardHeader}>
+                      <View style={{ flex: 1 }}>
                         <Text style={styles.sessionCardDate}>
                           {new Date(session.session_date).toLocaleDateString('en-US', {
                             month: 'short', day: 'numeric', year: 'numeric',
                           })}
+                          {pitch?.is_session_highlight ? '  ★' : ''}
                         </Text>
-                        <View style={styles.mocapBadge}>
-                          <Text style={styles.mocapBadgeText}>Mocap</Text>
+                        <View style={styles.sessionSourceRow}>
+                          <Text style={styles.sessionCardVenue}>
+                            {session.category === 'baseball_pitching' ? 'PITCHING ANALYSIS' : session.category?.toUpperCase()}
+                          </Text>
+                          {session.athlete_throws && (
+                            <Text style={styles.sessionThrows}>{session.athlete_throws}HP</Text>
+                          )}
                         </View>
-                        {pitch?.is_session_highlight && (
-                          <View style={styles.highlightBadge}>
-                            <Ionicons name="star" size={10} color="#D4AF37" />
-                          </View>
-                        )}
                       </View>
-                      <Text style={styles.sessionCardVenue}>
-                        {session.category === 'baseball_pitching' ? 'Pitching Analysis' : session.category}
-                        {session.athlete_throws ? ` • ${session.athlete_throws}HP` : ''}
-                      </Text>
+                      <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
                     </View>
-                    <Ionicons name="chevron-forward" size={20} color={COLORS.gray400} />
-                  </View>
 
-                  {pitch && (
-                    <View style={styles.sessionStatsRow}>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValue}>#{pitch.pitch_number}</Text>
-                        <Text style={styles.sessionStatLabel}>Pitch</Text>
+                    {/* Stats */}
+                    {pitch && (
+                      <View style={styles.sessionStatsRow}>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>#{pitch.pitch_number}</Text>
+                          <Text style={styles.sessionStatLabel}>Pitch</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={styles.sessionStatValue}>{pitch.pitch_type || '--'}</Text>
+                          <Text style={styles.sessionStatLabel}>Type</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          <Text style={[styles.sessionStatValue, styles.sessionStatAccent]}>
+                            {pitch.velocity_mph != null ? `${pitch.velocity_mph}` : '--'}
+                          </Text>
+                          <Text style={styles.sessionStatLabel}>Velo (mph)</Text>
+                        </View>
+                        <View style={styles.sessionStat}>
+                          {pitch.r2_video_key ? (
+                            <Ionicons name="videocam" size={16} color={COLORS.primary} />
+                          ) : (
+                            <Text style={[styles.sessionStatValue, { color: COLORS.gray600 }]}>—</Text>
+                          )}
+                          <Text style={styles.sessionStatLabel}>Video</Text>
+                        </View>
                       </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValue}>{pitch.pitch_type || '--'}</Text>
-                        <Text style={styles.sessionStatLabel}>Type</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={[styles.sessionStatValue, styles.sessionStatValueHighlight]}>
-                          {pitch.velocity_mph != null ? `${pitch.velocity_mph}` : '--'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Velo (mph)</Text>
-                      </View>
-                      <View style={styles.sessionStat}>
-                        <Text style={styles.sessionStatValue}>
-                          {pitch.r2_video_key ? '✓' : '—'}
-                        </Text>
-                        <Text style={styles.sessionStatLabel}>Video</Text>
-                      </View>
-                    </View>
-                  )}
+                    )}
+                  </View>
                 </TouchableOpacity>
               );
             })}
@@ -329,41 +334,33 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.white },
   sessionCountText: { fontSize: 12, color: COLORS.gray400 },
 
-  sessionsList: { gap: 8 },
+  sessionsList: { gap: 0 },
   sessionCard: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 12,
-    padding: 12,
+    flexDirection: 'row',
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 14,
+    overflow: 'hidden',
   },
-  sessionCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sessionCardHeaderLeft: { flex: 1 },
-  sessionCardDateRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  sessionCardDate: { fontSize: 14, fontWeight: '600', color: COLORS.white },
-  mocapBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    backgroundColor: 'rgba(155,221,255,0.15)',
-    borderColor: 'rgba(155,221,255,0.3)',
+  sessionAccent: {
+    width: 3,
+    backgroundColor: COLORS.primary,
   },
-  mocapBadgeText: { fontSize: 9, fontWeight: '600', color: COLORS.primary },
-  highlightBadge: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: 'rgba(212,175,55,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  sessionBody: {
+    flex: 1,
+    padding: 14,
   },
-  sessionCardVenue: { fontSize: 9, color: COLORS.gray500, textTransform: 'uppercase', letterSpacing: 0.5 },
-  sessionStatsRow: { flexDirection: 'row', justifyContent: 'space-around' },
-  sessionStat: { alignItems: 'center' },
-  sessionStatValue: { fontSize: 16, fontWeight: 'bold', color: COLORS.white },
-  sessionStatValueHighlight: { color: '#9BDDFF' },
-  sessionStatLabel: { fontSize: 7, color: COLORS.gray500, textTransform: 'uppercase', marginTop: 2 },
+  sessionCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  sessionCardDate: { fontSize: 15, fontWeight: '700', color: COLORS.white, marginBottom: 3 },
+  sessionSourceRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  sessionCardVenue: { fontSize: 10, color: COLORS.gray500, letterSpacing: 0.5 },
+  sessionThrows: { fontSize: 10, color: COLORS.gray500 },
+  sessionStatsRow: { flexDirection: 'row' },
+  sessionStat: { flex: 1, alignItems: 'center' },
+  sessionStatValue: { fontSize: 17, fontWeight: '800', color: COLORS.white },
+  sessionStatAccent: { color: COLORS.primary },
+  sessionStatLabel: { fontSize: 8, color: COLORS.gray500, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 2 },
 
   emptyState: { padding: 32, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 12, marginTop: 12, gap: 8 },
   emptyText: { color: COLORS.gray400, fontSize: 14 },
