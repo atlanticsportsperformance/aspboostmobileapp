@@ -340,9 +340,7 @@ function buildHTML(): string {
     if (c3d) {
       // Sync video to this exact frame — synchronous in WebView
       var targetTime = f / frameRate;
-      if (Math.abs(video.currentTime - targetTime) > 0.02) {
-        video.currentTime = targetTime;
-      }
+      video.currentTime = targetTime;
     }
     updateSkeleton(f);
     renderer.render(scene, camera);

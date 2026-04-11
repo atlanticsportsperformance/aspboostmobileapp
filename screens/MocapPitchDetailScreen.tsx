@@ -43,6 +43,7 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
   const skeletonViewerRef = useRef<any>(null);
   const [scrollEnabled, setScrollEnabled] = useState(true);
   const [activeTab, setActiveTab] = useState<'report' | 'motion'>('report');
+  const [motionReady, setMotionReady] = useState(false);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -195,6 +196,14 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
         </ScrollView>
       ) : (
         <View style={styles.scrollView}>
+          {/* Loading overlay until video + skeleton are ready */}
+          {!motionReady && (
+            <View style={styles.motionLoading}>
+              <ActivityIndicator size="large" color={ACCENT} />
+              <Text style={styles.motionLoadingText}>Loading motion data...</Text>
+            </View>
+          )}
+
           {/* Video + 3D Skeleton */}
           <SkeletonViewer3D
             ref={skeletonViewerRef}
@@ -210,6 +219,7 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
             isPlaying={isPlaying}
             playSpeed={playSpeed}
             height={600}
+            onReady={() => setMotionReady(true)}
             onFrameUpdate={onFrameUpdate}
             onPlaybackEnd={onPlaybackEnd}
           />
@@ -281,6 +291,12 @@ const styles = StyleSheet.create({
   content: { paddingBottom: 40 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { color: '#6B7280', fontSize: 14 },
+  motionLoading: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center', alignItems: 'center',
+    backgroundColor: '#0A0A0A', zIndex: 10, gap: 12,
+  },
+  motionLoadingText: { color: '#6B7280', fontSize: 13 },
 
   header: {
     flexDirection: 'row', alignItems: 'center',

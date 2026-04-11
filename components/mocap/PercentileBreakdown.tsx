@@ -22,10 +22,10 @@ import {
   buildDistributionPath,
 } from '../../lib/mocap/percentiles';
 
-const ACCENT = '#9BDDFF';
-const GREEN = '#4ADE80';
-const AMBER = '#FBBF24';
-const RED = '#F87171';
+const ACCENT = '#00E5FF';
+const GREEN = '#00FF94';
+const AMBER = '#FFD600';
+const RED = '#FF3D71';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_W = SCREEN_WIDTH - 48;
 const CHART_H = 60;
@@ -167,20 +167,17 @@ function RadarChart({ groupScores, overallScore }: { groupScores: number[]; over
           <SvgText x={CX} y={CY + 12} textAnchor="middle"
             fontSize="34" fontWeight="900" fill="#FFFFFF">{Math.round(overallScore)}</SvgText>
 
-          {/* Vertex labels + scores rendered in SVG for perfect positioning */}
+          {/* Vertex labels + scores — all centered on their axis */}
           {AXES.map((a, i) => {
-            const labelDist = (a.angle === 0 || a.angle === 180) ? 105 : 110;
-            const lp = rp(a.angle, labelDist);
-            const anchor = a.angle === 0 ? 'start' : a.angle === 180 ? 'end' : 'middle';
-            const dy = a.angle === -90 ? -8 : a.angle === 90 ? 18 : 0;
-            const dx = a.angle === 0 ? 8 : a.angle === 180 ? -8 : 0;
+            const lp = rp(a.angle, 118);
+            const dy = a.angle === -90 ? -6 : a.angle === 90 ? 16 : 4;
             return (
               <React.Fragment key={i}>
-                <SvgText x={lp.x + dx} y={lp.y + dy} textAnchor={anchor}
+                <SvgText x={lp.x} y={lp.y + dy} textAnchor="middle"
                   fontSize="20" fontWeight="900" fill="#FFFFFF">{Math.round(groupScores[i])}</SvgText>
-                <SvgText x={lp.x + dx} y={lp.y + dy + 14} textAnchor={anchor}
-                  fontSize="9" fontWeight="600" fill="rgba(255,255,255,0.35)"
-                  letterSpacing={1}>{a.label.toUpperCase()}</SvgText>
+                <SvgText x={lp.x} y={lp.y + dy + 14} textAnchor="middle"
+                  fontSize="8" fontWeight="700" fill="rgba(255,255,255,0.30)"
+                  letterSpacing={1.5}>{a.label.toUpperCase()}</SvgText>
               </React.Fragment>
             );
           })}
@@ -273,7 +270,7 @@ function MetricDetailModal({ metric, visible, onClose, percentileData }: {
             {/* Header */}
             <View style={modalStyles.header}>
               <View style={{ flex: 1 }}>
-                <Text style={[modalStyles.percentile, { color }]}>p{Math.round(metric.pct)}</Text>
+                <Text style={[modalStyles.percentile, { color }]}>P{Math.round(metric.pct)}</Text>
                 <Text style={modalStyles.title}>{metric.axisLabel}</Text>
                 {metric.timing && (
                   <Text style={modalStyles.timing}>{metric.timing}</Text>
@@ -592,7 +589,10 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
         {/* Group header */}
         <View style={styles.groupHeader}>
           <Text style={styles.groupTitle}>{GROUPS[activeGroup].title}</Text>
-          <Text style={[styles.groupAvg, { color: activeColor }]}>p{Math.round(activeAvg)}</Text>
+          <View style={[styles.groupPercentileBadge, { borderColor: activeColor + '30' }]}>
+            <Text style={[styles.groupPercentileLabel, { color: activeColor }]}>P</Text>
+            <Text style={[styles.groupPercentileValue, { color: activeColor }]}>{Math.round(activeAvg)}</Text>
+          </View>
         </View>
         <View style={styles.hairline} />
 
@@ -647,50 +647,56 @@ const styles = StyleSheet.create({
 
   // Tabs
   tabRow: {
-    flexDirection: 'row', gap: 8, marginBottom: 24, paddingHorizontal: 4,
+    flexDirection: 'row', gap: 6, marginBottom: 24, paddingHorizontal: 2,
   },
   tab: {
-    flex: 1, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 6,
-    borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+    flex: 1, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 6,
+    borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.02)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
   },
   tabActive: {
-    backgroundColor: 'rgba(155,221,255,0.08)',
-    borderColor: 'rgba(155,221,255,0.2)',
+    backgroundColor: 'rgba(155,221,255,0.06)',
+    borderColor: 'rgba(155,221,255,0.20)',
   },
-  tabScore: { fontSize: 20, fontWeight: '900', marginBottom: 2 },
-  tabLabel: { fontSize: 9, fontWeight: '700', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: 0.5 },
+  tabScore: { fontSize: 22, fontWeight: '900', marginBottom: 3, letterSpacing: -0.5 },
+  tabLabel: { fontSize: 8, fontWeight: '700', color: 'rgba(255,255,255,0.20)', textTransform: 'uppercase', letterSpacing: 1.5 },
 
-  hairline: { height: 1, backgroundColor: 'rgba(255,255,255,0.04)', marginBottom: 20 },
+  hairline: { height: 1, backgroundColor: 'rgba(155,221,255,0.08)', marginBottom: 22 },
 
   // Group content
-  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 },
-  groupTitle: { fontSize: 13, fontWeight: '800', color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: 3 },
-  groupAvg: { fontSize: 22, fontWeight: '900' },
+  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  groupTitle: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: 2 },
+  groupPercentileBadge: {
+    flexDirection: 'row', alignItems: 'baseline',
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+    borderWidth: 1, backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  groupPercentileLabel: { fontSize: 12, fontWeight: '600', marginRight: 1 },
+  groupPercentileValue: { fontSize: 20, fontWeight: '900' },
 
-  metricSeparator: { height: 1, backgroundColor: 'rgba(255,255,255,0.03)', marginVertical: 20 },
+  metricSeparator: { height: 1, backgroundColor: 'rgba(255,255,255,0.04)', marginVertical: 22 },
 
-  // Metric row — NO container, just content on void
+  // Metric row
   metricRow: {},
-  metricTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 },
-  heroPercentile: { fontSize: 32, fontWeight: '900' },
-  rawValue: { fontSize: 14, fontFamily: 'Courier', fontWeight: '600', color: 'rgba(255,255,255,0.6)' },
-  rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.35)' },
+  metricTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 },
+  heroPercentile: { fontSize: 34, fontWeight: '900', letterSpacing: -1 },
+  rawValue: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.55)', letterSpacing: 0.5 },
+  rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.3)' },
 
-  metricNameRow: { paddingLeft: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center' },
-  metricAccentBar: { width: 2, borderRadius: 1, position: 'absolute' as const, left: 0, top: 0 },
-  metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.8)', flex: 1 },
+  metricNameRow: { paddingLeft: 12, marginBottom: 12, flexDirection: 'row', alignItems: 'center' },
+  metricAccentBar: { width: 2.5, borderRadius: 1.5, position: 'absolute' as const, left: 0, top: 0 },
+  metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.75)', flex: 1 },
   infoButton: { padding: 4 },
 
-  barTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.15)', overflow: 'hidden', position: 'relative', marginBottom: 6 },
-  barP50: { position: 'absolute', left: '50%', top: 0, width: 2, height: '100%', backgroundColor: 'rgba(74,222,128,0.55)', zIndex: 10 },
-  barFill: { position: 'absolute', top: 0, left: 0, height: '100%', borderRadius: 3 },
+  barTrack: { height: 5, borderRadius: 2.5, backgroundColor: 'rgba(255,255,255,0.10)', overflow: 'hidden', position: 'relative' as const, marginBottom: 8 },
+  barP50: { position: 'absolute' as const, left: '50%', top: -1, width: 1.5, height: 7, backgroundColor: 'rgba(74,222,128,0.45)', zIndex: 10, borderRadius: 1 },
+  barFill: { position: 'absolute' as const, top: 0, left: 0, height: '100%', borderRadius: 2.5 },
 
-  compRow: { flexDirection: 'row', marginBottom: 8 },
-  compElite: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(74,222,128,0.6)' },
-  compIndustry: { fontSize: 10, fontFamily: 'Courier', color: 'rgba(251,191,36,0.55)' },
+  compRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  compElite: { fontSize: 10, fontWeight: '500', color: 'rgba(74,222,128,0.55)', letterSpacing: 0.3 },
+  compIndustry: { fontSize: 10, fontWeight: '500', color: 'rgba(251,191,36,0.50)', letterSpacing: 0.3 },
 
-  explanation: { fontSize: 11, color: 'rgba(255,255,255,0.35)', lineHeight: 16, marginTop: 6 },
+  explanation: { fontSize: 11, color: 'rgba(255,255,255,0.30)', lineHeight: 17, marginTop: 8 },
 });
 
 const modalStyles = StyleSheet.create({

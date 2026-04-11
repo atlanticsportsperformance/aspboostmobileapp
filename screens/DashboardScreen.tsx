@@ -1816,8 +1816,10 @@ export default function DashboardScreen({ navigation }: any) {
             console.log('[Dashboard] User is a parent (direct DB check), redirecting to ParentDashboard');
             navigation.replace('ParentDashboard');
           } else if (profileCheck) {
-            console.log('[Dashboard] User has profile but no athlete record, redirecting to Login');
-            navigation.replace('Login');
+            // Admin/staff/coach account with no athlete record — sign out to prevent loop
+            console.log('[Dashboard] User has profile (type:', profileCheck.account_type, ') but no athlete record, signing out');
+            await performLogout();
+            navigation.replace('Login', { skipAutoLogin: true });
           } else {
             console.log('[Dashboard] No profile found - signing out orphaned session');
             await performLogout();
