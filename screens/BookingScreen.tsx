@@ -124,6 +124,45 @@ export default function BookingScreen() {
     generateWeekDates(selectedDate);
   }, [selectedDate]);
 
+  // Waiver gate — fires the moment we know which athlete we're booking for.
+  // If there's any pending required waiver, immediately opens the signing
+  // sheet. The athlete can't browse events or tap anything until every
+  // required waiver is signed (or until they tap "back to dashboard").
+  const waiverGateCheckedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedAthleteId) return;
+    // Only run the gate once per athlete id per screen mount
+    if (waiverGateCheckedRef.current === selectedAthleteId) return;
+    waiverGateCheckedRef.current = selectedAthleteId;
+
+    (async () => {
+      console.log('[BookingScreen] mount-time waiver gate for', selectedAthleteId);
+      try {
+        const waiverCheck = await checkPendingWaivers(selectedAthleteId, 'booking');
+        console.log('[BookingScreen] mount waiver result', JSON.stringify(waiverCheck));
+        if (
+          waiverCheck.has_pending_waivers &&
+          waiverCheck.pending_waivers.length > 0
+        ) {
+          setPendingWaivers(waiverCheck.pending_waivers);
+          setShowWaiverSheet(true);
+        }
+      } catch (err: any) {
+        console.error('[BookingScreen] mount waiver check threw:', err?.message ?? err);
+        Alert.alert(
+          'Unable to verify waivers',
+          "We couldn't check your required waivers right now. Please try again in a moment.",
+          [
+            {
+              text: 'Back to Dashboard',
+              onPress: () => navigation.navigate('Dashboard' as never),
+            },
+          ],
+        );
+      }
+    })();
+  }, [selectedAthleteId]);
+
   // Fetch events when athlete or date changes
   useEffect(() => {
     if (selectedAthleteId && viewMode === 'day' && !isFetchingEventsRef.current) {
@@ -320,22 +359,34 @@ export default function BookingScreen() {
   };
 
   const handleEventPress = async (event: BookableEvent) => {
+    console.log('[BookingScreen] handleEventPress', { eventId: event.id, selectedAthleteId });
     if (!selectedAthleteId) return;
 
-    // First, check for pending waivers
+    // HARD-BLOCK: required booking waivers must be signed before the
+    // athlete can reach the event detail / payment flow. If the check
+    // itself fails (network hiccup, server error) we REFUSE to proceed —
+    // failing open here would let an unsigned athlete book.
     try {
+      console.log('[BookingScreen] calling checkPendingWaivers', selectedAthleteId);
       const waiverCheck = await checkPendingWaivers(selectedAthleteId, 'booking');
+      console.log('[BookingScreen] waiverCheck result', JSON.stringify(waiverCheck));
 
       if (waiverCheck.has_pending_waivers && waiverCheck.pending_waivers.length > 0) {
-        // Store the event to continue after waivers are signed
+        console.log('[BookingScreen] SHOWING waiver sheet, pending count =', waiverCheck.pending_waivers.length);
         setPendingEventAfterWaivers(event);
         setPendingWaivers(waiverCheck.pending_waivers);
         setShowWaiverSheet(true);
         return;
       }
-    } catch (error) {
-      console.error('Error checking waivers:', error);
-      // Continue with booking even if waiver check fails
+      console.log('[BookingScreen] no pending waivers, proceeding to event details');
+    } catch (error: any) {
+      console.error('[BookingScreen] waiver check THREW:', error?.message ?? error);
+      Alert.alert(
+        'Unable to verify waivers',
+        "We couldn't check your required waivers right now. Please try again in a moment.",
+        [{ text: 'OK' }],
+      );
+      return;
     }
 
     // No waivers needed, proceed with normal flow
@@ -820,6 +871,10 @@ export default function BookingScreen() {
           athleteId={selectedAthleteId}
           onClose={handleWaiverClose}
           onComplete={handleWaiverComplete}
+          onBackToDashboard={() => {
+            handleWaiverClose();
+            navigation.navigate('Dashboard' as never);
+          }}
         />
       )}
     </SafeAreaView>

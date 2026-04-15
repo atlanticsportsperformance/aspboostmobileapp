@@ -225,7 +225,9 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
     bg: '#1e3a8a',
     text: '#93c5fd',
     dot: '#3b82f6',
-    button: '#2563eb',
+    // Throwing pairs with the cyan pulse/workload UX. Dark navy reads as
+    // "black" against the black dashboard — use the brand cyan instead.
+    button: '#9BDDFF',
     label: 'Throwing',
   },
   strength_conditioning: {
@@ -485,6 +487,10 @@ export default function DashboardScreen({ navigation }: any) {
   const dayViewTranslateY = useRef(new Animated.Value(15)).current;
 
   const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
+
+  // Workload data for the visible month — drives calendar rings + day cards
+  // MUST be above any early returns to preserve hook order
+  const workloadByDate = useWorkloadMonth(athleteId, currentDate);
 
   // Check if there are upcoming events (bookings in the future)
   const hasUpcomingEvents = useMemo(() => {
@@ -2176,8 +2182,6 @@ export default function DashboardScreen({ navigation }: any) {
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
   const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
 
-  // Workload data for the visible month — drives calendar rings + day cards
-  const workloadByDate = useWorkloadMonth(athleteId, currentDate);
   const toIsoKey = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const selectedDateWorkload = selectedDate
@@ -2394,22 +2398,11 @@ export default function DashboardScreen({ navigation }: any) {
                   style={[styles.calendarDay, today && styles.calendarDayToday]}
                 >
                   {dayWorkload && (
-                    <View
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        right: 0,
-                      }}
-                      pointerEvents="none"
-                    >
-                      <WorkloadDayRing
-                        target={dayWorkload.target}
-                        actual={dayWorkload.actual}
-                        acwr={dayWorkload.acwr}
-                        size={26}
-                        isToday={today}
-                      />
-                    </View>
+                    <WorkloadDayRing
+                      target={dayWorkload.target}
+                      actual={dayWorkload.actual}
+                      acwr={dayWorkload.acwr}
+                    />
                   )}
                   <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
                     {date.getDate()}
@@ -2467,8 +2460,7 @@ export default function DashboardScreen({ navigation }: any) {
 
               {/* Week View Grid - FIXED */}
               <View style={styles.weekViewContainer}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
-                  <View style={styles.weekGrid}>
+                <View style={styles.weekGrid}>
                     {getWeekDates(selectedDate).map((date) => {
                       const isSelected = date.toDateString() === selectedDate.toDateString();
                       const today = isToday(date);
@@ -2488,18 +2480,11 @@ export default function DashboardScreen({ navigation }: any) {
                           ]}
                         >
                           {dayWorkload && (
-                            <View
-                              style={{ position: 'absolute', top: 2, right: 2 }}
-                              pointerEvents="none"
-                            >
-                              <WorkloadDayRing
-                                target={dayWorkload.target}
-                                actual={dayWorkload.actual}
-                                acwr={dayWorkload.acwr}
-                                size={22}
-                                isToday={today}
-                              />
-                            </View>
+                            <WorkloadDayRing
+                              target={dayWorkload.target}
+                              actual={dayWorkload.actual}
+                              acwr={dayWorkload.acwr}
+                            />
                           )}
                           <Text style={[
                             styles.weekDayName,
@@ -2537,8 +2522,7 @@ export default function DashboardScreen({ navigation }: any) {
                         </TouchableOpacity>
                       );
                     })}
-                  </View>
-                </ScrollView>
+                </View>
               </View>
 
               {/* Workouts for Selected Date - SCROLLABLE */}
@@ -2627,7 +2611,20 @@ export default function DashboardScreen({ navigation }: any) {
                                 }
                               }}
                             >
-                              <Text style={[styles.workoutActionButtonText, !isCompleted && { color: '#FFFFFF' }]}>
+                              <Text
+                                style={[
+                                  styles.workoutActionButtonText,
+                                  !isCompleted && {
+                                    // Throwing category uses cyan fill so the
+                                    // text needs to be black for contrast;
+                                    // other categories stay white on colored.
+                                    color:
+                                      workout.workouts?.category === 'throwing'
+                                        ? '#000000'
+                                        : '#FFFFFF',
+                                  },
+                                ]}
+                              >
                                 {isCompleted ? 'View' : 'Start'}
                               </Text>
                             </TouchableOpacity>
@@ -3498,16 +3495,14 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
     paddingVertical: 12,
   },
-  weekScroll: {
-    paddingHorizontal: 8,
-  },
   weekGrid: {
     flexDirection: 'row',
     gap: 6,
+    paddingHorizontal: 12,
   },
   weekDay: {
-    width: 50,
-    paddingVertical: 8,
+    flex: 1,
+    paddingVertical: 10,
     paddingHorizontal: 4,
     alignItems: 'center',
     borderRadius: 8,

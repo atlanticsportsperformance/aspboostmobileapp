@@ -16,13 +16,10 @@ import React, { useEffect, useMemo } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import Animated, {
-  FadeInDown,
+  FadeIn,
   useSharedValue,
   useAnimatedProps,
-  useAnimatedStyle,
   withTiming,
-  withRepeat,
-  withSequence,
   Easing,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
@@ -89,25 +86,8 @@ function AnimatedRing({
     });
   }, [pct, progress]);
 
-  const breathing = useSharedValue(0);
-  useEffect(() => {
-    breathing.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 2200, easing: Easing.inOut(Easing.sin) }),
-        withTiming(0, { duration: 2200, easing: Easing.inOut(Easing.sin) }),
-      ),
-      -1,
-      false,
-    );
-  }, [breathing]);
-
   const animatedProps = useAnimatedProps(() => ({
     strokeDashoffset: c - c * progress.value,
-  }));
-
-  const haloStyle = useAnimatedStyle(() => ({
-    opacity: 0.5 + breathing.value * 0.3,
-    shadowOpacity: 0.4 + breathing.value * 0.3,
   }));
 
   return (
@@ -120,20 +100,18 @@ function AnimatedRing({
         justifyContent: 'center',
       }}
     >
-      <Animated.View
-        style={[
-          {
-            position: 'absolute',
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            shadowColor: hex,
-            shadowRadius: 22,
-            shadowOffset: { width: 0, height: 0 },
-            elevation: 10,
-          },
-          haloStyle,
-        ]}
+      <View
+        style={{
+          position: 'absolute',
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          shadowColor: hex,
+          shadowOpacity: 0.35,
+          shadowRadius: 18,
+          shadowOffset: { width: 0, height: 0 },
+          elevation: 8,
+        }}
       />
       <Svg width={size} height={size}>
         <Circle
@@ -160,16 +138,7 @@ function AnimatedRing({
       </Svg>
       <View style={StyleSheet.absoluteFillObject as any}>
         <View style={styles.ringCenter}>
-          <Text
-            style={[
-              styles.ringNumber,
-              {
-                color: hex,
-                textShadowColor: hex,
-                textShadowRadius: 14,
-              },
-            ]}
-          >
+          <Text style={[styles.ringNumber, { color: hex }]}>
             {centerLabel}
           </Text>
         </View>
@@ -201,7 +170,7 @@ export function WorkloadDaySection({
       : '—';
 
   return (
-    <Animated.View entering={FadeInDown.duration(420).springify().damping(16)}>
+    <Animated.View entering={FadeIn.duration(260)}>
       <Pressable
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -213,13 +182,6 @@ export function WorkloadDaySection({
           pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
         ]}
       >
-        <View
-          style={[
-            styles.cardGlow,
-            { shadowColor: hex },
-          ]}
-          pointerEvents="none"
-        />
         <View style={styles.row}>
           <AnimatedRing size={92} stroke={7} hex={hex} pct={pct} centerLabel={centerLabel} />
           <View style={styles.rightCol}>
@@ -227,7 +189,7 @@ export function WorkloadDaySection({
             <Text
               style={[
                 styles.bigMetric,
-                { color: hex, textShadowColor: hex },
+                { color: hex },
               ]}
             >
               {hasTarget && hasActual ? (
@@ -316,129 +278,244 @@ export function CombinedThrowingDayCard({
       ? actual.toFixed(1)
       : '—';
 
+  const showMetric =
+    hasTarget || hasActual
+      ? hasTarget && hasActual
+        ? `${actual.toFixed(1)} / ${target.toFixed(1)} W`
+        : hasTarget
+          ? `0.0 / ${target.toFixed(1)} W`
+          : `${actual.toFixed(1)} W`
+      : '— W';
+
   return (
-    <Animated.View entering={FadeInDown.duration(460).springify().damping(14)}>
+    <Animated.View entering={FadeIn.duration(300)}>
       <View
         style={[
-          styles.card,
-          styles.combinedCard,
-          {
-            borderColor: `${hex}4D`,
-            shadowColor: hex,
-          },
+          combinedStyles.shell,
+          { borderColor: `${hex}40` },
         ]}
       >
-        <View
-          style={[styles.cardGlow, { shadowColor: hex }]}
-          pointerEvents="none"
-        />
-        {/* Top row: badge + Start button */}
-        <View style={styles.combinedTop}>
+        {/* Top strip — badge + start button on right */}
+        <View style={combinedStyles.topStrip}>
           <View
             style={[
-              styles.badge,
+              combinedStyles.badge,
               {
                 borderColor: `${hex}66`,
-                backgroundColor: `${hex}14`,
+                backgroundColor: `${hex}15`,
               },
             ]}
           >
-            <Text style={[styles.badgeText, { color: hex }]}>THROWING</Text>
+            <Text style={[combinedStyles.badgeText, { color: hex }]}>
+              THROWING
+            </Text>
           </View>
+          <View style={{ flex: 1 }} />
           {isCompleted && (
-            <View style={styles.completedBadge}>
-              <Text style={styles.completedText}>✓</Text>
+            <View style={combinedStyles.completedChip}>
+              <Text style={combinedStyles.completedChipText}>✓ DONE</Text>
             </View>
           )}
-          <View style={{ flex: 1 }} />
           <Pressable
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
               onStart();
             }}
-            style={({ pressed }) => [
-              styles.startBtn,
-              pressed && { transform: [{ scale: 0.96 }] },
-            ]}
+            hitSlop={8}
+            style={{ marginLeft: 8 }}
           >
-            <Text style={styles.startBtnText}>
-              {isCompleted ? 'View' : 'Start'}
-            </Text>
+            {({ pressed }) => (
+              <View style={[combinedStyles.startButtonCompact, pressed && { opacity: 0.82 }]}>
+                <Text style={combinedStyles.startButtonCompactText}>
+                  {isCompleted ? 'View' : 'Start'}
+                </Text>
+              </View>
+            )}
           </Pressable>
         </View>
 
-        {/* Main row */}
-        <View style={styles.row}>
-          <AnimatedRing size={92} stroke={7} hex={hex} pct={pct} centerLabel={centerLabel} />
-          <View style={styles.rightCol}>
-            <Text style={styles.workoutTitle} numberOfLines={1}>
-              {workoutName}
+        <Text style={combinedStyles.workoutName} numberOfLines={1}>
+          {workoutName}
+        </Text>
+        {durationMin != null && (
+          <Text style={combinedStyles.duration}>{durationMin} min</Text>
+        )}
+
+        {/* Hero row — big ring + metric stack */}
+        <View style={combinedStyles.heroRow}>
+          <AnimatedRing
+            size={84}
+            stroke={7}
+            hex={hex}
+            pct={pct}
+            centerLabel={centerLabel}
+          />
+          <View style={combinedStyles.metricCol}>
+            <Text style={combinedStyles.metricLabel}>TODAY&rsquo;S TARGET</Text>
+            <Text style={[combinedStyles.metricValue, { color: hex }]}>
+              {showMetric}
             </Text>
-            {durationMin != null && (
-              <Text style={styles.duration}>{durationMin} min</Text>
-            )}
-            <Text
-              style={[
-                styles.bigMetricCombined,
-                { color: hex, textShadowColor: hex },
-              ]}
-            >
-              {hasTarget && hasActual ? (
-                <>
-                  {actual.toFixed(1)}
-                  <Text style={styles.bigMetricDim}> / </Text>
-                  {target.toFixed(1)}
-                  <Text style={styles.bigMetricUnit}> W</Text>
-                </>
-              ) : hasTarget ? (
-                <>
-                  0.0<Text style={styles.bigMetricDim}> / </Text>
-                  {target.toFixed(1)}
-                  <Text style={styles.bigMetricUnit}> W</Text>
-                </>
-              ) : (
-                <>
-                  {actual.toFixed(1)}
-                  <Text style={styles.bigMetricUnit}> W</Text>
-                </>
-              )}
-            </Text>
-            <View style={styles.statusRow}>
+            <View style={combinedStyles.statusRow}>
               <View
                 style={[
-                  styles.statusDot,
-                  {
-                    backgroundColor: status.hex,
-                    shadowColor: status.hex,
-                  },
+                  combinedStyles.statusDot,
+                  { backgroundColor: status.hex },
                 ]}
               />
-              <Text style={[styles.statusLabel, { color: status.hex }]}>
+              <Text
+                style={[combinedStyles.statusLabel, { color: status.hex }]}
+              >
                 {status.label.toUpperCase()}
               </Text>
-              {throwCount > 0 && (
-                <>
-                  <Text style={styles.dotSep}>·</Text>
-                  <Text style={styles.statusMeta}>
+            </View>
+            {(throwCount > 0 || acwr != null) && (
+              <View style={combinedStyles.metaRow}>
+                {throwCount > 0 && (
+                  <Text style={combinedStyles.meta}>
                     {throwCount} throw{throwCount === 1 ? '' : 's'}
                   </Text>
-                </>
-              )}
-              {acwr != null && (
-                <>
-                  <Text style={styles.dotSep}>·</Text>
-                  <Text style={[styles.statusMeta, { color: hex }]}>
+                )}
+                {throwCount > 0 && acwr != null && (
+                  <Text style={combinedStyles.metaDot}>·</Text>
+                )}
+                {acwr != null && (
+                  <Text style={[combinedStyles.meta, { color: hex }]}>
                     ACWR {acwr.toFixed(2)}
                   </Text>
-                </>
-              )}
-            </View>
+                )}
+              </View>
+            )}
           </View>
         </View>
+
       </View>
     </Animated.View>
   );
 }
+
+const combinedStyles = StyleSheet.create({
+  shell: {
+    marginBottom: 12,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    backgroundColor: 'rgba(155,221,255,0.04)',
+  },
+  topStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  badge: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.3,
+  },
+  completedChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(52,211,153,0.15)',
+    borderColor: 'rgba(52,211,153,0.4)',
+    borderWidth: 1,
+  },
+  completedChipText: {
+    color: '#6ee7b7',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  workoutName: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 10,
+    letterSpacing: -0.3,
+  },
+  duration: {
+    color: '#6b7280',
+    fontSize: 11,
+    marginTop: 1,
+    fontVariant: ['tabular-nums'],
+  },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  metricCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  metricLabel: {
+    color: '#4b5563',
+    fontSize: 9,
+    letterSpacing: 2,
+    fontWeight: '700',
+  },
+  metricValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    marginTop: 4,
+    letterSpacing: -0.3,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  meta: {
+    color: '#6b7280',
+    fontSize: 10,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '600',
+  },
+  metaDot: {
+    color: '#374151',
+    fontSize: 10,
+  },
+  startButtonCompact: {
+    backgroundColor: '#9BDDFF',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startButtonCompactText: {
+    color: '#0A0A0A',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -592,18 +669,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   startBtn: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingHorizontal: 22,
+    paddingVertical: 11,
     borderRadius: 12,
     backgroundColor: '#9BDDFF',
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.5,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 0 },
+    borderWidth: 1,
+    borderColor: '#B3E6FF',
+    minWidth: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   startBtnText: {
-    color: '#000',
+    color: '#000000',
     fontWeight: '800',
     fontSize: 14,
+    letterSpacing: 0.5,
   },
 });

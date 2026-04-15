@@ -10,7 +10,10 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { supabase } from '../lib/supabase';
 import BlockOverview from './block-overview';
 import ExerciseDetailView from './exercise-detail-view';
-import WorkoutPreStartScreen from './WorkoutPreStartScreen';
+import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMonitor';
+import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
+import { PulseProvider } from '../lib/pulse/PulseProvider';
+import { PulseWizardModal, PulseAutoOpener } from '../components/pulse/PulseWizardModal';
 
 // Types
 type RootStackParamList = {
@@ -126,7 +129,7 @@ export default function WorkoutLoggerScreen() {
   const [workout, setWorkout] = useState<Workout | null>(null);
   const [workoutInstance, setWorkoutInstance] = useState<WorkoutInstance | null>(null);
   const [allExercises, setAllExercises] = useState<RoutineExercise[]>([]);
-  const [viewMode, setViewMode] = useState<'prestart' | 'overview' | 'exercise'>('prestart');
+  const [viewMode, setViewMode] = useState<'overview' | 'exercise'>('overview');
   const [activeExerciseId, setActiveExerciseId] = useState<string | null>(null);
   const [customMeasurements, setCustomMeasurements] = useState<Measurement[]>([]);
   const [exerciseInputs, setExerciseInputs] = useState<Record<string, any[]>>({});
@@ -141,6 +144,19 @@ export default function WorkoutLoggerScreen() {
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
+  // Org id for pulse monitor (separate fetch; keeps the existing athlete query untouched)
+  const [orgId, setOrgId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!athleteId) return;
+    (async () => {
+      const { data } = await supabase
+        .from('athletes')
+        .select('org_id')
+        .eq('id', athleteId)
+        .maybeSingle();
+      if (data?.org_id) setOrgId(data.org_id);
+    })();
+  }, [athleteId]);
 
   // Load workout data
   useEffect(() => {
@@ -416,18 +432,23 @@ export default function WorkoutLoggerScreen() {
       }
       setExerciseHistory(historyMap);
 
-      // Set view mode based on workout status
+      // Auto-start the workout if it's still pending. Mirrors how Strong /
+      // Hevy / Apple Fitness work: tap a workout from the day card → straight
+      // into the logger, no preview gate. The DB write is fire-and-forget so
+      // the UI doesn't block on it.
       if (instance.status === 'pending') {
-        setViewMode('prestart');
-      } else if (instance.status === 'in_progress') {
-        setViewMode('overview');
-        // Calculate elapsed time if already started
-        if (instance.started_at) {
-          const startTime = new Date(instance.started_at).getTime();
-          const now = Date.now();
-          const elapsedSeconds = Math.floor((now - startTime) / 1000);
-          setTimer(elapsedSeconds);
-        }
+        setTimer(0);
+        supabase
+          .from('workout_instances')
+          .update({ status: 'in_progress', started_at: new Date().toISOString() })
+          .eq('id', workoutInstanceId)
+          .then(({ error }) => {
+            if (error) console.error('[WorkoutLogger] auto-start failed', error);
+          });
+      } else if (instance.status === 'in_progress' && instance.started_at) {
+        const startTime = new Date(instance.started_at).getTime();
+        const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+        setTimer(elapsedSeconds);
       }
 
       setLoading(false);
@@ -446,28 +467,6 @@ export default function WorkoutLoggerScreen() {
       return () => clearInterval(interval);
     }
   }, [viewMode]);
-
-  const handleStartWorkout = async () => {
-    try {
-      await supabase
-        .from('workout_instances')
-        .update({
-          status: 'in_progress',
-        })
-        .eq('id', workoutInstanceId);
-
-      setWorkoutInstance(prev => prev ? {
-        ...prev,
-        status: 'in_progress',
-      } : null);
-
-      setTimer(0);
-      setViewMode('overview');
-    } catch (error) {
-      console.error('Error starting workout:', error);
-      Alert.alert('Error', 'Failed to start workout');
-    }
-  };
 
   const handleCompleteWorkout = async () => {
     try {
@@ -926,18 +925,28 @@ export default function WorkoutLoggerScreen() {
     );
   }
 
-  if (viewMode === 'prestart') {
-    return (
-      <WorkoutPreStartScreen
-        workout={workout}
-        customMeasurements={customMeasurements}
-        onStart={handleStartWorkout}
+  // Throwing-only pulse slots. Mounted into BlockOverview / ExerciseDetailView
+  // via their optional headerSlot + footerSlot props. Does NOT touch drill state.
+  const isThrowing = workout.category === 'throwing';
+  const scheduledDate = workoutInstance?.scheduled_date ?? undefined;
+  const throwingHeaderSlot =
+    isThrowing && athleteId && orgId ? (
+      <ThrowingWorkloadMonitor
+        athleteId={athleteId}
+        orgId={orgId}
+        scheduledDate={scheduledDate}
       />
-    );
-  }
+    ) : null;
+  const throwingFooterSlot =
+    isThrowing && athleteId ? (
+      <ThrowingThrowsFeed
+        athleteId={athleteId}
+        scheduledDate={scheduledDate}
+      />
+    ) : null;
 
-  if (viewMode === 'overview') {
-    return (
+  const body =
+    viewMode === 'overview' ? (
       <BlockOverview
         workout={workout}
         customMeasurements={customMeasurements}
@@ -947,12 +956,10 @@ export default function WorkoutLoggerScreen() {
         onCompleteWorkout={handleCompleteWorkout}
         onToggleExerciseComplete={handleToggleExerciseComplete}
         onBack={handleExitWorkout}
+        headerSlot={throwingHeaderSlot}
+        footerSlot={throwingFooterSlot}
       />
-    );
-  }
-
-  if (viewMode === 'exercise' && currentExercise && currentRoutine) {
-    return (
+    ) : viewMode === 'exercise' && currentExercise && currentRoutine ? (
       <ExerciseDetailView
         exercise={currentExercise}
         routine={currentRoutine}
@@ -976,10 +983,22 @@ export default function WorkoutLoggerScreen() {
         onBackToOverview={handleBackToOverview}
         prAlert={prAlert}
       />
+    ) : null;
+
+  // Wrap throwing workouts in the PulseProvider so the Monitor can read BLE
+  // state from context and the wizard modal has somewhere to live. Non-throwing
+  // workouts don't mount the Monitor, so they skip the provider entirely.
+  if (isThrowing && athleteId && orgId) {
+    return (
+      <PulseProvider athleteId={athleteId} orgId={orgId}>
+        {body}
+        <PulseWizardModal scheduledDate={scheduledDate} />
+        <PulseAutoOpener />
+      </PulseProvider>
     );
   }
 
-  return null;
+  return body;
 }
 
 const styles = StyleSheet.create({

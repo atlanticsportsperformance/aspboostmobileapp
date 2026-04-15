@@ -146,60 +146,6 @@ CREATE TABLE public.armcare_uploads (
   CONSTRAINT armcare_uploads_pkey PRIMARY KEY (id),
   CONSTRAINT armcare_uploads_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.profiles(id)
 );
-CREATE TABLE public.assessments (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  athlete_id uuid NOT NULL,
-  org_id uuid NOT NULL,
-  started_at timestamp with time zone NOT NULL DEFAULT now(),
-  ended_at timestamp with time zone,
-  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['active'::text, 'completed'::text, 'cancelled'::text])),
-  date_of_birth date,
-  play_level text,
-  height_inches numeric,
-  wingspan_inches numeric,
-  arm_length_inches numeric,
-  forearm_length_inches numeric,
-  thigh_length_inches numeric,
-  shank_length_inches numeric,
-  torso_length_inches numeric,
-  throws text CHECK (throws = ANY (ARRAY['Right'::text, 'Left'::text, 'Both'::text])),
-  bats text CHECK (bats = ANY (ARRAY['Right'::text, 'Left'::text, 'Both'::text])),
-  weight_lbs numeric,
-  cmj_test_id uuid,
-  sj_test_id uuid,
-  hj_test_id uuid,
-  ppu_test_id uuid,
-  imtp_test_id uuid,
-  blast_swing_ids ARRAY DEFAULT '{}'::uuid[],
-  trackman_session_id bigint,
-  command_session_id uuid,
-  hittrax_session_ids ARRAY DEFAULT '{}'::uuid[],
-  dynamo_test_ids ARRAY DEFAULT '{}'::uuid[],
-  created_by uuid,
-  notes text,
-  created_at timestamp with time zone DEFAULT now(),
-  updated_at timestamp with time zone DEFAULT now(),
-  assessment_type text CHECK (assessment_type = ANY (ARRAY['hitting'::text, 'pitching'::text])),
-  max_velo_mph numeric,
-  max_exit_velo_mph numeric,
-  max_distance_ft numeric,
-  max_bat_speed_mph numeric,
-  avg_miss_distance_inches numeric,
-  avg_miss_angle_degrees numeric,
-  hand_length_inches numeric,
-  hand_width_inches numeric,
-  CONSTRAINT assessments_pkey PRIMARY KEY (id),
-  CONSTRAINT assessments_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
-  CONSTRAINT assessments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
-  CONSTRAINT assessments_cmj_test_id_fkey FOREIGN KEY (cmj_test_id) REFERENCES public.cmj_tests(id),
-  CONSTRAINT assessments_sj_test_id_fkey FOREIGN KEY (sj_test_id) REFERENCES public.sj_tests(id),
-  CONSTRAINT assessments_hj_test_id_fkey FOREIGN KEY (hj_test_id) REFERENCES public.hj_tests(id),
-  CONSTRAINT assessments_ppu_test_id_fkey FOREIGN KEY (ppu_test_id) REFERENCES public.ppu_tests(id),
-  CONSTRAINT assessments_imtp_test_id_fkey FOREIGN KEY (imtp_test_id) REFERENCES public.imtp_tests(id),
-  CONSTRAINT assessments_trackman_session_id_fkey FOREIGN KEY (trackman_session_id) REFERENCES public.trackman_session(id),
-  CONSTRAINT assessments_command_session_id_fkey FOREIGN KEY (command_session_id) REFERENCES public.command_training_sessions(id),
-  CONSTRAINT assessments_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
-);
 CREATE TABLE public.athlete_baselines (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   athlete_id uuid,
@@ -366,6 +312,10 @@ CREATE TABLE public.athletes (
   last_viewed_resources_at timestamp with time zone,
   last_viewed_reports_at timestamp with time zone,
   dynamo_synced_at timestamp with time zone,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
+  throws text CHECK (throws = ANY (ARRAY['Right'::text, 'Left'::text])),
+  bats text CHECK (bats = ANY (ARRAY['Right'::text, 'Left'::text, 'Both'::text])),
+  starting_chronic real NOT NULL DEFAULT 2.0,
   CONSTRAINT athletes_pkey PRIMARY KEY (id),
   CONSTRAINT athletes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id),
   CONSTRAINT athletes_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
@@ -791,17 +741,6 @@ CREATE TABLE public.blast_sync_jobs (
   CONSTRAINT blast_sync_jobs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT blast_sync_jobs_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
-CREATE TABLE public.booking_audit_log (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  org_id uuid NOT NULL,
-  booking_id uuid NOT NULL,
-  action text NOT NULL CHECK (action = ANY (ARRAY['created'::text, 'updated'::text, 'cancelled'::text, 'checked_in'::text, 'no_show'::text])),
-  old_data jsonb,
-  new_data jsonb,
-  created_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT booking_audit_log_pkey PRIMARY KEY (id),
-  CONSTRAINT booking_audit_log_booking_id_fkey FOREIGN KEY (booking_id) REFERENCES public.scheduling_bookings(id)
-);
 CREATE TABLE public.booking_ledger (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL,
@@ -825,43 +764,6 @@ CREATE TABLE public.booking_ledger (
   CONSTRAINT booking_ledger_pkey PRIMARY KEY (id),
   CONSTRAINT booking_ledger_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT booking_ledger_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
-);
-CREATE TABLE public.bullpen_athletes (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  org_id uuid NOT NULL,
-  name text NOT NULL,
-  is_pro boolean DEFAULT false,
-  is_active boolean DEFAULT true,
-  created_at timestamp with time zone DEFAULT now(),
-  session_type text DEFAULT 'bullpen'::text CHECK (session_type = ANY (ARRAY['bullpen'::text, 'live_ab'::text])),
-  is_drop_in boolean DEFAULT false,
-  uses_remaining integer,
-  CONSTRAINT bullpen_athletes_pkey PRIMARY KEY (id),
-  CONSTRAINT bullpen_athletes_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
-);
-CREATE TABLE public.bullpen_pro_times (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  org_id uuid NOT NULL,
-  day_of_week integer NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 4),
-  start_time time without time zone NOT NULL,
-  end_time time without time zone NOT NULL,
-  created_at timestamp with time zone DEFAULT now(),
-  session_type text DEFAULT 'bullpen'::text CHECK (session_type = ANY (ARRAY['bullpen'::text, 'live_ab'::text])),
-  CONSTRAINT bullpen_pro_times_pkey PRIMARY KEY (id),
-  CONSTRAINT bullpen_pro_times_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
-);
-CREATE TABLE public.bullpen_slots (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  org_id uuid NOT NULL,
-  athlete_id uuid NOT NULL,
-  slot_date date NOT NULL,
-  slot_time time without time zone NOT NULL,
-  is_pro_slot boolean DEFAULT false,
-  created_at timestamp with time zone DEFAULT now(),
-  session_type text DEFAULT 'bullpen'::text CHECK (session_type = ANY (ARRAY['bullpen'::text, 'live_ab'::text])),
-  CONSTRAINT bullpen_slots_pkey PRIMARY KEY (id),
-  CONSTRAINT bullpen_slots_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
-  CONSTRAINT bullpen_slots_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.bullpen_athletes(id)
 );
 CREATE TABLE public.calendar_hierarchy (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1388,6 +1290,7 @@ CREATE TABLE public.cmj_tests (
   ecc_yielding_phase_rfd_asymm_unit text,
   test_number_at_level integer DEFAULT 1,
   source_system character varying DEFAULT 'vald'::character varying,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT cmj_tests_pkey PRIMARY KEY (id),
   CONSTRAINT cmj_tests_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
@@ -1735,24 +1638,6 @@ CREATE TABLE public.entitlement_rules (
   CONSTRAINT entitlement_rules_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.scheduling_categories(id),
   CONSTRAINT entitlement_rules_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.scheduling_templates(id)
 );
-CREATE TABLE public.events_attendance (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  team_id uuid,
-  event_date date NOT NULL,
-  event_type USER-DEFINED NOT NULL,
-  title text,
-  location text,
-  start_time time without time zone,
-  end_time time without time zone,
-  notes text,
-  created_by uuid,
-  created_at timestamp with time zone DEFAULT now(),
-  updated_at timestamp with time zone DEFAULT now(),
-  org_id uuid,
-  CONSTRAINT events_attendance_pkey PRIMARY KEY (id),
-  CONSTRAINT events_attendance_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id),
-  CONSTRAINT events_attendance_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
-);
 CREATE TABLE public.exercise_logs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   workout_instance_id uuid NOT NULL,
@@ -1811,6 +1696,7 @@ CREATE TABLE public.exercises (
   created_by uuid,
   categories ARRAY DEFAULT ARRAY[]::text[] CHECK (array_length(categories, 1) > 0),
   org_id uuid NOT NULL,
+  variations ARRAY DEFAULT '{}'::text[],
   CONSTRAINT exercises_pkey PRIMARY KEY (id),
   CONSTRAINT exercises_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT exercises_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
@@ -1835,8 +1721,93 @@ CREATE TABLE public.force_plate_percentiles (
   percentiles jsonb NOT NULL,
   sample_sizes jsonb,
   created_at timestamp with time zone DEFAULT now(),
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT force_plate_percentiles_pkey PRIMARY KEY (id),
   CONSTRAINT force_plate_percentiles_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
+);
+CREATE TABLE public.fullswing_raw_data (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  raw_payload jsonb NOT NULL,
+  received_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT fullswing_raw_data_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.fullswing_sessions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  athlete_id uuid,
+  session_date date NOT NULL,
+  total_swings integer DEFAULT 0,
+  contact_swings integer DEFAULT 0,
+  avg_exit_velocity numeric,
+  max_exit_velocity numeric,
+  avg_launch_angle numeric,
+  avg_distance numeric,
+  max_distance numeric,
+  avg_bat_speed numeric,
+  max_bat_speed numeric,
+  avg_smash_factor numeric,
+  max_smash_factor numeric,
+  avg_squared_up numeric,
+  squared_up_rate numeric,
+  environment text,
+  mode text,
+  pitch_distance text,
+  device_id text,
+  upload_id uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  hard_hit_count integer DEFAULT 0,
+  hard_hit_rate numeric,
+  CONSTRAINT fullswing_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT fullswing_sessions_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
+);
+CREATE TABLE public.fullswing_swings (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  session_id uuid,
+  pitch_number integer,
+  swing_date date,
+  swing_time time without time zone,
+  pitcher_name text,
+  pitcher_id text,
+  pitcher_throws text,
+  pitcher_team text,
+  batter_name text,
+  batter_id text,
+  batter_side text,
+  batter_team text,
+  pitch_speed numeric,
+  spin_rate numeric,
+  exit_velocity numeric,
+  launch_angle numeric,
+  spray_angle numeric,
+  distance numeric,
+  hit_spin_rate numeric,
+  bat_speed numeric,
+  smash_factor numeric,
+  pot_smash_factor numeric,
+  pot_exit_speed numeric,
+  squared_up numeric,
+  environment text,
+  mode text,
+  pitch_distance text,
+  level text,
+  device_id text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT fullswing_swings_pkey PRIMARY KEY (id),
+  CONSTRAINT fullswing_swings_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.fullswing_sessions(id)
+);
+CREATE TABLE public.fullswing_unmapped_rows (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  upload_id uuid,
+  csv_batter_name text,
+  csv_session_date date,
+  raw_csv_data jsonb,
+  status text DEFAULT 'pending'::text,
+  mapped_athlete_id uuid,
+  mapped_at timestamp with time zone,
+  mapped_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT fullswing_unmapped_rows_pkey PRIMARY KEY (id),
+  CONSTRAINT fullswing_unmapped_rows_mapped_athlete_id_fkey FOREIGN KEY (mapped_athlete_id) REFERENCES public.athletes(id)
 );
 CREATE TABLE public.grant_ledger (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -2304,6 +2275,7 @@ CREATE TABLE public.hj_tests (
   org_id uuid,
   test_number_at_level integer DEFAULT 1,
   source_system character varying DEFAULT 'vald'::character varying,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT hj_tests_pkey PRIMARY KEY (id),
   CONSTRAINT hj_tests_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
@@ -2592,6 +2564,7 @@ CREATE TABLE public.imtp_tests (
   org_id uuid,
   test_number_at_level integer DEFAULT 1,
   source_system character varying DEFAULT 'vald'::character varying,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT imtp_tests_pkey PRIMARY KEY (id),
   CONSTRAINT imtp_tests_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
@@ -2674,7 +2647,7 @@ CREATE TABLE public.lead_forms (
 CREATE TABLE public.lead_questions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL,
-  question_text character varying NOT NULL,
+  question_text text NOT NULL,
   question_key character varying NOT NULL,
   question_type character varying NOT NULL DEFAULT 'text'::character varying,
   options jsonb,
@@ -2707,6 +2680,7 @@ CREATE TABLE public.leads (
   converted_by uuid,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  email_opt_in boolean DEFAULT true,
   CONSTRAINT leads_pkey PRIMARY KEY (id),
   CONSTRAINT leads_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT leads_form_id_fkey FOREIGN KEY (form_id) REFERENCES public.lead_forms(id),
@@ -2834,7 +2808,7 @@ CREATE TABLE public.memberships (
   org_id uuid NOT NULL,
   athlete_id uuid NOT NULL,
   membership_type_id uuid NOT NULL,
-  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['trialing'::text, 'active'::text, 'paused'::text, 'past_due'::text, 'cancelled'::text, 'expired'::text])),
+  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['trialing'::text, 'active'::text, 'paused'::text, 'past_due'::text, 'cancelled'::text, 'expired'::text, 'scheduled'::text])),
   current_period_start timestamp with time zone NOT NULL,
   current_period_end timestamp with time zone NOT NULL,
   next_billing_date timestamp with time zone,
@@ -2860,6 +2834,9 @@ CREATE TABLE public.memberships (
   is_group_parent boolean DEFAULT false,
   pause_at timestamp with time zone,
   cancel_at timestamp with time zone,
+  service_groupings_override jsonb,
+  pending_charge_config jsonb,
+  price_override_cents integer,
   CONSTRAINT memberships_pkey PRIMARY KEY (id),
   CONSTRAINT memberships_membership_type_id_fkey FOREIGN KEY (membership_type_id) REFERENCES public.membership_types(id),
   CONSTRAINT memberships_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
@@ -2893,6 +2870,84 @@ CREATE TABLE public.messages (
   CONSTRAINT messages_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id),
   CONSTRAINT messages_reply_to_id_fkey FOREIGN KEY (reply_to_id) REFERENCES public.messages(id),
   CONSTRAINT messages_sender_id_fkey FOREIGN KEY (sender_id) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.mocap_pitches (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  session_id uuid,
+  org_id uuid,
+  pitch_number integer,
+  athlete_id uuid,
+  pitch_type text CHECK (pitch_type IS NULL OR (pitch_type = ANY (ARRAY['Fastball'::text, 'Sinker'::text, 'Slider'::text, 'Curveball'::text, 'Changeup'::text, 'Cutter'::text, 'Riseball'::text, 'Dropball'::text, 'Screwball'::text, 'Tee'::text, 'Front Toss'::text, 'Live BP'::text, 'Machine BP'::text, 'Game'::text, 'Other'::text]))),
+  velocity_mph numeric,
+  take_name text,
+  trial_id text,
+  trial_folder_path text,
+  calibration_source text,
+  status text NOT NULL DEFAULT 'logged'::text CHECK (status = ANY (ARRAY['logged'::text, 'linked'::text, 'trial_created'::text, 'processed'::text])),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  bat_speed_mph numeric,
+  exit_velo_mph numeric,
+  r2_video_key text,
+  r2_c3d_key text,
+  r2_uploaded_at timestamp with time zone,
+  is_session_highlight boolean DEFAULT false,
+  normalized_curves jsonb,
+  poi_fp jsonb,
+  poi_mer jsonb,
+  poi_br jsonb,
+  poi_peak jsonb,
+  source text DEFAULT 'local'::text CHECK (source = ANY (ARRAY['local'::text, 'obp'::text, 'external'::text])),
+  scalar_metrics jsonb,
+  event_times jsonb,
+  handedness text CHECK (handedness = ANY (ARRAY['R'::text, 'L'::text])),
+  play_level text,
+  athlete_height_m numeric,
+  athlete_mass_kg numeric,
+  athlete_age numeric,
+  category text CHECK (category IS NULL OR (category = ANY (ARRAY['baseball_pitching'::text, 'baseball_hitting'::text, 'softball_pitching'::text, 'softball_hitting'::text]))),
+  c3d_local_path text,
+  is_best_in_session boolean DEFAULT false,
+  session_pitch_count integer,
+  pitch_sequence integer,
+  clipped boolean DEFAULT false,
+  trackman_pitch_id bigint,
+  force_plate_metrics jsonb,
+  force_plate_csv_path text,
+  CONSTRAINT mocap_pitches_pkey PRIMARY KEY (id),
+  CONSTRAINT mocap_pitches_trackman_pitch_id_fkey FOREIGN KEY (trackman_pitch_id) REFERENCES public.trackman_pitch_data(id),
+  CONSTRAINT mocap_pitches_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.mocap_sessions(id),
+  CONSTRAINT mocap_pitches_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
+  CONSTRAINT mocap_pitches_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
+);
+CREATE TABLE public.mocap_sessions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL,
+  created_by uuid NOT NULL,
+  session_date date NOT NULL,
+  calibration_name text,
+  pipeline_base_path text,
+  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['active'::text, 'completed'::text, 'archived'::text])),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  started_at timestamp with time zone NOT NULL DEFAULT now(),
+  ended_at timestamp with time zone,
+  category text NOT NULL DEFAULT 'baseball_pitching'::text CHECK (category = ANY (ARRAY['baseball_pitching'::text, 'baseball_hitting'::text, 'softball_pitching'::text, 'softball_hitting'::text])),
+  athlete_id uuid,
+  athlete_weight_lbs numeric,
+  athlete_height_inches integer,
+  athlete_throws text CHECK (athlete_throws = ANY (ARRAY['R'::text, 'L'::text])),
+  athlete_bats text CHECK (athlete_bats = ANY (ARRAY['R'::text, 'L'::text, 'S'::text])),
+  highlight_pitch_id uuid,
+  session_tags ARRAY DEFAULT '{}'::text[],
+  limb_lengths jsonb,
+  trackman_session_id bigint,
+  CONSTRAINT mocap_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT mocap_sessions_highlight_pitch_id_fkey FOREIGN KEY (highlight_pitch_id) REFERENCES public.mocap_pitches(id),
+  CONSTRAINT mocap_sessions_trackman_session_id_fkey FOREIGN KEY (trackman_session_id) REFERENCES public.trackman_session(id),
+  CONSTRAINT mocap_sessions_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
+  CONSTRAINT mocap_sessions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
+  CONSTRAINT mocap_sessions_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id)
 );
 CREATE TABLE public.notification_automation_rules (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -3059,6 +3114,19 @@ CREATE TABLE public.org_invite_signups (
   CONSTRAINT org_invite_signups_invite_link_id_fkey FOREIGN KEY (invite_link_id) REFERENCES public.org_invite_links(id),
   CONSTRAINT org_invite_signups_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
+CREATE TABLE public.org_video_settings (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL UNIQUE,
+  r2_account_id text,
+  r2_access_key_id text,
+  r2_secret_access_key text,
+  r2_bucket_name text,
+  r2_configured boolean DEFAULT ((r2_account_id IS NOT NULL) AND (r2_access_key_id IS NOT NULL) AND (r2_secret_access_key IS NOT NULL) AND (r2_bucket_name IS NOT NULL)),
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT org_video_settings_pkey PRIMARY KEY (id),
+  CONSTRAINT org_video_settings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
+);
 CREATE TABLE public.organizations (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -3098,6 +3166,9 @@ CREATE TABLE public.organizations (
   stripe_connect_payouts_enabled boolean,
   stripe_platform_fee_percentage numeric,
   cumulative_revenue bigint NOT NULL DEFAULT '0'::bigint,
+  email_reply_to text,
+  is_billing_exempt boolean DEFAULT false,
+  blast_group_id text,
   CONSTRAINT organizations_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.package_types (
@@ -3226,10 +3297,10 @@ CREATE TABLE public.payments (
   tax_cents integer DEFAULT 0,
   total_cents integer DEFAULT (amount_cents + COALESCE(tax_cents, 0)),
   payment_method text NOT NULL CHECK (payment_method = ANY (ARRAY['stripe'::text, 'cash'::text, 'check'::text, 'bank_transfer'::text, 'comp'::text, 'other'::text])),
-  stripe_payment_intent_id text,
+  stripe_payment_intent_id text UNIQUE,
   stripe_charge_id text,
   stripe_customer_id text,
-  stripe_checkout_session_id text,
+  stripe_checkout_session_id text UNIQUE,
   status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text, 'refunded'::text, 'partially_refunded'::text])),
   refund_amount_cents integer DEFAULT 0,
   refunded_at timestamp with time zone,
@@ -3249,6 +3320,7 @@ CREATE TABLE public.payments (
   net_amount_cents integer,
   platform_fee_revenue integer,
   platform_fee_cents integer DEFAULT 0,
+  is_full_refund boolean,
   CONSTRAINT payments_pkey PRIMARY KEY (id),
   CONSTRAINT payments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT payments_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
@@ -3578,6 +3650,7 @@ CREATE TABLE public.ppu_tests (
   eccentric_impulse_asymm_unit text,
   test_number_at_level integer DEFAULT 1,
   source_system character varying DEFAULT 'vald'::character varying,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT ppu_tests_pkey PRIMARY KEY (id),
   CONSTRAINT ppu_tests_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
@@ -3667,6 +3740,211 @@ CREATE TABLE public.program_days (
   CONSTRAINT program_days_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.training_plans(id),
   CONSTRAINT program_days_workout_id_fkey FOREIGN KEY (workout_id) REFERENCES public.workouts(id)
 );
+CREATE TABLE public.pulse_athlete_workload_day (
+  athlete_id uuid NOT NULL,
+  target_date date NOT NULL,
+  target_w_day real NOT NULL DEFAULT 0,
+  intent smallint NOT NULL DEFAULT 0,
+  min_throws smallint,
+  max_throws smallint,
+  notes text,
+  source_plan_id uuid,
+  org_id uuid NOT NULL,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_athlete_workload_day_pkey PRIMARY KEY (athlete_id, target_date),
+  CONSTRAINT pulse_athlete_workload_day_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
+  CONSTRAINT pulse_athlete_workload_day_source_plan_id_fkey FOREIGN KEY (source_plan_id) REFERENCES public.pulse_workload_plans(id),
+  CONSTRAINT pulse_athlete_workload_day_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
+  CONSTRAINT pulse_athlete_workload_day_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id)
+);
+CREATE TABLE public.pulse_daily_workload (
+  athlete_id uuid NOT NULL,
+  training_date date NOT NULL,
+  org_id uuid NOT NULL,
+  w_day real NOT NULL DEFAULT 0,
+  throw_count integer NOT NULL DEFAULT 0,
+  valid_count integer NOT NULL DEFAULT 0,
+  high_effort_count integer NOT NULL DEFAULT 0,
+  peak_torque_nm real,
+  peak_speed_dps real,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_daily_workload_pkey PRIMARY KEY (athlete_id, training_date),
+  CONSTRAINT pulse_daily_workload_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
+  CONSTRAINT pulse_daily_workload_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
+);
+CREATE TABLE public.pulse_devices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL,
+  serial text NOT NULL,
+  hardware_rev text,
+  firmware_rev text,
+  nickname text,
+  current_athlete_id uuid,
+  assigned_at timestamp with time zone,
+  last_seen_at timestamp with time zone,
+  battery_pct smallint,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_devices_pkey PRIMARY KEY (id),
+  CONSTRAINT pulse_devices_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
+  CONSTRAINT pulse_devices_current_athlete_id_fkey FOREIGN KEY (current_athlete_id) REFERENCES public.athletes(id)
+);
+CREATE TABLE public.pulse_throws (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_throws_2026_03 (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_2026_03_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_throws_2026_04 (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_2026_04_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_throws_2026_05 (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_2026_05_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_throws_2026_06 (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_2026_06_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_throws_2026_07 (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  org_id uuid NOT NULL,
+  athlete_id uuid NOT NULL,
+  device_id uuid,
+  thrown_at timestamp with time zone NOT NULL,
+  training_date date NOT NULL,
+  torque_nm real,
+  arm_speed_dps real,
+  arm_slot_deg real,
+  workload real NOT NULL,
+  ball_weight_oz smallint NOT NULL DEFAULT 5,
+  source character NOT NULL DEFAULT 'L'::bpchar CHECK (source = ANY (ARRAY['L'::bpchar, 'S'::bpchar, 'M'::bpchar])),
+  is_valid boolean NOT NULL DEFAULT true,
+  excluded_reason smallint CHECK (excluded_reason IS NULL OR excluded_reason >= 1 AND excluded_reason <= 5),
+  excluded_by uuid,
+  excluded_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT pulse_throws_2026_07_pkey PRIMARY KEY (id, thrown_at)
+);
+CREATE TABLE public.pulse_workload_plan_days (
+  plan_id uuid NOT NULL,
+  day_offset smallint NOT NULL CHECK (day_offset >= 0),
+  target_w_day real NOT NULL DEFAULT 0 CHECK (target_w_day >= 0::double precision),
+  intent smallint NOT NULL DEFAULT 0 CHECK (intent >= 0 AND intent <= 6),
+  min_throws smallint,
+  max_throws smallint,
+  notes text,
+  CONSTRAINT pulse_workload_plan_days_pkey PRIMARY KEY (plan_id, day_offset),
+  CONSTRAINT pulse_workload_plan_days_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.pulse_workload_plans(id)
+);
+CREATE TABLE public.pulse_workload_plans (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL,
+  name text NOT NULL,
+  description text,
+  tags ARRAY NOT NULL DEFAULT '{}'::text[],
+  duration_days smallint NOT NULL CHECK (duration_days >= 1 AND duration_days <= 365),
+  is_template boolean NOT NULL DEFAULT false,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  athlete_id uuid,
+  source_plan_id uuid,
+  start_date date,
+  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['active'::text, 'completed'::text, 'cancelled'::text, 'paused'::text, 'draft'::text])),
+  starting_chronic real,
+  owner_training_plan_id uuid,
+  CONSTRAINT pulse_workload_plans_pkey PRIMARY KEY (id),
+  CONSTRAINT pulse_workload_plans_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
+  CONSTRAINT pulse_workload_plans_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
+  CONSTRAINT pulse_workload_plans_source_plan_id_fkey FOREIGN KEY (source_plan_id) REFERENCES public.pulse_workload_plans(id),
+  CONSTRAINT pulse_workload_plans_owner_training_plan_id_fkey FOREIGN KEY (owner_training_plan_id) REFERENCES public.training_plans(id)
+);
 CREATE TABLE public.push_tokens (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL,
@@ -3727,21 +4005,6 @@ CREATE TABLE public.reminder_completions (
   CONSTRAINT reminder_completions_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
   CONSTRAINT reminder_completions_completed_by_fkey FOREIGN KEY (completed_by) REFERENCES public.profiles(id),
   CONSTRAINT reminder_completions_reminder_assignment_id_fkey FOREIGN KEY (reminder_assignment_id) REFERENCES public.reminder_assignments(id)
-);
-CREATE TABLE public.reminder_instances (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  reminder_id uuid NOT NULL,
-  org_id uuid NOT NULL,
-  athlete_id uuid,
-  due_date date NOT NULL,
-  is_completed boolean DEFAULT false,
-  is_snoozed boolean DEFAULT false,
-  snooze_until date,
-  is_dismissed boolean DEFAULT false,
-  created_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT reminder_instances_pkey PRIMARY KEY (id),
-  CONSTRAINT reminder_instances_reminder_id_fkey FOREIGN KEY (reminder_id) REFERENCES public.reminders(id),
-  CONSTRAINT reminder_instances_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
 CREATE TABLE public.reminders (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -3823,18 +4086,6 @@ CREATE TABLE public.restriction_tags (
   CONSTRAINT restriction_tags_pkey PRIMARY KEY (id),
   CONSTRAINT restriction_tags_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
 );
-CREATE TABLE public.role_definitions (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  role_type text NOT NULL CHECK (role_type = ANY (ARRAY['app_role'::text, 'staff_role'::text])),
-  role_name text NOT NULL,
-  display_name text NOT NULL,
-  description text NOT NULL,
-  scope text NOT NULL CHECK (scope = ANY (ARRAY['platform'::text, 'organization'::text, 'team'::text, 'self'::text])),
-  hierarchy_level integer NOT NULL,
-  permissions jsonb NOT NULL,
-  created_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT role_definitions_pkey PRIMARY KEY (id)
-);
 CREATE TABLE public.routine_exercises (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   routine_id uuid,
@@ -3870,23 +4121,10 @@ CREATE TABLE public.routine_exercises (
   org_id uuid,
   tempo text,
   notes_only boolean DEFAULT false,
+  selected_variation text,
   CONSTRAINT routine_exercises_pkey PRIMARY KEY (id),
   CONSTRAINT routine_exercises_exercise_id_fkey FOREIGN KEY (exercise_id) REFERENCES public.exercises(id),
   CONSTRAINT routine_exercises_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES public.routines(id)
-);
-CREATE TABLE public.routine_imports (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  workout_id uuid NOT NULL,
-  source_routine_id uuid NOT NULL,
-  imported_routine_id uuid NOT NULL,
-  imported_at timestamp with time zone DEFAULT now(),
-  imported_by uuid,
-  org_id uuid,
-  CONSTRAINT routine_imports_pkey PRIMARY KEY (id),
-  CONSTRAINT routine_imports_workout_id_fkey FOREIGN KEY (workout_id) REFERENCES public.workouts(id),
-  CONSTRAINT routine_imports_source_routine_id_fkey FOREIGN KEY (source_routine_id) REFERENCES public.routines(id),
-  CONSTRAINT routine_imports_imported_routine_id_fkey FOREIGN KEY (imported_routine_id) REFERENCES public.routines(id),
-  CONSTRAINT routine_imports_imported_by_fkey FOREIGN KEY (imported_by) REFERENCES public.profiles(id)
 );
 CREATE TABLE public.routines (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -4113,6 +4351,7 @@ CREATE TABLE public.scheduling_templates (
   auto_assign_lifecycle_on_attendance character varying CHECK (auto_assign_lifecycle_on_attendance::text = ANY (ARRAY['assessment_scheduled'::character varying, 'assessment_completed'::character varying, 'member'::character varying, 'cancelled_membership'::character varying]::text[])),
   auto_assign_coach_ids ARRAY DEFAULT '{}'::uuid[],
   auto_assign_coach_trigger character varying DEFAULT NULL::character varying CHECK (auto_assign_coach_trigger::text = ANY (ARRAY['booking'::character varying, 'attendance'::character varying]::text[])),
+  preparation_notes text,
   CONSTRAINT scheduling_templates_pkey PRIMARY KEY (id),
   CONSTRAINT event_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT event_templates_default_staff_id_fkey FOREIGN KEY (default_staff_id) REFERENCES public.staff(id),
@@ -4594,6 +4833,7 @@ CREATE TABLE public.sj_tests (
   bw_rel_peak_landing_force_trial_unit text,
   test_number_at_level integer DEFAULT 1,
   source_system character varying DEFAULT 'vald'::character varying,
+  sex character varying DEFAULT 'M'::character varying CHECK (sex::text = ANY (ARRAY['M'::character varying, 'F'::character varying]::text[])),
   CONSTRAINT sj_tests_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.staff (
@@ -4721,17 +4961,6 @@ CREATE TABLE public.subscriptions (
   CONSTRAINT subscriptions_pkey PRIMARY KEY (id),
   CONSTRAINT subscriptions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id)
 );
-CREATE TABLE public.tag_exercise_recommendations (
-  tag_id uuid NOT NULL,
-  exercise_id uuid NOT NULL,
-  priority integer DEFAULT 0,
-  reason text,
-  created_at timestamp with time zone DEFAULT now(),
-  org_id uuid,
-  CONSTRAINT tag_exercise_recommendations_pkey PRIMARY KEY (tag_id, exercise_id),
-  CONSTRAINT tag_exercise_recommendations_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES public.tags(id),
-  CONSTRAINT tag_exercise_recommendations_exercise_id_fkey FOREIGN KEY (exercise_id) REFERENCES public.exercises(id)
-);
 CREATE TABLE public.tags (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name text NOT NULL UNIQUE,
@@ -4752,6 +4981,7 @@ CREATE TABLE public.teams (
   is_active boolean DEFAULT true,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  show_player_metrics_publicly boolean DEFAULT false,
   CONSTRAINT teams_pkey PRIMARY KEY (id),
   CONSTRAINT teams_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id),
   CONSTRAINT teams_head_coach_id_fkey FOREIGN KEY (head_coach_id) REFERENCES public.staff(id)
@@ -4814,7 +5044,9 @@ CREATE TABLE public.trackman_pitch_data (
   video_url text,
   video_clip_id text,
   video_camera_type text,
+  pitch_timestamp timestamp with time zone,
   CONSTRAINT trackman_pitch_data_pkey PRIMARY KEY (id),
+  CONSTRAINT fk_trackman_pitch_session FOREIGN KEY (session_id) REFERENCES public.trackman_session(id),
   CONSTRAINT fk_trackman_pitch_athlete FOREIGN KEY (athlete_id) REFERENCES public.athletes(id),
   CONSTRAINT fk_trackman_pitch_org FOREIGN KEY (org_id) REFERENCES public.organizations(id)
 );
@@ -4907,9 +5139,11 @@ CREATE TABLE public.training_plans (
   tags ARRAY DEFAULT '{}'::text[],
   created_by uuid,
   org_id uuid,
+  workload_plan_id uuid,
   CONSTRAINT training_plans_pkey PRIMARY KEY (id),
   CONSTRAINT training_plans_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id),
-  CONSTRAINT training_plans_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
+  CONSTRAINT training_plans_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
+  CONSTRAINT training_plans_workload_plan_id_fkey FOREIGN KEY (workload_plan_id) REFERENCES public.pulse_workload_plans(id)
 );
 CREATE TABLE public.vald_profile_queue (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -4994,23 +5228,6 @@ CREATE TABLE public.workout_tags (
   updated_at timestamp with time zone DEFAULT now(),
   org_id uuid,
   CONSTRAINT workout_tags_pkey PRIMARY KEY (id)
-);
-CREATE TABLE public.workout_targets (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  workout_instance_id uuid,
-  routine_exercise_id uuid,
-  set_number integer NOT NULL,
-  target_reps integer,
-  target_load numeric,
-  target_velocity numeric,
-  target_distance numeric,
-  target_time_seconds integer,
-  target_rpe integer,
-  created_at timestamp with time zone DEFAULT now(),
-  org_id uuid,
-  CONSTRAINT workout_targets_pkey PRIMARY KEY (id),
-  CONSTRAINT workout_targets_workout_instance_id_fkey FOREIGN KEY (workout_instance_id) REFERENCES public.workout_instances(id),
-  CONSTRAINT workout_targets_routine_exercise_id_fkey FOREIGN KEY (routine_exercise_id) REFERENCES public.routine_exercises(id)
 );
 CREATE TABLE public.workouts (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

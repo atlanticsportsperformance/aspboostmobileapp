@@ -29,6 +29,8 @@ import {
 } from '../lib/throwingConversions';
 import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMonitor';
 import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
+import { PulseProvider } from '../lib/pulse/PulseProvider';
+import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 
 // Types
 type RootStackParamList = {
@@ -436,7 +438,21 @@ export default function WorkoutExecutionScreen() {
         return;
       }
 
-      setInstance(inst);
+      // Auto-start if still pending — match WorkoutLoggerScreen behavior so
+      // the deep-link path doesn't show a different UI than the dashboard path.
+      if (inst.status === 'not_started' || inst.status === 'pending') {
+        const startedAt = new Date().toISOString();
+        setInstance({ ...inst, status: 'in_progress', started_at: startedAt });
+        supabase
+          .from('workout_instances')
+          .update({ status: 'in_progress', started_at: startedAt })
+          .eq('id', instanceId)
+          .then(({ error }) => {
+            if (error) console.error('[WorkoutExecution] auto-start failed', error);
+          });
+      } else {
+        setInstance(inst);
+      }
 
       // Fetch workout with full routine and exercise data
       const { data: wo, error: woError } = await supabase
@@ -712,119 +728,10 @@ export default function WorkoutExecutionScreen() {
 
   const isThrowing = workout.category === 'throwing';
 
-  // Render pre-workout start page
-  if (instance.status === 'not_started') {
-    return (
-      <View style={styles.container}>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-          {/* THROWING WORKLOAD MONITOR — top of page for throwing workouts only */}
-          {isThrowing && athleteId && orgId && (
-            <ThrowingWorkloadMonitor athleteId={athleteId} orgId={orgId} />
-          )}
-          {/* Header */}
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle}>{workout.name}</Text>
-            <Text style={styles.previewSubtitle}>
-              {allExercises.length} exercises • {routines.length} {routines.length === 1 ? 'block' : 'blocks'}
-            </Text>
-          </View>
-
-          {/* Workout Notes */}
-          {(workout.notes || workout.description) && (
-            <Text style={styles.workoutNotesSimple}>
-              {workout.notes || workout.description}
-            </Text>
-          )}
-
-          {/* Blocks and Exercises Preview */}
-          {routines.map((routine, routineIdx) => {
-            const schemeNames = ['exercise', 'superset', 'emom', 'circuit', 'amrap', 'straight_sets'];
-            const hasBlockTitle = routine.name && !schemeNames.includes(routine.name.toLowerCase());
-            const exercises = (routine.routine_exercises || []).filter(ex => !ex.exercises?.is_placeholder);
-            const blockLetter = String.fromCharCode(65 + routineIdx);
-
-            return (
-              <View key={routine.id} style={styles.blockSection}>
-                {/* Block Header */}
-                {hasBlockTitle && (
-                  <View style={styles.blockHeader}>
-                    <Text style={styles.blockTitle}>{routine.name.toUpperCase()}</Text>
-                    {routine.description && (
-                      <Text style={styles.blockDescription}>{routine.description}</Text>
-                    )}
-                    {routine.notes && (
-                      <Text style={styles.blockNotesText}>{routine.notes}</Text>
-                    )}
-                    {routine.text_info && (
-                      <Text style={styles.blockTextInfoText}>{routine.text_info}</Text>
-                    )}
-                  </View>
-                )}
-
-                {/* Exercises - flat list */}
-                {exercises.map((ex, exIdx) => {
-                  const exercise = ex.exercises;
-                  if (!exercise) return null;
-
-                  const exerciseCode = `${blockLetter}${exIdx + 1}`;
-                  const tracksPR = ex.tracked_max_metrics && ex.tracked_max_metrics.length > 0;
-
-                  const metricsDisplay = formatExerciseMetrics({
-                    exercise: ex,
-                    customMeasurements,
-                    separator: '|||'
-                  });
-
-                  const metricRows = metricsDisplay ? metricsDisplay.split('|||') : [];
-
-                  return (
-                    <View key={ex.id} style={styles.exerciseRow}>
-                      <View style={styles.exerciseCodeBadge}>
-                        <Text style={styles.exerciseCodeText}>{exerciseCode}</Text>
-                      </View>
-                      <View style={styles.exerciseContent}>
-                        <Text style={styles.exerciseName}>
-                          {exercise.name}
-                          {tracksPR && ' 🏆'}
-                        </Text>
-                        {metricRows.map((row, idx) => (
-                          <Text key={idx} style={styles.metricRow}>{row.trim()}</Text>
-                        ))}
-                        {ex.tempo && (
-                          <Text style={styles.tempoText}>Tempo: {ex.tempo}</Text>
-                        )}
-                        {ex.notes && (
-                          <Text style={styles.exerciseNotesText}>{ex.notes}</Text>
-                        )}
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            );
-          })}
-
-          {/* THROWING THROWS FEED — below logger body on throwing workouts */}
-          {isThrowing && athleteId && (
-            <ThrowingThrowsFeed athleteId={athleteId} />
-          )}
-        </ScrollView>
-
-        {/* Start Workout Button */}
-        <View style={styles.startButtonContainer}>
-          <TouchableOpacity
-            style={[styles.startButton, { backgroundColor: categoryInfo.button }]}
-            onPress={startWorkout}
-          >
-            <Text style={styles.startButtonText}>Start Workout</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
-  // Render workout execution interface
-  return (
+  // Render workout execution interface. Throwing workouts are wrapped in the
+  // PulseProvider so the Monitor can consume BLE state from context and the
+  // wizard modal has somewhere to mount.
+  const mainContent = (
     <View style={styles.container}>
       {/* Header with timer and progress */}
       <View style={styles.header}>
@@ -849,7 +756,7 @@ export default function WorkoutExecutionScreen() {
         <ScrollView style={styles.executionScroll} contentContainerStyle={styles.executionScrollContent}>
           {/* THROWING WORKLOAD MONITOR — top of in-progress view on throwing only */}
           {isThrowing && athleteId && orgId && (
-            <ThrowingWorkloadMonitor athleteId={athleteId} orgId={orgId} />
+            <ThrowingWorkloadMonitor athleteId={athleteId} orgId={orgId} scheduledDate={instance?.scheduled_date} />
           )}
           {/* Workout Notes */}
           {(workout.notes || workout.description) && (
@@ -1003,7 +910,7 @@ export default function WorkoutExecutionScreen() {
 
           {/* THROWING THROWS FEED — below logger body on throwing workouts */}
           {isThrowing && athleteId && (
-            <ThrowingThrowsFeed athleteId={athleteId} />
+            <ThrowingThrowsFeed athleteId={athleteId} scheduledDate={instance?.scheduled_date} />
           )}
 
           <View style={{ height: 100 }} />
@@ -1855,6 +1762,17 @@ export default function WorkoutExecutionScreen() {
       )}
     </View>
   );
+
+  if (isThrowing && athleteId && orgId) {
+    return (
+      <PulseProvider athleteId={athleteId} orgId={orgId}>
+        {mainContent}
+        <PulseWizardModal scheduledDate={instance?.scheduled_date} />
+      </PulseProvider>
+    );
+  }
+
+  return mainContent;
 }
 
 const { width, height } = Dimensions.get('window');

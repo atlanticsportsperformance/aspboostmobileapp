@@ -98,6 +98,10 @@ interface BlockOverviewProps {
   onCompleteWorkout: () => void;
   onToggleExerciseComplete: (exerciseId: string, sets: number) => void;
   onBack: () => void;
+  /** Optional slot rendered at the TOP of the scroll content (above notes + routines). */
+  headerSlot?: React.ReactNode;
+  /** Optional slot rendered at the BOTTOM of the scroll content (below routines). */
+  footerSlot?: React.ReactNode;
 }
 
 // Helper: Get YouTube video ID from URL
@@ -164,6 +168,8 @@ export default function BlockOverview({
   onCompleteWorkout,
   onToggleExerciseComplete,
   onBack,
+  headerSlot,
+  footerSlot,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
@@ -279,6 +285,9 @@ export default function BlockOverview({
         style={styles.scrollView}
         contentContainerStyle={styles.contentContainer}
       >
+        {/* Optional top slot — throwing workload monitor mounts here */}
+        {headerSlot}
+
         {/* Workout Notes */}
         {(workout.notes || workout.description) && (
           <View style={styles.workoutNotesBanner}>
@@ -476,6 +485,9 @@ export default function BlockOverview({
           </View>
         );
       })}
+
+      {/* Optional bottom slot — throwing throws feed mounts here */}
+      {footerSlot}
       </ScrollView>
 
       {/* Complete Workout Button (Fixed Bottom) */}

@@ -17,7 +17,7 @@
  *  - Header counter spring-counts up as rows stream in
  */
 
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -31,20 +31,20 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
   withTiming,
-  withDelay,
-  FadeInDown,
-  FadeOutLeft,
-  Layout,
-  Easing,
+  FadeIn,
+  FadeOut,
 } from 'react-native-reanimated';
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import { Zap, Trash2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
+import { pulseEvents } from '../../lib/pulse/ble/pulse-events';
+import { queuedFetch } from '../../lib/pulse/fetch-queue';
 
-interface Throw {
+export interface Throw {
   id: string;
   thrown_at: string;
+  training_date?: string;
   torque_nm: number | null;
   arm_speed_dps: number | null;
   arm_slot_deg: number | null;
@@ -55,6 +55,17 @@ interface Throw {
 
 interface Props {
   athleteId: string;
+  /** ISO date (YYYY-MM-DD) of the workout being viewed. Defaults to today. */
+  scheduledDate?: string;
+  /**
+   * External mode: when `throws` is provided, this component is fully
+   * controlled — no self-fetch, no loading spinner sourced internally.
+   * Parent owns the data (used by WorkloadScreen's pre-fetch architecture).
+   */
+  throws?: Throw[];
+  throwsLoading?: boolean;
+  /** Called after a successful soft-delete so the parent can drop the row. */
+  onThrowDeleted?: (id: string) => void;
 }
 
 function toISO(d: Date): string {
@@ -71,100 +82,97 @@ function torqueHex(tq: number | null): string {
   return '#f87171';              // red — peak
 }
 
-export function ThrowingThrowsFeed({ athleteId }: Props) {
-  const [throws, setThrows] = useState<Throw[]>([]);
-  const [loading, setLoading] = useState(true);
+export function ThrowingThrowsFeed({
+  athleteId,
+  scheduledDate,
+  throws: externalThrows,
+  throwsLoading: externalLoading,
+  onThrowDeleted,
+}: Props) {
+  const external = externalThrows !== undefined;
+
+  const { session } = useAuth();
+  const token = session?.access_token ?? null;
+  const [internalThrows, setInternalThrows] = useState<Throw[]>([]);
+  const [internalLoading, setInternalLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Spring-count the header total
-  const countTarget = useSharedValue(0);
-  const [displayCount, setDisplayCount] = useState(0);
-  useEffect(() => {
-    countTarget.value = withSpring(throws.length, { damping: 15, stiffness: 90 });
-  }, [throws.length, countTarget]);
-  useEffect(() => {
-    // derived shim — we can't runOnJS easily for a number, just snap
-    setDisplayCount(throws.length);
-  }, [throws.length]);
+  const throws = external ? (externalThrows as Throw[]) : internalThrows;
+  const loading = external ? (externalLoading ?? false) : internalLoading;
+  const displayCount = throws.length;
 
+  // Self-fetch path — only runs when parent doesn't provide `throws`. Used
+  // by WorkoutExecutionScreen / WorkoutLoggerScreen where we don't have a
+  // rapid day-switcher. WorkloadScreen uses external mode and filters a
+  // pre-fetched 35-day window client-side.
   useEffect(() => {
-    if (!athleteId) return;
+    if (external) return;
+
+    const anchorIso = scheduledDate ?? toISO(new Date());
+    if (!athleteId) {
+      setInternalLoading(false);
+      return;
+    }
+
     let cancelled = false;
-    let channel: RealtimeChannel | null = null;
 
-    (async () => {
-      const today = toISO(new Date());
-      const start = `${today}T00:00:00Z`;
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const end = `${toISO(tomorrow)}T00:00:00Z`;
-
-      const { data } = await supabase
-        .from('pulse_throws')
-        .select(
-          'id, thrown_at, torque_nm, arm_speed_dps, arm_slot_deg, workload, source, is_valid',
-        )
-        .eq('athlete_id', athleteId)
-        .eq('is_valid', true)
-        .gte('thrown_at', start)
-        .lt('thrown_at', end)
-        .order('thrown_at', { ascending: false })
-        .limit(50);
-
+    const run = async () => {
+      setInternalLoading(true);
+      let tk = token;
+      if (!tk) {
+        try {
+          const res = await Promise.race([
+            supabase.auth.getSession(),
+            new Promise<any>((_, rej) => setTimeout(() => rej(new Error('session timeout')), 2000)),
+          ]);
+          tk = res?.data?.session?.access_token ?? null;
+        } catch {
+          tk = null;
+        }
+      }
       if (cancelled) return;
-      setThrows((data ?? []) as Throw[]);
-      setLoading(false);
+      if (!tk) {
+        setInternalThrows([]);
+        setInternalLoading(false);
+        return;
+      }
 
-      channel = supabase
-        .channel(`pulse_throws_mobile_${athleteId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'pulse_throws',
-            filter: `athlete_id=eq.${athleteId}`,
+      try {
+        const url =
+          `${process.env.EXPO_PUBLIC_SUPABASE_URL}/rest/v1/pulse_throws?` +
+          `select=id,thrown_at,training_date,torque_nm,arm_speed_dps,arm_slot_deg,workload,source,is_valid` +
+          `&athlete_id=eq.${athleteId}` +
+          `&is_valid=eq.true` +
+          `&training_date=eq.${anchorIso}` +
+          `&order=thrown_at.desc` +
+          `&limit=50`;
+        const res = await queuedFetch('feed', url, {
+          headers: {
+            apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+            Authorization: `Bearer ${tk}`,
           },
-          (payload: any) => {
-            const row = payload.new as Throw;
-            if (!row.thrown_at || row.is_valid === false) return;
-            const d = new Date(row.thrown_at);
-            if (toISO(d) !== today) return;
-            setThrows((prev) => {
-              if (prev.some((t) => t.id === row.id)) return prev;
-              return [row, ...prev].slice(0, 50);
-            });
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-          },
-        )
-        .on(
-          'postgres_changes',
-          {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'pulse_throws',
-            filter: `athlete_id=eq.${athleteId}`,
-          },
-          (payload: any) => {
-            const row = payload.new as Throw;
-            if (!row?.id) return;
-            if (row.is_valid === false) {
-              setThrows((prev) => prev.filter((t) => t.id !== row.id));
-              return;
-            }
-            setThrows((prev) =>
-              prev.map((t) => (t.id === row.id ? { ...t, ...row } : t)),
-            );
-          },
-        )
-        .subscribe();
-    })();
+        });
+        const body = await res.json();
+        if (cancelled) return;
+        setInternalThrows(res.ok && Array.isArray(body) ? (body as Throw[]) : []);
+      } catch {
+        if (!cancelled) setInternalThrows([]);
+      } finally {
+        if (!cancelled) setInternalLoading(false);
+      }
+    };
+
+    run();
+
+    const unsubscribe = pulseEvents.onThrowsCommitted(() => {
+      run();
+    });
 
     return () => {
       cancelled = true;
-      if (channel) supabase.removeChannel(channel);
+      unsubscribe();
     };
-  }, [athleteId]);
+  }, [external, athleteId, scheduledDate, token]);
 
   const onDelete = useCallback(
     (id: string) => {
@@ -193,7 +201,11 @@ export function ThrowingThrowsFeed({ athleteId }: Props) {
                   })
                   .eq('id', id);
                 if (error) throw error;
-                setThrows((prev) => prev.filter((t) => t.id !== id));
+                if (external) {
+                  onThrowDeleted?.(id);
+                } else {
+                  setInternalThrows((prev) => prev.filter((t) => t.id !== id));
+                }
                 Haptics.notificationAsync(
                   Haptics.NotificationFeedbackType.Success,
                 ).catch(() => {});
@@ -215,7 +227,11 @@ export function ThrowingThrowsFeed({ athleteId }: Props) {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Zap size={14} color="#9BDDFF" />
-          <Text style={styles.headerLabel}>TODAY'S THROWS</Text>
+          <Text style={styles.headerLabel}>
+            {scheduledDate && scheduledDate !== toISO(new Date())
+              ? `THROWS · ${new Date(`${scheduledDate}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}`
+              : "TODAY'S THROWS"}
+          </Text>
         </View>
         {displayCount > 0 && (
           <Text style={styles.headerCount}>{displayCount} total</Text>
@@ -281,12 +297,8 @@ function ThrowRow({
 
   return (
     <Animated.View
-      entering={FadeInDown.delay(Math.min(index * 30, 180))
-        .duration(420)
-        .springify()
-        .damping(16)}
-      exiting={FadeOutLeft.duration(240)}
-      layout={Layout.springify().damping(18).stiffness(120)}
+      entering={FadeIn.duration(180)}
+      exiting={FadeOut.duration(160)}
       style={[
         styles.row,
         {
@@ -342,23 +354,19 @@ function ThrowRow({
 
 const styles = StyleSheet.create({
   container: {
-    marginHorizontal: 12,
-    marginTop: 12,
+    marginHorizontal: 16,
+    marginTop: 20,
     marginBottom: 140,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderRadius: 18,
-    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 4,
+    paddingBottom: 12,
     borderBottomColor: 'rgba(255,255,255,0.06)',
     borderBottomWidth: 1,
+    marginBottom: 10,
   },
   headerLeft: {
     flexDirection: 'row',

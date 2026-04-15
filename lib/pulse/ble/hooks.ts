@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import Constants from 'expo-constants';
 import { PulseDeviceRN as PulseDevice } from './pulse-device-rn';
 
 const KEEP_AWAKE_TAG = 'pulse-live-session';
@@ -20,6 +21,7 @@ import {
   type LiveSessionHandle,
 } from './pulse-sync';
 import { commitThrows } from './pulse-persist';
+import { pulseEvents } from './pulse-events';
 import type { DecodedThrow, AthleteAnthro } from './pulse-codec';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -34,14 +36,19 @@ export type BluetoothSupport = {
 };
 
 export function useBluetoothSupport(): BluetoothSupport {
-  // On native, ble-plx is linked via the Expo config plugin and is always
-  // available in dev client / production builds. Inside Expo Go the require
-  // of react-native-ble-plx would crash at module load, so if we got here
-  // we're in a real build.
-  return useMemo(
-    () => ({ supported: PulseDevice.isSupported(), reason: null }),
-    [],
-  );
+  return useMemo(() => {
+    // Expo Go cannot load `react-native-ble-plx` because it needs native
+    // linking. Detect it explicitly so the UI shows a friendly message
+    // instead of hitting a runtime crash when the user taps Connect.
+    if (Constants.appOwnership === 'expo') {
+      return {
+        supported: false,
+        reason:
+          'Bluetooth requires a dev build. Run `npx expo run:ios` or install the TestFlight build — Expo Go does not include Bluetooth.',
+      };
+    }
+    return { supported: PulseDevice.isSupported(), reason: null };
+  }, []);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -196,6 +203,13 @@ export function usePulseSync({
       if (res.error) throw new Error(res.error);
       setCommittedCount(res.inserted);
 
+      // Notify subscribers (e.g. ThrowingThrowsFeed) that new throws were
+      // committed. Realtime can be flaky if Supabase REPLICA IDENTITY isn't
+      // FULL, so this gives consumers a reliable refetch trigger.
+      if (res.inserted > 0) {
+        pulseEvents.emitThrowsCommitted();
+      }
+
       // Only wipe flash AFTER commit succeeds — if anything goes wrong, the
       // athlete can retry from scratch with data still on the sensor.
       try {
@@ -308,6 +322,9 @@ export function useLiveSession({
                 return;
               }
               setCommittedCount((c) => c + (res.inserted ?? 0));
+              if ((res.inserted ?? 0) > 0) {
+                pulseEvents.emitThrowsCommitted();
+              }
             })
             .catch((err) => console.warn('[pulse live] insert threw', err));
         },

@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Modal,
   Dimensions,
+  BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -36,6 +37,10 @@ const COLORS = {
 };
 
 export default function WaiversScreen({ navigation, route }: any) {
+  // blocking mode kept as an optional flag — triggered when mobile booking
+  // flow detects pending waivers and routes here. Athletes reaching this
+  // screen from the profile menu get the normal (non-blocking) experience.
+  const blocking: boolean = route?.params?.blocking === true;
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(null);
@@ -98,10 +103,36 @@ export default function WaiversScreen({ navigation, route }: any) {
     setShowSigningSheet(true);
   };
 
-  const handleSigningComplete = () => {
+  const handleSigningComplete = async () => {
     setShowSigningSheet(false);
     setWaiversToSign([]);
-    loadData(); // Refresh the list
+    await loadData(); // Refresh the list
+    // In blocking mode, bounce back to the dashboard the moment every
+    // required waiver is signed. Re-read server-side pending list to
+    // avoid trusting stale local state.
+    if (blocking && athleteId) {
+      const { data: remaining } = await supabase
+        .from('athlete_pending_waivers')
+        .select('id')
+        .eq('athlete_id', athleteId)
+        .limit(1);
+      if (!remaining || remaining.length === 0) {
+        const parent = await supabase.auth.getUser();
+        const isParent = parent?.data?.user
+          ? (
+              await supabase
+                .from('profiles')
+                .select('account_type')
+                .eq('id', parent.data.user.id)
+                .maybeSingle()
+            ).data?.account_type === 'parent'
+          : false;
+        navigation.reset({
+          index: 0,
+          routes: [{ name: isParent ? 'ParentDashboard' : 'Dashboard' }],
+        });
+      }
+    }
   };
 
   const renderWaiverContent = (html: string) => {
@@ -138,15 +169,48 @@ export default function WaiversScreen({ navigation, route }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
-          <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
-        </TouchableOpacity>
+        {blocking ? (
+          <View style={styles.headerPlaceholder} />
+        ) : (
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
+          </TouchableOpacity>
+        )}
         <Text style={styles.headerTitle}>Waivers</Text>
         <View style={styles.headerPlaceholder} />
       </View>
+
+      {blocking && pendingWaivers.length > 0 && (
+        <View
+          style={{
+            marginHorizontal: 16,
+            marginTop: 12,
+            padding: 14,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: 'rgba(239,68,68,0.4)',
+            backgroundColor: 'rgba(239,68,68,0.08)',
+            flexDirection: 'row',
+            gap: 10,
+          }}
+        >
+          <Ionicons name="lock-closed" size={20} color={COLORS.red500} style={{ marginTop: 2 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14 }}>
+              Sign required waivers to continue
+            </Text>
+            <Text style={{ color: '#d1d5db', fontSize: 12, marginTop: 4, lineHeight: 17 }}>
+              You have {pendingWaivers.length} required waiver
+              {pendingWaivers.length === 1 ? '' : 's'} to sign before you can
+              use ASP Boost. Booking, logging workouts, and other features are
+              blocked until every required waiver is signed.
+            </Text>
+          </View>
+        </View>
+      )}
 
       <ScrollView
         style={styles.content}

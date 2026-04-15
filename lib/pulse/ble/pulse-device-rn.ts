@@ -48,13 +48,28 @@ function byteToBase64(b: number): string {
 
 // ────────────────────────────────────────────────────────────────────
 // Singleton BleManager — ble-plx wants exactly one per app
+//
+// Wrapped in try/catch because ble-plx throws at construction time when
+// running inside Expo Go (no native linking). We surface a friendlier
+// error instead of a raw module crash.
 // ────────────────────────────────────────────────────────────────────
 
+const NOT_LINKED_MSG =
+  'Bluetooth requires a dev build. Run `npx expo run:ios` or install the TestFlight build — Expo Go does not include Bluetooth.';
+
 let _manager: BleManager | null = null;
+let _managerError: Error | null = null;
+
 function getManager(): BleManager {
+  if (_managerError) throw _managerError;
   if (!_manager) {
-    _manager = new BleManager();
-    _manager.setLogLevel(LogLevel.None);
+    try {
+      _manager = new BleManager();
+      _manager.setLogLevel(LogLevel.None);
+    } catch {
+      _managerError = new Error(NOT_LINKED_MSG);
+      throw _managerError;
+    }
   }
   return _manager;
 }
@@ -112,9 +127,11 @@ export class PulseDeviceRN {
         reject(new Error('No Pulse found — make sure the sensor is on and nearby.'));
       }, timeoutMs);
 
-      // Scan filtered by control service UUID so we only see Pulse devices
+      // Pulse 2.0 does NOT advertise its custom service UUID — it only puts it in
+      // the GATT after connect. So we must scan unfiltered and match by name,
+      // matching the working bleak/noble scripts in /Users/maxsmac/Desktop/motus.
       mgr.startDeviceScan(
-        [PULSE.CONTROL_SERVICE_UUID],
+        null,
         { allowDuplicates: false },
         (err, device) => {
           if (err) {
@@ -123,7 +140,9 @@ export class PulseDeviceRN {
             reject(err);
             return;
           }
-          if (device) {
+          if (!device) return;
+          const candidate = (device.name ?? device.localName ?? '').toLowerCase();
+          if (candidate.includes('pulse') || candidate.includes('motus')) {
             clearTimeout(timer);
             mgr.stopDeviceScan();
             resolve(new PulseDeviceRN(device));
@@ -259,9 +278,16 @@ export class PulseDeviceRN {
     console.warn('[pulse-rn] characteristic error', err.message);
   }
 
-  // Static helper so hooks.ts can check support the same way as web
+  // Static helper so hooks.ts can check support the same way as web.
+  // Returns false when ble-plx is not linked (e.g. Expo Go) so the UI can
+  // show a friendly message instead of letting the user hit Connect and
+  // crash.
   static isSupported(): boolean {
-    // ble-plx loads if we reach this file, so always true on native
-    return true;
+    try {
+      getManager();
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

@@ -42,6 +42,10 @@ interface WaiverSigningSheetProps {
   athleteId: string;
   onClose: () => void;
   onComplete: () => void;
+  /** Optional escape hatch — shown as "Back to Dashboard" in the footer
+   * so athletes who don't want to sign right now can leave booking
+   * entirely instead of just dismissing the sheet back to the events list. */
+  onBackToDashboard?: () => void;
 }
 
 export default function WaiverSigningSheet({
@@ -50,6 +54,7 @@ export default function WaiverSigningSheet({
   athleteId,
   onClose,
   onComplete,
+  onBackToDashboard,
 }: WaiverSigningSheetProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [signing, setSigning] = useState(false);
@@ -485,6 +490,25 @@ export default function WaiverSigningSheet({
                 )}
               </LinearGradient>
             </TouchableOpacity>
+
+            {/* Escape hatch — "Maybe later, back to dashboard". Leaves
+                booking entirely. Server-side API backstop still blocks
+                any actual booking attempt until waivers are signed. */}
+            {onBackToDashboard && (
+              <TouchableOpacity
+                style={styles.backHomeButton}
+                onPress={() => {
+                  handleClose();
+                  onBackToDashboard();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="home-outline" size={14} color={COLORS.gray400} />
+                <Text style={styles.backHomeText}>
+                  Maybe later — back to dashboard
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -704,5 +728,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.black,
+  },
+  backHomeButton: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  backHomeText: {
+    color: COLORS.gray400,
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

@@ -17,14 +17,9 @@ import Svg, { Circle, Line, Defs, RadialGradient, Stop } from 'react-native-svg'
 import Animated, {
   useSharedValue,
   useAnimatedProps,
-  useDerivedValue,
   withTiming,
-  withRepeat,
-  withSequence,
-  withSpring,
+  cancelAnimation,
   Easing,
-  runOnJS,
-  interpolateColor,
 } from 'react-native-reanimated';
 import { acwrColor, ACWR_HEX } from '../../lib/pulse/workload';
 
@@ -44,7 +39,7 @@ interface Props {
   size?: number;
 }
 
-export function RadialAcwr({
+function RadialAcwrInner({
   value,
   dayW,
   chronic,
@@ -71,50 +66,25 @@ export function RadialAcwr({
   const progressPct = Math.min(1, Math.max(0, dayW / arcCeiling));
 
   // ─── Reanimated state ───
+  // Only the progress ring animates. The breathing halo loop and number spring
+  // were both removed because they were causing the WorkloadScreen to freeze
+  // after a few minutes — the breathing withRepeat(-1) loop ran 60fps forever
+  // on the UI thread, which compounds dev-mode bookkeeping into JS-thread
+  // starvation. The halo is now static (still visible, just doesn't pulse).
   const progress = useSharedValue(0);
-  const numSpring = useSharedValue(0);
-  const breathing = useSharedValue(0);
-  const [displayNum, setDisplayNum] = React.useState(0);
 
-  // Drive the progress ring + big number on every data change
   useEffect(() => {
     progress.value = withTiming(progressPct, {
       duration: 1400,
       easing: Easing.bezier(0.16, 1, 0.3, 1),
     });
-    numSpring.value = withSpring(dayW, {
-      damping: 18,
-      stiffness: 80,
-      mass: 0.9,
-    });
-  }, [progressPct, dayW, progress, numSpring]);
-
-  // Ambient breathing — very subtle scale/opacity on the glow halo
-  useEffect(() => {
-    breathing.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 2800, easing: Easing.inOut(Easing.sin) }),
-        withTiming(0, { duration: 2800, easing: Easing.inOut(Easing.sin) }),
-      ),
-      -1,
-      false,
-    );
-  }, [breathing]);
-
-  // Pipe the animated number to state at 60fps via runOnJS
-  useDerivedValue(() => {
-    const v = numSpring.value;
-    runOnJS(setDisplayNum)(v);
-    return v;
-  });
+    return () => {
+      cancelAnimation(progress);
+    };
+  }, [progressPct, progress]);
 
   const animatedRingProps = useAnimatedProps(() => ({
     strokeDashoffset: circumference - circumference * progress.value,
-  }));
-
-  const haloStyle = useAnimatedProps(() => ({
-    opacity: 0.55 + breathing.value * 0.25,
-    transform: [{ scale: 1 + breathing.value * 0.04 }],
   }));
 
   // Tick marks — 24 around 360°
@@ -139,8 +109,8 @@ export function RadialAcwr({
 
   return (
     <View style={[styles.container, { width: size }]}>
-      {/* Ambient halo behind the gauge */}
-      <Animated.View
+      {/* Ambient halo behind the gauge — static opacity (no breathing pulse) */}
+      <View
         style={[
           styles.halo,
           {
@@ -148,8 +118,8 @@ export function RadialAcwr({
             height: size * 1.4,
             top: -size * 0.2,
             left: -size * 0.2,
+            opacity: 0.55,
           },
-          haloStyle as any,
         ]}
         pointerEvents="none"
       >
@@ -163,7 +133,7 @@ export function RadialAcwr({
           </Defs>
           <Circle cx="50%" cy="50%" r="50%" fill="url(#halo)" />
         </Svg>
-      </Animated.View>
+      </View>
 
       <Svg width={size} height={size}>
         {/* Track — faint full ring */}
@@ -222,11 +192,10 @@ export function RadialAcwr({
             {
               fontSize: size * 0.22,
               color: hex,
-              textShadowColor: hex,
             },
           ]}
         >
-          {displayNum.toFixed(1)}
+          {dayW.toFixed(1)}
         </Text>
         <Text style={styles.label}>W TODAY</Text>
         {value != null && (
@@ -247,7 +216,7 @@ export function RadialAcwr({
           <View style={styles.statBlock}>
             <Text style={styles.statLabel}>TARGET</Text>
             <Text
-              style={[styles.statValue, { color: hex, textShadowColor: hex }]}
+              style={[styles.statValue, { color: hex }]}
             >
               {target.toFixed(1)}
             </Text>
@@ -265,7 +234,7 @@ export function RadialAcwr({
         <View style={styles.divider} />
         <View style={styles.statBlock}>
           <Text style={styles.statLabel}>CHRONIC</Text>
-          <Text style={[styles.statValue, { color: hex, textShadowColor: hex }]}>
+          <Text style={[styles.statValue, { color: hex }]}>
             {chronic.toFixed(2)}
           </Text>
           <Text style={styles.statSub}>28-day</Text>
@@ -274,6 +243,11 @@ export function RadialAcwr({
     </View>
   );
 }
+
+// Memoize so idle parent re-renders (AuthContext token refresh, etc.) don't
+// re-render the entire SVG tree. Props are all primitives so shallow compare
+// via React.memo's default equality is correct.
+export const RadialAcwr = React.memo(RadialAcwrInner);
 
 const styles = StyleSheet.create({
   container: {
@@ -292,8 +266,8 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
     letterSpacing: -1,
-    textShadowRadius: 24,
-    textShadowOffset: { width: 0, height: 0 },
+    // No textShadow — RN clips text shadow to the glyph's bounding box which
+    // reads as a square halo. The gauge's own radial SVG halo does the glow.
   },
   label: {
     color: '#6b7280',
@@ -329,8 +303,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
     marginTop: 4,
-    textShadowRadius: 16,
-    textShadowOffset: { width: 0, height: 0 },
   },
   statSub: {
     color: '#4b5563',
