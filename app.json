@@ -61,7 +61,15 @@
           "color": "#ef4444"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "@config-plugins/react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "bluetoothAlwaysPermission": "ASP Boost uses Bluetooth to sync your Motus Pulse sensor and track throws in real time."
+        }
+      ]
     ]
   }
 }

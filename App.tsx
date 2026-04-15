@@ -41,6 +41,7 @@ import ParentDashboardScreen from './screens/ParentDashboardScreen';
 import WorkoutExecutionScreen from './screens/WorkoutExecutionScreen';
 import WorkoutLoggerScreen from './screens/WorkoutLoggerScreen';
 import CompletedWorkoutScreen from './screens/CompletedWorkoutScreen';
+import WorkloadScreen from './screens/WorkloadScreen';
 import MessagesScreen from './screens/MessagesScreen';
 import LeaderboardScreen from './screens/LeaderboardScreen';
 import HittingPerformanceScreen from './screens/HittingPerformanceScreen';
@@ -177,6 +178,7 @@ function AppContent() {
             <Stack.Screen name="WorkoutExecution" component={WorkoutExecutionScreen} />
             <Stack.Screen name="WorkoutLogger" component={WorkoutLoggerScreen} />
             <Stack.Screen name="CompletedWorkout" component={CompletedWorkoutScreen} />
+            <Stack.Screen name="Workload" component={WorkloadScreen} />
             <Stack.Screen name="Messages" component={MessagesScreen} />
             <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
             <Stack.Screen name="HittingPerformance" component={HittingPerformanceScreen} />

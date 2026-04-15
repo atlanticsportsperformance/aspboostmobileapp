@@ -27,6 +27,8 @@ import {
   calculateThrowingTarget,
   calculateStrengthTarget
 } from '../lib/throwingConversions';
+import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMonitor';
+import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 
 // Types
 type RootStackParamList = {
@@ -162,6 +164,7 @@ export default function WorkoutExecutionScreen() {
   // State
   const [loading, setLoading] = useState(true);
   const [athleteId, setAthleteId] = useState<string | null>(null);
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [instance, setInstance] = useState<WorkoutInstance | null>(null);
   const [workout, setWorkout] = useState<Workout | null>(null);
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -272,6 +275,7 @@ export default function WorkoutExecutionScreen() {
       }
 
       setAthleteId(athlete.id);
+      setOrgId(athlete.org_id);
     } catch (err) {
       console.error('Error fetching athlete ID:', err);
       Alert.alert('Error', 'Failed to load profile');
@@ -706,11 +710,17 @@ export default function WorkoutExecutionScreen() {
 
   const categoryInfo = CATEGORY_COLORS[workout.category] || CATEGORY_COLORS.strength_conditioning;
 
+  const isThrowing = workout.category === 'throwing';
+
   // Render pre-workout start page
   if (instance.status === 'not_started') {
     return (
       <View style={styles.container}>
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+          {/* THROWING WORKLOAD MONITOR — top of page for throwing workouts only */}
+          {isThrowing && athleteId && orgId && (
+            <ThrowingWorkloadMonitor athleteId={athleteId} orgId={orgId} />
+          )}
           {/* Header */}
           <View style={styles.previewHeader}>
             <Text style={styles.previewTitle}>{workout.name}</Text>
@@ -793,6 +803,11 @@ export default function WorkoutExecutionScreen() {
               </View>
             );
           })}
+
+          {/* THROWING THROWS FEED — below logger body on throwing workouts */}
+          {isThrowing && athleteId && (
+            <ThrowingThrowsFeed athleteId={athleteId} />
+          )}
         </ScrollView>
 
         {/* Start Workout Button */}
@@ -832,6 +847,10 @@ export default function WorkoutExecutionScreen() {
       {viewMode === 'overview' ? (
         // BLOCK OVERVIEW MODE - List of all exercises
         <ScrollView style={styles.executionScroll} contentContainerStyle={styles.executionScrollContent}>
+          {/* THROWING WORKLOAD MONITOR — top of in-progress view on throwing only */}
+          {isThrowing && athleteId && orgId && (
+            <ThrowingWorkloadMonitor athleteId={athleteId} orgId={orgId} />
+          )}
           {/* Workout Notes */}
           {(workout.notes || workout.description) && (
             <Text style={styles.workoutNotesSimple}>
@@ -981,6 +1000,11 @@ export default function WorkoutExecutionScreen() {
               </View>
             );
           })}
+
+          {/* THROWING THROWS FEED — below logger body on throwing workouts */}
+          {isThrowing && athleteId && (
+            <ThrowingThrowsFeed athleteId={athleteId} />
+          )}
 
           <View style={{ height: 100 }} />
         </ScrollView>

@@ -32,6 +32,9 @@ import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { cancelBooking } from '../lib/bookingApi';
+import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
+import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
+import { WorkloadDaySection, CombinedThrowingDayCard } from '../components/pulse/DayDetailCards';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -2173,6 +2176,19 @@ export default function DashboardScreen({ navigation }: any) {
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
   const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
 
+  // Workload data for the visible month — drives calendar rings + day cards
+  const workloadByDate = useWorkloadMonth(athleteId, currentDate);
+  const toIsoKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const selectedDateWorkload = selectedDate
+    ? workloadByDate.get(toIsoKey(selectedDate)) ?? null
+    : null;
+  const selectedDateThrowingWorkout = selectedDateWorkouts.find(
+    (w: any) => w.workouts?.category === 'throwing',
+  );
+  const useCombinedThrowingCard =
+    !!selectedDateWorkload && !!selectedDateThrowingWorkout;
+
   const snapshotSlides: string[] = [];
   if (hasUpcomingEvents) snapshotSlides.push('events');
   if (pitchingData) snapshotSlides.push('pitching');
@@ -2369,6 +2385,7 @@ export default function DashboardScreen({ navigation }: any) {
               const dayBookings = getBookingsForDate(date);
               const dayReminders = getRemindersForDate(date);
               const today = isToday(date);
+              const dayWorkload = workloadByDate.get(toIsoKey(date));
 
               return (
                 <TouchableOpacity
@@ -2376,6 +2393,24 @@ export default function DashboardScreen({ navigation }: any) {
                   onPress={() => handleDayClick(date)}
                   style={[styles.calendarDay, today && styles.calendarDayToday]}
                 >
+                  {dayWorkload && (
+                    <View
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        right: 0,
+                      }}
+                      pointerEvents="none"
+                    >
+                      <WorkloadDayRing
+                        target={dayWorkload.target}
+                        actual={dayWorkload.actual}
+                        acwr={dayWorkload.acwr}
+                        size={26}
+                        isToday={today}
+                      />
+                    </View>
+                  )}
                   <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
                     {date.getDate()}
                   </Text>
@@ -2440,6 +2475,7 @@ export default function DashboardScreen({ navigation }: any) {
                       const dayWorkouts = getWorkoutsForDate(date);
                       const dayBookings = getBookingsForDate(date);
                       const dayReminders = getRemindersForDate(date);
+                      const dayWorkload = workloadByDate.get(toIsoKey(date));
 
                       return (
                         <TouchableOpacity
@@ -2451,6 +2487,20 @@ export default function DashboardScreen({ navigation }: any) {
                             today && !isSelected && styles.weekDayToday
                           ]}
                         >
+                          {dayWorkload && (
+                            <View
+                              style={{ position: 'absolute', top: 2, right: 2 }}
+                              pointerEvents="none"
+                            >
+                              <WorkloadDayRing
+                                target={dayWorkload.target}
+                                actual={dayWorkload.actual}
+                                acwr={dayWorkload.acwr}
+                                size={22}
+                                isToday={today}
+                              />
+                            </View>
+                          )}
                           <Text style={[
                             styles.weekDayName,
                             isSelected && styles.weekDayNameSelected
@@ -2494,14 +2544,49 @@ export default function DashboardScreen({ navigation }: any) {
               {/* Workouts for Selected Date - SCROLLABLE */}
               <Animated.View style={{ flex: 1, opacity: dayViewOpacity, transform: [{ translateY: dayViewTranslateY }] }}>
               <ScrollView style={styles.workoutsScrollView} contentContainerStyle={styles.workoutsContainer}>
-                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 ? (
+                {/* Combined throwing + workload hero card (renders when both exist) */}
+                {useCombinedThrowingCard && selectedDateThrowingWorkout && selectedDateWorkload && (
+                  <CombinedThrowingDayCard
+                    workload={selectedDateWorkload}
+                    workoutName={selectedDateThrowingWorkout.workouts?.name ?? 'Throwing workout'}
+                    durationMin={selectedDateThrowingWorkout.workouts?.estimated_duration_minutes ?? null}
+                    isCompleted={selectedDateThrowingWorkout.status === 'completed'}
+                    onStart={async () => {
+                      if (selectedDateThrowingWorkout.status === 'completed') {
+                        navigation.navigate('CompletedWorkout', {
+                          workoutInstanceId: selectedDateThrowingWorkout.id,
+                        });
+                      } else {
+                        const showedModal = await checkAndShowResumeModal(selectedDateThrowingWorkout);
+                        if (!showedModal) {
+                          navigation.navigate('WorkoutLogger', {
+                            workoutInstanceId: selectedDateThrowingWorkout.id,
+                            athleteId,
+                          });
+                        }
+                      }
+                    }}
+                  />
+                )}
+                {/* Standalone workload hero card (renders when only workload exists) */}
+                {!useCombinedThrowingCard && selectedDateWorkload && (
+                  <WorkloadDaySection
+                    workload={selectedDateWorkload}
+                    onPress={() => navigation.navigate('Workload' as never)}
+                  />
+                )}
+                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 && !selectedDateWorkload ? (
                   <View style={styles.emptyDayView}>
                     <Text style={styles.emptyDayIcon}>📅</Text>
                     <Text style={styles.emptyDayText}>No activities scheduled</Text>
                   </View>
                 ) : (
                   <>
-                    {selectedDateWorkouts.map(workout => {
+                    {selectedDateWorkouts
+                      .filter((w: any) =>
+                        !useCombinedThrowingCard || w.id !== selectedDateThrowingWorkout?.id,
+                      )
+                      .map(workout => {
                       const categoryInfo = CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'];
                       const isCompleted = workout.status === 'completed';
                       const isExpanded = expandedWorkoutId === workout.id;
@@ -2800,8 +2885,8 @@ export default function DashboardScreen({ navigation }: any) {
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => {} },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
-          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           // CONDITIONAL items
+          { id: 'workload', label: 'Workload', icon: 'speedometer', onPress: () => navigation.navigate('Workload') },
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),

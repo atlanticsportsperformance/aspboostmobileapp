@@ -726,6 +726,26 @@ export default function ProfileScreen({ navigation, route }: any) {
             )}
           </View>
 
+          {/* Leaderboard Section */}
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => navigation.navigate('Leaderboard')}
+          >
+            <View style={styles.cardSectionHeader}>
+              <Ionicons name="trophy" size={20} color={COLORS.yellow500} />
+              <Text style={styles.cardSectionTitle}>Leaderboard</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={COLORS.gray400}
+                style={{ marginLeft: 'auto' }}
+              />
+            </View>
+            <Text style={styles.billingDescription}>
+              See how you stack up against other athletes
+            </Text>
+          </TouchableOpacity>
+
           {/* Billing & Payments Section */}
           <TouchableOpacity
             style={styles.card}

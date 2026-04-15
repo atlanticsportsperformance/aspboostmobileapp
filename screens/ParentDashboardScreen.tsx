@@ -2112,7 +2112,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
         items={[
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => setFabOpen(false) },
           { id: 'messages', label: 'Messages', icon: 'chatbubbles', onPress: () => navigation.navigate('Messages') },
-          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('HittingPerformance') }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => handleFabNavigate('MocapSessions') }] : []),
