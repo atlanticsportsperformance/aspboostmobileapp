@@ -34,7 +34,7 @@ import Animated, {
   FadeIn,
   FadeOut,
 } from 'react-native-reanimated';
-import { Zap, Trash2 } from 'lucide-react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -226,7 +226,7 @@ export function ThrowingThrowsFeed({
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Zap size={14} color="#9BDDFF" />
+          <Ionicons name="flash" size={14} color="#9BDDFF" />
           <Text style={styles.headerLabel}>
             {scheduledDate && scheduledDate !== toISO(new Date())
               ? `THROWS · ${new Date(`${scheduledDate}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}`
@@ -337,15 +337,14 @@ function ThrowRow({
         onPressOut={() => {
           scale.value = withSpring(1, { damping: 12, stiffness: 180 });
         }}
-        onLongPress={onDelete}
-        delayLongPress={350}
-        hitSlop={8}
+        onPress={onDelete}
+        hitSlop={16}
         style={styles.trashBtn}
       >
         {deleting ? (
-          <ActivityIndicator size="small" color="#6b7280" />
+          <ActivityIndicator size="small" color="#9ca3af" />
         ) : (
-          <Trash2 size={14} color="#4b5563" />
+          <Ionicons name="trash-outline" size={18} color="#9ca3af" />
         )}
       </Pressable>
     </Animated.View>
@@ -451,6 +450,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   trashBtn: {
-    padding: 6,
+    padding: 10,
+    marginLeft: 4,
   },
 });

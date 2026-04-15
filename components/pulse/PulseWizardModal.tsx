@@ -37,17 +37,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
-import {
-  Bluetooth,
-  BluetoothOff,
-  X,
-  Play,
-  Download,
-  Check,
-  Square,
-  Zap,
-  AlertTriangle,
-} from 'lucide-react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { usePulse } from '../../lib/pulse/PulseProvider';
 
@@ -194,16 +184,14 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setPostSyncDest('done');
     setStep('syncing');
-    await sync.run();
-    await sync.commit();
+    await sync.runAndCommit();
   }, [sync]);
 
   const handleSyncThenLive = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setPostSyncDest('live');
     setStep('syncing');
-    await sync.run();
-    await sync.commit();
+    await sync.runAndCommit();
   }, [sync]);
 
   const handleStartLive = useCallback(async () => {
@@ -297,13 +285,13 @@ export function PulseWizardModal({ scheduledDate }: Props) {
                       active && styles.dotActive,
                     ]}
                   >
-                    {done && <Check size={9} color="#000" strokeWidth={3.5} />}
+                    {done && <Ionicons name="checkmark" size={9} color="#000" />}
                   </View>
                 );
               })}
             </View>
             <Pressable onPress={handleClose} hitSlop={12} style={styles.closeBtn}>
-              <X size={18} color="#9ca3af" />
+              <Ionicons name="close" size={18} color="#9ca3af" />
             </Pressable>
           </View>
 
@@ -400,7 +388,7 @@ function ConnectStep({
     return (
       <View style={styles.body}>
         <View style={[styles.iconCircle, { backgroundColor: 'rgba(248,113,113,0.1)' }]}>
-          <BluetoothOff size={32} color="#f87171" />
+          <Ionicons name="bluetooth" size={32} color="#f87171" />
         </View>
         <Text style={styles.title}>Bluetooth not available</Text>
         <Text style={styles.subtitle}>{ble.reason ?? 'This build does not support BLE.'}</Text>
@@ -481,11 +469,11 @@ function ConnectStep({
         {isWorking ? (
           <ActivityIndicator size="large" color="#9BDDFF" />
         ) : isError ? (
-          <BluetoothOff size={32} color="#f87171" />
+          <Ionicons name="bluetooth" size={32} color="#f87171" />
         ) : isConnected ? (
-          <Check size={32} color="#34d399" strokeWidth={3} />
+          <Ionicons name="checkmark" size={32} color="#34d399" />
         ) : (
-          <Bluetooth size={32} color="#9BDDFF" />
+          <Ionicons name="bluetooth" size={32} color="#9BDDFF" />
         )}
       </View>
       <Text style={styles.title}>{title}</Text>
@@ -556,7 +544,7 @@ function ChooseStep({
             <Text style={styles.sensorMeta}>{battery}%</Text>
           )}
           <View style={styles.sensorCounter}>
-            <Zap size={12} color="#9BDDFF" />
+            <Ionicons name="flash" size={12} color="#9BDDFF" />
             <Text style={styles.sensorCounterText}>
               {hasCached ? `${counter} cached` : 'Ready'}
             </Text>
@@ -566,7 +554,7 @@ function ChooseStep({
 
       {!profileComplete && (
         <View style={styles.warnRow}>
-          <AlertTriangle size={14} color="#facc15" />
+          <Ionicons name="warning" size={14} color="#facc15" />
           <Text style={styles.warnText}>
             Height/weight missing — workload math will be approximate.
           </Text>
@@ -597,7 +585,7 @@ function ChooseStep({
             ]}
             onPress={onSyncOnly}
           >
-            <Download size={16} color="#000" />
+            <Ionicons name="cloud-download" size={16} color="#000" />
             <Text style={styles.primaryBtnText}>Sync {counter}</Text>
           </Pressable>
           {canLive && (
@@ -621,7 +609,7 @@ function ChooseStep({
             disabled={!profileComplete}
             onPress={onStartLive}
           >
-            <Play size={16} color="#000" fill="#000" />
+            <Ionicons name="play" size={16} color="#000" />
             <Text style={styles.primaryBtnText}>Start live session</Text>
           </Pressable>
           <Pressable onPress={onDone} hitSlop={8}>
@@ -719,7 +707,7 @@ function LiveStep({
         ]}
         onPress={onStop}
       >
-        <Square size={14} color="#fca5a5" fill="#fca5a5" />
+        <Ionicons name="stop" size={14} color="#fca5a5" />
         <Text style={styles.stopBtnText}>Stop session</Text>
       </Pressable>
     </View>
@@ -743,7 +731,7 @@ function DoneStep({
   return (
     <View style={styles.body}>
       <View style={[styles.iconCircle, { backgroundColor: 'rgba(52,211,153,0.1)' }]}>
-        <Check size={36} color="#34d399" strokeWidth={3} />
+        <Ionicons name="checkmark" size={36} color="#34d399" />
       </View>
       <Text style={styles.title}>Session complete</Text>
       <Text style={styles.subtitle}>

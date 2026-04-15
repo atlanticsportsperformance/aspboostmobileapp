@@ -105,15 +105,32 @@ export class PulseDeviceRN {
   static async request(timeoutMs = 10_000): Promise<PulseDeviceRN> {
     const mgr = getManager();
 
-    // Wait for BLE to be powered on
+    // Check BLE state upfront. If it's off, reject fast with a clear message
+    // so the wizard can show its "Bluetooth is off" branch instead of hanging
+    // on a scan spinner until the 10s timeout. Only wait for state change if
+    // we're in a transient state (Resetting/Unknown) that could flip shortly.
     const state = await mgr.state();
+    if (state === BleState.PoweredOff) {
+      throw new Error('Bluetooth is powered off. Turn it on in Settings and try again.');
+    }
+    if (state === BleState.Unsupported) {
+      throw new Error('Bluetooth Unsupported on this device.');
+    }
+    if (state === BleState.Unauthorized) {
+      throw new Error('Bluetooth Unauthorized — grant permission in Settings.');
+    }
     if (state !== BleState.PoweredOn) {
+      // Resetting / Unknown — give it a brief window to settle.
       await new Promise<void>((resolve, reject) => {
         const sub = mgr.onStateChange((s) => {
           if (s === BleState.PoweredOn) {
             sub.remove();
             resolve();
-          } else if (s === BleState.Unsupported || s === BleState.Unauthorized) {
+          } else if (
+            s === BleState.PoweredOff ||
+            s === BleState.Unsupported ||
+            s === BleState.Unauthorized
+          ) {
             sub.remove();
             reject(new Error(`Bluetooth ${s}`));
           }

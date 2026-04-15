@@ -222,6 +222,70 @@ export function usePulseSync({
     }
   }, [device]);
 
+  // runAndCommit — one-shot "sync then save to DB" used by the wizard.
+  // Fixes a stale-closure bug where calling run() then commit() from the
+  // wizard captured an idle-state commit closure that silently early-returned,
+  // forcing athletes to tap Sync twice. Using local variables here avoids
+  // re-reading status/decoded from state between the two phases.
+  const runAndCommit = useCallback(async () => {
+    if (!device) {
+      setError('No device connected');
+      return;
+    }
+    setError(null);
+    setStatus('syncing');
+    setDecoded([]);
+    setSkipped(0);
+    setCommittedCount(0);
+    setProgress({ packetsReceived: 0, throwsDecoded: 0, done: false });
+
+    let result: { throws: DecodedThrow[]; skipped: number };
+    try {
+      result = await syncAllThrows(device, athleteRef.current, (p) => {
+        setProgress(p);
+      });
+      setDecoded(result.throws);
+      setSkipped(result.skipped);
+    } catch (err: any) {
+      console.error('[pulse] sync failed', err);
+      setError(err?.message ?? 'Sync failed');
+      setStatus('error');
+      return;
+    }
+
+    if (result.throws.length === 0) {
+      setStatus('done');
+      return;
+    }
+
+    setStatus('committing');
+    try {
+      const res = await commitThrows({
+        supabase,
+        orgId,
+        athleteId,
+        throws: result.throws,
+      });
+      if (res.error) throw new Error(res.error);
+      setCommittedCount(res.inserted);
+
+      if (res.inserted > 0) {
+        pulseEvents.emitThrowsCommitted();
+      }
+
+      try {
+        await device?.wipeFlashAfterSync();
+      } catch (wipeErr) {
+        console.warn('[pulse] flash wipe failed after commit', wipeErr);
+      }
+      setStatus('done');
+    } catch (err: any) {
+      console.error('[pulse] commit failed', err);
+      setError(err?.message ?? 'Commit failed');
+      setStatus('error');
+    }
+  }, [device, supabase, orgId, athleteId]);
+
   const commit = useCallback(async () => {
     if (status !== 'preview') return;
     if (decoded.length === 0) {
@@ -285,11 +349,12 @@ export function usePulseSync({
       error,
       committedCount,
       run,
+      runAndCommit,
       commit,
       discard,
       reset,
     }),
-    [status, progress, decoded, skipped, error, committedCount, run, commit, discard, reset],
+    [status, progress, decoded, skipped, error, committedCount, run, runAndCommit, commit, discard, reset],
   );
 }
 
