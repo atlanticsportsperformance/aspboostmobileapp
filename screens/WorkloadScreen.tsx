@@ -12,7 +12,7 @@
  * a commit (live throw landed or sync completed).
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -32,6 +32,7 @@ import Animated, {
   useSharedValue,
   useAnimatedProps,
   withTiming,
+  cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
 import { supabase } from '../lib/supabase';
@@ -281,9 +282,22 @@ export default function WorkloadScreen() {
     };
   }, [athleteId, token]);
 
-  // Throws-only refetch (cheapest query) triggered by live/sync commit events
+  // Throws-only refetch (cheapest query) triggered by live/sync commit events.
+  // Uses a monotonic request counter + mounted ref so late responses from a
+  // previous invocation can't clobber state after a newer refetch has already
+  // written fresher data (can happen if two commit events fire back-to-back).
+  const refetchSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const refetchThrows = useCallback(async () => {
     if (!athleteId || !token) return;
+    const mySeq = ++refetchSeqRef.current;
     const today = toISO(new Date());
     const windowStart = addDaysISO(today, -(WINDOW_DAYS - 1));
     const url =
@@ -301,6 +315,9 @@ export default function WorkloadScreen() {
       });
       if (!r.ok) return;
       const body = await r.json();
+      // Drop the response if we're unmounted OR a newer refetch already fired.
+      if (!mountedRef.current) return;
+      if (mySeq !== refetchSeqRef.current) return;
       if (Array.isArray(body)) setThrows(body as Throw[]);
     } catch {
       // swallow — next event will try again
@@ -390,7 +407,10 @@ export default function WorkloadScreen() {
 
   // End a throwing workout right from the workload view — same DB write the
   // logger does (status = 'completed' + completed_at). Optimistically updates
-  // the local map so the card flips to "Completed" immediately.
+  // the local map so the card flips to "Completed" immediately. On failure,
+  // rolls back ONLY if the same instance id is still at the same date key —
+  // guards against another source (e.g. a parallel refetch) having mutated
+  // the entry in between the optimistic update and the error.
   const endThrowingWorkout = useCallback(
     (instance: ThrowingWorkoutInstance) => {
       Alert.alert(
@@ -402,16 +422,20 @@ export default function WorkloadScreen() {
             text: 'End workout',
             style: 'destructive',
             onPress: async () => {
-              // Optimistic update
+              // Snapshot the previous entry before the optimistic update so
+              // rollback can restore the exact prior state (not the stale
+              // `instance` closure — which may have been a prior render's
+              // value if the user ended the workout fast).
+              let snapshot: ThrowingWorkoutInstance | null = null;
               setThrowingWorkouts((prev) => {
+                const existing = prev.get(instance.scheduled_date);
+                if (!existing) return prev;
+                snapshot = existing;
                 const next = new Map(prev);
-                const existing = next.get(instance.scheduled_date);
-                if (existing) {
-                  next.set(instance.scheduled_date, {
-                    ...existing,
-                    status: 'completed',
-                  });
-                }
+                next.set(instance.scheduled_date, {
+                  ...existing,
+                  status: 'completed',
+                });
                 return next;
               });
               try {
@@ -424,12 +448,17 @@ export default function WorkloadScreen() {
                   .eq('id', instance.id);
                 if (error) throw error;
               } catch (err: any) {
-                // Roll back on failure
-                setThrowingWorkouts((prev) => {
-                  const next = new Map(prev);
-                  next.set(instance.scheduled_date, instance);
-                  return next;
-                });
+                // Roll back only if the key still has OUR optimistic update.
+                // If something else changed it in the meantime, leave it.
+                if (snapshot) {
+                  setThrowingWorkouts((prev) => {
+                    const current = prev.get(instance.scheduled_date);
+                    if (!current || current.id !== instance.id) return prev;
+                    const next = new Map(prev);
+                    next.set(instance.scheduled_date, snapshot!);
+                    return next;
+                  });
+                }
                 Alert.alert(
                   'Failed to end workout',
                   err?.message ?? 'Please try again.',
@@ -717,6 +746,9 @@ function AnimatedBar({
       duration: 650,
       easing: Easing.bezier(0.16, 1, 0.3, 1),
     });
+    return () => {
+      cancelAnimation(h);
+    };
   }, [heightPx, h]);
 
   const animatedProps = useAnimatedProps(() => ({

@@ -17,7 +17,7 @@
  * monitor's chip keeps showing the live state and tapping reopens here.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Linking,
+  Platform,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -55,15 +56,21 @@ import { usePulse } from '../../lib/pulse/PulseProvider';
  * mounted if Pulse isn't already connected. Lives inside the PulseProvider
  * tree so it can read BLE state and call openWizard(). Mount this from any
  * screen that should auto-prompt the athlete to connect.
+ *
+ * Guarded by a local ref so a React StrictMode double-mount or a parent
+ * remount triggered by fast refresh doesn't reopen the wizard after the
+ * athlete has deliberately closed it.
  */
 export function PulseAutoOpener() {
   const { dev, openWizard } = usePulse();
+  const firedRef = React.useRef(false);
   React.useEffect(() => {
-    // Fire once on mount if not already connected / connecting.
+    if (firedRef.current) return;
+    firedRef.current = true;
     if (dev.state === 'idle' || dev.state === 'disconnected') {
       openWizard();
     }
-    // Intentionally no deps — fire ONCE on mount only
+    // Fire ONCE per mount — the ref guards against StrictMode double-mounts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return null;
@@ -104,49 +111,56 @@ export function PulseWizardModal({ scheduledDate }: Props) {
   // a "what did the user pick" memory for the sync→live auto-advance flow.
   const [step, setStep] = useState<Step>('connect');
   const [postSyncDest, setPostSyncDest] = useState<'done' | 'live'>('done');
+  // Ref to prevent the sync→live auto-advance effect from firing live.start()
+  // more than once per sync-complete. Without this, the routing effect can
+  // re-run after sync.status settles to 'done' but before live.status flips
+  // to 'running', causing a duplicate live.start() call.
+  const liveAutoStartedRef = useRef(false);
 
-  // Route the step whenever the modal opens or underlying state changes
+  // Route the step whenever the modal opens or underlying state changes.
+  // This effect is READ-ONLY with respect to live/sync: it only calls
+  // setStep. The sync→live auto-advance lives in its own effect below.
   useEffect(() => {
     if (!wizardOpen) return;
 
-    // Live session is running — regardless of previous step, show live
     if (live.status === 'running') {
       setStep('live');
       return;
     }
-
-    // Sync in progress
     if (sync.status === 'syncing' || sync.status === 'committing') {
       setStep('syncing');
       return;
     }
-
-    // Sync just finished — advance based on user's earlier pick
-    if (sync.status === 'done') {
-      if (postSyncDest === 'live') {
-        // Kick off live session, then let the next render flip to 'live'
-        live.start().catch(() => {});
-        setPostSyncDest('done'); // reset
-        return;
-      }
+    if (sync.status === 'done' && postSyncDest !== 'live') {
       setStep('done');
       return;
     }
-
-    // Otherwise: route on connection state
     if (dev.state === 'connected') {
       setStep((cur) => (cur === 'done' ? 'done' : 'choose'));
     } else if (dev.state === 'error' || dev.state === 'disconnected' || dev.state === 'idle') {
       setStep('connect');
     }
     // 'requesting' / 'connecting' — stay on connect step with spinner
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wizardOpen, dev.state, live.status, sync.status]);
+  }, [wizardOpen, dev.state, live.status, sync.status, postSyncDest]);
 
-  // Reset postSyncDest when closing
+  // Dedicated sync→live auto-advance effect. Fires live.start() exactly once
+  // when (a) the user chose "Sync, then start live" in the Choose step, and
+  // (b) sync has finished. The ref guards against re-entry.
+  useEffect(() => {
+    if (!wizardOpen) return;
+    if (postSyncDest !== 'live') return;
+    if (sync.status !== 'done') return;
+    if (liveAutoStartedRef.current) return;
+    liveAutoStartedRef.current = true;
+    live.start().catch(() => {});
+    setPostSyncDest('done');
+  }, [wizardOpen, postSyncDest, sync.status, live]);
+
+  // Reset routing state when closing so the next open starts fresh
   useEffect(() => {
     if (!wizardOpen) {
       setPostSyncDest('done');
+      liveAutoStartedRef.current = false;
     }
   }, [wizardOpen]);
 
@@ -440,8 +454,14 @@ function ConnectStep({
       ? 'Open Settings'
       : 'Try again'
     : 'Connect Pulse';
+  // iOS: deep-link to the app's Settings page via the 'app-settings:' URL
+  // scheme. Android: use Linking.openSettings() which opens the app info page.
   const onPrimary = needsSettings
-    ? () => Linking.openURL('app-settings:').catch(() => {})
+    ? () =>
+        (Platform.OS === 'ios'
+          ? Linking.openURL('app-settings:')
+          : Linking.openSettings()
+        ).catch(() => {})
     : onConnect;
 
   return (

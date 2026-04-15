@@ -144,12 +144,22 @@ export function PulseProvider({
     };
   }, [athleteId, initialAnthro]);
 
-  // Keep internal anthro in sync with prop updates (parent may lazy-load it)
+  // Keep internal anthro in sync with prop updates (parent may lazy-load it).
+  // Shallow-compare the values so a parent that passes a fresh object reference
+  // on every render doesn't thrash this effect — only commit when the actual
+  // height/weight numbers change.
   useEffect(() => {
-    if (initialAnthro) {
-      setAnthro(initialAnthro);
-      setAnthroLoaded(true);
-    }
+    if (!initialAnthro) return;
+    setAnthro((prev) => {
+      if (
+        prev.heightInches === initialAnthro.heightInches &&
+        prev.weightLbs === initialAnthro.weightLbs
+      ) {
+        return prev;
+      }
+      return initialAnthro;
+    });
+    setAnthroLoaded(true);
   }, [initialAnthro]);
 
   const heightM = (anthro.heightInches ?? 0) * 0.0254;

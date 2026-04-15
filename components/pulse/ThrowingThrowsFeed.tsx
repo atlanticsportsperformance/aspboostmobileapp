@@ -219,7 +219,7 @@ export function ThrowingThrowsFeed({
         ],
       );
     },
-    [],
+    [external, onThrowDeleted],
   );
 
   return (

@@ -30,7 +30,7 @@ import {
 import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMonitor';
 import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
-import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
+import { PulseWizardModal, PulseAutoOpener } from '../components/pulse/PulseWizardModal';
 
 // Types
 type RootStackParamList = {
@@ -1776,6 +1776,7 @@ export default function WorkoutExecutionScreen() {
       <PulseProvider athleteId={athleteId} orgId={orgId}>
         {mainContent}
         <PulseWizardModal scheduledDate={instance?.scheduled_date} />
+        <PulseAutoOpener />
       </PulseProvider>
     );
   }
