@@ -43,21 +43,30 @@ export default function FABMenu({
   onWorkloadPress,
 }: FABMenuProps) {
   // Auto-inject the Workload item when gated on active membership. Lives
-  // inside FABMenu so the 7 FAB screens don't each need to duplicate the
-  // entry. Prepended at the top so it's the first action the athlete sees.
-  const resolvedItems: FABMenuItem[] =
-    showWorkload && onWorkloadPress
-      ? [
-          {
-            id: 'workload',
-            label: 'Workload',
-            icon: 'speedometer',
-            iconFamily: 'ionicons',
-            onPress: onWorkloadPress,
-          },
-          ...items.filter((i) => i.id !== 'workload'),
-        ]
-      : items;
+  // inside FABMenu so the FAB screens don't each need to duplicate the
+  // entry. Inserted immediately AFTER the Home item (not prepended) so
+  // Home stays at the top of the menu as users expect.
+  const resolvedItems: FABMenuItem[] = (() => {
+    if (!showWorkload || !onWorkloadPress) return items;
+    const filtered = items.filter((i) => i.id !== 'workload');
+    const workloadItem: FABMenuItem = {
+      id: 'workload',
+      label: 'Workload',
+      icon: 'speedometer',
+      iconFamily: 'ionicons',
+      onPress: onWorkloadPress,
+    };
+    const homeIdx = filtered.findIndex((i) => i.id === 'home');
+    if (homeIdx < 0) {
+      // No home item — drop it at the top.
+      return [workloadItem, ...filtered];
+    }
+    return [
+      ...filtered.slice(0, homeIdx + 1),
+      workloadItem,
+      ...filtered.slice(homeIdx + 1),
+    ];
+  })();
   const renderIcon = (item: FABMenuItem) => {
     const iconColor = item.isActive ? '#9BDDFF' : item.isBookButton ? '#000000' : '#FFFFFF';
     const iconSize = 20;

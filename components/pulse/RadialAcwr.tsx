@@ -13,7 +13,7 @@
 
 import React, { useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import Svg, { Circle, Line, Defs, RadialGradient, Stop } from 'react-native-svg';
+import Svg, { Circle, Line, Defs, RadialGradient, Stop, LinearGradient, Ellipse } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedProps,
@@ -136,7 +136,26 @@ function RadialAcwrInner({
       </View>
 
       <Svg width={size} height={size}>
-        {/* Track — faint full ring */}
+        <Defs>
+          {/* Glass rim — bright white highlight at top, fading to color at bottom */}
+          <LinearGradient id="bubbleRim" x1="0%" y1="0%" x2="0%" y2="100%">
+            <Stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.85" />
+            <Stop offset="35%" stopColor={hex} stopOpacity="0.35" />
+            <Stop offset="100%" stopColor={hex} stopOpacity="0.12" />
+          </LinearGradient>
+        </Defs>
+
+        {/* Outer glass rim — thin bright arc on top fading down */}
+        <Circle
+          cx={cx}
+          cy={cy}
+          r={r + stroke * 0.35}
+          fill="none"
+          stroke="url(#bubbleRim)"
+          strokeWidth={1.5}
+        />
+
+        {/* Track — faint full ring (base) */}
         <Circle
           cx={cx}
           cy={cy}
@@ -145,6 +164,17 @@ function RadialAcwrInner({
           stroke={hex}
           strokeOpacity={0.12}
           strokeWidth={stroke}
+        />
+
+        {/* Inner glass rim — thin highlight just inside the ring */}
+        <Circle
+          cx={cx}
+          cy={cy}
+          r={r - stroke * 0.55}
+          fill="none"
+          stroke="url(#bubbleRim)"
+          strokeWidth={1}
+          strokeOpacity={0.6}
         />
 
         {/* Progress ring — animated draw-in */}

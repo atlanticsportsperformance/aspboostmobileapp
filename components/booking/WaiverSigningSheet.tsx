@@ -482,7 +482,10 @@ export default function WaiverSigningSheet({
                   <ActivityIndicator size="small" color={COLORS.black} />
                 ) : (
                   <>
-                    <Ionicons name="checkmark-circle" size={20} color={COLORS.black} />
+                    <View style={styles.signIconBubble}>
+                      <View style={styles.signIconBubbleInner} />
+                      <Ionicons name="checkmark-sharp" size={14} color={COLORS.black} />
+                    </View>
                     <Text style={styles.signButtonText}>
                       {isLastWaiver ? 'Sign & Continue to Booking' : 'Sign & Continue'}
                     </Text>
@@ -747,5 +750,30 @@ const styles = StyleSheet.create({
     color: COLORS.gray400,
     fontSize: 12,
     fontWeight: '600',
+  },
+  signIconBubble: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  signIconBubbleInner: {
+    position: 'absolute',
+    top: 3,
+    left: 5,
+    width: 9,
+    height: 5,
+    borderRadius: 5,
+    backgroundColor: 'rgba(255, 255, 255, 1)',
+    transform: [{ rotate: '-20deg' }],
   },
 });
