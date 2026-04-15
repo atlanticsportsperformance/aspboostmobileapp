@@ -15,6 +15,7 @@ import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { fetchMocapSessions, type MocapSession } from '../lib/mocap/api';
 import FABMenu from '../components/FABMenu';
+import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 
 const COLORS = {
   primary: '#9BDDFF',
@@ -37,6 +38,7 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
 
   // FAB
   const [fabOpen, setFabOpen] = useState(false);
+  const { isMember } = useAthleteLifecycle();
   const [hittingData, setHittingData] = useState(false);
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [armCareData, setArmCareData] = useState(false);
@@ -300,6 +302,8 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        showWorkload={isMember}
+        onWorkloadPress={() => navigation.navigate('Workload' as never)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate('Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },

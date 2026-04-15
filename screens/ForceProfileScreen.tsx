@@ -16,6 +16,7 @@ import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
+import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -106,6 +107,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
 
   // FAB state and data presence (matching DashboardScreen exactly)
   const [fabOpen, setFabOpen] = useState(false);
+  const { isMember } = useAthleteLifecycle();
   const [hasHittingData, setHasHittingData] = useState(false);
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasArmCareData, setHasArmCareData] = useState(false);
@@ -511,6 +513,8 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        showWorkload={isMember}
+        onWorkloadPress={() => navigation.navigate('Workload' as never)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },

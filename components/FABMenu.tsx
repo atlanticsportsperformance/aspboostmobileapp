@@ -25,6 +25,13 @@ interface FABMenuProps {
   onToggle: () => void;
   items: FABMenuItem[];
   totalBadgeCount?: number;
+  /** When true, a "Workload" menu item is automatically prepended to the
+   *  items list. Pair with `onWorkloadPress`. Screens should pass
+   *  `showWorkload={useAthleteLifecycle().isMember}`. */
+  showWorkload?: boolean;
+  /** Handler for the auto-injected Workload item. Required when
+   *  `showWorkload` is true. */
+  onWorkloadPress?: () => void;
 }
 
 export default function FABMenu({
@@ -32,7 +39,25 @@ export default function FABMenu({
   onToggle,
   items,
   totalBadgeCount = 0,
+  showWorkload = false,
+  onWorkloadPress,
 }: FABMenuProps) {
+  // Auto-inject the Workload item when gated on active membership. Lives
+  // inside FABMenu so the 7 FAB screens don't each need to duplicate the
+  // entry. Prepended at the top so it's the first action the athlete sees.
+  const resolvedItems: FABMenuItem[] =
+    showWorkload && onWorkloadPress
+      ? [
+          {
+            id: 'workload',
+            label: 'Workload',
+            icon: 'speedometer',
+            iconFamily: 'ionicons',
+            onPress: onWorkloadPress,
+          },
+          ...items.filter((i) => i.id !== 'workload'),
+        ]
+      : items;
   const renderIcon = (item: FABMenuItem) => {
     const iconColor = item.isActive ? '#9BDDFF' : item.isBookButton ? '#000000' : '#FFFFFF';
     const iconSize = 20;
@@ -89,7 +114,7 @@ export default function FABMenu({
           onPress={onToggle}
         >
           <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-            {items.map((item) => {
+            {resolvedItems.map((item) => {
               if (item.isBookButton) {
                 return (
                   <TouchableOpacity

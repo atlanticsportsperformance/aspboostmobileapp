@@ -31,6 +31,7 @@ import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
 import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
+import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 import { cancelBooking } from '../lib/bookingApi';
 import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
 import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
@@ -491,6 +492,10 @@ export default function DashboardScreen({ navigation }: any) {
   // Workload data for the visible month — drives calendar rings + day cards
   // MUST be above any early returns to preserve hook order
   const workloadByDate = useWorkloadMonth(athleteId, currentDate);
+
+  // Athlete lifecycle — gates the Workload FAB item on active membership.
+  // Cached module-wide so every FAB screen shares a single fetch.
+  const { isMember } = useAthleteLifecycle();
 
   // Check if there are upcoming events (bookings in the future)
   const hasUpcomingEvents = useMemo(() => {
@@ -2877,13 +2882,14 @@ export default function DashboardScreen({ navigation }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        showWorkload={isMember}
+        onWorkloadPress={() => navigation.navigate('Workload')}
         items={[
           // ALWAYS SHOWN items
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => {} },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
           // CONDITIONAL items
-          { id: 'workload', label: 'Workload', icon: 'speedometer', onPress: () => navigation.navigate('Workload') },
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),

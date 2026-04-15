@@ -17,6 +17,7 @@ import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
+import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -62,6 +63,7 @@ export default function ArmCareScreen({ navigation, route }: any) {
 
   // FAB state
   const [fabOpen, setFabOpen] = useState(false);
+  const { isMember } = useAthleteLifecycle();
   const [hasPitchingData, setHasPitchingData] = useState(false);
   const [hasHittingData, setHasHittingData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
@@ -759,6 +761,8 @@ export default function ArmCareScreen({ navigation, route }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        showWorkload={isMember}
+        onWorkloadPress={() => navigation.navigate('Workload' as never)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
