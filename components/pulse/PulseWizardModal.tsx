@@ -357,8 +357,14 @@ function ConnectStep({
         </View>
         <Text style={styles.title}>Bluetooth not available</Text>
         <Text style={styles.subtitle}>{ble.reason ?? 'This build does not support BLE.'}</Text>
-        <Pressable style={styles.ghostBtn} onPress={onCancel}>
-          <Text style={styles.ghostBtnText}>Close</Text>
+        <Pressable
+          style={({ pressed }) => [
+            styles.secondaryBtn,
+            pressed && { transform: [{ scale: 0.97 }] },
+          ]}
+          onPress={onCancel}
+        >
+          <Text style={styles.secondaryBtnText}>Close</Text>
         </Pressable>
       </View>
     );
@@ -450,16 +456,30 @@ function ConnectStep({
         <Pressable
           style={({ pressed }) => [
             styles.primaryBtn,
+            { backgroundColor: '#9BDDFF' },
             pressed && { transform: [{ scale: 0.97 }] },
           ]}
           onPress={onPrimary}
         >
+          {needsSettings ? (
+            <Ionicons name="settings-outline" size={16} color="#000" />
+          ) : isError ? (
+            <Ionicons name="refresh" size={16} color="#000" />
+          ) : (
+            <Ionicons name="bluetooth" size={16} color="#000" />
+          )}
           <Text style={styles.primaryBtnText}>{primaryLabel}</Text>
         </Pressable>
       )}
       {!isConnected && (
-        <Pressable onPress={onCancel} hitSlop={8}>
-          <Text style={styles.ghostBtnText}>{isError ? 'Close' : 'Cancel'}</Text>
+        <Pressable
+          style={({ pressed }) => [
+            styles.secondaryBtn,
+            pressed && { transform: [{ scale: 0.97 }] },
+          ]}
+          onPress={onCancel}
+        >
+          <Text style={styles.secondaryBtnText}>{isError ? 'Close' : 'Cancel'}</Text>
         </Pressable>
       )}
     </View>
@@ -534,6 +554,43 @@ function ChooseStep({
             <Text style={styles.primaryBtnText}>Got it</Text>
           </Pressable>
         </>
+      ) : canLive ? (
+        <>
+          <Text style={styles.title}>
+            {hasCached ? `${counter} ${counter === 1 ? 'throw' : 'throws'} ready` : 'Ready to throw'}
+          </Text>
+          <Text style={styles.subtitle}>
+            {hasCached
+              ? 'Sync your cached throws or start a live session.'
+              : 'Start a live session to stream each throw in real time.'}
+          </Text>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.primaryBtn,
+              !profileComplete && { opacity: 0.5 },
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+            disabled={!profileComplete}
+            onPress={onStartLive}
+          >
+            <Ionicons name="play" size={16} color="#000" />
+            <Text style={styles.primaryBtnText}>Start Live Session</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.secondaryBtn,
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+            onPress={onSyncOnly}
+          >
+            <Ionicons name="cloud-download" size={16} color="#9BDDFF" />
+            <Text style={styles.secondaryBtnText}>
+              {hasCached ? `Sync ${counter}` : 'Sync'}
+            </Text>
+          </Pressable>
+        </>
       ) : hasCached ? (
         <>
           <Text style={styles.title}>Sync your throws</Text>
@@ -552,28 +609,6 @@ function ChooseStep({
             <Text style={styles.primaryBtnText}>Sync {counter}</Text>
           </Pressable>
         </>
-      ) : canLive ? (
-        <>
-          <Text style={styles.title}>Ready to throw</Text>
-          <Text style={styles.subtitle}>
-            Start a live session to stream each throw to your gauge in real time.
-          </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              !profileComplete && { opacity: 0.5 },
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
-            disabled={!profileComplete}
-            onPress={onStartLive}
-          >
-            <Ionicons name="play" size={16} color="#000" />
-            <Text style={styles.primaryBtnText}>Start live session</Text>
-          </Pressable>
-          <Pressable onPress={onDone} hitSlop={8}>
-            <Text style={styles.ghostBtnText}>Done for now</Text>
-          </Pressable>
-        </>
       ) : (
         <>
           <Text style={styles.title}>Past day</Text>
@@ -581,6 +616,16 @@ function ChooseStep({
             Live mode only works in real time. Sync any cached throws if the
             sensor recorded some earlier.
           </Text>
+          <Pressable
+            style={({ pressed }) => [
+              styles.secondaryBtn,
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+            onPress={onSyncOnly}
+          >
+            <Ionicons name="cloud-download" size={16} color="#9BDDFF" />
+            <Text style={styles.secondaryBtnText}>Sync</Text>
+          </Pressable>
           <Pressable style={styles.primaryBtn} onPress={onDone}>
             <Text style={styles.primaryBtnText}>Got it</Text>
           </Pressable>
@@ -711,18 +756,18 @@ function DoneStep({
           onPress={onStartLive}
         >
           <Ionicons name="play" size={16} color="#000" />
-          <Text style={styles.primaryBtnText}>Start live session</Text>
+          <Text style={styles.primaryBtnText}>Start Live Session</Text>
         </Pressable>
       )}
 
       <Pressable
         style={({ pressed }) => [
-          canStartLive ? styles.ghostBtn : styles.primaryBtn,
+          canStartLive ? styles.secondaryBtn : styles.primaryBtn,
           pressed && { transform: [{ scale: 0.97 }] },
         ]}
         onPress={onClose}
       >
-        <Text style={canStartLive ? styles.ghostBtnText : styles.primaryBtnText}>Done</Text>
+        <Text style={canStartLive ? styles.secondaryBtnText : styles.primaryBtnText}>Done</Text>
       </Pressable>
     </View>
   );
@@ -915,6 +960,24 @@ const styles = StyleSheet.create({
     color: '#000',
     fontWeight: '700',
     fontSize: 16,
+  },
+  secondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    alignSelf: 'stretch',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    borderWidth: 1.5,
+    borderColor: '#9BDDFF',
+    marginTop: 10,
+  },
+  secondaryBtnText: {
+    color: '#9BDDFF',
+    fontWeight: '700',
+    fontSize: 15,
   },
   ghostBtn: {
     paddingVertical: 10,

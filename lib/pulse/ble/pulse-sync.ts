@@ -166,10 +166,12 @@ export function startLiveSession(
 ): LiveSessionHandle {
   let active = true;
   let throwIndex = 0;
-  // pendingCount tracks how many throws we've been notified about but haven't
-  // yet fetched. Simpler and correct compared to comparing counter values —
-  // the sensor's counter resets after POP_OR_ADVANCE so n-vs-n comparisons
-  // end up dropping throws. Each counter tick == one throw queued, full stop.
+  // Track the last counter value we saw AND a pending-throws queue. Both are
+  // needed: the queue so multiple ticks during decode aren't lost; the mirror
+  // so we can detect real increments after POP_OR_ADVANCE (which decrements
+  // the sensor's counter on its end, making the next real tick look equal to
+  // our stale value and silently drop).
+  let lastCounter: number | null = null;
   let pendingCount = 0;
   let processing = false;
   const pending: Sample[] = [];
@@ -185,11 +187,24 @@ export function startLiveSession(
 
   const counterHandler = (n: number) => {
     cbs.onCounterChange?.(n);
-    // Any counter notification means a new throw is queued on the sensor.
-    // Don't compare to a previous value — POP_OR_ADVANCE resets the sensor
-    // counter after each fetch, so comparisons would incorrectly drop throws.
-    pendingCount++;
-    if (!processing) void processNextThrow();
+    if (lastCounter == null) {
+      // Baseline. If the sensor reports a non-zero queue at subscribe time,
+      // those are pre-existing buffered throws we should drain. Otherwise
+      // nothing to do yet — don't treat the baseline itself as a new throw.
+      lastCounter = n;
+      if (n > 0) {
+        pendingCount += n;
+        if (!processing) void processNextThrow();
+      }
+      return;
+    }
+    if (n > lastCounter) {
+      pendingCount += n - lastCounter;
+      if (!processing) void processNextThrow();
+    }
+    // n <= lastCounter: either a stale repeat, or the sensor's post-advance
+    // mirror we already accounted for in the finally block. Ignore silently.
+    lastCounter = n;
   };
   device.addEventListener('counter', counterHandler);
 
@@ -225,7 +240,11 @@ export function startLiveSession(
     } finally {
       processing = false;
       pendingCount = Math.max(0, pendingCount - 1);
-      // If more throws queued up while we were decoding, drain them.
+      // Mirror the sensor's post-POP_OR_ADVANCE state locally so the next
+      // real tick is detected as a genuine increment. Without this, after
+      // the first throw lastCounter stays at 1 forever and throw 2 (which
+      // brings the sensor counter back to 1) is silently dropped.
+      if (lastCounter != null && lastCounter > 0) lastCounter -= 1;
       if (active && pendingCount > 0) {
         void processNextThrow();
       }
@@ -233,13 +252,20 @@ export function startLiveSession(
   }
 
   // Seed: if the sensor already has throws pending when we attach, drain them.
+  // Also seeds `lastCounter` before any BLE notification arrives, preventing
+  // a race where the first notification could otherwise be misinterpreted as
+  // a phantom throw that fires PER_THROW_FETCH on an empty queue and leaves
+  // the cursor out of sync with reality.
   void (async () => {
     try {
       const c = await device.readCounter();
       cbs.onCounterChange?.(c);
-      if (c > 0) {
-        pendingCount += c;
-        if (!processing) void processNextThrow();
+      if (lastCounter == null) {
+        lastCounter = c;
+        if (c > 0) {
+          pendingCount += c;
+          if (!processing) void processNextThrow();
+        }
       }
     } catch {
       // ignore
