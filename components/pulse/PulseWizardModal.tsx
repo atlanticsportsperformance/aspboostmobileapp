@@ -97,19 +97,12 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     return 'today';
   }, [scheduledDate]);
 
-  // Internal step state. Derived from BLE/sync/live where possible, plus
-  // a "what did the user pick" memory for the sync→live auto-advance flow.
+  // Internal step state. Derived from BLE/sync/live where possible.
   const [step, setStep] = useState<Step>('connect');
-  const [postSyncDest, setPostSyncDest] = useState<'done' | 'live'>('done');
-  // Ref to prevent the sync→live auto-advance effect from firing live.start()
-  // more than once per sync-complete. Without this, the routing effect can
-  // re-run after sync.status settles to 'done' but before live.status flips
-  // to 'running', causing a duplicate live.start() call.
-  const liveAutoStartedRef = useRef(false);
 
   // Route the step whenever the modal opens or underlying state changes.
-  // This effect is READ-ONLY with respect to live/sync: it only calls
-  // setStep. The sync→live auto-advance lives in its own effect below.
+  // Live mode is only entered via an explicit user tap (handleStartLive);
+  // we never auto-transition into it from sync completion.
   useEffect(() => {
     if (!wizardOpen) return;
 
@@ -121,7 +114,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
       setStep('syncing');
       return;
     }
-    if (sync.status === 'done' && postSyncDest !== 'live') {
+    if (sync.status === 'done') {
       setStep('done');
       return;
     }
@@ -131,28 +124,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
       setStep('connect');
     }
     // 'requesting' / 'connecting' — stay on connect step with spinner
-  }, [wizardOpen, dev.state, live.status, sync.status, postSyncDest]);
-
-  // Dedicated sync→live auto-advance effect. Fires live.start() exactly once
-  // when (a) the user chose "Sync, then start live" in the Choose step, and
-  // (b) sync has finished. The ref guards against re-entry.
-  useEffect(() => {
-    if (!wizardOpen) return;
-    if (postSyncDest !== 'live') return;
-    if (sync.status !== 'done') return;
-    if (liveAutoStartedRef.current) return;
-    liveAutoStartedRef.current = true;
-    live.start().catch(() => {});
-    setPostSyncDest('done');
-  }, [wizardOpen, postSyncDest, sync.status, live]);
-
-  // Reset routing state when closing so the next open starts fresh
-  useEffect(() => {
-    if (!wizardOpen) {
-      setPostSyncDest('done');
-      liveAutoStartedRef.current = false;
-    }
-  }, [wizardOpen]);
+  }, [wizardOpen, dev.state, live.status, sync.status]);
 
   // Auto-trigger the BLE scan when the wizard opens if Pulse is idle. This
   // collapses "Open Pulse → tap Connect" into a single tap. The athlete sees
@@ -182,14 +154,6 @@ export function PulseWizardModal({ scheduledDate }: Props) {
 
   const handleSyncOnly = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    setPostSyncDest('done');
-    setStep('syncing');
-    await sync.runAndCommit();
-  }, [sync]);
-
-  const handleSyncThenLive = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    setPostSyncDest('live');
     setStep('syncing');
     await sync.runAndCommit();
   }, [sync]);
@@ -315,7 +279,6 @@ export function PulseWizardModal({ scheduledDate }: Props) {
               dateMode={dateMode}
               profileComplete={profileComplete}
               onSyncOnly={handleSyncOnly}
-              onSyncThenLive={handleSyncThenLive}
               onStartLive={handleStartLive}
               onDone={handleClose}
             />
@@ -343,7 +306,9 @@ export function PulseWizardModal({ scheduledDate }: Props) {
             <DoneStep
               syncCommitted={sync.committedCount}
               liveThrows={live.throws.length}
+              canStartLive={dateMode === 'today' && profileComplete && live.status !== 'running'}
               onClose={handleClose}
+              onStartLive={handleStartLive}
             />
           )}
         </View>
@@ -512,7 +477,6 @@ function ChooseStep({
   dateMode,
   profileComplete,
   onSyncOnly,
-  onSyncThenLive,
   onStartLive,
   onDone,
 }: {
@@ -522,7 +486,6 @@ function ChooseStep({
   dateMode: 'today' | 'past' | 'future';
   profileComplete: boolean;
   onSyncOnly: () => void;
-  onSyncThenLive: () => void;
   onStartLive: () => void;
   onDone: () => void;
 }) {
@@ -588,11 +551,6 @@ function ChooseStep({
             <Ionicons name="cloud-download" size={16} color="#000" />
             <Text style={styles.primaryBtnText}>Sync {counter}</Text>
           </Pressable>
-          {canLive && (
-            <Pressable onPress={onSyncThenLive} hitSlop={8}>
-              <Text style={styles.ghostBtnText}>Sync, then start live</Text>
-            </Pressable>
-          )}
         </>
       ) : canLive ? (
         <>
@@ -721,11 +679,15 @@ function LiveStep({
 function DoneStep({
   syncCommitted,
   liveThrows,
+  canStartLive,
   onClose,
+  onStartLive,
 }: {
   syncCommitted: number;
   liveThrows: number;
+  canStartLive: boolean;
   onClose: () => void;
+  onStartLive: () => void;
 }) {
   const totalThrows = syncCommitted + liveThrows;
   return (
@@ -740,14 +702,27 @@ function DoneStep({
           : 'Nothing new to save.'}
       </Text>
 
+      {canStartLive && (
+        <Pressable
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            pressed && { transform: [{ scale: 0.97 }] },
+          ]}
+          onPress={onStartLive}
+        >
+          <Ionicons name="play" size={16} color="#000" />
+          <Text style={styles.primaryBtnText}>Start live session</Text>
+        </Pressable>
+      )}
+
       <Pressable
         style={({ pressed }) => [
-          styles.primaryBtn,
+          canStartLive ? styles.ghostBtn : styles.primaryBtn,
           pressed && { transform: [{ scale: 0.97 }] },
         ]}
         onPress={onClose}
       >
-        <Text style={styles.primaryBtnText}>Done</Text>
+        <Text style={canStartLive ? styles.ghostBtnText : styles.primaryBtnText}>Done</Text>
       </Pressable>
     </View>
   );

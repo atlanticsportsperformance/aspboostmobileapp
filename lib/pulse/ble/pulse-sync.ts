@@ -19,7 +19,7 @@
  */
 
 import { PulseDeviceRN as PulseDevice } from './pulse-device-rn';
-import { CMD, SYNC_SILENCE_MS, PACKET_BYTES } from './constants';
+import { CMD, SYNC_SILENCE_MS, LIVE_SILENCE_MS, PACKET_BYTES } from './constants';
 import {
   parsePacket,
   splitBySentinel,
@@ -166,7 +166,11 @@ export function startLiveSession(
 ): LiveSessionHandle {
   let active = true;
   let throwIndex = 0;
-  let lastSeenCounter: number | null = null;
+  // pendingCount tracks how many throws we've been notified about but haven't
+  // yet fetched. Simpler and correct compared to comparing counter values —
+  // the sensor's counter resets after POP_OR_ADVANCE so n-vs-n comparisons
+  // end up dropping throws. Each counter tick == one throw queued, full stop.
+  let pendingCount = 0;
   let processing = false;
   const pending: Sample[] = [];
   let lastPacketAt = 0;
@@ -181,28 +185,25 @@ export function startLiveSession(
 
   const counterHandler = (n: number) => {
     cbs.onCounterChange?.(n);
-    // Initialize on the first notification so we don't pull a pre-existing throw
-    if (lastSeenCounter == null) {
-      lastSeenCounter = n;
-      return;
-    }
-    if (n > lastSeenCounter && !processing) {
-      // Fire-and-forget — the loop inside processNextThrow handles sequencing
-      void processNextThrow();
-    }
-    lastSeenCounter = n;
+    // Any counter notification means a new throw is queued on the sensor.
+    // Don't compare to a previous value — POP_OR_ADVANCE resets the sensor
+    // counter after each fetch, so comparisons would incorrectly drop throws.
+    pendingCount++;
+    if (!processing) void processNextThrow();
   };
   device.addEventListener('counter', counterHandler);
 
   async function processNextThrow() {
     if (!active || processing) return;
+    if (pendingCount <= 0) return;
     processing = true;
     pending.length = 0;
     lastPacketAt = Date.now();
     try {
       await device.writeCmd(CMD.PER_THROW_FETCH);
-      // Collect packets until silence — same rule as bulk sync
-      await waitForSilence(() => lastPacketAt, SYNC_SILENCE_MS, 10_000);
+      // Collect packets until silence — shorter window for live mode since a
+      // single throw's packet burst is much shorter than a bulk sync clip.
+      await waitForSilence(() => lastPacketAt, LIVE_SILENCE_MS, 10_000);
 
       // Single-clip decode — strip any sentinel trailers via stripJunk (handled
       // inside decodeClip)
@@ -223,20 +224,10 @@ export function startLiveSession(
       }
     } finally {
       processing = false;
-      // In case another throw landed while we were decoding, drain it immediately
-      if (active && lastSeenCounter != null && lastSeenCounter > 0) {
-        // Small breath so we don't tight-loop
-        await delay(50);
-        // Re-read the real counter so we're in sync with the sensor
-        try {
-          const fresh = await device.readCounter();
-          if (fresh > 0 && active) {
-            lastSeenCounter = fresh;
-            void processNextThrow();
-          }
-        } catch {
-          // ignore — will recover on next counter notify
-        }
+      pendingCount = Math.max(0, pendingCount - 1);
+      // If more throws queued up while we were decoding, drain them.
+      if (active && pendingCount > 0) {
+        void processNextThrow();
       }
     }
   }
@@ -246,8 +237,10 @@ export function startLiveSession(
     try {
       const c = await device.readCounter();
       cbs.onCounterChange?.(c);
-      lastSeenCounter = c;
-      if (c > 0) void processNextThrow();
+      if (c > 0) {
+        pendingCount += c;
+        if (!processing) void processNextThrow();
+      }
     } catch {
       // ignore
     }

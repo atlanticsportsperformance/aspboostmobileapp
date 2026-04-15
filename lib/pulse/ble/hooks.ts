@@ -389,6 +389,20 @@ export function useLiveSession({
 
   const start = useCallback(async () => {
     if (!device || status === 'running') return;
+
+    // Defensive: if a prior session left a handle behind (e.g. stop() errored
+    // or the component unmounted mid-flight), tear it down before starting a
+    // new one. Leaving a stale handle means two sets of listeners on the same
+    // device, which corrupts the counter queue and drops throws.
+    if (handleRef.current) {
+      try {
+        await handleRef.current.stop();
+      } catch {
+        // non-fatal
+      }
+      handleRef.current = null;
+    }
+
     setError(null);
     setThrows([]);
     setCommittedCount(0);

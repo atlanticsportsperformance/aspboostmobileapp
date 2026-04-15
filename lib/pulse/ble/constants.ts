@@ -74,6 +74,14 @@ export const PACKET_FIELDS = {
  */
 export const SYNC_SILENCE_MS = 500;
 
+/**
+ * Shorter silence window used for per-throw fetches in LIVE mode. A single
+ * throw's packet burst is much shorter than a bulk sync clip, so 150ms of
+ * silence is a safe "burst finished" indicator and gives each throw a snappy
+ * ~200ms turnaround from counter tick to decoded data.
+ */
+export const LIVE_SILENCE_MS = 150;
+
 /** How many samples of the clip head we average for bias correction. */
 export const BIAS_SAMPLE_COUNT = 20;
 
