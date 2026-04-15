@@ -163,8 +163,6 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
         }
       }
 
-      console.log('[Monitor] anthro resolved', { h, w });
-
       setHeightInches(h != null ? Number(h) : null);
       setWeightLbs(w != null ? Math.round(Number(w) * 10) / 10 : null);
     })();
@@ -193,16 +191,12 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
       };
 
       const fetchJson = async (tag: string, path: string): Promise<any[]> => {
-        console.log(`[Monitor] ${tag} START`);
         try {
           const r = await queuedFetch(tag, `${base}/rest/v1/${path}`, { headers });
-          console.log(`[Monitor] ${tag} status`, r.status);
           if (!r.ok) return [];
           const j = await r.json();
-          console.log(`[Monitor] ${tag} DONE rows=`, Array.isArray(j) ? j.length : 'n/a');
           return Array.isArray(j) ? j : [];
-        } catch (err: any) {
-          console.log(`[Monitor] ${tag} ERR`, err?.message);
+        } catch {
           return [];
         }
       };
@@ -217,7 +211,6 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           `pulse_athlete_workload_day?select=target_w_day,target_date&athlete_id=eq.${athleteId}&target_date=eq.${anchor}`,
         ),
       ]);
-      console.log('[Monitor] workload both done', { dailyCount: daily.length, targetCount: targetRows.length, active });
       if (!active) return;
 
       const byDate = new Map<string, number>();
@@ -343,27 +336,6 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const onConnect = useCallback(async () => {
-    Haptics.selectionAsync().catch(() => {});
-    await dev.connect();
-  }, [dev]);
-
-  const onStartLive = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    await live.start();
-  }, [live]);
-
-  const onStopLive = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    await live.stop();
-  }, [live]);
-
-  const onSync = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    await syncM.run();
-    await syncM.commit();
-  }, [syncM]);
 
   // Live red dot pulse. The withRepeat(-1) loop must be explicitly cancelled
   // when live stops or on unmount — reassigning `pulseVal.value = 1` does NOT
@@ -495,164 +467,6 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
   );
 }
 
-// ─────────────────────────────────────────────────────────────
-// Sensor info chip — shown only when connected. Pure info readout
-// (device name · battery · cached throw counter). Not tappable —
-// disconnect happens from inside the wizard.
-// ─────────────────────────────────────────────────────────────
-
-function SensorInfoChip({
-  deviceName,
-  battery,
-  counter,
-}: {
-  deviceName: string;
-  battery: number | null;
-  counter: number | null;
-}) {
-  const lowBattery = battery != null && battery < 20;
-  return (
-    <View style={styles.chipConnected}>
-      <View style={styles.connectedDot} />
-      <Text style={styles.chipDeviceName} numberOfLines={1}>
-        {deviceName}
-      </Text>
-      {battery != null && (
-        <View style={styles.chipBatteryRow}>
-          {lowBattery ? (
-            <BatteryLow size={14} color="#f87171" />
-          ) : (
-            <Battery size={14} color="#9CA3AF" />
-          )}
-          <Text
-            style={[
-              styles.chipBattery,
-              lowBattery && { color: '#f87171' },
-            ]}
-          >
-            {battery}%
-          </Text>
-        </View>
-      )}
-      {counter != null && counter > 0 && (
-        <View style={styles.chipCounterRow}>
-          <Zap size={14} color="#9BDDFF" />
-          <Text style={styles.chipCounter}>{counter}</Text>
-        </View>
-      )}
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// Action buttons — primary (filled) + secondary (ghost) variants
-// Smart CTA swap is done at the call site; these just render the shape.
-// ─────────────────────────────────────────────────────────────
-
-function PrimaryLiveButton({ disabled, onPress }: { disabled: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.liveBtn,
-        disabled && { opacity: 0.4 },
-        pressed && { transform: [{ scale: 0.96 }] },
-      ]}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      <Play size={16} color="#000" fill="#000" />
-      <Text style={styles.liveBtnText}>Start live</Text>
-    </Pressable>
-  );
-}
-
-function SecondaryLiveButton({ disabled, onPress }: { disabled: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.ghostBtn,
-        disabled && { opacity: 0.4 },
-        pressed && { transform: [{ scale: 0.96 }] },
-      ]}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      <Play size={14} color="#9BDDFF" />
-      <Text style={styles.ghostBtnText}>Live</Text>
-    </Pressable>
-  );
-}
-
-function PrimarySyncButton({
-  status,
-  disabled,
-  counter,
-  onPress,
-}: {
-  status: string;
-  disabled: boolean;
-  counter: number;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.syncPrimaryBtn,
-        disabled && { opacity: 0.4 },
-        pressed && { transform: [{ scale: 0.96 }] },
-      ]}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      {status === 'syncing' || status === 'committing' ? (
-        <ActivityIndicator size="small" color="#000" />
-      ) : status === 'done' ? (
-        <Check size={16} color="#000" />
-      ) : status === 'error' ? (
-        <X size={16} color="#000" />
-      ) : (
-        <Download size={16} color="#000" />
-      )}
-      <Text style={styles.syncPrimaryBtnText}>
-        Sync {counter > 0 ? `${counter}` : 'throws'}
-      </Text>
-    </Pressable>
-  );
-}
-
-function SecondarySyncButton({
-  status,
-  disabled,
-  onPress,
-}: {
-  status: string;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.ghostBtn,
-        disabled && { opacity: 0.4 },
-        pressed && { transform: [{ scale: 0.96 }] },
-      ]}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      {status === 'syncing' || status === 'committing' ? (
-        <ActivityIndicator size="small" color="#9ca3af" />
-      ) : status === 'done' ? (
-        <Check size={14} color="#34d399" />
-      ) : status === 'error' ? (
-        <X size={14} color="#f87171" />
-      ) : (
-        <Download size={14} color="#9ca3af" />
-      )}
-      <Text style={styles.ghostBtnText}>Sync</Text>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   container: {
     marginHorizontal: 16,
@@ -678,65 +492,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
     maxWidth: 260,
   },
-  actionsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 16,
-    flexWrap: 'wrap',
-  },
-  liveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#9BDDFF',
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  liveBtnText: {
-    color: '#000',
-    fontWeight: '700',
-    fontSize: 15,
-  },
-  syncPrimaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#9BDDFF',
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  syncPrimaryBtnText: {
-    color: '#000',
-    fontWeight: '700',
-    fontSize: 15,
-  },
-  ghostBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderColor: 'rgba(255,255,255,0.14)',
-    borderWidth: 1,
-  },
-  ghostBtnText: {
-    color: '#9ca3af',
-    fontWeight: '600',
-    fontSize: 13,
-  },
   wizardHint: {
     color: '#9ca3af',
     fontSize: 12,
@@ -746,6 +501,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     lineHeight: 17,
   },
+  // Top-right pulse entry point — three variants (disconnected / connected / live)
   topOpenBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -805,92 +561,11 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(248,113,113,0.3)',
     borderWidth: 1,
   },
-  liveChipRunning: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(248,113,113,0.08)',
-    borderColor: 'rgba(248,113,113,0.25)',
-    borderWidth: 1,
-  },
-  liveChipTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    alignSelf: 'stretch',
-    marginHorizontal: 16,
-    marginTop: 14,
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: 'rgba(248,113,113,0.06)',
-    borderColor: 'rgba(248,113,113,0.3)',
-    borderWidth: 1,
-  },
-  openWizardBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    alignSelf: 'stretch',
-    marginHorizontal: 16,
-    marginTop: 14,
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: 'rgba(155,221,255,0.08)',
-    borderColor: 'rgba(155,221,255,0.3)',
-    borderWidth: 1,
-  },
-  openWizardBtnText: {
-    color: '#9BDDFF',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  cachedBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-    backgroundColor: '#9BDDFF',
-    minWidth: 22,
-    alignItems: 'center',
-  },
-  cachedBadgeText: {
-    color: '#000',
-    fontSize: 11,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
-  },
   liveChipCount: {
     color: '#fca5a5',
     fontSize: 12,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
-  },
-  syncBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderColor: 'rgba(255,255,255,0.18)',
-    borderWidth: 1,
-  },
-  syncBtnText: {
-    color: '#e5e7eb',
-    fontWeight: '700',
-    fontSize: 15,
-  },
-  liveChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
   },
   liveDot: {
     width: 8,
@@ -908,133 +583,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.5,
   },
-  stopBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderColor: 'rgba(248,113,113,0.3)',
-    borderWidth: 1,
-  },
-  stopBtnText: {
-    color: '#fca5a5',
-    fontWeight: '600',
-    fontSize: 11,
-  },
-  syncBannerSafe: {
-    flex: 1,
-    backgroundColor: 'transparent',
-    justifyContent: 'flex-start',
-  },
-  syncBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginHorizontal: 12,
-    marginTop: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: 'rgba(10,10,10,0.96)',
-    borderColor: 'rgba(155,221,255,0.3)',
-    borderWidth: 1,
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 12,
-  },
-  syncBannerTitle: {
-    color: '#9BDDFF',
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  syncBannerSub: {
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 11,
-    marginTop: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  pastBlock: {
-    marginTop: 16,
-    alignItems: 'center',
-    gap: 12,
-  },
-  pastWarning: {
-    color: 'rgba(253, 224, 71, 0.85)',
-    fontSize: 11,
-    textAlign: 'center',
-    lineHeight: 16,
-    paddingHorizontal: 16,
-  },
-  errText: {
-    color: '#f87171',
-    fontSize: 11,
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  progressText: {
-    color: '#9ca3af',
-    fontSize: 11,
-    textAlign: 'center',
-    marginTop: 8,
-    fontVariant: ['tabular-nums'],
-  },
-  // chip styles
-  chipGhost: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-  },
-  chipGhostText: {
-    color: '#6b7280',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  chipLoadingText: {
-    color: '#9ca3af',
-    fontSize: 13,
-  },
-  chipRetryText: {
-    color: '#f87171',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  chipConnect: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(155, 221, 255, 0.08)',
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-    borderWidth: 1,
-  },
-  chipConnectText: {
-    color: '#9BDDFF',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  chipConnected: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(52, 211, 153, 0.05)',
-    borderColor: 'rgba(52, 211, 153, 0.25)',
-    borderWidth: 1,
-    maxWidth: 260,
-  },
   connectedDot: {
     width: 8,
     height: 8,
@@ -1044,33 +592,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.8,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 },
-  },
-  chipDeviceName: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-    maxWidth: 80,
-  },
-  chipBatteryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  chipBattery: {
-    color: '#d1d5db',
-    fontSize: 13,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-  },
-  chipCounterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  chipCounter: {
-    color: '#9BDDFF',
-    fontSize: 13,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
   },
 });
