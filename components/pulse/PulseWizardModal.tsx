@@ -555,42 +555,35 @@ function ChooseStep({
           </Pressable>
         </>
       ) : canLive ? (
-        <>
-          <Text style={styles.title}>
-            {hasCached ? `${counter} ${counter === 1 ? 'throw' : 'throws'} ready` : 'Ready to throw'}
-          </Text>
-          <Text style={styles.subtitle}>
-            {hasCached
-              ? 'Sync your cached throws or start a live session.'
-              : 'Start a live session to stream each throw in real time.'}
-          </Text>
-
+        <View style={styles.choiceStack}>
           <Pressable
             style={({ pressed }) => [
-              styles.primaryBtn,
+              styles.bigBtn,
+              styles.bigBtnPrimary,
               !profileComplete && { opacity: 0.5 },
               pressed && { transform: [{ scale: 0.97 }] },
             ]}
             disabled={!profileComplete}
             onPress={onStartLive}
           >
-            <Ionicons name="play" size={16} color="#000" />
-            <Text style={styles.primaryBtnText}>Start Live Session</Text>
+            <Ionicons name="play" size={26} color="#000" />
+            <Text style={styles.bigBtnPrimaryText}>Start Live Session</Text>
           </Pressable>
 
           <Pressable
             style={({ pressed }) => [
-              styles.secondaryBtn,
+              styles.bigBtn,
+              styles.bigBtnSecondary,
               pressed && { transform: [{ scale: 0.97 }] },
             ]}
             onPress={onSyncOnly}
           >
-            <Ionicons name="cloud-download" size={16} color="#9BDDFF" />
-            <Text style={styles.secondaryBtnText}>
+            <Ionicons name="cloud-download" size={26} color="#9BDDFF" />
+            <Text style={styles.bigBtnSecondaryText}>
               {hasCached ? `Sync ${counter}` : 'Sync'}
             </Text>
           </Pressable>
-        </>
+        </View>
       ) : hasCached ? (
         <>
           <Text style={styles.title}>Sync your throws</Text>
@@ -978,6 +971,45 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
     fontWeight: '700',
     fontSize: 15,
+  },
+  choiceStack: {
+    alignSelf: 'stretch',
+    marginTop: 40,
+    marginBottom: 40,
+    gap: 16,
+  },
+  bigBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    alignSelf: 'stretch',
+    paddingVertical: 28,
+    borderRadius: 18,
+  },
+  bigBtnPrimary: {
+    backgroundColor: '#9BDDFF',
+    shadowColor: '#9BDDFF',
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  bigBtnPrimaryText: {
+    color: '#000',
+    fontWeight: '800',
+    fontSize: 20,
+    letterSpacing: 0.3,
+  },
+  bigBtnSecondary: {
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    borderWidth: 2,
+    borderColor: '#9BDDFF',
+  },
+  bigBtnSecondaryText: {
+    color: '#9BDDFF',
+    fontWeight: '800',
+    fontSize: 20,
+    letterSpacing: 0.3,
   },
   ghostBtn: {
     paddingVertical: 10,

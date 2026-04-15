@@ -103,6 +103,12 @@ export async function syncAllThrows(
 /**
  * Resolve once the supplied `lastEventAtRef` has been unchanged for `silenceMs`.
  * Rejects if `maxWaitMs` elapses from the start of the call.
+ *
+ * Important: `initialPacketAt` is the timestamp we compare against BEFORE any
+ * packets have actually arrived. We must NOT treat "no packets yet" as silence,
+ * otherwise a slow sensor response looks identical to a completed clip. We
+ * track whether lastEventAtRef has advanced past its starting value, and only
+ * start the silence timer after the first real packet has been seen.
  */
 async function waitForSilence(
   lastEventAtRef: () => number,
@@ -110,15 +116,21 @@ async function waitForSilence(
   maxWaitMs: number,
 ): Promise<void> {
   const start = Date.now();
-  // Seed — give the sensor a moment to even start responding
-  await delay(200);
+  const initialPacketAt = lastEventAtRef();
   while (true) {
     const now = Date.now();
-    if (now - lastEventAtRef() >= silenceMs) return;
     if (now - start >= maxWaitMs) {
       throw new Error(`sync timed out after ${maxWaitMs}ms without silence`);
     }
-    await delay(100);
+    const currentPacketAt = lastEventAtRef();
+    // No packet has arrived yet — keep waiting. Never exit silently.
+    if (currentPacketAt === initialPacketAt) {
+      await delay(50);
+      continue;
+    }
+    // First (and subsequent) packets have arrived — normal silence window.
+    if (now - currentPacketAt >= silenceMs) return;
+    await delay(50);
   }
 }
 
