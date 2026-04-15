@@ -187,6 +187,7 @@ export function startLiveSession(
 
   const counterHandler = (n: number) => {
     cbs.onCounterChange?.(n);
+    console.warn(`[pulse live] counter tick n=${n} lastCounter=${lastCounter} pending=${pendingCount} processing=${processing}`);
     if (lastCounter == null) {
       // Baseline. If the sensor reports a non-zero queue at subscribe time,
       // those are pre-existing buffered throws we should drain. Otherwise
@@ -194,12 +195,15 @@ export function startLiveSession(
       lastCounter = n;
       if (n > 0) {
         pendingCount += n;
+        console.warn(`[pulse live] baseline had ${n} queued, starting drain`);
         if (!processing) void processNextThrow();
       }
       return;
     }
     if (n > lastCounter) {
-      pendingCount += n - lastCounter;
+      const delta = n - lastCounter;
+      pendingCount += delta;
+      console.warn(`[pulse live] +${delta} throws queued (pending=${pendingCount})`);
       if (!processing) void processNextThrow();
     }
     // n <= lastCounter: either a stale repeat, or the sensor's post-advance
@@ -211,6 +215,7 @@ export function startLiveSession(
   async function processNextThrow() {
     if (!active || processing) return;
     if (pendingCount <= 0) return;
+    console.warn(`[pulse live] processNextThrow START idx=${throwIndex} pending=${pendingCount}`);
     processing = true;
     pending.length = 0;
     lastPacketAt = Date.now();
@@ -219,14 +224,17 @@ export function startLiveSession(
       // Collect packets until silence — shorter window for live mode since a
       // single throw's packet burst is much shorter than a bulk sync clip.
       await waitForSilence(() => lastPacketAt, LIVE_SILENCE_MS, 10_000);
+      console.warn(`[pulse live] silence reached, packets=${pending.length}`);
 
       // Single-clip decode — strip any sentinel trailers via stripJunk (handled
       // inside decodeClip)
       try {
         const decoded = decodeClip(pending, athlete);
+        console.warn(`[pulse live] decoded throw ${throwIndex} torque=${decoded.torqueNm} armSpeed=${decoded.armSpeedDps}`);
         cbs.onThrow(decoded, throwIndex);
         throwIndex++;
       } catch (err: any) {
+        console.warn(`[pulse live] decode FAILED idx=${throwIndex}: ${err?.message ?? 'unknown'}`);
         cbs.onDecodeError?.(err?.message ?? 'decode failed', throwIndex);
       }
 
@@ -245,6 +253,7 @@ export function startLiveSession(
       // the first throw lastCounter stays at 1 forever and throw 2 (which
       // brings the sensor counter back to 1) is silently dropped.
       if (lastCounter != null && lastCounter > 0) lastCounter -= 1;
+      console.warn(`[pulse live] processNextThrow END pending=${pendingCount} lastCounter=${lastCounter}`);
       if (active && pendingCount > 0) {
         void processNextThrow();
       }
@@ -256,19 +265,22 @@ export function startLiveSession(
   // a race where the first notification could otherwise be misinterpreted as
   // a phantom throw that fires PER_THROW_FETCH on an empty queue and leaves
   // the cursor out of sync with reality.
+  console.warn('[pulse live] session STARTED, seeding...');
   void (async () => {
     try {
       const c = await device.readCounter();
+      console.warn(`[pulse live] seed readCounter=${c} lastCounter=${lastCounter}`);
       cbs.onCounterChange?.(c);
       if (lastCounter == null) {
         lastCounter = c;
         if (c > 0) {
           pendingCount += c;
+          console.warn(`[pulse live] seed drain starting, pending=${pendingCount}`);
           if (!processing) void processNextThrow();
         }
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      console.warn(`[pulse live] seed failed: ${err?.message ?? 'unknown'}`);
     }
   })();
 
