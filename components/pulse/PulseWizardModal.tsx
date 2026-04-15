@@ -1069,13 +1069,14 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     paddingVertical: 16,
     borderRadius: 14,
-    borderColor: 'rgba(248,113,113,0.3)',
-    borderWidth: 1,
+    backgroundColor: 'rgba(248, 113, 113, 0.15)',
+    borderColor: '#f87171',
+    borderWidth: 2,
     marginTop: 20,
   },
   stopBtnText: {
     color: '#fca5a5',
-    fontWeight: '700',
-    fontSize: 15,
+    fontWeight: '800',
+    fontSize: 16,
   },
 });

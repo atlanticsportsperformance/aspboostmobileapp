@@ -401,9 +401,35 @@ export default function WorkloadScreen() {
     });
   }, [selectedDate]);
 
-  const onThrowDeleted = useCallback((id: string) => {
-    setThrows((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const onThrowDeleted = useCallback(
+    (id: string) => {
+      // Look up the throw before we drop it so we know how much workload to
+      // subtract from the daily series. Without this the radial gauge keeps
+      // showing the stale dayW until the screen is remounted.
+      let deletedW = 0;
+      let deletedDate: string | null = null;
+      setThrows((prev) => {
+        const found = prev.find((t) => t.id === id);
+        if (found) {
+          deletedW = Number(found.workload) || 0;
+          deletedDate = found.training_date ?? null;
+        }
+        return prev.filter((t) => t.id !== id);
+      });
+      // Subtract the deleted throw's workload from series[date] so dayW and
+      // downstream ACWR/chronic math all reflect the delete immediately.
+      if (deletedDate && deletedW > 0) {
+        setSeries((prev) => {
+          const idx = dateKeys.indexOf(deletedDate!);
+          if (idx < 0) return prev;
+          const next = prev.slice();
+          next[idx] = Math.max(0, (next[idx] ?? 0) - deletedW);
+          return next;
+        });
+      }
+    },
+    [dateKeys],
+  );
 
   // End a throwing workout right from the workload view — same DB write the
   // logger does (status = 'completed' + completed_at). Optimistically updates

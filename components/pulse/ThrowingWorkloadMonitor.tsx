@@ -21,18 +21,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
-import {
-  Bluetooth,
-  BluetoothOff,
-  Battery,
-  BatteryLow,
-  Zap,
-  Play,
-  Square,
-  Download,
-  Check,
-  X,
-} from 'lucide-react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -416,7 +405,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
             </Text>
             {(dev.counter ?? 0) > 0 && (
               <View style={styles.topCachedBadge}>
-                <Zap size={10} color="#000" />
+                <Ionicons name="flash" size={10} color="#000" />
                 <Text style={styles.topCachedBadgeText}>{dev.counter}</Text>
               </View>
             )}
@@ -429,7 +418,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
               pressed && { opacity: 0.8 },
             ]}
           >
-            <Bluetooth size={14} color="#9BDDFF" />
+            <Ionicons name="bluetooth" size={14} color="#9BDDFF" />
             <Text style={styles.topOpenBtnText}>Open Pulse</Text>
           </Pressable>
         )}
@@ -460,9 +449,48 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
         )}
       </View>
 
-      {/* Contextual one-liner below the gauge — tells the athlete what will
-          happen when they tap the Pulse button in the top-right. */}
-      <Text style={styles.wizardHint}>{wizardHint}</Text>
+      {/* Action buttons when connected — Start Live Session + Sync. Placed
+          directly under the gauge so the athlete doesn't have to dig into
+          the wizard modal just to kick off a session. The wizard still
+          exists for error / connect / permissions flows via the top chip. */}
+      {dev.state === 'connected' && live.status !== 'running' ? (
+        <View style={styles.quickActionRow}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionBtnPrimary,
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+              live.start().catch((err) => console.warn('[monitor] live start failed', err));
+            }}
+          >
+            <Ionicons name="play" size={20} color="#000" />
+            <Text style={styles.quickActionPrimaryText}>Start Live</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionBtnSecondary,
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+              syncM.runAndCommit().catch((err) =>
+                console.warn('[monitor] sync failed', err),
+              );
+            }}
+          >
+            <Ionicons name="cloud-download" size={20} color="#9BDDFF" />
+            <Text style={styles.quickActionSecondaryText}>
+              {(dev.counter ?? 0) > 0 ? `Sync ${dev.counter}` : 'Sync'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : (
+        /* Not connected — show the contextual hint instead. The top-right
+           chip is the entry point to the wizard for connect / permissions. */
+        <Text style={styles.wizardHint}>{wizardHint}</Text>
+      )}
     </View>
   );
 }
@@ -500,6 +528,51 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     paddingHorizontal: 24,
     lineHeight: 17,
+  },
+  quickActionRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 20,
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  quickActionBtnPrimary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 18,
+    borderRadius: 14,
+    backgroundColor: '#9BDDFF',
+    shadowColor: '#9BDDFF',
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  quickActionPrimaryText: {
+    color: '#000',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  quickActionBtnSecondary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 18,
+    borderRadius: 14,
+    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+    borderWidth: 2,
+    borderColor: '#9BDDFF',
+  },
+  quickActionSecondaryText: {
+    color: '#9BDDFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   // Top-right pulse entry point — three variants (disconnected / connected / live)
   topOpenBtn: {
