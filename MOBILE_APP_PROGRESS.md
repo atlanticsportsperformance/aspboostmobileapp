@@ -8,7 +8,6 @@
 - [x] **Messages** - `MessagesScreen.tsx`
 - [x] **Leaderboard** - `LeaderboardScreen.tsx`
 - [x] **Workout Logger** - `WorkoutLoggerScreen.tsx`
-- [x] **Workout Execution** - `WorkoutExecutionScreen.tsx`
 - [x] **Join Group** - `JoinGroupScreen.tsx`
 - [x] **Update Password** - `UpdatePasswordScreen.tsx`
 

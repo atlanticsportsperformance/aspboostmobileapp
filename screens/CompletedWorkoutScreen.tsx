@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 interface ExerciseLog {
   id: string;
@@ -51,6 +52,7 @@ interface Routine {
 
 interface WorkoutInstance {
   id: string;
+  athlete_id: string;
   status: string;
   scheduled_date: string;
   completed_at: string | null;
@@ -70,6 +72,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
   const [exerciseLogs, setExerciseLogs] = useState<ExerciseLog[]>([]);
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [reopening, setReopening] = useState(false);
 
   useEffect(() => {
     loadCompletedWorkout();
@@ -84,6 +87,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
         .from('workout_instances')
         .select(`
           id,
+          athlete_id,
           status,
           scheduled_date,
           completed_at,
@@ -143,6 +147,45 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
       console.error('Error loading completed workout:', error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleReopenWorkout() {
+    if (!workout) return;
+    try {
+      setReopening(true);
+
+      // Flip status back to in_progress and clear completed_at. All logged
+      // exercise_logs stay put — the athlete can tweak/add to existing sets
+      // instead of redoing the workout from scratch.
+      const { error } = await supabase
+        .from('workout_instances')
+        .update({
+          status: 'in_progress',
+          completed_at: null,
+        })
+        .eq('id', workoutInstanceId);
+
+      if (error) {
+        Alert.alert('Could not reopen workout', error.message || 'Please try again.');
+        return;
+      }
+
+      // Signal the dashboard/workload that the list is stale so the card
+      // re-renders as in_progress on the next focus.
+      markWorkoutListDirty();
+
+      // Replace this screen in the stack with the logger so tapping Back
+      // returns to Dashboard, not to the stale completed view.
+      navigation.replace('WorkoutLogger', {
+        workoutInstanceId,
+        athleteId: workout.athlete_id,
+      });
+    } catch (err: any) {
+      console.error('[CompletedWorkout] reopen failed', err);
+      Alert.alert('Could not reopen workout', err?.message ?? 'Please try again.');
+    } finally {
+      setReopening(false);
     }
   }
 
@@ -381,7 +424,25 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           })}
 
 
-        {/* Reset Button */}
+        {/* Reopen Button — non-destructive: keeps all logged data and
+            drops you back into the logger as in_progress. */}
+        <TouchableOpacity
+          style={styles.reopenButton}
+          onPress={handleReopenWorkout}
+          disabled={reopening}
+          activeOpacity={0.7}
+        >
+          {reopening ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <>
+              <Text style={styles.reopenButtonIcon}>▸</Text>
+              <Text style={styles.reopenButtonText}>Reopen Workout</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        {/* Reset Button — destructive: deletes all logged data */}
         <TouchableOpacity
           style={styles.resetButton}
           onPress={() => setShowResetModal(true)}
@@ -687,6 +748,28 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontStyle: 'italic',
   },
+  reopenButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(155, 221, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(155, 221, 255, 0.35)',
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 24,
+  },
+  reopenButtonIcon: {
+    fontSize: 16,
+    color: '#9BDDFF',
+  },
+  reopenButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#9BDDFF',
+    letterSpacing: 0.3,
+  },
   resetButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -697,7 +780,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(239, 68, 68, 0.3)',
     borderRadius: 12,
     paddingVertical: 14,
-    marginTop: 24,
+    marginTop: 12,
   },
   resetButtonIcon: {
     fontSize: 18,

@@ -102,9 +102,9 @@ export function ThrowingThrowsFeed({
   const displayCount = throws.length;
 
   // Self-fetch path — only runs when parent doesn't provide `throws`. Used
-  // by WorkoutExecutionScreen / WorkoutLoggerScreen where we don't have a
-  // rapid day-switcher. WorkloadScreen uses external mode and filters a
-  // pre-fetched 35-day window client-side.
+  // by WorkoutLoggerScreen where we don't have a rapid day-switcher.
+  // WorkloadScreen uses external mode and filters a pre-fetched 35-day
+  // window client-side.
   useEffect(() => {
     if (external) return;
 

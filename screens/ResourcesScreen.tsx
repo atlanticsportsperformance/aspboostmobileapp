@@ -1071,7 +1071,7 @@ const styles = StyleSheet.create({
   bulletinDescriptionContainer: { marginBottom: 8 },
   bulletinDescription: { fontSize: 14, color: COLORS.gray400, lineHeight: 20 },
   readMoreText: { fontSize: 12, color: COLORS.primary, marginTop: 4, fontWeight: '500' },
-  // Video Container (matching WorkoutExecutionScreen exactly)
+  // Video Container (matching WorkoutLoggerScreen exactly)
   videoContainer: { width: '100%', height: 200, marginTop: 12, borderRadius: 8, overflow: 'hidden', backgroundColor: '#000' },
   video: { width: '100%', height: '100%' },
   openLinkButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: COLORS.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, marginTop: 12, alignSelf: 'flex-start' },

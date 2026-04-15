@@ -32,6 +32,7 @@ import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
+import { consumeWorkoutListDirty } from '../lib/workoutRefreshSignal';
 import { cancelBooking } from '../lib/bookingApi';
 import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
 import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
@@ -649,11 +650,20 @@ export default function DashboardScreen({ navigation }: any) {
   // AuthContext handles session refresh, we just need to reload data
   useFocusEffect(
     useCallback(() => {
-      const now = Date.now();
-      const timeSinceLastLoad = now - lastLoadTimeRef.current;
+      if (!session || isLoadingRef.current || !initialFetchDone.current) return;
 
-      // Reload if not currently loading and at least 30 seconds since last load
-      if (session && !isLoadingRef.current && timeSinceLastLoad > 30000 && initialFetchDone.current) {
+      // WorkoutLogger marks the list dirty after complete/exit so we can
+      // bypass the throttle and immediately see status:'completed'. Without
+      // this, the 30s throttle left the dashboard card stale and tapping
+      // it re-opened the logger instead of routing to CompletedWorkout.
+      if (consumeWorkoutListDirty()) {
+        console.log('[Dashboard] Workout list dirty — forcing refresh');
+        loadDashboard();
+        return;
+      }
+
+      const timeSinceLastLoad = Date.now() - lastLoadTimeRef.current;
+      if (timeSinceLastLoad > 30000) {
         console.log('[Dashboard] Focus effect triggering data refresh');
         loadDashboard();
       }

@@ -38,7 +38,6 @@ import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import ParentDashboardScreen from './screens/ParentDashboardScreen';
-import WorkoutExecutionScreen from './screens/WorkoutExecutionScreen';
 import WorkoutLoggerScreen from './screens/WorkoutLoggerScreen';
 import CompletedWorkoutScreen from './screens/CompletedWorkoutScreen';
 import WorkloadScreen from './screens/WorkloadScreen';
@@ -94,7 +93,10 @@ function AppContent() {
     } else if (data.type) {
       switch (data.type) {
         case 'workout':
-          nav.navigate('WorkoutExecution', { workoutId: data.id });
+          // Notification payload only carries `data.id`; WorkoutLogger requires
+          // both workoutInstanceId and athleteId. Fall through to Dashboard so
+          // the user can tap their workout card with the auth context intact.
+          nav.navigate('Dashboard');
           break;
         case 'message':
           nav.navigate('Messages');
@@ -175,7 +177,6 @@ function AppContent() {
             <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="ParentDashboard" component={ParentDashboardScreen} />
-            <Stack.Screen name="WorkoutExecution" component={WorkoutExecutionScreen} />
             <Stack.Screen name="WorkoutLogger" component={WorkoutLoggerScreen} />
             <Stack.Screen name="CompletedWorkout" component={CompletedWorkoutScreen} />
             <Stack.Screen name="Workload" component={WorkloadScreen} />

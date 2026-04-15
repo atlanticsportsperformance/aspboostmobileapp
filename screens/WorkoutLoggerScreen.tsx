@@ -14,6 +14,7 @@ import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMon
 import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
 import { PulseWizardModal, PulseAutoOpener } from '../components/pulse/PulseWizardModal';
+import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 // Types
 type RootStackParamList = {
@@ -482,24 +483,32 @@ export default function WorkoutLoggerScreen() {
   }, [viewMode]);
 
   const handleCompleteWorkout = async () => {
-    try {
-      await supabase
-        .from('workout_instances')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', workoutInstanceId);
+    const { error } = await supabase
+      .from('workout_instances')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', workoutInstanceId);
 
+    if (error) {
+      console.error('[WorkoutLogger] complete failed', error);
       Alert.alert(
-        'Workout Complete!',
-        'Great job! Your workout has been saved.',
-        [{ text: 'OK', onPress: () => navigation.goBack() }]
+        'Could not save workout',
+        error.message || 'Please try again.',
       );
-    } catch (error) {
-      console.error('Error completing workout:', error);
-      Alert.alert('Error', 'Failed to complete workout');
+      return;
     }
+
+    // Signal the dashboard that its workout list is stale so the next
+    // focus bypasses the 30s refetch throttle and we see `status: completed`.
+    markWorkoutListDirty();
+
+    Alert.alert(
+      'Workout Complete!',
+      'Great job! Your workout has been saved.',
+      [{ text: 'OK', onPress: () => navigation.goBack() }]
+    );
   };
 
   const handleExitWorkout = () => {

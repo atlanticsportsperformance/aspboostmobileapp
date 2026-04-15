@@ -551,12 +551,23 @@ export default function WorkloadScreen() {
               {dayThrowingWorkout && athleteId && (
                 <ThrowingWorkoutCard
                   instance={dayThrowingWorkout}
-                  onOpen={() =>
-                    navigation.navigate('WorkoutLogger', {
-                      workoutInstanceId: dayThrowingWorkout.id,
-                      athleteId: athleteId,
-                    })
-                  }
+                  onOpen={() => {
+                    // Completed workouts route to the read-only review
+                    // screen — reopening WorkoutLogger on a completed
+                    // instance made users think "end" hadn't actually
+                    // worked because the logger UI is indistinguishable
+                    // from an in-progress session.
+                    if (dayThrowingWorkout.status === 'completed') {
+                      navigation.navigate('CompletedWorkout', {
+                        workoutInstanceId: dayThrowingWorkout.id,
+                      });
+                    } else {
+                      navigation.navigate('WorkoutLogger', {
+                        workoutInstanceId: dayThrowingWorkout.id,
+                        athleteId: athleteId,
+                      });
+                    }
+                  }}
                   onEnd={() => endThrowingWorkout(dayThrowingWorkout)}
                 />
               )}
