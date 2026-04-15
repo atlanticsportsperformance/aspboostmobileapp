@@ -438,18 +438,26 @@ export default function WorkoutExecutionScreen() {
         return;
       }
 
-      // Auto-start if still pending — match WorkoutLoggerScreen behavior so
-      // the deep-link path doesn't show a different UI than the dashboard path.
-      if (inst.status === 'not_started' || inst.status === 'pending') {
+      // Auto-start if still not_started — match WorkoutLoggerScreen behavior
+      // so the deep-link path doesn't show a different UI than the dashboard
+      // path. 'not_started' is the canonical DB default (completion_status
+      // enum).
+      if (inst.status === 'not_started') {
         const startedAt = new Date().toISOString();
-        setInstance({ ...inst, status: 'in_progress', started_at: startedAt });
-        supabase
+        const { error: startErr } = await supabase
           .from('workout_instances')
           .update({ status: 'in_progress', started_at: startedAt })
-          .eq('id', instanceId)
-          .then(({ error }) => {
-            if (error) console.error('[WorkoutExecution] auto-start failed', error);
-          });
+          .eq('id', instanceId);
+        if (startErr) {
+          console.error('[WorkoutExecution] auto-start failed', startErr);
+          Alert.alert(
+            'Could not start workout',
+            startErr.message ?? 'Please check your connection and try again.',
+          );
+          navigation.goBack();
+          return;
+        }
+        setInstance({ ...inst, status: 'in_progress', started_at: startedAt });
       } else {
         setInstance(inst);
       }

@@ -70,6 +70,17 @@ export function usePulseDevice() {
   const [counter, setCounter] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Store the live-listener refs and the connected device on refs so we can
+  // remove the listeners + disconnect on unmount without the closure trap that
+  // `useEffect(() => { return () => device?.disconnect(); }, [])` falls into
+  // (empty deps → stale initial null closure, cleanup never actually runs).
+  const deviceRef = useRef<PulseDevice | null>(null);
+  const listenersRef = useRef<{
+    onCounter: (n: number) => void;
+    onBattery: (n: number) => void;
+    onDisconnect: () => void;
+  } | null>(null);
+
   const connect = useCallback(async () => {
     setError(null);
     try {
@@ -78,6 +89,7 @@ export function usePulseDevice() {
       setState('connecting');
       await d.connect();
       setDevice(d);
+      deviceRef.current = d;
       setState('connected');
 
       // Initial reads
@@ -89,10 +101,16 @@ export function usePulseDevice() {
         // Some firmware versions don't expose battery — not fatal
       }
 
-      // Live listeners — RN driver calls callbacks with raw detail
-      d.addEventListener('counter', (n: number) => setCounter(n));
-      d.addEventListener('battery', (n: number) => setBattery(n));
-      d.addEventListener('disconnect', () => setState('disconnected'));
+      // Live listeners — stored as named refs so unmount cleanup can remove
+      // them. Without removeEventListener, the listener set grows forever and
+      // closures capture stale setters after the hook unmounts.
+      const onCounter = (n: number) => setCounter(n);
+      const onBattery = (n: number) => setBattery(n);
+      const onDisconnect = () => setState('disconnected');
+      d.addEventListener('counter', onCounter);
+      d.addEventListener('battery', onBattery);
+      d.addEventListener('disconnect', onDisconnect);
+      listenersRef.current = { onCounter, onBattery, onDisconnect };
     } catch (err: any) {
       console.error('[pulse] connect failed', err);
       setError(err?.message ?? 'Connection failed');
@@ -101,18 +119,37 @@ export function usePulseDevice() {
   }, []);
 
   const disconnect = useCallback(() => {
-    device?.disconnect();
+    const d = deviceRef.current;
+    const listeners = listenersRef.current;
+    if (d && listeners) {
+      d.removeEventListener('counter', listeners.onCounter);
+      d.removeEventListener('battery', listeners.onBattery);
+      d.removeEventListener('disconnect', listeners.onDisconnect);
+    }
+    d?.disconnect();
+    listenersRef.current = null;
+    deviceRef.current = null;
     setDevice(null);
     setState('idle');
     setBattery(null);
     setCounter(null);
-  }, [device]);
+  }, []);
 
+  // Unmount cleanup: tear down listeners + disconnect via the ref (closure over
+  // state would be stale).
   useEffect(() => {
     return () => {
-      device?.disconnect();
+      const d = deviceRef.current;
+      const listeners = listenersRef.current;
+      if (d && listeners) {
+        d.removeEventListener('counter', listeners.onCounter);
+        d.removeEventListener('battery', listeners.onBattery);
+        d.removeEventListener('disconnect', listeners.onDisconnect);
+      }
+      d?.disconnect();
+      listenersRef.current = null;
+      deviceRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { device, state, battery, counter, error, connect, disconnect };

@@ -411,9 +411,9 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
       {/* Top strip — date label on the left, single pulse entry point on
           the right. The right slot flips between three states:
             • LIVE chip when a live session is running (tap to open wizard)
-            • SensorInfoChip + compact Open button when connected idle
+            • Connected info button (battery + cached throw count) when idle
             • "Open Pulse" button when disconnected
-          Single entry point — the big button below the gauge is gone. */}
+          Every tap opens the wizard modal — there's no inline action UI. */}
       <View style={styles.topRow}>
         <Text style={styles.panelLabel}>{dateHeader}</Text>
         {live.status === 'running' ? (

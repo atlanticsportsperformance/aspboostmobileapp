@@ -29,7 +29,7 @@ interface WorkoutInstance {
   workout_id: string;
   athlete_id: string;
   scheduled_date: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'not_started' | 'in_progress' | 'completed';
   started_at?: string;
   completed_at?: string;
 }
@@ -432,19 +432,32 @@ export default function WorkoutLoggerScreen() {
       }
       setExerciseHistory(historyMap);
 
-      // Auto-start the workout if it's still pending. Mirrors how Strong /
+      // Auto-start the workout if it's still not_started. Mirrors how Strong /
       // Hevy / Apple Fitness work: tap a workout from the day card → straight
-      // into the logger, no preview gate. The DB write is fire-and-forget so
-      // the UI doesn't block on it.
-      if (instance.status === 'pending') {
+      // into the logger, no preview gate. We await the DB write so if the
+      // network drops the athlete sees an alert and can retry, instead of
+      // silently landing on a logger for a workout the backend thinks is
+      // still pending (which would re-auto-start on next open and reset the
+      // elapsed timer).
+      if (instance.status === 'not_started') {
         setTimer(0);
-        supabase
+        const startedAt = new Date().toISOString();
+        const { error: startErr } = await supabase
           .from('workout_instances')
-          .update({ status: 'in_progress', started_at: new Date().toISOString() })
-          .eq('id', workoutInstanceId)
-          .then(({ error }) => {
-            if (error) console.error('[WorkoutLogger] auto-start failed', error);
-          });
+          .update({ status: 'in_progress', started_at: startedAt })
+          .eq('id', workoutInstanceId);
+        if (startErr) {
+          console.error('[WorkoutLogger] auto-start failed', startErr);
+          Alert.alert(
+            'Could not start workout',
+            startErr.message ?? 'Please check your connection and try again.',
+          );
+          navigation.goBack();
+          return;
+        }
+        // Keep local state in sync with the DB write so later logic that
+        // reads workoutInstance.status sees 'in_progress'.
+        setWorkoutInstance({ ...instance, status: 'in_progress', started_at: startedAt });
       } else if (instance.status === 'in_progress' && instance.started_at) {
         const startTime = new Date(instance.started_at).getTime();
         const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);

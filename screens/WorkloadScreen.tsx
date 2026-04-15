@@ -76,7 +76,7 @@ type ThrowingWorkoutInstance = {
   id: string;
   workout_id: string;
   scheduled_date: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'not_started' | 'in_progress' | 'completed';
   name: string;
   exerciseCount: number;
 };
