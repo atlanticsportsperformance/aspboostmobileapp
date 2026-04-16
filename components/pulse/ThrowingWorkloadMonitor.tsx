@@ -453,12 +453,23 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           directly under the gauge so the athlete doesn't have to dig into
           the wizard modal just to kick off a session. The wizard still
           exists for error / connect / permissions flows via the top chip. */}
-      {dev.state === 'connected' && live.status !== 'running' ? (
+      {/* Always-visible Start Live + Sync buttons right under the gauge stats.
+          When not connected they're dimmed and tapping opens the wizard to
+          connect first. When live is already running they're hidden. */}
+      {live.status !== 'running' && (
         <View style={styles.quickActionRow}>
           <TouchableOpacity
-            style={[styles.quickActionBtnPrimary, { backgroundColor: '#9BDDFF' }]}
+            style={[
+              styles.quickActionBtnPrimary,
+              { backgroundColor: '#9BDDFF' },
+              dev.state !== 'connected' && { opacity: 0.35 },
+            ]}
             activeOpacity={0.8}
             onPress={() => {
+              if (dev.state !== 'connected') {
+                openWizard();
+                return;
+              }
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
               live.start().catch((err) => console.warn('[monitor] live start failed', err));
             }}
@@ -467,9 +478,17 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
             <Text style={styles.quickActionPrimaryText}>Start Live</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.quickActionBtnSecondary, { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' }]}
+            style={[
+              styles.quickActionBtnSecondary,
+              { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' },
+              dev.state !== 'connected' && { opacity: 0.35 },
+            ]}
             activeOpacity={0.8}
             onPress={() => {
+              if (dev.state !== 'connected') {
+                openWizard();
+                return;
+              }
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
               syncM.runAndCommit().catch((err) =>
                 console.warn('[monitor] sync failed', err),
@@ -482,10 +501,9 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
             </Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        /* Not connected — show the contextual hint instead. The top-right
-           chip is the entry point to the wizard for connect / permissions. */
-        <Text style={styles.wizardHint}>{wizardHint}</Text>
+      )}
+      {live.status === 'running' && (
+        <Text style={styles.wizardHint}>Live — every throw streams to your gauge in real time.</Text>
       )}
     </View>
   );
