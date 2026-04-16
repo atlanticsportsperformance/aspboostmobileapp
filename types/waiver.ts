@@ -34,7 +34,7 @@ export interface SignedWaiver {
 
 export type SignatureData =
   | { agreed: boolean } // For checkbox
-  | { typed_name: string } // For typed_name
+  | { typed_name: string; legal_name_confirmed: true } // For typed_name (API requires the confirmation flag)
   | { image_data: string }; // For drawn (base64 PNG)
 
 export interface WaiverCheckResponse {

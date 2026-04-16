@@ -99,10 +99,14 @@ export default function WaiverSigningSheet({
         break;
       case 'typed_name':
         if (!typedName.trim()) {
-          setError('Please type your full name');
+          setError('Please type your full legal name');
           return;
         }
-        signatureData = { typed_name: typedName.trim() };
+        if (typedName.trim().length < 2) {
+          setError('Please type your full legal name');
+          return;
+        }
+        signatureData = { typed_name: typedName.trim(), legal_name_confirmed: true };
         break;
       case 'drawn':
         if (!drawnSignature) {
