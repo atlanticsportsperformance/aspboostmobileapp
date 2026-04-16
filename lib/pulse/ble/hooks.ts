@@ -21,6 +21,7 @@ import {
   type LiveSessionHandle,
 } from './pulse-sync';
 import { commitThrows } from './pulse-persist';
+import { enqueueThrow } from './offline-queue';
 import { pulseEvents } from './pulse-events';
 import type { DecodedThrow, AthleteAnthro } from './pulse-codec';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -421,9 +422,20 @@ export function useLiveSession({
         onThrow: (t) => {
           setThrows((prev) => [...prev, t]);
 
-          // Stream each decoded throw straight to Supabase so nothing is lost
-          // if the browser tab closes mid-session. We deliberately don't hold
-          // a preview buffer — live mode == trust the sensor, trust the decode.
+          // Stream each decoded throw straight to Supabase. If the network
+          // is down, queue it locally for retry so zero throws are lost.
+          const throwRow = {
+            org_id: orgId,
+            athlete_id: athleteId,
+            device_id: null as string | null,
+            thrown_at: new Date().toISOString(),
+            torque_nm: t.torqueNm,
+            arm_speed_dps: t.armSpeedDps,
+            arm_slot_deg: t.armSlotDeg,
+            ball_weight_oz: 5,
+            source: 'L' as const,
+            is_valid: true,
+          };
           commitThrows({
             supabase,
             orgId,
@@ -434,7 +446,8 @@ export function useLiveSession({
           })
             .then((res) => {
               if (res.error) {
-                console.warn('[pulse live] insert failed', res.error);
+                console.warn('[pulse live] insert failed, queueing:', res.error);
+                enqueueThrow(throwRow);
                 return;
               }
               setCommittedCount((c) => c + (res.inserted ?? 0));
@@ -442,7 +455,10 @@ export function useLiveSession({
                 pulseEvents.emitThrowsCommitted();
               }
             })
-            .catch((err) => console.warn('[pulse live] insert threw', err));
+            .catch((err) => {
+              console.warn('[pulse live] insert threw, queueing:', err?.message);
+              enqueueThrow(throwRow);
+            });
         },
         onDecodeError: (msg) => {
           console.warn('[pulse live] decode error', msg);

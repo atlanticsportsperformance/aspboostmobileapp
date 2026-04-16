@@ -33,6 +33,7 @@ import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 import { consumeWorkoutListDirty } from '../lib/workoutRefreshSignal';
+import { startOfflineQueue } from '../lib/pulse/ble/offline-queue';
 import { cancelBooking } from '../lib/bookingApi';
 import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
 import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
@@ -645,6 +646,12 @@ export default function DashboardScreen({ navigation }: any) {
 
     return () => clearTimeout(failsafe);
   }, [loading, setAppReady]);
+
+  // Start the offline throw queue so any throws that failed to commit (no
+  // network, server error) during a previous session are retried automatically.
+  useEffect(() => {
+    startOfflineQueue(supabase);
+  }, []);
 
   // useFocusEffect for navigation (coming back from other screens) AND foreground refresh
   // AuthContext handles session refresh, we just need to reload data

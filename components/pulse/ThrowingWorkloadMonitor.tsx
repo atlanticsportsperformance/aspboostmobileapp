@@ -9,7 +9,7 @@
  * directly.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
@@ -279,6 +279,18 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
     return 'Start a live session, or throw freely and sync later.';
   })();
 
+  // Track whether a throw is being processed (counter ticked but decode
+  // hasn't finished yet). Shows a processing indicator under the gauge.
+  const [processingThrow, setProcessingThrow] = useState(false);
+  const prevCounterRef = useRef(dev.counter);
+  useEffect(() => {
+    if (live.status !== 'running') return;
+    if (dev.counter != null && dev.counter !== prevCounterRef.current) {
+      prevCounterRef.current = dev.counter;
+      setProcessingThrow(true);
+    }
+  }, [dev.counter, live.status]);
+
   // Optimistic gauge bump when new live throws land
   const prevLiveLen = React.useRef(0);
   useEffect(() => {
@@ -288,6 +300,8 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
       prevLiveLen.current = now;
       return;
     }
+    // Throw decoded — clear processing indicator
+    setProcessingThrow(false);
     const news = live.throws.slice(prev);
     const addW = news.reduce((a, t) => a + (Number(t.wThrow) || 0), 0);
     if (external) {
@@ -453,6 +467,14 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           directly under the gauge so the athlete doesn't have to dig into
           the wizard modal just to kick off a session. The wizard still
           exists for error / connect / permissions flows via the top chip. */}
+      {/* Processing throw indicator — shows between counter tick and decode */}
+      {processingThrow && live.status === 'running' && (
+        <View style={styles.processingRow}>
+          <ActivityIndicator size="small" color="#9BDDFF" />
+          <Text style={styles.processingText}>Processing throw…</Text>
+        </View>
+      )}
+
       {/* Always-visible Start Live + Sync buttons right under the gauge stats.
           When not connected they're dimmed and tapping opens the wizard to
           connect first. When live is already running they're hidden. */}
@@ -534,6 +556,24 @@ const styles = StyleSheet.create({
     marginTop: 6,
     maxWidth: 260,
   },
+  processingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
+    alignSelf: 'center',
+  },
+  processingText: {
+    color: '#9BDDFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   wizardHint: {
     color: '#9ca3af',
     fontSize: 12,
@@ -545,48 +585,42 @@ const styles = StyleSheet.create({
   },
   quickActionRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 20,
-    marginBottom: 6,
-    paddingHorizontal: 4,
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 4,
+    justifyContent: 'center',
   },
   quickActionBtnPrimary: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 18,
-    borderRadius: 14,
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 20,
     backgroundColor: '#9BDDFF',
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 0 },
   },
   quickActionPrimaryText: {
     color: '#000',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontSize: 12,
+    fontWeight: '700',
   },
   quickActionBtnSecondary: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 18,
-    borderRadius: 14,
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 20,
     backgroundColor: 'rgba(155, 221, 255, 0.1)',
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: '#9BDDFF',
   },
   quickActionSecondaryText: {
     color: '#9BDDFF',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontSize: 12,
+    fontWeight: '700',
   },
   // Top-right pulse entry point — three variants (disconnected / connected / live)
   topOpenBtn: {
