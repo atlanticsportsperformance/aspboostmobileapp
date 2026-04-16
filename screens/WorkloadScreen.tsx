@@ -839,7 +839,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingTop: 16,
+    paddingTop: 4,
     paddingBottom: 40,
   },
   loadingContainer: {
@@ -857,8 +857,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginHorizontal: 16,
-    marginBottom: 12,
-    paddingVertical: 10,
+    marginBottom: 6,
+    paddingVertical: 6,
   },
   navBtn: {
     padding: 8,
