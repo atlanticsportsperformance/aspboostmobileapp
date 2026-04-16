@@ -10,7 +10,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, Modal } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
@@ -455,11 +455,9 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           exists for error / connect / permissions flows via the top chip. */}
       {dev.state === 'connected' && live.status !== 'running' ? (
         <View style={styles.quickActionRow}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.quickActionBtnPrimary,
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
+          <TouchableOpacity
+            style={[styles.quickActionBtnPrimary, { backgroundColor: '#9BDDFF' }]}
+            activeOpacity={0.8}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
               live.start().catch((err) => console.warn('[monitor] live start failed', err));
@@ -467,12 +465,10 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           >
             <Ionicons name="play" size={20} color="#000" />
             <Text style={styles.quickActionPrimaryText}>Start Live</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.quickActionBtnSecondary,
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.quickActionBtnSecondary, { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' }]}
+            activeOpacity={0.8}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
               syncM.runAndCommit().catch((err) =>
@@ -484,7 +480,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
             <Text style={styles.quickActionSecondaryText}>
               {(dev.counter ?? 0) > 0 ? `Sync ${dev.counter}` : 'Sync'}
             </Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
       ) : (
         /* Not connected — show the contextual hint instead. The top-right

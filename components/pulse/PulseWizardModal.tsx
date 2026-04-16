@@ -23,6 +23,7 @@ import {
   Text,
   Modal,
   Pressable,
+  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   Linking,
@@ -684,28 +685,29 @@ function LiveStep({
       <View style={styles.liveHeader}>
         <Animated.View style={[styles.liveDot, pulseDotStyle]} />
         <Text style={styles.liveHeaderText}>LIVE</Text>
+        <ActivityIndicator size="small" color="#9BDDFF" style={{ marginLeft: 8 }} />
       </View>
 
       <Text style={styles.liveBigNum}>{throws}</Text>
       <Text style={styles.subtitle}>{throws === 1 ? 'throw' : 'throws'}</Text>
 
-      {lastThrow && (
+      {lastThrow ? (
         <Text style={styles.liveLast}>
           Last:  {lastThrow.torqueNm != null ? `${Math.round(lastThrow.torqueNm)} Nm` : '—'}
           {lastThrow.armSpeedDps != null ? `  ·  ${Math.round(lastThrow.armSpeedDps)} °/s` : ''}
         </Text>
+      ) : (
+        <Text style={styles.liveWaiting}>Throw to see data appear here</Text>
       )}
 
-      <Pressable
-        style={({ pressed }) => [
-          styles.stopBtn,
-          pressed && { transform: [{ scale: 0.97 }] },
-        ]}
+      <TouchableOpacity
+        style={[styles.stopBtn, { backgroundColor: 'rgba(248,113,113,0.15)', borderColor: '#f87171' }]}
         onPress={onStop}
+        activeOpacity={0.8}
       >
         <Ionicons name="stop" size={14} color="#fca5a5" />
         <Text style={styles.stopBtnText}>Stop session</Text>
-      </Pressable>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -741,27 +743,25 @@ function DoneStep({
       </Text>
 
       {canStartLive && (
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryBtn,
-            pressed && { transform: [{ scale: 0.97 }] },
-          ]}
+        <TouchableOpacity
+          style={[styles.primaryBtn, { backgroundColor: '#9BDDFF' }]}
           onPress={onStartLive}
+          activeOpacity={0.8}
         >
           <Ionicons name="play" size={16} color="#000" />
           <Text style={styles.primaryBtnText}>Start Live Session</Text>
-        </Pressable>
+        </TouchableOpacity>
       )}
 
-      <Pressable
-        style={({ pressed }) => [
-          canStartLive ? styles.secondaryBtn : styles.primaryBtn,
-          pressed && { transform: [{ scale: 0.97 }] },
-        ]}
+      <TouchableOpacity
+        style={canStartLive
+          ? [styles.secondaryBtn, { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' }]
+          : [styles.primaryBtn, { backgroundColor: '#9BDDFF' }]}
         onPress={onClose}
+        activeOpacity={0.8}
       >
         <Text style={canStartLive ? styles.secondaryBtnText : styles.primaryBtnText}>Done</Text>
-      </Pressable>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -1060,6 +1060,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontVariant: ['tabular-nums'],
     marginTop: 4,
+  },
+  liveWaiting: {
+    color: '#4b5563',
+    fontSize: 13,
+    fontStyle: 'italic',
+    marginTop: 8,
   },
   stopBtn: {
     flexDirection: 'row',
