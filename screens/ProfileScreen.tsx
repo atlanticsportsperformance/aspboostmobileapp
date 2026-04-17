@@ -92,6 +92,11 @@ export default function ProfileScreen({ navigation, route }: any) {
   const [athlete, setAthlete] = useState<Athlete | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
   const [isParent, setIsParent] = useState(false);
+  const [parentProfile, setParentProfile] = useState<{
+    first_name: string | null;
+    last_name: string | null;
+    email: string | null;
+  } | null>(null);
   const [linkedAthletes, setLinkedAthletes] = useState<LinkedAthlete[]>([]);
   const [linkedGuardians, setLinkedGuardians] = useState<LinkedGuardian[]>([]);
 
@@ -143,23 +148,36 @@ export default function ProfileScreen({ navigation, route }: any) {
         return;
       }
 
-      // Check if user is a parent
+      // Check if user is a parent. Also fetch first_name/last_name/email so
+      // we can render a parent profile view without touching the `athletes`
+      // table (parents don't have an athletes row).
       const { data: profile } = await supabase
         .from('profiles')
-        .select('account_type')
+        .select('account_type, first_name, last_name, email')
         .eq('id', user.id)
         .single();
 
       // Check if still mounted before updating state
       if (!isMountedRef.current) return;
 
-      if (profile?.account_type === 'parent') {
+      const parentAccount = profile?.account_type === 'parent';
+      if (parentAccount) {
         setIsParent(true);
+        setParentProfile({
+          first_name: profile.first_name ?? null,
+          last_name: profile.last_name ?? null,
+          email: profile.email ?? null,
+        });
         await loadLinkedAthletes(user.id);
-      } else {
-        // For athletes, load linked guardians (parents)
-        await loadLinkedGuardians(user.id);
+        // Parents don't have an athletes row — render the parent view
+        // (name, email, linked athletes) and skip the athletes fetch that
+        // was causing "Failed to load profile" for parent logins.
+        if (isMountedRef.current) setLoading(false);
+        return;
       }
+
+      // Athlete path: load linked guardians (parents) then own athlete row
+      await loadLinkedGuardians(user.id);
 
       // Check if still mounted before continuing
       if (!isMountedRef.current) return;
@@ -447,7 +465,9 @@ export default function ProfileScreen({ navigation, route }: any) {
     );
   }
 
-  if (!athlete) {
+  // Parents don't have an athletes row — fall through to the main render
+  // which will hide athlete-only sections when `athlete` is null.
+  if (!athlete && !isParent) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
@@ -489,7 +509,9 @@ export default function ProfileScreen({ navigation, route }: any) {
             />
           }
         >
-          {/* Profile Info Card */}
+          {/* Profile Info Card — renders from athlete for athlete users, or
+              from parentProfile for parent users (parents don't have an
+              athletes row, so athlete is null for them). */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.profileHeader}>
@@ -498,32 +520,43 @@ export default function ProfileScreen({ navigation, route }: any) {
                   style={styles.avatar}
                 >
                   <Text style={styles.avatarText}>
-                    {athlete.first_name?.[0]}{athlete.last_name?.[0]}
+                    {isParent
+                      ? `${parentProfile?.first_name?.[0] ?? ''}${parentProfile?.last_name?.[0] ?? ''}`
+                      : `${athlete?.first_name?.[0] ?? ''}${athlete?.last_name?.[0] ?? ''}`}
                   </Text>
                 </LinearGradient>
                 <View style={styles.profileInfo}>
                   <Text style={styles.profileName}>
-                    {athlete.first_name} {athlete.last_name}
+                    {isParent
+                      ? `${parentProfile?.first_name ?? ''} ${parentProfile?.last_name ?? ''}`.trim() || 'Parent'
+                      : `${athlete?.first_name ?? ''} ${athlete?.last_name ?? ''}`.trim()}
                   </Text>
-                  <Text style={styles.profileEmail}>{athlete.email}</Text>
+                  <Text style={styles.profileEmail}>
+                    {isParent ? parentProfile?.email ?? '' : athlete?.email ?? ''}
+                  </Text>
                 </View>
               </View>
-              <TouchableOpacity
-                onPress={() => {
-                  if (editingProfile) {
-                    populateFormFields(athlete);
-                    setProfileError('');
-                    setProfileSuccess('');
-                  }
-                  setEditingProfile(!editingProfile);
-                }}
-                style={styles.editButton}
-              >
-                <Ionicons name={editingProfile ? 'close' : 'pencil'} size={18} color={COLORS.gray400} />
-              </TouchableOpacity>
+              {!isParent && athlete && (
+                <TouchableOpacity
+                  onPress={() => {
+                    if (editingProfile) {
+                      populateFormFields(athlete);
+                      setProfileError('');
+                      setProfileSuccess('');
+                    }
+                    setEditingProfile(!editingProfile);
+                  }}
+                  style={styles.editButton}
+                >
+                  <Ionicons name={editingProfile ? 'close' : 'pencil'} size={18} color={COLORS.gray400} />
+                </TouchableOpacity>
+              )}
             </View>
 
-            {editingProfile ? (
+            {/* Athlete-only edit/display block. Parents don't have an athletes
+                row so we skip this entirely — they see the name + linked
+                athletes section below instead. */}
+            {!isParent && athlete && (editingProfile ? (
               <View style={styles.form}>
                 {/* Name Fields */}
                 <View style={styles.formRow}>
@@ -699,32 +732,34 @@ export default function ProfileScreen({ navigation, route }: any) {
                   </View>
                 )}
               </View>
-            )}
+            ))}
           </View>
 
-          {/* Play Level Section */}
-          <View style={styles.card}>
-            <View style={styles.cardSectionHeader}>
-              <Ionicons name="trending-up" size={20} color={COLORS.primary} />
-              <Text style={styles.cardSectionTitle}>Play Level</Text>
+          {/* Play Level Section — athlete-only */}
+          {!isParent && athlete && (
+            <View style={styles.card}>
+              <View style={styles.cardSectionHeader}>
+                <Ionicons name="trending-up" size={20} color={COLORS.primary} />
+                <Text style={styles.cardSectionTitle}>Play Level</Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.playLevelSelector}
+                onPress={() => setShowPlayLevelPicker(true)}
+              >
+                <Text style={playLevel ? styles.playLevelText : styles.playLevelPlaceholder}>
+                  {playLevel || 'Select play level'}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color={COLORS.gray400} />
+              </TouchableOpacity>
+
+              {playLevel && (
+                <Text style={styles.playLevelHint}>
+                  Current: <Text style={styles.playLevelHighlight}>{playLevel}</Text>
+                </Text>
+              )}
             </View>
-
-            <TouchableOpacity
-              style={styles.playLevelSelector}
-              onPress={() => setShowPlayLevelPicker(true)}
-            >
-              <Text style={playLevel ? styles.playLevelText : styles.playLevelPlaceholder}>
-                {playLevel || 'Select play level'}
-              </Text>
-              <Ionicons name="chevron-down" size={20} color={COLORS.gray400} />
-            </TouchableOpacity>
-
-            {playLevel && (
-              <Text style={styles.playLevelHint}>
-                Current: <Text style={styles.playLevelHighlight}>{playLevel}</Text>
-              </Text>
-            )}
-          </View>
+          )}
 
           {/* Leaderboard Section */}
           <TouchableOpacity

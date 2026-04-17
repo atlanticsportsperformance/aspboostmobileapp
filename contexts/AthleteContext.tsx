@@ -63,9 +63,15 @@ export function AthleteProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Skip if already loaded for this user
-    if (lastUserId.current === session.user.id) return;
-    lastUserId.current = session.user.id;
+    // Skip only if we've already loaded for this exact (userId, isParent)
+    // combination. AuthContext sets isParentAccount asynchronously, so this
+    // effect may fire once with isParentAccount=false (before checkAccountType
+    // resolves) and then again with =true. Without including isParentAccount
+    // in the guard, the second pass would early-return and parents would
+    // never see their linked athletes.
+    const key = `${session.user.id}|${isParentAccount ? '1' : '0'}`;
+    if (lastUserId.current === key) return;
+    lastUserId.current = key;
 
     if (isParentAccount) {
       // Only query needed: parent's display name (account_type already known from AuthContext)
@@ -127,7 +133,7 @@ export function AthleteProvider({ children }: { children: ReactNode }) {
 
       // Fetch linked athletes from athlete_guardians
       // Note: athlete_guardians.athlete_id references profiles.id (user_id), not athletes.id
-      const { data: guardianships, error: guardianError } = await supabase
+      const { data: guardianships } = await supabase
         .from('athlete_guardians')
         .select(`
           athlete_id,
