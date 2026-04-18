@@ -40,6 +40,14 @@ export type SignatureData =
 export interface WaiverCheckResponse {
   has_pending_waivers: boolean;
   pending_waivers: PendingWaiver[];
+  athlete_is_minor: boolean;
+}
+
+export interface GuardianInfo {
+  first_name: string;
+  last_name: string;
+  email: string;
+  relationship: 'parent' | 'guardian';
 }
 
 export interface AthleteWaiversResponse {
@@ -52,6 +60,10 @@ export interface SignWaiverRequest {
   athlete_id: string;
   signature_type: 'checkbox' | 'typed_name' | 'drawn';
   signature_data: SignatureData;
+  /** Set when a parent/guardian is signing on-site on behalf of a minor
+   * athlete. Server-side the route promotes relationship from self →
+   * parent/guardian when this is present. */
+  guardian_info?: GuardianInfo;
 }
 
 export interface SignWaiverResponse {

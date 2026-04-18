@@ -44,6 +44,7 @@ export default function WaiversScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(null);
+  const [athleteIsMinor, setAthleteIsMinor] = useState(false);
   const [signedWaivers, setSignedWaivers] = useState<SignedWaiver[]>([]);
   const [pendingWaivers, setPendingWaivers] = useState<PendingWaiver[]>([]);
 
@@ -66,10 +67,10 @@ export default function WaiversScreen({ navigation, route }: any) {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Get athlete ID
+      // Get athlete ID + DOB for local minor check
       const { data: athlete } = await supabase
         .from('athletes')
-        .select('id')
+        .select('id, date_of_birth')
         .eq('user_id', user.id)
         .single();
 
@@ -80,6 +81,16 @@ export default function WaiversScreen({ navigation, route }: any) {
       }
 
       setAthleteId(athlete.id);
+      // Local minor computation — matches the server's 18yr default.
+      // The server re-validates with the exact waiver threshold.
+      if (athlete.date_of_birth) {
+        const dob = new Date(athlete.date_of_birth);
+        const now = new Date();
+        let age = now.getFullYear() - dob.getFullYear();
+        const m = now.getMonth() - dob.getMonth();
+        if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) age -= 1;
+        setAthleteIsMinor(age < 18);
+      }
 
       // Load waivers
       const waiverData = await getAthleteWaivers(athlete.id);
@@ -387,6 +398,7 @@ export default function WaiversScreen({ navigation, route }: any) {
           visible={showSigningSheet}
           waivers={waiversToSign}
           athleteId={athleteId}
+          athleteIsMinor={athleteIsMinor}
           onClose={() => {
             setShowSigningSheet(false);
             setWaiversToSign([]);

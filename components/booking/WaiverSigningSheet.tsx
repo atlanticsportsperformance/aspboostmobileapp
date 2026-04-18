@@ -15,7 +15,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import WebView from 'react-native-webview';
-import { PendingWaiver, SignatureData } from '../../types/waiver';
+import { PendingWaiver, SignatureData, GuardianInfo } from '../../types/waiver';
 import { signWaiver } from '../../lib/waiverApi';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -40,6 +40,13 @@ interface WaiverSigningSheetProps {
   visible: boolean;
   waivers: PendingWaiver[];
   athleteId: string;
+  /** True when the athlete on this account is under the waiver's minor
+   * age threshold. When combined with `waiver.requiresGuardianSignature`
+   * the sheet shows a parent/guardian info form above the signature so
+   * an adult can sign on behalf of the minor from within the minor's
+   * account. The form feeds `guardian_info` into the sign payload and
+   * the server promotes relationship self → parent/guardian. */
+  athleteIsMinor?: boolean;
   onClose: () => void;
   onComplete: () => void;
   /** Optional escape hatch — shown as "Back to Dashboard" in the footer
@@ -52,6 +59,7 @@ export default function WaiverSigningSheet({
   visible,
   waivers,
   athleteId,
+  athleteIsMinor = false,
   onClose,
   onComplete,
   onBackToDashboard,
@@ -66,10 +74,27 @@ export default function WaiverSigningSheet({
   const [drawnSignature, setDrawnSignature] = useState<string | null>(null);
   const [selectedSignatureType, setSelectedSignatureType] = useState<'checkbox' | 'typed_name' | 'drawn'>('checkbox');
 
+  // Guardian form state — only used when the athlete is a minor AND the
+  // current waiver requires a guardian signature. Persists across the
+  // waiver list so a parent doesn't have to re-type their info if there
+  // are multiple pending waivers.
+  const [guardianFirstName, setGuardianFirstName] = useState('');
+  const [guardianLastName, setGuardianLastName] = useState('');
+  const [guardianEmail, setGuardianEmail] = useState('');
+  const [guardianRelationship, setGuardianRelationship] = useState<'parent' | 'guardian'>('parent');
+
   const webViewRef = useRef<WebView>(null);
 
   const currentWaiver = waivers[currentIndex];
   const isLastWaiver = currentIndex === waivers.length - 1;
+
+  const needsGuardian =
+    athleteIsMinor && !!currentWaiver?.requiresGuardianSignature;
+
+  const guardianComplete =
+    guardianFirstName.trim().length > 0 &&
+    guardianLastName.trim().length > 0 &&
+    /\S+@\S+\.\S+/.test(guardianEmail.trim());
 
   // Determine which signature type to use
   const signatureType = currentWaiver?.signatureType === 'any'
@@ -82,10 +107,20 @@ export default function WaiverSigningSheet({
     setDrawnSignature(null);
     setSelectedSignatureType('checkbox');
     setError(null);
+    // Guardian form deliberately NOT reset — a parent filling in once
+    // for the first waiver shouldn't have to re-enter for the next.
   };
 
   const handleSign = async () => {
     if (!currentWaiver) return;
+
+    // Parent/guardian form must be complete before a minor's waiver
+    // can be signed. The server also enforces this but we fail fast
+    // locally to save the round-trip.
+    if (needsGuardian && !guardianComplete) {
+      setError('Please fill in the parent/guardian name and email before signing.');
+      return;
+    }
 
     // Validate signature
     let signatureData: SignatureData;
@@ -123,11 +158,21 @@ export default function WaiverSigningSheet({
     setSigning(true);
     setError(null);
 
+    const guardianPayload: GuardianInfo | undefined = needsGuardian
+      ? {
+          first_name: guardianFirstName.trim(),
+          last_name: guardianLastName.trim(),
+          email: guardianEmail.trim().toLowerCase(),
+          relationship: guardianRelationship,
+        }
+      : undefined;
+
     const result = await signWaiver({
       waiver_id: currentWaiver.id,
       athlete_id: athleteId,
       signature_type: signatureType,
       signature_data: signatureData,
+      ...(guardianPayload ? { guardian_info: guardianPayload } : {}),
     });
 
     setSigning(false);
@@ -459,6 +504,93 @@ export default function WaiverSigningSheet({
               </View>
             </ScrollView>
 
+            {/* Parent/Guardian info — shown above the signature for minor
+                athletes whose waiver requires a guardian to sign. Allows
+                the parent to sign on the kid's phone/account. */}
+            {needsGuardian && (
+              <View style={styles.guardianSection}>
+                <View style={styles.guardianHeader}>
+                  <Ionicons name="shield-checkmark" size={18} color={COLORS.yellow500} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.guardianTitle}>
+                      Parent or guardian must sign
+                    </Text>
+                    <Text style={styles.guardianSubtitle}>
+                      This athlete is under{' '}
+                      {currentWaiver?.minorAgeThreshold ?? 18}. A parent or
+                      legal guardian must fill in their info and sign below
+                      on the athlete's behalf.
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.guardianRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.guardianLabel}>First name</Text>
+                    <TextInput
+                      style={styles.guardianInput}
+                      value={guardianFirstName}
+                      onChangeText={setGuardianFirstName}
+                      placeholder="Parent first name"
+                      placeholderTextColor={COLORS.gray500}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      textContentType="givenName"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.guardianLabel}>Last name</Text>
+                    <TextInput
+                      style={styles.guardianInput}
+                      value={guardianLastName}
+                      onChangeText={setGuardianLastName}
+                      placeholder="Parent last name"
+                      placeholderTextColor={COLORS.gray500}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      textContentType="familyName"
+                    />
+                  </View>
+                </View>
+
+                <Text style={styles.guardianLabel}>Email</Text>
+                <TextInput
+                  style={styles.guardianInput}
+                  value={guardianEmail}
+                  onChangeText={setGuardianEmail}
+                  placeholder="parent@example.com"
+                  placeholderTextColor={COLORS.gray500}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="emailAddress"
+                />
+
+                <Text style={styles.guardianLabel}>Relationship</Text>
+                <View style={styles.relationshipRow}>
+                  {(['parent', 'guardian'] as const).map((r) => (
+                    <TouchableOpacity
+                      key={r}
+                      style={[
+                        styles.relationshipChip,
+                        guardianRelationship === r && styles.relationshipChipActive,
+                      ]}
+                      onPress={() => setGuardianRelationship(r)}
+                    >
+                      <Text
+                        style={[
+                          styles.relationshipChipText,
+                          guardianRelationship === r && styles.relationshipChipTextActive,
+                        ]}
+                      >
+                        {r === 'parent' ? 'Parent' : 'Legal guardian'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
             {/* Signature Section */}
             <View style={styles.signatureSection}>
               {renderSignatureInput()}
@@ -473,9 +605,12 @@ export default function WaiverSigningSheet({
 
             {/* Action Button */}
             <TouchableOpacity
-              style={styles.signButton}
+              style={[
+                styles.signButton,
+                needsGuardian && !guardianComplete && styles.signButtonDisabled,
+              ]}
               onPress={handleSign}
-              disabled={signing}
+              disabled={signing || (needsGuardian && !guardianComplete)}
               activeOpacity={0.8}
             >
               <LinearGradient
@@ -723,6 +858,83 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderRadius: 12,
     overflow: 'hidden',
+  },
+  signButtonDisabled: {
+    opacity: 0.5,
+  },
+  guardianSection: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    padding: 14,
+    backgroundColor: 'rgba(234, 179, 8, 0.06)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(234, 179, 8, 0.25)',
+    gap: 10,
+  },
+  guardianHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  guardianTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  guardianSubtitle: {
+    fontSize: 12,
+    color: COLORS.gray400,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  guardianRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  guardianLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: COLORS.gray400,
+    marginBottom: 4,
+  },
+  guardianInput: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.white,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  relationshipRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  relationshipChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  relationshipChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  relationshipChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.gray400,
+  },
+  relationshipChipTextActive: {
+    color: COLORS.black,
   },
   signButtonGradient: {
     flexDirection: 'row',

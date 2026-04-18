@@ -95,6 +95,7 @@ export default function BookingScreen() {
   // Waiver flow
   const [showWaiverSheet, setShowWaiverSheet] = useState(false);
   const [pendingWaivers, setPendingWaivers] = useState<PendingWaiver[]>([]);
+  const [athleteIsMinor, setAthleteIsMinor] = useState(false);
   const [pendingEventAfterWaivers, setPendingEventAfterWaivers] = useState<BookableEvent | null>(null);
 
   // Refs to prevent infinite loops and state updates on unmounted component
@@ -145,6 +146,7 @@ export default function BookingScreen() {
           waiverCheck.pending_waivers.length > 0
         ) {
           setPendingWaivers(waiverCheck.pending_waivers);
+          setAthleteIsMinor(!!waiverCheck.athlete_is_minor);
           setShowWaiverSheet(true);
         }
       } catch (err: any) {
@@ -375,6 +377,7 @@ export default function BookingScreen() {
         console.log('[BookingScreen] SHOWING waiver sheet, pending count =', waiverCheck.pending_waivers.length);
         setPendingEventAfterWaivers(event);
         setPendingWaivers(waiverCheck.pending_waivers);
+        setAthleteIsMinor(!!waiverCheck.athlete_is_minor);
         setShowWaiverSheet(true);
         return;
       }
@@ -869,6 +872,7 @@ export default function BookingScreen() {
           visible={showWaiverSheet}
           waivers={pendingWaivers}
           athleteId={selectedAthleteId}
+          athleteIsMinor={athleteIsMinor}
           onClose={handleWaiverClose}
           onComplete={handleWaiverComplete}
           onBackToDashboard={() => {

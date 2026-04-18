@@ -50,6 +50,7 @@ export async function checkPendingWaivers(
     return {
       has_pending_waivers: data.has_pending_waivers,
       pending_waivers: (data.pending_waivers || []).map(transformPendingWaiver),
+      athlete_is_minor: !!data.athlete_is_minor,
     };
   } catch (error) {
     console.error('Error checking pending waivers:', error);
@@ -103,6 +104,7 @@ export async function signWaiver(
         athlete_id: request.athlete_id,
         signature_type: request.signature_type,
         signature_data: request.signature_data,
+        ...(request.guardian_info ? { guardian_info: request.guardian_info } : {}),
       }),
     });
 
