@@ -39,55 +39,17 @@ interface Props {
   size?: number;
 }
 
-function RadialAcwrInner({
-  value,
-  dayW,
-  chronic,
-  target = null,
-  dateLabel,
-  size = 260,
-}: Props) {
-  const cx = size / 2;
-  const cy = size / 2;
-  const stroke = size * 0.065;
-  const r = size / 2 - stroke * 1.6;
-  const circumference = 2 * Math.PI * r;
-
-  // Color driven by ACWR bucket
-  const baseHex = '#9BDDFF';
-  const hex = value == null ? baseHex : ACWR_HEX[acwrColor(value)];
-
-  // Ceiling: prefer explicit target, else chronic × 1.3, else 5 W
-  const arcCeiling = useMemo(() => {
-    if (target != null && target > 0) return target;
-    if (chronic > 0.05) return chronic * 1.3;
-    return 5;
-  }, [target, chronic]);
-  const progressPct = Math.min(1, Math.max(0, dayW / arcCeiling));
-
-  // ─── Reanimated state ───
-  // Only the progress ring animates. The breathing halo loop and number spring
-  // were both removed because they were causing the WorkloadScreen to freeze
-  // after a few minutes — the breathing withRepeat(-1) loop ran 60fps forever
-  // on the UI thread, which compounds dev-mode bookkeeping into JS-thread
-  // starvation. The halo is now static (still visible, just doesn't pulse).
-  const progress = useSharedValue(0);
-
-  useEffect(() => {
-    progress.value = withTiming(progressPct, {
-      duration: 1400,
-      easing: Easing.bezier(0.16, 1, 0.3, 1),
-    });
-    return () => {
-      cancelAnimation(progress);
-    };
-  }, [progressPct, progress]);
-
-  const animatedRingProps = useAnimatedProps(() => ({
-    strokeDashoffset: circumference - circumference * progress.value,
-  }));
-
-  // Tick marks — 24 around 360°
+// The heavy SVG tree (halo, ring track, glass rims, 24 tick marks) uses a
+// fixed neutral color (#9BDDFF — the Pulse brand cyan). The ACWR bucket
+// color is carried ONLY by the animated progress arc and the center text
+// (dayW number + ACWR chip), so the shell never needs to rebuild when the
+// selected day changes — it renders exactly once per mount.
+// Previous behavior rebuilt the entire ~30-node SVG tree through the RN
+// bridge on every day switch (~40ms on mid-tier phones). Now it's ~0ms.
+const SHELL_HEX = '#9BDDFF';
+function GaugeShell({ size, stroke, r, cx, cy }: {
+  size: number; stroke: number; r: number; cx: number; cy: number;
+}) {
   const ticks = useMemo(() => {
     const TICK_COUNT = 24;
     return Array.from({ length: TICK_COUNT }, (_, i) => {
@@ -108,8 +70,7 @@ function RadialAcwrInner({
   }, [r, stroke, cx, cy]);
 
   return (
-    <View style={[styles.container, { width: size }]}>
-      {/* Ambient halo behind the gauge — static opacity (no breathing pulse) */}
+    <>
       <View
         style={[
           styles.halo,
@@ -126,74 +87,26 @@ function RadialAcwrInner({
         <Svg width="100%" height="100%">
           <Defs>
             <RadialGradient id="halo" cx="50%" cy="50%" r="50%">
-              <Stop offset="0%" stopColor={hex} stopOpacity="0.35" />
-              <Stop offset="35%" stopColor={hex} stopOpacity="0.12" />
-              <Stop offset="70%" stopColor={hex} stopOpacity="0" />
+              <Stop offset="0%" stopColor={SHELL_HEX} stopOpacity="0.35" />
+              <Stop offset="35%" stopColor={SHELL_HEX} stopOpacity="0.12" />
+              <Stop offset="70%" stopColor={SHELL_HEX} stopOpacity="0" />
             </RadialGradient>
           </Defs>
           <Circle cx="50%" cy="50%" r="50%" fill="url(#halo)" />
         </Svg>
       </View>
 
-      <Svg width={size} height={size}>
+      <Svg width={size} height={size} style={StyleSheet.absoluteFill as any}>
         <Defs>
-          {/* Glass rim — bright white highlight at top, fading to color at bottom */}
           <LinearGradient id="bubbleRim" x1="0%" y1="0%" x2="0%" y2="100%">
             <Stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.85" />
-            <Stop offset="35%" stopColor={hex} stopOpacity="0.35" />
-            <Stop offset="100%" stopColor={hex} stopOpacity="0.12" />
+            <Stop offset="35%" stopColor={SHELL_HEX} stopOpacity="0.35" />
+            <Stop offset="100%" stopColor={SHELL_HEX} stopOpacity="0.12" />
           </LinearGradient>
         </Defs>
-
-        {/* Outer glass rim — thin bright arc on top fading down */}
-        <Circle
-          cx={cx}
-          cy={cy}
-          r={r + stroke * 0.35}
-          fill="none"
-          stroke="url(#bubbleRim)"
-          strokeWidth={1.5}
-        />
-
-        {/* Track — faint full ring (base) */}
-        <Circle
-          cx={cx}
-          cy={cy}
-          r={r}
-          fill="none"
-          stroke={hex}
-          strokeOpacity={0.12}
-          strokeWidth={stroke}
-        />
-
-        {/* Inner glass rim — thin highlight just inside the ring */}
-        <Circle
-          cx={cx}
-          cy={cy}
-          r={r - stroke * 0.55}
-          fill="none"
-          stroke="url(#bubbleRim)"
-          strokeWidth={1}
-          strokeOpacity={0.6}
-        />
-
-        {/* Progress ring — animated draw-in */}
-        {value != null && (
-          <AnimatedCircle
-            cx={cx}
-            cy={cy}
-            r={r}
-            fill="none"
-            stroke={hex}
-            strokeWidth={stroke}
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            animatedProps={animatedRingProps}
-            transform={`rotate(-90 ${cx} ${cy})`}
-          />
-        )}
-
-        {/* Tick marks */}
+        <Circle cx={cx} cy={cy} r={r + stroke * 0.35} fill="none" stroke="url(#bubbleRim)" strokeWidth={1.5} />
+        <Circle cx={cx} cy={cy} r={r} fill="none" stroke={SHELL_HEX} strokeOpacity={0.12} strokeWidth={stroke} />
+        <Circle cx={cx} cy={cy} r={r - stroke * 0.55} fill="none" stroke="url(#bubbleRim)" strokeWidth={1} strokeOpacity={0.6} />
         {ticks.map((t) => (
           <Line
             key={t.key}
@@ -201,55 +114,131 @@ function RadialAcwrInner({
             y1={t.y1}
             x2={t.x2}
             y2={t.y2}
-            stroke={hex}
+            stroke={SHELL_HEX}
             strokeOpacity={t.isMajor ? 0.45 : 0.18}
             strokeWidth={t.isMajor ? 1.8 : 1}
           />
         ))}
       </Svg>
+    </>
+  );
+}
+const MemoGaugeShell = React.memo(GaugeShell);
 
-      {/* Centered text — W today + ACWR chip */}
-      <View
-        style={[
-          styles.centerStack,
-          { width: size, height: size },
-        ]}
-        pointerEvents="none"
-      >
-        <Text
-          style={[
-            styles.bigNumber,
-            {
-              fontSize: size * 0.22,
-              color: hex,
-            },
-          ]}
-        >
-          {dayW.toFixed(1)}
-        </Text>
-        <Text style={styles.label}>W TODAY</Text>
+function RadialAcwrInner({
+  value,
+  dayW,
+  chronic,
+  target = null,
+  dateLabel,
+  size = 260,
+}: Props) {
+  // PERF instrumentation.
+  const _perfT0 = performance.now();
+  useEffect(() => {
+    const dt = performance.now() - _perfT0;
+    if (dt > 2) console.log(`[WorkloadPerf]     RadialAcwr render: ${dt.toFixed(1)}ms`);
+  });
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const stroke = size * 0.065;
+  const r = size / 2 - stroke * 1.6;
+  const circumference = 2 * Math.PI * r;
+
+  // Status color is driven by today's workload vs the scheduled target.
+  // ACWR is shown as a separate informational chip — it doesn't drive the
+  // main gauge color anymore. Red = overload (threw MORE than scheduled).
+  //   - no target → neutral cyan (nothing to compare against)
+  //   - dayW > target → red (overload, the one we warn on)
+  //   - dayW >= target → emerald (hit it)
+  //   - else → cyan (in progress / rest)
+  const hasTarget = target != null && target > 0;
+  const status: 'neutral' | 'met' | 'over' = !hasTarget
+    ? 'neutral'
+    : dayW > (target as number)
+      ? 'over'
+      : dayW >= (target as number)
+        ? 'met'
+        : 'neutral';
+  const hex =
+    status === 'over' ? '#ef4444'
+    : status === 'met' ? '#34d399'
+    : SHELL_HEX;
+
+  // Ceiling: prefer explicit target, else chronic × 1.3, else 5 W
+  const arcCeiling = useMemo(() => {
+    if (target != null && target > 0) return target;
+    if (chronic > 0.05) return chronic * 1.3;
+    return 5;
+  }, [target, chronic]);
+  const progressPct = Math.min(1, Math.max(0, dayW / arcCeiling));
+
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withTiming(progressPct, {
+      duration: 1400,
+      easing: Easing.bezier(0.16, 1, 0.3, 1),
+    });
+    return () => {
+      cancelAnimation(progress);
+    };
+  }, [progressPct, progress]);
+
+  const animatedRingProps = useAnimatedProps(() => ({
+    strokeDashoffset: circumference - circumference * progress.value,
+  }));
+
+  // Gauge color model:
+  //   - Red    = today went OVER scheduled target (the warning)
+  //   - Green  = today met scheduled target (positive signal)
+  //   - Cyan   = under target / no target (neutral)
+  // ACWR is shown as a neutral informational chip — it's a trend indicator,
+  // not a verdict on today's activity, so it doesn't drive the color.
+  return (
+    <View style={[styles.container, { width: size, height: size + 80 }]}>
+      <View style={{ width: size, height: size }}>
+        <MemoGaugeShell size={size} stroke={stroke} r={r} cx={cx} cy={cy} />
+
         {value != null && (
-          <Text
-            style={[
-              styles.acwrChip,
-              { color: hex },
-            ]}
-          >
-            ACWR {value.toFixed(2)}
-          </Text>
+          <Svg width={size} height={size} style={StyleSheet.absoluteFill as any} pointerEvents="none">
+            <AnimatedCircle
+              cx={cx}
+              cy={cy}
+              r={r}
+              fill="none"
+              stroke={hex}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              animatedProps={animatedRingProps}
+              transform={`rotate(-90 ${cx} ${cy})`}
+            />
+          </Svg>
         )}
+
+        <View
+          style={[styles.centerStack, { width: size, height: size }]}
+          pointerEvents="none"
+        >
+          <Text style={[styles.bigNumber, { fontSize: size * 0.22, color: hex }]}>
+            {dayW.toFixed(1)}
+          </Text>
+          <Text style={styles.label}>W TODAY</Text>
+          {value != null && (
+            <Text style={[styles.acwrChip, { color: '#9ca3af' }]}>
+              ACWR {value.toFixed(2)}
+            </Text>
+          )}
+        </View>
       </View>
 
-      {/* Secondary stat pair below the ring */}
       <View style={styles.statRow}>
-        {target != null && target > 0 ? (
+        {hasTarget ? (
           <View style={styles.statBlock}>
             <Text style={styles.statLabel}>TARGET</Text>
-            <Text
-              style={[styles.statValue, { color: hex }]}
-            >
-              {target.toFixed(1)}
-            </Text>
+            <Text style={[styles.statValue, { color: '#e5e7eb' }]}>{(target as number).toFixed(1)}</Text>
             <Text style={styles.statSub}>W planned</Text>
           </View>
         ) : (
@@ -264,9 +253,7 @@ function RadialAcwrInner({
         <View style={styles.divider} />
         <View style={styles.statBlock}>
           <Text style={styles.statLabel}>CHRONIC</Text>
-          <Text style={[styles.statValue, { color: hex }]}>
-            {chronic.toFixed(2)}
-          </Text>
+          <Text style={[styles.statValue, { color: '#e5e7eb' }]}>{chronic.toFixed(2)}</Text>
           <Text style={styles.statSub}>28-day</Text>
         </View>
       </View>

@@ -296,8 +296,8 @@ export function PulseWizardModal({ scheduledDate }: Props) {
 
           {step === 'live' && (
             <LiveStep
-              throws={live.throws.length}
-              lastThrow={live.throws[live.throws.length - 1]}
+              throws={live.throwCount}
+              lastThrow={live.lastThrow ?? undefined}
               pulseDotStyle={pulseDotStyle}
               onStop={handleStopLive}
             />
@@ -306,7 +306,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
           {step === 'done' && (
             <DoneStep
               syncCommitted={sync.committedCount}
-              liveThrows={live.throws.length}
+              liveThrows={live.throwCount}
               canStartLive={dateMode === 'today' && profileComplete && live.status !== 'running'}
               onClose={handleClose}
               onStartLive={handleStartLive}
@@ -556,33 +556,36 @@ function ChooseStep({
           </Pressable>
         </>
       ) : canLive ? (
-        <View style={styles.choiceStack}>
+        <View style={styles.choiceRow}>
           <Pressable
             style={({ pressed }) => [
-              styles.bigBtn,
-              styles.bigBtnPrimary,
+              styles.choiceBtn,
+              styles.choiceBtnPrimary,
               !profileComplete && { opacity: 0.5 },
               pressed && { transform: [{ scale: 0.97 }] },
             ]}
             disabled={!profileComplete}
             onPress={onStartLive}
           >
-            <Ionicons name="play" size={26} color="#000" />
-            <Text style={styles.bigBtnPrimaryText}>Start Live Session</Text>
+            <Ionicons name="play" size={22} color="#000" />
+            <Text style={styles.choiceBtnPrimaryText}>Start Live</Text>
           </Pressable>
 
           <Pressable
             style={({ pressed }) => [
-              styles.bigBtn,
-              styles.bigBtnSecondary,
+              styles.choiceBtn,
+              styles.choiceBtnSecondary,
               pressed && { transform: [{ scale: 0.97 }] },
             ]}
             onPress={onSyncOnly}
           >
-            <Ionicons name="cloud-download" size={26} color="#9BDDFF" />
-            <Text style={styles.bigBtnSecondaryText}>
-              {hasCached ? `Sync ${counter}` : 'Sync'}
-            </Text>
+            <Ionicons name="cloud-download" size={22} color="#9BDDFF" />
+            <Text style={styles.choiceBtnSecondaryText}>Sync</Text>
+            {hasCached && (
+              <View style={styles.syncCountBadge}>
+                <Text style={styles.syncCountBadgeText}>{counter}</Text>
+              </View>
+            )}
           </Pressable>
         </View>
       ) : hasCached ? (
@@ -972,44 +975,68 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 15,
   },
-  choiceStack: {
+  choiceRow: {
+    flexDirection: 'row',
     alignSelf: 'stretch',
-    marginTop: 40,
-    marginBottom: 40,
-    gap: 16,
+    marginTop: 32,
+    marginBottom: 32,
+    gap: 12,
   },
-  bigBtn: {
+  choiceBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
-    alignSelf: 'stretch',
-    paddingVertical: 28,
-    borderRadius: 18,
+    gap: 8,
+    paddingVertical: 20,
+    borderRadius: 14,
+    position: 'relative',
   },
-  bigBtnPrimary: {
+  choiceBtnPrimary: {
     backgroundColor: '#9BDDFF',
     shadowColor: '#9BDDFF',
     shadowOpacity: 0.5,
-    shadowRadius: 20,
+    shadowRadius: 16,
     shadowOffset: { width: 0, height: 0 },
   },
-  bigBtnPrimaryText: {
+  choiceBtnPrimaryText: {
     color: '#000',
     fontWeight: '800',
-    fontSize: 20,
+    fontSize: 16,
     letterSpacing: 0.3,
   },
-  bigBtnSecondary: {
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
+  choiceBtnSecondary: {
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
     borderWidth: 2,
     borderColor: '#9BDDFF',
   },
-  bigBtnSecondaryText: {
+  choiceBtnSecondaryText: {
     color: '#9BDDFF',
     fontWeight: '800',
-    fontSize: 20,
+    fontSize: 16,
     letterSpacing: 0.3,
+  },
+  syncCountBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#9BDDFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    shadowColor: '#9BDDFF',
+    shadowOpacity: 0.7,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  syncCountBadgeText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   ghostBtn: {
     paddingVertical: 10,

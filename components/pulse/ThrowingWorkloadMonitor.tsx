@@ -69,6 +69,13 @@ interface Props {
 }
 
 export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data }: Props) {
+  // PERF instrumentation — log render time for this component.
+  const _perfT0 = performance.now();
+  useEffect(() => {
+    const dt = performance.now() - _perfT0;
+    if (dt > 2) console.log(`[WorkloadPerf]   Monitor render: ${dt.toFixed(1)}ms (date=${scheduledDate})`);
+  });
+
   const external = data !== undefined;
   // Determine date mode: today / past / future. Past/future days cannot use
   // live mode (Pulse only generates packets in real time). Past days can still
@@ -281,38 +288,65 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
 
   // Track whether a throw is being processed (counter ticked but decode
   // hasn't finished yet). Shows a processing indicator under the gauge.
+  // Only fires when the counter INCREASES during a live session (otherwise
+  // a sync that resets the counter 5→0 was falsely triggering the indicator
+  // and leaving it stuck on forever). 2s hard timeout as a safety net so
+  // the indicator can never stay up indefinitely if decode silently fails.
   const [processingThrow, setProcessingThrow] = useState(false);
-  const prevCounterRef = useRef(dev.counter);
+  const prevCounterRef = useRef<number | null>(dev.counter ?? null);
   useEffect(() => {
-    if (live.status !== 'running') return;
-    if (dev.counter != null && dev.counter !== prevCounterRef.current) {
-      prevCounterRef.current = dev.counter;
+    if (live.status !== 'running') {
+      // Not live → clear indicator + snapshot current counter so the next
+      // live start doesn't immediately falsely trigger.
+      setProcessingThrow(false);
+      prevCounterRef.current = dev.counter ?? null;
+      return;
+    }
+    const current = dev.counter ?? null;
+    const prev = prevCounterRef.current;
+    if (current != null && prev != null && current > prev) {
       setProcessingThrow(true);
     }
+    prevCounterRef.current = current;
   }, [dev.counter, live.status]);
 
-  // Optimistic gauge bump when new live throws land
+  useEffect(() => {
+    if (!processingThrow) return;
+    const t = setTimeout(() => setProcessingThrow(false), 2000);
+    return () => clearTimeout(t);
+  }, [processingThrow]);
+
+  // Optimistic gauge bump when new live throws land. Depends on the scalar
+  // signals (throwCount / lastThrow) — NOT the ref-backed throws array —
+  // because the array's identity is stable across the session and wouldn't
+  // wake this effect. 99% of the time delta=1 so we read lastThrow directly;
+  // in the rare case React batches multiple throws into one render we slice
+  // the tail of the ref.
   const prevLiveLen = React.useRef(0);
   useEffect(() => {
     const prev = prevLiveLen.current;
-    const now = live.throws.length;
+    const now = live.throwCount;
     if (now <= prev) {
       prevLiveLen.current = now;
       return;
     }
-    // Throw decoded — clear processing indicator
     setProcessingThrow(false);
-    const news = live.throws.slice(prev);
-    const addW = news.reduce((a, t) => a + (Number(t.wThrow) || 0), 0);
+    const delta = now - prev;
+    let addW = 0;
+    if (delta === 1 && live.lastThrow) {
+      addW = Number(live.lastThrow.wThrow) || 0;
+    } else {
+      const tail = live.throws.slice(-delta);
+      addW = tail.reduce((a, t) => a + (Number(t.wThrow) || 0), 0);
+    }
     if (external) {
       setExtraW((cur) => cur + addW);
     } else {
       setActualWDay((cur) => cur + addW);
     }
     prevLiveLen.current = now;
-    // Gentle haptic per throw
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-  }, [live.throws]);
+  }, [live.throwCount, live.lastThrow]);
 
   // When a bulk sync commits, bump the running total
   useEffect(() => {
@@ -368,7 +402,11 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
     opacity: live.status === 'running' ? 2 - pulseVal.value : 1,
   }));
 
-  const dateHeader = (() => {
+  // Memoize the date-derived strings so we don't allocate a Date + run
+  // Intl.DateTimeFormat on every Monitor render. Saves two Date allocations
+  // and two formatter invocations per day switch (and per re-render in
+  // general).
+  const dateHeader = useMemo(() => {
     if (!scheduledDate) return 'WORKLOAD MONITOR';
     const d = new Date(`${scheduledDate}T12:00:00`);
     const label = d
@@ -379,7 +417,17 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
       })
       .toUpperCase();
     return `WORKLOAD · ${label}`;
-  })();
+  }, [scheduledDate]);
+
+  const gaugeDateLabel = useMemo(() => {
+    const anchor = scheduledDate
+      ? new Date(`${scheduledDate}T12:00:00`)
+      : new Date();
+    return anchor.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+  }, [scheduledDate]);
 
   return (
     <View style={styles.container}>
@@ -401,8 +449,8 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           >
             <Animated.View style={[styles.liveDot, pulseStyle]} />
             <Text style={styles.liveChipText}>LIVE</Text>
-            {live.throws.length > 0 && (
-              <Text style={styles.liveChipCount}>· {live.throws.length}</Text>
+            {live.throwCount > 0 && (
+              <Text style={styles.liveChipCount}>· {live.throwCount}</Text>
             )}
           </Pressable>
         ) : dev.state === 'connected' ? (
@@ -445,15 +493,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
           dayW={effActualWDay}
           chronic={effChronic}
           target={effTargetWDay}
-          dateLabel={(() => {
-            const anchor = scheduledDate
-              ? new Date(`${scheduledDate}T12:00:00`)
-              : new Date();
-            return anchor.toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
-            });
-          })()}
+          dateLabel={gaugeDateLabel}
           size={290}
         />
         {!profileComplete && (

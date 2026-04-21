@@ -23,7 +23,6 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { acwrColor, ACWR_HEX } from '../../lib/pulse/workload';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -37,26 +36,25 @@ interface WorkloadShape {
 function useStatusAndHex(
   target: number,
   actual: number,
-  acwr: number | null,
+  _acwr: number | null,
 ): { status: { label: string; hex: string }; hex: string } {
   const hasActual = actual > 0;
   const hasTarget = target > 0;
+  // Color model (matches the gauge + the calendar rings):
+  //   red   = over scheduled target (overload)
+  //   green = hit/met target
+  //   cyan  = in progress / no target (neutral)
+  // ACWR is no longer a color driver; it's a separate trend signal.
   const status = useMemo(() => {
     if (!hasTarget && !hasActual) return { label: 'No data', hex: '#4b5563' };
     if (!hasActual) return { label: 'No throws yet', hex: '#9BDDFF' };
     if (!hasTarget) return { label: 'Logged', hex: '#9BDDFF' };
-    const ratio = actual / target;
-    if (ratio < 0.5) return { label: 'Starting', hex: '#9BDDFF' };
-    if (ratio < 0.9) return { label: 'On track', hex: '#34d399' };
-    if (ratio <= 1.1) return { label: 'Hit target', hex: '#34d399' };
-    if (ratio <= 1.3) return { label: 'Over target', hex: '#facc15' };
-    return { label: 'Overload', hex: '#ef4444' };
+    if (actual > target) return { label: 'Overload', hex: '#ef4444' };
+    if (actual >= target) return { label: 'Hit target', hex: '#34d399' };
+    if (actual >= target * 0.5) return { label: 'On track', hex: '#9BDDFF' };
+    return { label: 'Starting', hex: '#9BDDFF' };
   }, [hasTarget, hasActual, target, actual]);
-  const hex = useMemo(() => {
-    if (acwr != null) return ACWR_HEX[acwrColor(acwr)];
-    return status.hex;
-  }, [acwr, status.hex]);
-  return { status, hex };
+  return { status, hex: status.hex };
 }
 
 // ─────────────────────────────────────────────────────────────

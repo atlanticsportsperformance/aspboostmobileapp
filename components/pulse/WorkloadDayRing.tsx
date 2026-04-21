@@ -1,7 +1,12 @@
 /**
  * WorkloadDayRing — subtle bottom bar indicator for calendar day cells.
- * Shows workload as a thin horizontal fill at the bottom of the cell,
- * color-coded by ACWR bucket. Much cleaner than a ring wrapping the day number.
+ * Shows workload as a thin horizontal fill at the bottom of the cell.
+ *
+ * Color model (matches the gauge):
+ *   - Red   = went OVER the scheduled target (overload)
+ *   - Green = hit/met the scheduled target
+ *   - Cyan  = under target / no target (neutral)
+ * ACWR is no longer a color driver — it's a separate trend signal.
  */
 
 import React, { useEffect } from 'react';
@@ -12,7 +17,6 @@ import Animated, {
   withTiming,
   Easing,
 } from 'react-native-reanimated';
-import { acwrColor, ACWR_HEX } from '../../lib/pulse/workload';
 
 interface Props {
   target: number;
@@ -21,12 +25,18 @@ interface Props {
   size?: number; // kept for API compat, unused
 }
 
-export function WorkloadDayRing({ target, actual, acwr }: Props) {
+export function WorkloadDayRing({ target, actual }: Props) {
   const hasActual = actual > 0;
   const hasTarget = target > 0;
   const shouldRender = hasActual || hasTarget;
 
-  const hex = acwr != null ? ACWR_HEX[acwrColor(acwr)] : '#9BDDFF';
+  const hex = hasTarget
+    ? actual > target
+      ? '#ef4444' // red — over target
+      : actual >= target
+        ? '#34d399' // emerald — met target
+        : '#9BDDFF' // cyan — in progress
+    : '#9BDDFF'; // cyan — no target
 
   const pct = hasTarget
     ? Math.min(1, Math.max(0, actual / target))

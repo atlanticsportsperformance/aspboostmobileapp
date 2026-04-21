@@ -960,37 +960,39 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   async function fetchHittingData(athleteIdParam: string) {
-    // Query Blast Motion swings for bat speed
-    const { data: blastSwings } = await supabase
-      .from('blast_swings')
-      .select('*')
-      .eq('athlete_id', athleteIdParam)
-      .order('recorded_date', { ascending: false })
-      .order('recorded_time', { ascending: false });
+    // Blast / HitTrax sessions / FullSwing are independent — fetch in parallel.
+    // HitTrax swings depends on session IDs, so it runs after that result resolves.
+    const [blastResult, hittraxSessionsResult, fullSwingResult] = await Promise.all([
+      supabase
+        .from('blast_swings')
+        .select('recorded_date, recorded_time, metrics')
+        .eq('athlete_id', athleteIdParam)
+        .order('recorded_date', { ascending: false })
+        .order('recorded_time', { ascending: false }),
+      supabase
+        .from('hittrax_sessions')
+        .select('id, session_date')
+        .eq('athlete_id', athleteIdParam)
+        .order('session_date', { ascending: false }),
+      supabase
+        .from('fullswing_sessions')
+        .select('id, session_date, max_bat_speed, max_exit_velocity, max_distance')
+        .eq('athlete_id', athleteIdParam)
+        .order('session_date', { ascending: false }),
+    ]);
 
-    // Query HitTrax sessions to get session IDs linked to this athlete
-    const { data: hittraxSessions } = await supabase
-      .from('hittrax_sessions')
-      .select('id, session_date')
-      .eq('athlete_id', athleteIdParam)
-      .order('session_date', { ascending: false });
+    const blastSwings = blastResult.data;
+    const hittraxSessions = hittraxSessionsResult.data;
+    const fullSwingSessions = fullSwingResult.data;
 
-    // Query HitTrax swings for exit velocity and distance
     const hittraxSessionIds = hittraxSessions?.map((s) => s.id) || [];
     const { data: hittraxSwings } = hittraxSessionIds.length > 0
       ? await supabase
           .from('hittrax_swings')
-          .select('*')
+          .select('session_id, exit_velocity, distance, swing_timestamp')
           .in('session_id', hittraxSessionIds)
           .order('swing_timestamp', { ascending: false })
       : { data: null };
-
-    // Query Full Swing sessions for combined bat speed + exit velocity + distance
-    const { data: fullSwingSessions } = await supabase
-      .from('fullswing_sessions')
-      .select('id, session_date, max_bat_speed, max_exit_velocity, max_distance')
-      .eq('athlete_id', athleteIdParam)
-      .order('session_date', { ascending: false });
 
     // Calculate PRs for bat speed (from Blast + Full Swing), exit velocity and distance (from HitTrax + Full Swing)
     let maxBatSpeed = { value: 0, date: '' };
@@ -1257,40 +1259,37 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   async function fetchPitchingData(athleteIdParam: string) {
-    // Query TrackMan pitch data for velocity metrics
-    // Use pagination to bypass 1000 row limit
-    // Fetch pitches and stuff_plus separately (no FK relationship in DB for JOIN)
-    const allPitches: any[] = [];
-    let offset = 0;
-    let hasMore = true;
-
-    while (hasMore) {
-      const { data: pitchBatch, error } = await supabase
-        .from('trackman_pitch_data')
-        .select('*')
-        .eq('athlete_id', athleteIdParam)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + BATCH_SIZE - 1);
-
-      if (error) {
-        console.error('Error fetching pitching data:', error);
-        break;
-      }
-
-      if (pitchBatch && pitchBatch.length > 0) {
-        allPitches.push(...pitchBatch);
+    // Query TrackMan pitch data for velocity metrics.
+    // Pitches (paginated) and stuff_plus grades are independent queries — fetch in parallel.
+    // Narrow SELECT to only the fields actually consumed downstream.
+    const paginatedPitches = (async () => {
+      const collected: any[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: pitchBatch, error } = await supabase
+          .from('trackman_pitch_data')
+          .select('pitch_uid, session_id, rel_speed, tagged_pitch_type, created_at')
+          .eq('athlete_id', athleteIdParam)
+          .order('created_at', { ascending: false })
+          .range(offset, offset + BATCH_SIZE - 1);
+        if (error) {
+          console.error('Error fetching pitching data:', error);
+          return collected;
+        }
+        if (!pitchBatch || pitchBatch.length === 0) return collected;
+        collected.push(...pitchBatch);
+        if (pitchBatch.length < BATCH_SIZE) return collected;
         offset += BATCH_SIZE;
-        hasMore = pitchBatch.length === BATCH_SIZE;
-      } else {
-        hasMore = false;
       }
-    }
+    })();
 
-    // Fetch stuff_plus grades separately
-    const { data: stuffPlusGrades } = await supabase
+    const stuffPlusFetch = supabase
       .from('pitch_stuff_plus')
       .select('pitch_uid, stuff_plus, pitch_type_group, graded_at')
       .eq('athlete_id', athleteIdParam);
+
+    const [allPitches, stuffPlusResult] = await Promise.all([paginatedPitches, stuffPlusFetch]);
+    const stuffPlusGrades = stuffPlusResult.data;
 
     // Create a map for quick lookup
     const stuffPlusMap = new Map<string, { stuff_plus: number; pitch_type_group: string; graded_at: string }>();
@@ -1987,9 +1986,9 @@ export default function DashboardScreen({ navigation }: any) {
           .filter(Boolean); // Remove null entries
         setBookings(normalizedBookings);
 
-        // Calculate unread messages count using conversation_participants.last_read_at
-        // BATCHED: Single query instead of 1 per conversation
-        // Run in background to not block initial render
+        // Unread messages: one count-only query per conversation, in parallel.
+        // Server-side count(*) with last_read_at filter replaces the previous
+        // fetch-all-messages-and-count-in-memory approach.
         (async () => {
           try {
             const participants = conversationParticipantsResult.data || [];
@@ -1998,25 +1997,18 @@ export default function DashboardScreen({ navigation }: any) {
               return;
             }
 
-            const conversationIds = participants.map(p => p.conversation_id);
-
-            // Fetch all messages for all conversations in one query
-            const { data: allMessages } = await supabase
-              .from('messages')
-              .select('conversation_id, created_at')
-              .in('conversation_id', conversationIds)
-              .eq('is_deleted', false)
-              .neq('sender_id', user.id);
-
-            // Count unread by filtering in-memory based on last_read_at
-            let totalUnread = 0;
-            for (const msg of allMessages || []) {
-              const participant = participants.find(p => p.conversation_id === msg.conversation_id);
-              const lastReadAt = participant?.last_read_at || '1970-01-01';
-              if (msg.created_at > lastReadAt) {
-                totalUnread++;
-              }
-            }
+            const counts = await Promise.all(
+              participants.map((p) =>
+                supabase
+                  .from('messages')
+                  .select('id', { count: 'exact', head: true })
+                  .eq('conversation_id', p.conversation_id)
+                  .eq('is_deleted', false)
+                  .neq('sender_id', user.id)
+                  .gt('created_at', p.last_read_at || '1970-01-01')
+              )
+            );
+            const totalUnread = counts.reduce((sum, r) => sum + (r.count || 0), 0);
             setUnreadMessagesCount(totalUnread);
           } catch (err) {
             console.error('Error calculating unread messages:', err);

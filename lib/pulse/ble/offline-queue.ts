@@ -15,8 +15,10 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { pulseEvents } from './pulse-events';
 
 const STORAGE_KEY = 'pulse_offline_throw_queue';
+const DEFAULT_INTERVAL_MS = 10_000;
 
 export interface QueuedThrowRow {
   org_id: string;
@@ -34,6 +36,7 @@ export interface QueuedThrowRow {
 let memoryQueue: QueuedThrowRow[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 let supabaseRef: SupabaseClient | null = null;
+let currentIntervalMs = DEFAULT_INTERVAL_MS;
 
 /** Enqueue a row that failed to commit. Persists to AsyncStorage. */
 export async function enqueueThrow(row: QueuedThrowRow): Promise<void> {
@@ -86,8 +89,14 @@ export async function flushQueue(supabase?: SupabaseClient): Promise<number> {
     } catch {
       // non-fatal
     }
-    console.warn(`[offline-queue] flushed ${count ?? batch.length} queued throws`);
-    return count ?? batch.length;
+    const committed = count ?? batch.length;
+    if (committed > 0) {
+      // Notify listeners (WorkloadScreen, ThrowingThrowsFeed) that new rows
+      // landed in Supabase so they can refetch. The queue is now the primary
+      // live-write path, so this is how commits propagate to the UI.
+      pulseEvents.emitThrowsCommitted();
+    }
+    return committed;
   } catch (err: any) {
     console.warn('[offline-queue] flush threw, will retry:', err?.message);
     return 0;
@@ -120,13 +129,35 @@ export async function startOfflineQueue(supabase: SupabaseClient): Promise<void>
     flushQueue().catch(() => {});
   }
 
-  // Periodic retry every 10 seconds
-  if (flushTimer) clearInterval(flushTimer);
+  // Periodic retry on the current interval
+  restartTimer();
+}
+
+function restartTimer(): void {
+  if (flushTimer) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
   flushTimer = setInterval(() => {
     if (memoryQueue.length > 0) {
       flushQueue().catch(() => {});
     }
-  }, 10_000);
+  }, currentIntervalMs);
+}
+
+/**
+ * Re-pace the flush timer at runtime. Live sessions call this with 1000 ms
+ * for near-realtime persistence; stop() restores the 10 s idle cadence.
+ * Safe to call before startOfflineQueue — the interval is used when the
+ * timer is next started.
+ */
+export function setFlushInterval(ms: number): void {
+  const clamped = Math.max(250, Math.floor(ms));
+  if (clamped === currentIntervalMs) return;
+  currentIntervalMs = clamped;
+  if (flushTimer) {
+    restartTimer();
+  }
 }
 
 /** Stop the periodic flush timer. */

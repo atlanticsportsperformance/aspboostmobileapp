@@ -21,6 +21,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { supabase } from '../supabase';
@@ -83,6 +84,13 @@ export function PulseProvider({
   initialAnthro,
   children,
 }: ProviderProps) {
+  // PERF instrumentation — see if the provider is re-rendering on day switch
+  // and whether its context value ref is staying stable.
+  const _perfT0 = useRef(performance.now());
+  _perfT0.current = performance.now();
+  const _renderCountRef = useRef(0);
+  _renderCountRef.current += 1;
+
   const [anthro, setAnthro] = useState<PulseAnthro>(
     initialAnthro ?? { heightInches: null, weightLbs: null },
   );
@@ -220,6 +228,28 @@ export function PulseProvider({
       closeWizard,
     ],
   );
+
+  // PERF: flag when the context value ref actually changed vs the prior render.
+  const _prevValueRef = useRef<PulseContextValue | null>(null);
+  const _prevValue = _prevValueRef.current;
+  _prevValueRef.current = value;
+  useEffect(() => {
+    const dt = performance.now() - _perfT0.current;
+    const changed = _prevValue !== value;
+    if (dt > 2 || changed) {
+      console.log(
+        `[WorkloadPerf] PulseProvider render #${_renderCountRef.current}: ${dt.toFixed(1)}ms, ` +
+        `value ${changed ? 'CHANGED' : 'stable'}`,
+      );
+      if (changed && _prevValue) {
+        const diffs: string[] = [];
+        (Object.keys(value) as (keyof PulseContextValue)[]).forEach((k) => {
+          if (_prevValue[k] !== value[k]) diffs.push(k);
+        });
+        if (diffs.length) console.log(`[WorkloadPerf]   diff keys: ${diffs.join(', ')}`);
+      }
+    }
+  });
 
   return <PulseContext.Provider value={value}>{children}</PulseContext.Provider>;
 }

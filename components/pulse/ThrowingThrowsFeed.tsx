@@ -17,7 +17,7 @@
  *  - Header counter spring-counts up as rows stream in
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -26,14 +26,10 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  withTiming,
-  FadeIn,
-  FadeOut,
-} from 'react-native-reanimated';
+// No reanimated imports — per-row press feedback is handled by Pressable's
+// {pressed} callback, which is dramatically cheaper than allocating a
+// shared-value + animated-style per row at mount. On day switches this saves
+// ~8ms/row of reanimated bridge work.
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
@@ -89,6 +85,14 @@ export function ThrowingThrowsFeed({
   throwsLoading: externalLoading,
   onThrowDeleted,
 }: Props) {
+  // PERF instrumentation — log render time + row count for this component.
+  const _perfT0 = performance.now();
+  useEffect(() => {
+    const dt = performance.now() - _perfT0;
+    const n = externalThrows?.length ?? 0;
+    if (dt > 2) console.log(`[WorkloadPerf]   Feed render: ${dt.toFixed(1)}ms (rows=${n}, date=${scheduledDate})`);
+  });
+
   const external = externalThrows !== undefined;
 
   const { session } = useAuth();
@@ -257,7 +261,7 @@ export function ThrowingThrowsFeed({
               t={t}
               index={i}
               deleting={deletingId === t.id}
-              onDelete={() => onDelete(t.id)}
+              onDelete={onDelete}
             />
           ))}
         </View>
@@ -267,45 +271,46 @@ export function ThrowingThrowsFeed({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Individual throw row with entering animation + long-press delete
+// Individual throw row with long-press delete.
+//
+// Entering / exiting animations were removed: switching days unmounted N
+// rows and mounted M rows, triggering N+M simultaneous reanimated entering/
+// exiting operations — the single biggest source of day-switch jank. The
+// press-scale feedback animation is kept because it's per-interaction, not
+// per-mount.
 // ─────────────────────────────────────────────────────────────
 
-function ThrowRow({
+function ThrowRowInner({
   t,
-  index,
   deleting,
   onDelete,
 }: {
   t: Throw;
   index: number;
   deleting: boolean;
-  onDelete: () => void;
+  onDelete: (id: string) => void;
 }) {
   const hex = torqueHex(t.torque_nm);
-  const time = t.thrown_at
-    ? new Date(t.thrown_at).toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-      })
-    : '—';
+  const time = useMemo(() => {
+    if (!t.thrown_at) return '—';
+    return new Date(t.thrown_at).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }, [t.thrown_at]);
 
-  // Press feedback
-  const scale = useSharedValue(1);
-  const pressStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
+  const handlePress = useCallback(() => {
+    onDelete(t.id);
+  }, [onDelete, t.id]);
 
   return (
-    <Animated.View
-      entering={FadeIn.duration(180)}
-      exiting={FadeOut.duration(160)}
+    <View
       style={[
         styles.row,
         {
           borderColor: `${hex}33`,
           shadowColor: hex,
         },
-        pressStyle,
       ]}
     >
       <View style={[styles.rowAccent, { backgroundColor: hex }]} />
@@ -330,16 +335,17 @@ function ThrowRow({
       </View>
       <View style={{ flex: 1 }} />
       {t.source && <Text style={styles.rowSource}>{t.source}</Text>}
+      {/* Workload per throw — right-aligned audit value next to the trash */}
+      <View style={styles.rowWorkload}>
+        <Text style={[styles.rowWorkloadNum, { color: hex }]}>
+          {t.workload != null ? t.workload.toFixed(2) : '—'}
+        </Text>
+        <Text style={styles.rowWorkloadUnit}>W</Text>
+      </View>
       <Pressable
-        onPressIn={() => {
-          scale.value = withTiming(0.94, { duration: 100 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 12, stiffness: 180 });
-        }}
-        onPress={onDelete}
+        onPress={handlePress}
         hitSlop={16}
-        style={styles.trashBtn}
+        style={({ pressed }) => [styles.trashBtn, pressed && { opacity: 0.6 }]}
       >
         {deleting ? (
           <ActivityIndicator size="small" color="#9ca3af" />
@@ -347,9 +353,15 @@ function ThrowRow({
           <Ionicons name="trash-outline" size={18} color="#9ca3af" />
         )}
       </Pressable>
-    </Animated.View>
+    </View>
   );
 }
+
+// Memoize per-row: when the parent re-renders (e.g. day switch or delete),
+// rows whose props are unchanged skip re-render entirely. Props are all
+// primitives/stable (onDelete is stabilized via useCallback at the parent)
+// so React.memo's default shallow compare is correct.
+const ThrowRow = React.memo(ThrowRowInner);
 
 const styles = StyleSheet.create({
   container: {
@@ -448,6 +460,24 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 1,
+  },
+  rowWorkload: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 2,
+    marginLeft: 8,
+  },
+  rowWorkloadNum: {
+    fontSize: 12,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    textShadowRadius: 6,
+    textShadowOffset: { width: 0, height: 0 },
+  },
+  rowWorkloadUnit: {
+    color: '#4b5563',
+    fontSize: 9,
+    fontWeight: '700',
   },
   trashBtn: {
     padding: 10,

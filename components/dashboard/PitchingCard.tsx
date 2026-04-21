@@ -236,7 +236,10 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
       }
     }
 
-    // Avg Velocity bars (slower spring)
+    // Avg Velocity bars — animate whichever rows have data independently.
+    // Previously the recent-session bar was nested inside the 30d check, so
+    // athletes with no last-30-day pitches (but an older recent session)
+    // showed no avg section at all.
     if (latest.avg_velo_30d) {
       Animated.spring(avgVelo30dAnim, {
         toValue: avgVelo30dWidth,
@@ -245,16 +248,15 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
         tension: 25,
         useNativeDriver: false,
       }).start();
-
-      if (latest.avg_velo_recent !== null) {
-        Animated.spring(avgVeloRecentAnim, {
-          toValue: avgVeloRecentWidth,
-          delay: 950,
-          friction: 8,
-          tension: 25,
-          useNativeDriver: false,
-        }).start();
-      }
+    }
+    if (latest.avg_velo_recent !== null) {
+      Animated.spring(avgVeloRecentAnim, {
+        toValue: avgVeloRecentWidth,
+        delay: latest.avg_velo_30d ? 950 : 700,
+        friction: 8,
+        tension: 25,
+        useNativeDriver: false,
+      }).start();
     }
 
     // Hash marks pop in staggered (more delay between each)
@@ -419,9 +421,10 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
       }]}>
         <Text style={styles.metricLabel}>Avg Velocity</Text>
 
-        {latest.avg_velo_30d ? (
+        {(latest.avg_velo_30d || latest.avg_velo_recent !== null) ? (
           <>
-            {/* 30 Day Average Slider */}
+            {/* 30 Day Average Slider — only when there's data in the last 30d */}
+            {latest.avg_velo_30d ? (
             <View style={styles.sliderRow}>
               <Text style={styles.sliderLabel}>Last 30 Days</Text>
               <View style={styles.sliderTrackContainer}>
@@ -449,6 +452,7 @@ export default function PitchingCard({ data, isActive = true }: PitchingCardProp
                 <Text style={styles.unit}>mph</Text>
               </View>
             </View>
+            ) : null}
 
             {/* Recent Session Average */}
             {latest.avg_velo_recent !== null && (
