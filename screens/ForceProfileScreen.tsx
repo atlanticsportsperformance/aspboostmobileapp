@@ -513,14 +513,12 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
-        showWorkload={isMember}
-        onWorkloadPress={() => navigation.navigate('Workload' as never)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
-          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasPitchingData || isMember ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingHub', { athleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
           ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           { id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },

@@ -49,6 +49,7 @@ import HittingTrendsScreen from './screens/HittingTrendsScreen';
 import BattedBallTrendsScreen from './screens/BattedBallTrendsScreen';
 import PairedDataTrendsScreen from './screens/PairedDataTrendsScreen';
 import PitchingScreen from './screens/PitchingScreen';
+import PitchingHubScreen from './screens/PitchingHubScreen';
 import PitchingSessionScreen from './screens/PitchingSessionScreen';
 import PitchingTrendsScreen from './screens/PitchingTrendsScreen';
 import MocapSessionsScreen from './screens/MocapSessionsScreen';
@@ -187,6 +188,7 @@ function AppContent() {
             <Stack.Screen name="HittingTrends" component={HittingTrendsScreen} />
             <Stack.Screen name="BattedBallTrends" component={BattedBallTrendsScreen} />
             <Stack.Screen name="PairedDataTrends" component={PairedDataTrendsScreen} />
+            <Stack.Screen name="PitchingHub" component={PitchingHubScreen} />
             <Stack.Screen name="PitchingPerformance" component={PitchingScreen} />
             <Stack.Screen name="PitchingSession" component={PitchingSessionScreen} />
             <Stack.Screen name="PitchingTrends" component={PitchingTrendsScreen} />

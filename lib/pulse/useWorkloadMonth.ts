@@ -8,7 +8,7 @@
  * CombinedThrowingDayCard.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../supabase';
 import { acwr as acwrFn } from './workload';
 
@@ -33,8 +33,10 @@ function addDaysISO(iso: string, n: number): string {
 export function useWorkloadMonth(
   athleteId: string | null,
   monthDate: Date,
-): Map<string, WorkloadDayEntry> {
+): { byDate: Map<string, WorkloadDayEntry>; refresh: () => void } {
   const [byDate, setByDate] = useState<Map<string, WorkloadDayEntry>>(new Map());
+  const [nonce, setNonce] = useState(0);
+  const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     if (!athleteId) return;
@@ -108,7 +110,7 @@ export function useWorkloadMonth(
     return () => {
       cancelled = true;
     };
-  }, [athleteId, monthDate.getFullYear(), monthDate.getMonth()]);
+  }, [athleteId, monthDate.getFullYear(), monthDate.getMonth(), nonce]);
 
-  return byDate;
+  return { byDate, refresh };
 }

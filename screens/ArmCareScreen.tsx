@@ -761,14 +761,12 @@ export default function ArmCareScreen({ navigation, route }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
-        showWorkload={isMember}
-        onWorkloadPress={() => navigation.navigate('Workload' as never)}
         items={[
           { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
           { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId: currentAthleteId }) },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId: currentAthleteId }) }] : []),
-          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId: currentAthleteId }) }] : []),
+          ...(hasPitchingData || isMember ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingHub', { athleteId: currentAthleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId: currentAthleteId }) }] : []),
           { id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, isActive: true, onPress: () => setFabOpen(false) },
           ...(hasForceData ? [{ id: 'force', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId: currentAthleteId }) }] : []),

@@ -457,19 +457,28 @@ function ConnectStep({
         <Pressable
           style={({ pressed }) => [
             styles.primaryBtn,
-            { backgroundColor: '#9BDDFF' },
+            needsSettings
+              ? {
+                  backgroundColor: '#1f2937',
+                  borderWidth: 1,
+                  borderColor: 'rgba(255,255,255,0.15)',
+                  shadowOpacity: 0,
+                }
+              : { backgroundColor: '#9BDDFF' },
             pressed && { transform: [{ scale: 0.97 }] },
           ]}
           onPress={onPrimary}
         >
           {needsSettings ? (
-            <Ionicons name="settings-outline" size={16} color="#000" />
+            <Ionicons name="settings-outline" size={16} color="#fff" />
           ) : isError ? (
             <Ionicons name="refresh" size={16} color="#000" />
           ) : (
             <Ionicons name="bluetooth" size={16} color="#000" />
           )}
-          <Text style={styles.primaryBtnText}>{primaryLabel}</Text>
+          <Text style={[styles.primaryBtnText, needsSettings && { color: '#fff' }]}>
+            {primaryLabel}
+          </Text>
         </Pressable>
       )}
       {!isConnected && (

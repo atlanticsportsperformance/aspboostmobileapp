@@ -491,9 +491,11 @@ export default function DashboardScreen({ navigation }: any) {
 
   const hasAnyData = !!(forceProfile && valdProfileId) || !!armCareData || !!hittingData || !!pitchingData;
 
-  // Workload data for the visible month — drives calendar rings + day cards
-  // MUST be above any early returns to preserve hook order
-  const workloadByDate = useWorkloadMonth(athleteId, currentDate);
+  // Workload data for the visible month — drives calendar rings + day cards.
+  // Exposes refresh() so we can bust the cache when the dashboard regains focus
+  // (e.g. after deleting throws on the Workload screen).
+  // MUST be above any early returns to preserve hook order.
+  const { byDate: workloadByDate, refresh: refreshWorkload } = useWorkloadMonth(athleteId, currentDate);
 
   // Athlete lifecycle — gates the Workload FAB item on active membership.
   // Cached module-wide so every FAB screen shares a single fetch.
@@ -659,6 +661,12 @@ export default function DashboardScreen({ navigation }: any) {
     useCallback(() => {
       if (!session || isLoadingRef.current || !initialFetchDone.current) return;
 
+      // Workload may have changed while the user was on the Workload screen
+      // (throw deletions trigger a server-side recompute of pulse_daily_workload).
+      // Always bust the workload month cache on focus so calendar rings reflect
+      // the latest w_day — it's one query and the server does the aggregation.
+      refreshWorkload();
+
       // WorkoutLogger marks the list dirty after complete/exit so we can
       // bypass the throttle and immediately see status:'completed'. Without
       // this, the 30s throttle left the dashboard card stale and tapping
@@ -674,7 +682,7 @@ export default function DashboardScreen({ navigation }: any) {
         console.log('[Dashboard] Focus effect triggering data refresh');
         loadDashboard();
       }
-    }, [session])
+    }, [session, refreshWorkload])
   );
 
   // Check if workout is in progress and show resume modal
@@ -2891,8 +2899,6 @@ export default function DashboardScreen({ navigation }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
-        showWorkload={isMember}
-        onWorkloadPress={() => navigation.navigate('Workload')}
         items={[
           // ALWAYS SHOWN items
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => {} },
@@ -2900,7 +2906,9 @@ export default function DashboardScreen({ navigation }: any) {
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
           // CONDITIONAL items
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
-          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          // Pitching opens the hub (gateway to Performance + Workload). Shown
+          // for anyone with trackman data OR active membership (workload access).
+          ...(hasPitchingData || isMember ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingHub', { athleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
           ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           ...(forceProfile && valdProfileId ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),

@@ -231,14 +231,6 @@ export function WorkloadDaySection({
                   </Text>
                 </>
               )}
-              {acwr != null && (
-                <>
-                  <Text style={styles.dotSep}>·</Text>
-                  <Text style={[styles.statusMeta, { color: hex }]}>
-                    ACWR {acwr.toFixed(2)}
-                  </Text>
-                </>
-              )}
             </View>
           </View>
           <Text style={[styles.chevron, { color: hex }]}>OPEN →</Text>
@@ -366,21 +358,11 @@ export function CombinedThrowingDayCard({
                 {status.label.toUpperCase()}
               </Text>
             </View>
-            {(throwCount > 0 || acwr != null) && (
+            {throwCount > 0 && (
               <View style={combinedStyles.metaRow}>
-                {throwCount > 0 && (
-                  <Text style={combinedStyles.meta}>
-                    {throwCount} throw{throwCount === 1 ? '' : 's'}
-                  </Text>
-                )}
-                {throwCount > 0 && acwr != null && (
-                  <Text style={combinedStyles.metaDot}>·</Text>
-                )}
-                {acwr != null && (
-                  <Text style={[combinedStyles.meta, { color: hex }]}>
-                    ACWR {acwr.toFixed(2)}
-                  </Text>
-                )}
+                <Text style={combinedStyles.meta}>
+                  {throwCount} throw{throwCount === 1 ? '' : 's'}
+                </Text>
               </View>
             )}
           </View>

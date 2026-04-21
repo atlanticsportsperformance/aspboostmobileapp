@@ -1,7 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
+import Svg, {
+  Circle,
+  Defs,
+  LinearGradient as SvgLinearGradient,
+  RadialGradient as SvgRadialGradient,
+  Stop,
+  Line,
+} from 'react-native-svg';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -45,10 +52,53 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
   const predictionAnim = useRef(new Animated.Value(0)).current;
 
-  // Circle circumference
+  // Circle geometry — slightly bigger viewBox so the halo can bleed beyond the stroke.
+  const SVG_SIZE = 180;
+  const CX = SVG_SIZE / 2;
+  const CY = SVG_SIZE / 2;
+  const STROKE_W = 12;
   const radius = 68;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - percentile_rank / 100);
+
+  // Tier → hex (single source of truth for arc, halo, rim, ticks, text color)
+  const tier =
+    percentile_rank >= 75 ? 'elite'
+    : percentile_rank >= 50 ? 'optimize'
+    : percentile_rank >= 25 ? 'sharpen'
+    : 'build';
+  const tierHex =
+    tier === 'elite' ? '#34d399'
+    : tier === 'optimize' ? '#9BDDFF'
+    : tier === 'sharpen' ? '#fbbf24'
+    : '#ef4444';
+  const tierHexBright =
+    tier === 'elite' ? '#6ee7b7'
+    : tier === 'optimize' ? '#B0E5FF'
+    : tier === 'sharpen' ? '#fcd34d'
+    : '#f87171';
+  const tierHexDeep =
+    tier === 'elite' ? '#10b981'
+    : tier === 'optimize' ? '#7BC5F0'
+    : tier === 'sharpen' ? '#f59e0b'
+    : '#dc2626';
+
+  // Tier threshold tick marks at 25 / 50 / 75 — drawn in the SAME rotated frame
+  // as the Svg (progress starts at top because the whole Svg is rotated -90°),
+  // so t=0% is "up" and t=25% is "right". Math below matches that.
+  const ticks = [25, 50, 75].map((t) => {
+    const angle = (t / 100) * 2 * Math.PI;
+    const rInner = radius - STROKE_W * 0.55;
+    const rOuter = radius + STROKE_W * 0.55;
+    return {
+      key: `tick-${t}`,
+      x1: CX + Math.cos(angle) * rInner,
+      y1: CY + Math.sin(angle) * rInner,
+      x2: CX + Math.cos(angle) * rOuter,
+      y2: CY + Math.sin(angle) * rOuter,
+      major: t === 50,
+    };
+  });
 
   // Reset when card becomes inactive
   useEffect(() => {
@@ -147,37 +197,119 @@ export default function ForceProfileCard({ data, latestPrediction, batSpeedPredi
     <View style={styles.forceProfileContent}>
       {/* LEFT: Circle */}
       <View style={styles.leftColumn}>
-        <Animated.View style={[styles.circleContainer, {
-          transform: [{ scale: scaleAnim }],
-        }]}>
-          <Svg width={160} height={160} style={{ transform: [{ rotate: '-90deg' }] }}>
+        <Animated.View
+          style={[
+            styles.circleContainer,
+            {
+              transform: [{ scale: scaleAnim }],
+              shadowColor: tierHex,
+              shadowOpacity: tier === 'elite' ? 0.55 : 0.35,
+              shadowRadius: 22,
+              shadowOffset: { width: 0, height: 0 },
+            },
+          ]}
+        >
+          {/* Radial halo glow bleeds beyond the ring for depth */}
+          <View style={styles.halo} pointerEvents="none">
+            <Svg width="100%" height="100%">
+              <Defs>
+                <SvgRadialGradient id="forceHalo" cx="50%" cy="50%" r="50%">
+                  <Stop offset="0%" stopColor={tierHex} stopOpacity="0.45" />
+                  <Stop offset="40%" stopColor={tierHex} stopOpacity="0.15" />
+                  <Stop offset="78%" stopColor={tierHex} stopOpacity="0" />
+                </SvgRadialGradient>
+              </Defs>
+              <Circle cx="50%" cy="50%" r="50%" fill="url(#forceHalo)" />
+            </Svg>
+          </View>
+
+          <Svg
+            width={SVG_SIZE}
+            height={SVG_SIZE}
+            style={{ transform: [{ rotate: '-90deg' }] }}
+          >
             <Defs>
+              {/* Arc gradient stays in the tier hue the whole way around — no
+                  more fade-to-black at the start, which was killing visibility. */}
               <SvgLinearGradient id="forceGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                <Stop offset="0%" stopColor="#000000" />
-                <Stop offset="30%" stopColor={percentile_rank >= 75 ? "#10b981" : percentile_rank >= 50 ? "#7BC5F0" : percentile_rank >= 25 ? "#f59e0b" : "#dc2626"} />
-                <Stop offset="60%" stopColor={percentile_rank >= 75 ? "#34d399" : percentile_rank >= 50 ? "#9BDDFF" : percentile_rank >= 25 ? "#fbbf24" : "#ef4444"} />
-                <Stop offset="100%" stopColor={percentile_rank >= 75 ? "#6ee7b7" : percentile_rank >= 50 ? "#B0E5FF" : percentile_rank >= 25 ? "#fcd34d" : "#f87171"} />
+                <Stop offset="0%" stopColor={tierHexDeep} />
+                <Stop offset="50%" stopColor={tierHex} />
+                <Stop offset="100%" stopColor={tierHexBright} />
+              </SvgLinearGradient>
+              {/* Top-to-bottom glass rim — mimics the Pulse bubble */}
+              <SvgLinearGradient id="forceRim" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.85" />
+                <Stop offset="40%" stopColor={tierHex} stopOpacity="0.30" />
+                <Stop offset="100%" stopColor={tierHex} stopOpacity="0.10" />
               </SvgLinearGradient>
             </Defs>
-            <Circle cx="80" cy="80" r="68" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="12" fill="none" />
+
+            {/* Outer rim — subtle glass highlight */}
+            <Circle
+              cx={CX}
+              cy={CY}
+              r={radius + STROKE_W * 0.45}
+              fill="none"
+              stroke="url(#forceRim)"
+              strokeWidth={1.5}
+            />
+
+            {/* Track */}
+            <Circle
+              cx={CX}
+              cy={CY}
+              r={radius}
+              stroke={tierHex}
+              strokeOpacity={0.1}
+              strokeWidth={STROKE_W}
+              fill="none"
+            />
+
+            {/* Inner rim — second glass hit for depth */}
+            <Circle
+              cx={CX}
+              cy={CY}
+              r={radius - STROKE_W * 0.55}
+              fill="none"
+              stroke="url(#forceRim)"
+              strokeWidth={1}
+              strokeOpacity={0.55}
+            />
+
+            {/* Tier threshold tick marks (25 / 50 / 75) */}
+            {ticks.map((t) => (
+              <Line
+                key={t.key}
+                x1={t.x1}
+                y1={t.y1}
+                x2={t.x2}
+                y2={t.y2}
+                stroke={tierHex}
+                strokeOpacity={t.major ? 0.5 : 0.25}
+                strokeWidth={t.major ? 2 : 1.2}
+              />
+            ))}
+
+            {/* Animated progress arc */}
             <AnimatedCircle
-              cx="80"
-              cy="80"
-              r="68"
+              cx={CX}
+              cy={CY}
+              r={radius}
               stroke="url(#forceGradient)"
-              strokeWidth="12"
+              strokeWidth={STROKE_W}
               fill="none"
               strokeLinecap="round"
               strokeDasharray={circumference}
               strokeDashoffset={animatedStrokeDashoffset}
             />
           </Svg>
+
           <View style={styles.circleText}>
-            <Text style={[styles.circleScore, {
-              color: percentile_rank >= 75 ? '#34d399' : percentile_rank >= 50 ? '#9BDDFF' : percentile_rank >= 25 ? '#fbbf24' : '#ef4444'
-            }]}>{displayScore}</Text>
-            <Text style={styles.circleLabel}>
-              {percentile_rank >= 75 ? 'ELITE' : percentile_rank >= 50 ? 'OPTIMIZE' : percentile_rank >= 25 ? 'SHARPEN' : 'BUILD'}
+            <Text style={[styles.circleScore, { color: tierHex }]}>
+              {displayScore}
+            </Text>
+            <Text style={[styles.circleLabel, { color: `${tierHex}CC` }]}>
+              {tier === 'elite' ? 'ELITE' : tier === 'optimize' ? 'OPTIMIZE' : tier === 'sharpen' ? 'SHARPEN' : 'BUILD'}
             </Text>
           </View>
         </Animated.View>
@@ -397,10 +529,17 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   circleContainer: {
-    width: 160,
-    height: 160,
+    width: 180,
+    height: 180,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  halo: {
+    position: 'absolute',
+    width: 220,
+    height: 220,
+    top: -20,
+    left: -20,
   },
   circleGlow: {
     position: 'absolute',

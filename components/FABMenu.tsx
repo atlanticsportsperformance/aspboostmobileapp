@@ -25,13 +25,6 @@ interface FABMenuProps {
   onToggle: () => void;
   items: FABMenuItem[];
   totalBadgeCount?: number;
-  /** When true, a "Workload" menu item is automatically prepended to the
-   *  items list. Pair with `onWorkloadPress`. Screens should pass
-   *  `showWorkload={useAthleteLifecycle().isMember}`. */
-  showWorkload?: boolean;
-  /** Handler for the auto-injected Workload item. Required when
-   *  `showWorkload` is true. */
-  onWorkloadPress?: () => void;
 }
 
 export default function FABMenu({
@@ -39,34 +32,8 @@ export default function FABMenu({
   onToggle,
   items,
   totalBadgeCount = 0,
-  showWorkload = false,
-  onWorkloadPress,
 }: FABMenuProps) {
-  // Auto-inject the Workload item when gated on active membership. Lives
-  // inside FABMenu so the FAB screens don't each need to duplicate the
-  // entry. Inserted immediately AFTER the Home item (not prepended) so
-  // Home stays at the top of the menu as users expect.
-  const resolvedItems: FABMenuItem[] = (() => {
-    if (!showWorkload || !onWorkloadPress) return items;
-    const filtered = items.filter((i) => i.id !== 'workload');
-    const workloadItem: FABMenuItem = {
-      id: 'workload',
-      label: 'Workload',
-      icon: 'speedometer',
-      iconFamily: 'ionicons',
-      onPress: onWorkloadPress,
-    };
-    const homeIdx = filtered.findIndex((i) => i.id === 'home');
-    if (homeIdx < 0) {
-      // No home item — drop it at the top.
-      return [workloadItem, ...filtered];
-    }
-    return [
-      ...filtered.slice(0, homeIdx + 1),
-      workloadItem,
-      ...filtered.slice(homeIdx + 1),
-    ];
-  })();
+  const resolvedItems: FABMenuItem[] = items;
   const renderIcon = (item: FABMenuItem) => {
     const iconColor = item.isActive ? '#9BDDFF' : item.isBookButton ? '#000000' : '#FFFFFF';
     const iconSize = 20;
