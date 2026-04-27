@@ -23,6 +23,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { RadialAcwr } from './RadialAcwr';
@@ -77,6 +78,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
   });
 
   const external = data !== undefined;
+  const navigation = useNavigation<any>();
   // Determine date mode: today / past / future. Past/future days cannot use
   // live mode (Pulse only generates packets in real time). Past days can still
   // sync to commit any stored throws from the device buffer; future days can do
@@ -537,7 +539,14 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
                 Alert.alert(
                   'Set your height & weight',
-                  'Workload can\'t be computed without your height and weight. Open the web app, go to Workload, and fill them in. Throws synced before that point would log as zero workload.',
+                  "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Open profile',
+                      onPress: () => navigation.navigate('Profile'),
+                    },
+                  ],
                 );
                 return;
               }
@@ -564,7 +573,14 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
                 Alert.alert(
                   'Set your height & weight',
-                  'Workload can\'t be computed without your height and weight. Open the web app, go to Workload, and fill them in. Throws synced before that point would log as zero workload.',
+                  "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Open profile',
+                      onPress: () => navigation.navigate('Profile'),
+                    },
+                  ],
                 );
                 return;
               }

@@ -51,6 +51,13 @@ export interface PulseContextValue {
   wizardOpen: boolean;
   openWizard(): void;
   closeWizard(): void;
+  /**
+   * Persist the athlete's height/weight to Supabase AND update local state so
+   * `profileComplete` flips immediately without a screen remount. Called from
+   * the in-wizard anthro entry step so the user can go straight from "Set
+   * height & weight" → Start Live without leaving the modal.
+   */
+  saveAnthro(next: PulseAnthro): Promise<void>;
 }
 
 const PulseContext = createContext<PulseContextValue | null>(null);
@@ -170,8 +177,11 @@ export function PulseProvider({
     setAnthroLoaded(true);
   }, [initialAnthro]);
 
+  // Conversion factors per PORT_TO_MOBILE.md — matched to the binary's
+  // float-precision math so byte-exact decoder output isn't broken by an
+  // imprecise lb→kg conversion.
   const heightM = (anthro.heightInches ?? 0) * 0.0254;
-  const weightKg = (anthro.weightLbs ?? 0) * 0.453592;
+  const weightKg = (anthro.weightLbs ?? 0) * 0.45359237;
   const profileComplete = heightM > 0 && weightKg > 0;
 
   const ble = useBluetoothSupport();
@@ -198,6 +208,25 @@ export function PulseProvider({
   const openWizard = useCallback(() => setWizardOpen(true), []);
   const closeWizard = useCallback(() => setWizardOpen(false), []);
 
+  // Inline save path used by the wizard's anthro entry step. Writes the
+  // canonical numeric columns (height_inches integer, weight_lbs numeric)
+  // and updates local state so `profileComplete` flips immediately.
+  const saveAnthro = useCallback(
+    async (next: PulseAnthro): Promise<void> => {
+      const { error } = await supabase
+        .from('athletes')
+        .update({
+          height_inches: next.heightInches,
+          weight_lbs: next.weightLbs,
+        })
+        .eq('id', athleteId);
+      if (error) throw new Error(error.message);
+      setAnthro(next);
+      setAnthroLoaded(true);
+    },
+    [athleteId],
+  );
+
   const value = useMemo<PulseContextValue>(
     () => ({
       athleteId,
@@ -212,6 +241,7 @@ export function PulseProvider({
       wizardOpen,
       openWizard,
       closeWizard,
+      saveAnthro,
     }),
     [
       athleteId,
@@ -226,6 +256,7 @@ export function PulseProvider({
       wizardOpen,
       openWizard,
       closeWizard,
+      saveAnthro,
     ],
   );
 

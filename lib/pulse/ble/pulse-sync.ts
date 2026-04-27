@@ -1,38 +1,68 @@
 /**
- * High-level Pulse sync flow.
+ * High-level Pulse sync flow — byte-exact decoder edition.
  *
- * Wraps the PulseDevice + codec into a single "press a button, get decoded
- * throws back" operation the UI can await.
- *
- *   1. Subscribe to 'packet' notifications
+ *   1. Subscribe to 'packet' notifications (18-byte BLE chunks)
  *   2. Write CMD.BULK_SYNC (0x01) to the CMD register
- *   3. Buffer every 18-byte packet
+ *   3. Buffer every raw 18-byte notification (NOT pre-parsed; the framing is
+ *      chunk-based, not per-IMU-sample — see pulse-chunks.ts)
  *   4. Wait for silence (SYNC_SILENCE_MS with no new packet = done)
- *   5. Split the buffer at sentinel markers
- *   6. Decode each clip via pulse-codec
- *   7. Return the decoded throws — WITHOUT writing 0x04 (flash wipe)
+ *   5. parseCmd01Stream(buffered notifications) → one event per pitch
+ *   6. For each event: decodeEvent(sampleData, compressionData, athlete) → DecodedThrow
+ *   7. Return decoded throws — WITHOUT writing 0x04 (flash wipe)
  *
- * The caller is responsible for committing to Supabase first, then calling
- * `device.wipeFlashAfterSync()`. This is intentional: if anything goes wrong
- * between "decoded successfully" and "persisted to DB", we want the sensor's
- * flash to still hold the raw data so the sync can be retried.
+ * Caller is responsible for committing to Supabase first, then calling
+ * `device.wipeFlashAfterSync()`. If anything goes wrong between "decoded
+ * successfully" and "persisted to DB", we want the sensor's flash intact so
+ * the sync can be retried.
+ *
+ * Pulse iOS pipeline byte-exact match across 66 captured events:
+ *   torque   0.01% mean error
+ *   armSpeed 0.05% mean error
+ *   armSlot  0.27% mean error
+ *
+ * Mobile-specific notes (see PORT_TO_MOBILE.md):
+ *   - PulseDeviceRN's `addEventListener('packet', cb)` calls `cb(view)` with
+ *     a DataView directly — not a CustomEvent.detail. The handlers below
+ *     match this signature.
+ *   - The live-session counter logic is more elaborate than web's because the
+ *     sensor's POP_OR_ADVANCE protocol decrements its counter on a successful
+ *     advance; we mirror that locally so subsequent ticks aren't dropped.
  */
 
 import { PulseDeviceRN as PulseDevice } from './pulse-device-rn';
 import { CMD, SYNC_SILENCE_MS, LIVE_SILENCE_MS, PACKET_BYTES } from './constants';
-import {
-  parsePacket,
-  splitBySentinel,
-  decodeClip,
-  type Sample,
-  type DecodedThrow,
-  type AthleteAnthro,
-} from './pulse-codec';
+import { parseCmd01Stream } from './pulse-chunks';
+import { decodeEvent } from '../decoder/decode-event';
+
+export interface AthleteAnthro {
+  /** Athlete height in metres. Convert from inches at the call site (× 0.0254). */
+  heightM: number;
+  /** Athlete weight in kilograms. Convert from pounds at the call site (× 0.45359237). */
+  weightKg: number;
+}
+
+export interface DecodedThrow {
+  torqueNm: number;
+  armSpeedRadS: number;
+  armSpeedDps: number;
+  /** Arm speed in RPM — the unit Pulse iOS displays. */
+  armSpeedRpm: number;
+  armSlotRad: number;
+  armSlotDeg: number;
+  /** Driveline one-throw workload (kept on client too — DB trigger is canonical). */
+  wThrow: number;
+  /** How many raw samples this throw decoded from (diagnostic). */
+  cleanSampleCount: number;
+  /** Pulse-assigned per-pitch id — useful for ordering / dedup. */
+  eventId: number;
+  /** Sensor-stamped Unix seconds (0 if no metadata chunk for this event). */
+  timestampSec: number;
+}
 
 export interface SyncProgress {
-  /** Number of 18-byte packets received from the sensor so far. */
+  /** Number of 18-byte BLE notifications received from the sensor so far. */
   packetsReceived: number;
-  /** Decoded throws so far (populated only after the sync completes and clips are split). */
+  /** Decoded throws so far (populated only after the sync completes). */
   throwsDecoded: number;
   /** Whether the silence timer has fired and the sync has finished collecting. */
   done: boolean;
@@ -40,10 +70,10 @@ export interface SyncProgress {
 
 export interface SyncResult {
   throws: DecodedThrow[];
-  /** Clips the decoder skipped (too short or malformed). */
+  /** Events the decoder skipped (too short or malformed). */
   skipped: number;
-  /** Total raw samples received (pre-sentinel-split). */
-  sampleCount: number;
+  /** Total raw 18-byte BLE notifications received. */
+  notificationCount: number;
 }
 
 /**
@@ -54,14 +84,20 @@ export async function syncAllThrows(
   device: PulseDevice,
   athlete: AthleteAnthro,
   onProgress?: (p: SyncProgress) => void,
+  ballOz?: number,
 ): Promise<SyncResult> {
-  const buffer: Sample[] = [];
+  const notifications: Uint8Array[] = [];
   let lastPacketAt = Date.now();
   let packetCount = 0;
 
   const handler = (view: DataView) => {
     if (!view || view.byteLength < PACKET_BYTES) return;
-    buffer.push(parsePacket(view));
+    // Copy the bytes out so the decoder isn't holding refs into a buffer the
+    // BLE library may reuse on its next emit. `.slice()` on Uint8Array
+    // produces a fresh, independent buffer.
+    notifications.push(
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice(),
+    );
     packetCount++;
     lastPacketAt = Date.now();
     onProgress?.({ packetsReceived: packetCount, throwsDecoded: 0, done: false });
@@ -70,22 +106,28 @@ export async function syncAllThrows(
 
   try {
     await device.writeCmd(CMD.BULK_SYNC);
-
-    // Poll until we've had SYNC_SILENCE_MS of quiet on the packet stream. We
-    // can't trust the counter here; the sensor has no "done" marker.
     await waitForSilence(() => lastPacketAt, SYNC_SILENCE_MS, 30_000);
   } finally {
     device.removeEventListener('packet', handler);
   }
 
-  // Split the accumulated stream into per-throw clips at sentinel boundaries,
-  // then decode each one. Decoder handles its own junk filtering.
-  const clips = splitBySentinel(buffer);
+  const events = parseCmd01Stream(notifications);
   const throws: DecodedThrow[] = [];
   let skipped = 0;
-  for (const clip of clips) {
+  for (const ev of events) {
     try {
-      throws.push(decodeClip(clip, athlete));
+      // Yield to the JS event loop between events so big bulk syncs (200+
+      // pitches) don't lock the UI for the duration of the decode pass.
+      // 100-200ms per event * 200 events ≈ 30s of CPU; we want progressive
+      // feedback rather than one giant blocking chunk.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      const decoded = decodeEvent(ev.sampleData, ev.compressionData, athlete, { ballOz });
+      throws.push(toDecodedThrow(decoded, ev.eventId, ev.timestamp));
+      onProgress?.({
+        packetsReceived: packetCount,
+        throwsDecoded: throws.length,
+        done: false,
+      });
     } catch {
       skipped++;
     }
@@ -97,18 +139,36 @@ export async function syncAllThrows(
     done: true,
   });
 
-  return { throws, skipped, sampleCount: buffer.length };
+  return { throws, skipped, notificationCount: notifications.length };
+}
+
+function toDecodedThrow(
+  d: ReturnType<typeof decodeEvent>,
+  eventId: number,
+  timestampSec: number,
+): DecodedThrow {
+  return {
+    torqueNm: d.torqueNm,
+    armSpeedRadS: d.armSpeedRadS,
+    armSpeedDps: d.armSpeedDps,
+    armSpeedRpm: d.armSpeedRpm,
+    armSlotRad: d.armSlotRad,
+    armSlotDeg: d.armSlotDeg,
+    wThrow: d.wThrow,
+    cleanSampleCount: d.cleanSampleCount,
+    eventId,
+    timestampSec,
+  };
 }
 
 /**
  * Resolve once the supplied `lastEventAtRef` has been unchanged for `silenceMs`.
  * Rejects if `maxWaitMs` elapses from the start of the call.
  *
- * Important: `initialPacketAt` is the timestamp we compare against BEFORE any
- * packets have actually arrived. We must NOT treat "no packets yet" as silence,
- * otherwise a slow sensor response looks identical to a completed clip. We
- * track whether lastEventAtRef has advanced past its starting value, and only
- * start the silence timer after the first real packet has been seen.
+ * Important: tracks whether `lastEventAtRef` has advanced past its starting
+ * value, and only starts the silence timer after the first real packet has
+ * been seen — otherwise a slow sensor response looks identical to a completed
+ * clip.
  */
 async function waitForSilence(
   lastEventAtRef: () => number,
@@ -123,12 +183,10 @@ async function waitForSilence(
       throw new Error(`sync timed out after ${maxWaitMs}ms without silence`);
     }
     const currentPacketAt = lastEventAtRef();
-    // No packet has arrived yet — keep waiting. Never exit silently.
     if (currentPacketAt === initialPacketAt) {
       await delay(50);
       continue;
     }
-    // First (and subsequent) packets have arrived — normal silence window.
     if (now - currentPacketAt >= silenceMs) return;
     await delay(50);
   }
@@ -143,12 +201,15 @@ function delay(ms: number): Promise<void> {
 //
 // Protocol (per pulse_integration/IOS_INTEGRATION.md):
 //   1. Sensor notifies on COUNTER when a new throw hits flash
-//   2. Write 0x07 to CMD  → sensor streams that one throw's packets
-//   3. Wait for silence   → decode the clip
+//   2. Write 0x07 to CMD  → sensor streams that one throw's notifications
+//   3. Wait for silence   → parseCmd01Stream → decodeEvent
 //   4. Write 0x04 to CMD  → advances the cursor (decrements counter)
 //   5. Loop back to (1) for the next throw
 //
-// Returns a handle with stop() to tear down the listeners.
+// The mobile `lastCounter` mirror is necessary because POP_OR_ADVANCE
+// decrements the sensor's counter on its end; without local mirroring, the
+// next real tick at the same numeric value would be silently dropped as a
+// stale repeat.
 // ────────────────────────────────────────────────────────────────────
 
 export interface LiveSessionHandle {
@@ -166,7 +227,7 @@ export interface LiveSessionCallbacks {
 
 /**
  * Start a live session loop. Each time the sensor counter ticks up, pull the
- * throw, decode it, and call onThrow.
+ * throw, decode it via the byte-exact pipeline, and call onThrow.
  *
  * Assumes the device is already connected and counter + data notifications
  * are subscribed (PulseDevice.connect() handles both).
@@ -175,39 +236,39 @@ export function startLiveSession(
   device: PulseDevice,
   athlete: AthleteAnthro,
   cbs: LiveSessionCallbacks,
+  ballOz?: number,
 ): LiveSessionHandle {
   let active = true;
   let throwIndex = 0;
   // Track the last counter value we saw AND a pending-throws queue. Both are
   // needed: the queue so multiple ticks during decode aren't lost; the mirror
   // so we can detect real increments after POP_OR_ADVANCE (which decrements
-  // the sensor's counter on its end, making the next real tick look equal to
-  // our stale value and silently drop).
+  // the sensor's counter, making the next real tick look equal to our stale
+  // value and silently drop).
   let lastCounter: number | null = null;
   let pendingCount = 0;
   let processing = false;
-  const pending: Sample[] = [];
+  const pending: Uint8Array[] = [];
   let lastPacketAt = 0;
 
   const packetHandler = (view: DataView) => {
     if (!processing) return;
     if (!view || view.byteLength < PACKET_BYTES) return;
-    pending.push(parsePacket(view));
+    pending.push(
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice(),
+    );
     lastPacketAt = Date.now();
   };
   device.addEventListener('packet', packetHandler);
 
   const counterHandler = (n: number) => {
     cbs.onCounterChange?.(n);
-    console.warn(`[pulse live] counter tick n=${n} lastCounter=${lastCounter} pending=${pendingCount} processing=${processing}`);
     if (lastCounter == null) {
       // Baseline. If the sensor reports a non-zero queue at subscribe time,
-      // those are pre-existing buffered throws we should drain. Otherwise
-      // nothing to do yet — don't treat the baseline itself as a new throw.
+      // those are pre-existing buffered throws we should drain.
       lastCounter = n;
       if (n > 0) {
         pendingCount += n;
-        console.warn(`[pulse live] baseline had ${n} queued, starting drain`);
         if (!processing) void processNextThrow();
       }
       return;
@@ -215,11 +276,9 @@ export function startLiveSession(
     if (n > lastCounter) {
       const delta = n - lastCounter;
       pendingCount += delta;
-      console.warn(`[pulse live] +${delta} throws queued (pending=${pendingCount})`);
       if (!processing) void processNextThrow();
     }
-    // n <= lastCounter: either a stale repeat, or the sensor's post-advance
-    // mirror we already accounted for in the finally block. Ignore silently.
+    // n <= lastCounter: stale repeat or post-advance mirror — ignore.
     lastCounter = n;
   };
   device.addEventListener('counter', counterHandler);
@@ -227,26 +286,28 @@ export function startLiveSession(
   async function processNextThrow() {
     if (!active || processing) return;
     if (pendingCount <= 0) return;
-    console.warn(`[pulse live] processNextThrow START idx=${throwIndex} pending=${pendingCount}`);
     processing = true;
     pending.length = 0;
     lastPacketAt = Date.now();
     try {
       await device.writeCmd(CMD.PER_THROW_FETCH);
       // Collect packets until silence — shorter window for live mode since a
-      // single throw's packet burst is much shorter than a bulk sync clip.
+      // single throw's BLE burst is much shorter than a bulk-sync clip.
       await waitForSilence(() => lastPacketAt, LIVE_SILENCE_MS, 10_000);
-      console.warn(`[pulse live] silence reached, packets=${pending.length}`);
 
-      // Single-clip decode — strip any sentinel trailers via stripJunk (handled
-      // inside decodeClip)
+      // Per-throw fetch should yield exactly one event. If the sensor mixes
+      // in stale metadata we just take the first event the parser sees.
       try {
-        const decoded = decodeClip(pending, athlete);
-        console.warn(`[pulse live] decoded throw ${throwIndex} torque=${decoded.torqueNm} armSpeed=${decoded.armSpeedDps}`);
-        cbs.onThrow(decoded, throwIndex);
-        throwIndex++;
+        const events = parseCmd01Stream(pending);
+        if (events.length === 0) {
+          cbs.onDecodeError?.('no event parsed', throwIndex);
+        } else {
+          const ev = events[0];
+          const decoded = decodeEvent(ev.sampleData, ev.compressionData, athlete, { ballOz });
+          cbs.onThrow(toDecodedThrow(decoded, ev.eventId, ev.timestamp), throwIndex);
+          throwIndex++;
+        }
       } catch (err: any) {
-        console.warn(`[pulse live] decode FAILED idx=${throwIndex}: ${err?.message ?? 'unknown'}`);
         cbs.onDecodeError?.(err?.message ?? 'decode failed', throwIndex);
       }
 
@@ -261,11 +322,8 @@ export function startLiveSession(
       processing = false;
       pendingCount = Math.max(0, pendingCount - 1);
       // Mirror the sensor's post-POP_OR_ADVANCE state locally so the next
-      // real tick is detected as a genuine increment. Without this, after
-      // the first throw lastCounter stays at 1 forever and throw 2 (which
-      // brings the sensor counter back to 1) is silently dropped.
+      // real tick is detected as a genuine increment.
       if (lastCounter != null && lastCounter > 0) lastCounter -= 1;
-      console.warn(`[pulse live] processNextThrow END pending=${pendingCount} lastCounter=${lastCounter}`);
       if (active && pendingCount > 0) {
         void processNextThrow();
       }
@@ -273,26 +331,19 @@ export function startLiveSession(
   }
 
   // Seed: if the sensor already has throws pending when we attach, drain them.
-  // Also seeds `lastCounter` before any BLE notification arrives, preventing
-  // a race where the first notification could otherwise be misinterpreted as
-  // a phantom throw that fires PER_THROW_FETCH on an empty queue and leaves
-  // the cursor out of sync with reality.
-  console.warn('[pulse live] session STARTED, seeding...');
   void (async () => {
     try {
       const c = await device.readCounter();
-      console.warn(`[pulse live] seed readCounter=${c} lastCounter=${lastCounter}`);
       cbs.onCounterChange?.(c);
       if (lastCounter == null) {
         lastCounter = c;
         if (c > 0) {
           pendingCount += c;
-          console.warn(`[pulse live] seed drain starting, pending=${pendingCount}`);
           if (!processing) void processNextThrow();
         }
       }
-    } catch (err: any) {
-      console.warn(`[pulse live] seed failed: ${err?.message ?? 'unknown'}`);
+    } catch {
+      // ignore — first counter notification will seed instead
     }
   })();
 
@@ -304,4 +355,3 @@ export function startLiveSession(
     },
   };
 }
-

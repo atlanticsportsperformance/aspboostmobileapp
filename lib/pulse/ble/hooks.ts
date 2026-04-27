@@ -23,7 +23,7 @@ import {
 import { commitThrows } from './pulse-persist';
 import { enqueueThrow, flushQueue, setFlushInterval } from './offline-queue';
 import { pulseEvents } from './pulse-events';
-import type { DecodedThrow, AthleteAnthro } from './pulse-codec';
+import type { DecodedThrow, AthleteAnthro } from './pulse-sync';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ────────────────────────────────────────────────────────────────────

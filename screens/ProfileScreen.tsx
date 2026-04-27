@@ -51,8 +51,13 @@ interface Athlete {
   primary_position: string | null;
   secondary_position: string | null;
   grad_year: string | null;
-  height: string | null;
-  weight: string | null;
+  // Canonical numeric columns (per Supabase schema):
+  //   athletes.height_inches  integer
+  //   athletes.weight_lbs     numeric
+  // The Pulse byte-exact decoder reads these directly via PulseProvider —
+  // any drift from the schema breaks live + sync workload computation.
+  height_inches: number | null;
+  weight_lbs: number | null;
   play_level: string | null;
 }
 
@@ -108,7 +113,12 @@ export default function ProfileScreen({ navigation, route }: any) {
   const [primaryPosition, setPrimaryPosition] = useState('');
   const [secondaryPosition, setSecondaryPosition] = useState('');
   const [gradYear, setGradYear] = useState('');
-  const [height, setHeight] = useState('');
+  // Height stored as a single integer `height_inches` on athletes; split the
+  // input into feet + inches for UX but always write the total back. Mirrors
+  // the web app at app/athlete-dashboard/profile/page.tsx.
+  const [heightFeet, setHeightFeet] = useState('');
+  const [heightInches, setHeightInches] = useState('');
+  const [weightLbs, setWeightLbs] = useState('');
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
 
@@ -302,7 +312,16 @@ export default function ProfileScreen({ navigation, route }: any) {
     setPrimaryPosition(data.primary_position || '');
     setSecondaryPosition(data.secondary_position || '');
     setGradYear(data.grad_year || '');
-    setHeight(data.height || '');
+    // Split height_inches into feet + inches for the two-input UX. The save
+    // path joins them back with `feet * 12 + inches` before writing.
+    if (data.height_inches != null && data.height_inches > 0) {
+      setHeightFeet(String(Math.floor(data.height_inches / 12)));
+      setHeightInches(String(data.height_inches % 12));
+    } else {
+      setHeightFeet('');
+      setHeightInches('');
+    }
+    setWeightLbs(data.weight_lbs != null ? String(data.weight_lbs) : '');
     setPlayLevel(data.play_level || '');
   }
 
@@ -324,6 +343,21 @@ export default function ProfileScreen({ navigation, route }: any) {
     setSaving(true);
 
     try {
+      // Validate + normalize height/weight to the canonical numeric columns.
+      // height_inches = feet * 12 + inches (integer). weight_lbs = numeric.
+      // Both nullable when blank — Pulse decoder gates on these via
+      // PulseProvider.profileComplete; if either is null, sync/live both
+      // refuse to start so workload math can't run on zeros.
+      const feet = parseInt(heightFeet, 10);
+      const inches = parseInt(heightInches, 10);
+      const totalInches =
+        Number.isFinite(feet) && feet >= 0 && Number.isFinite(inches) && inches >= 0
+          ? feet * 12 + inches
+          : null;
+      const weightNum = parseFloat(weightLbs);
+      const finalWeightLbs =
+        Number.isFinite(weightNum) && weightNum > 0 ? weightNum : null;
+
       const { error } = await supabase
         .from('athletes')
         .update({
@@ -334,7 +368,8 @@ export default function ProfileScreen({ navigation, route }: any) {
           primary_position: primaryPosition || null,
           secondary_position: secondaryPosition || null,
           grad_year: gradYear || null,
-          height: height || null,
+          height_inches: totalInches,
+          weight_lbs: finalWeightLbs,
         })
         .eq('id', athlete?.id);
 
@@ -349,7 +384,8 @@ export default function ProfileScreen({ navigation, route }: any) {
         primary_position: primaryPosition,
         secondary_position: secondaryPosition,
         grad_year: gradYear,
-        height,
+        height_inches: totalInches,
+        weight_lbs: finalWeightLbs,
       });
 
       setProfileSuccess('Profile updated successfully!');
@@ -648,15 +684,46 @@ export default function ProfileScreen({ navigation, route }: any) {
                   />
                 </View>
 
-                {/* Physical Stats */}
+                {/* Physical Stats — required for Pulse workload math.
+                    Stored as integer height_inches + numeric weight_lbs in
+                    Supabase; the byte-exact decoder reads these directly. */}
+                <View style={styles.formRow}>
+                  <View style={styles.formFieldHalf}>
+                    <Text style={styles.formLabel}>Height (ft)</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={heightFeet}
+                      onChangeText={(t) => setHeightFeet(t.replace(/[^0-9]/g, ''))}
+                      placeholder="e.g., 6"
+                      placeholderTextColor={COLORS.gray500}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                    />
+                  </View>
+                  <View style={styles.formFieldHalf}>
+                    <Text style={styles.formLabel}>Height (in)</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={heightInches}
+                      onChangeText={(t) => setHeightInches(t.replace(/[^0-9]/g, ''))}
+                      placeholder="e.g., 2"
+                      placeholderTextColor={COLORS.gray500}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                    />
+                  </View>
+                </View>
+
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Height</Text>
+                  <Text style={styles.formLabel}>Weight (lbs)</Text>
                   <TextInput
                     style={styles.formInput}
-                    value={height}
-                    onChangeText={setHeight}
-                    placeholder={'e.g., 6\'2"'}
+                    value={weightLbs}
+                    onChangeText={(t) => setWeightLbs(t.replace(/[^0-9.]/g, ''))}
+                    placeholder="e.g., 185"
                     placeholderTextColor={COLORS.gray500}
+                    keyboardType="decimal-pad"
+                    maxLength={6}
                   />
                 </View>
 
@@ -723,11 +790,20 @@ export default function ProfileScreen({ navigation, route }: any) {
                     <Text style={styles.detailText}>Class of {athlete.grad_year}</Text>
                   </View>
                 )}
-                {(athlete.height || athlete.weight) && (
+                {(athlete.height_inches != null || athlete.weight_lbs != null) && (
                   <View style={styles.detailRow}>
                     <MaterialCommunityIcons name="human-male-height" size={16} color={COLORS.gray400} />
                     <Text style={styles.detailText}>
-                      {[athlete.height, athlete.weight].filter(Boolean).join(', ')}
+                      {[
+                        athlete.height_inches != null && athlete.height_inches > 0
+                          ? `${Math.floor(athlete.height_inches / 12)}'${athlete.height_inches % 12}"`
+                          : null,
+                        athlete.weight_lbs != null && athlete.weight_lbs > 0
+                          ? `${athlete.weight_lbs} lbs`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(', ')}
                     </Text>
                   </View>
                 )}

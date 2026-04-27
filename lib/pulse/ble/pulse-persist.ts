@@ -7,7 +7,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { DecodedThrow } from './pulse-codec';
+import type { DecodedThrow } from './pulse-sync';
 
 export interface CommitThrowsInput {
   supabase: SupabaseClient;

@@ -28,6 +28,9 @@ import {
   ActivityIndicator,
   Linking,
   Platform,
+  TextInput,
+  KeyboardAvoidingView,
+  Alert,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -40,6 +43,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useNavigation } from '@react-navigation/native';
 import { usePulse } from '../../lib/pulse/PulseProvider';
 
 /**
@@ -67,7 +71,7 @@ export function PulseAutoOpener() {
   return null;
 }
 
-type Step = 'connect' | 'choose' | 'syncing' | 'live' | 'done';
+type Step = 'connect' | 'set-anthro' | 'choose' | 'syncing' | 'live' | 'done';
 
 interface Props {
   /** ISO date the athlete is currently viewing. Drives past/future gating. */
@@ -84,10 +88,20 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     dev,
     live,
     sync,
+    anthro,
     profileComplete,
     wizardOpen,
     closeWizard,
   } = usePulse();
+  const navigation = useNavigation<any>();
+
+  // Route to the Profile screen so the user can set their height/weight, then
+  // close the wizard. They'll come back to the workload screen with profile
+  // complete and the Start Live button enabled.
+  const handleOpenProfile = useCallback(() => {
+    closeWizard();
+    navigation.navigate('Profile');
+  }, [closeWizard, navigation]);
 
   // Date gating — past/future days can't do live, only sync
   const dateMode = useMemo<'today' | 'past' | 'future'>(() => {
@@ -120,12 +134,19 @@ export function PulseWizardModal({ scheduledDate }: Props) {
       return;
     }
     if (dev.state === 'connected') {
-      setStep((cur) => (cur === 'done' ? 'done' : 'choose'));
+      setStep((cur) => {
+        if (cur === 'done') return 'done';
+        // Inline anthro entry — block sync/live UI until height & weight are
+        // set so the byte-exact decoder isn't fed zeros. After saveAnthro
+        // flips profileComplete the effect re-runs and routes to 'choose'.
+        if (!profileComplete) return 'set-anthro';
+        return 'choose';
+      });
     } else if (dev.state === 'error' || dev.state === 'disconnected' || dev.state === 'idle') {
       setStep('connect');
     }
     // 'requesting' / 'connecting' — stay on connect step with spinner
-  }, [wizardOpen, dev.state, live.status, sync.status]);
+  }, [wizardOpen, dev.state, live.status, sync.status, profileComplete]);
 
   // Auto-trigger the BLE scan when the wizard opens if Pulse is idle. This
   // collapses "Open Pulse → tap Connect" into a single tap. The athlete sees
@@ -204,9 +225,10 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     transform: [{ scale: pulseVal.value }],
   }));
 
-  // Step number for the progress dots (1-4)
+  // Step number for the progress dots (1-4). 'set-anthro' shares dot 1
+  // with 'connect' since both are pre-flight setup.
   const stepIndex =
-    step === 'connect'
+    step === 'connect' || step === 'set-anthro'
       ? 1
       : step === 'choose'
       ? 2
@@ -272,6 +294,14 @@ export function PulseWizardModal({ scheduledDate }: Props) {
             />
           )}
 
+          {step === 'set-anthro' && (
+            <SetAnthroStep
+              currentHeightInches={anthro.heightInches}
+              currentWeightLbs={anthro.weightLbs}
+              onCancel={handleClose}
+            />
+          )}
+
           {step === 'choose' && (
             <ChooseStep
               deviceName={dev.device?.name ?? 'Pulse'}
@@ -282,6 +312,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
               onSyncOnly={handleSyncOnly}
               onStartLive={handleStartLive}
               onDone={handleClose}
+              onOpenProfile={handleOpenProfile}
             />
           )}
 
@@ -497,6 +528,173 @@ function ConnectStep({
 }
 
 // ═════════════════════════════════════════════════════════════
+// Step: Set Anthro (height + weight) — inline, no profile-screen detour
+// ═════════════════════════════════════════════════════════════
+
+function SetAnthroStep({
+  currentHeightInches,
+  currentWeightLbs,
+  onCancel,
+}: {
+  currentHeightInches: number | null;
+  currentWeightLbs: number | null;
+  onCancel: () => void;
+}) {
+  const { saveAnthro } = usePulse();
+  const [feet, setFeet] = useState(
+    currentHeightInches != null && currentHeightInches > 0
+      ? String(Math.floor(currentHeightInches / 12))
+      : '',
+  );
+  const [inches, setInches] = useState(
+    currentHeightInches != null && currentHeightInches > 0
+      ? String(currentHeightInches % 12)
+      : '',
+  );
+  const [weight, setWeight] = useState(
+    currentWeightLbs != null && currentWeightLbs > 0 ? String(currentWeightLbs) : '',
+  );
+  const [saving, setSaving] = useState(false);
+
+  // Disable Save unless we can produce a non-zero height_inches and a positive
+  // weight_lbs. Both must be present for the byte-exact decoder.
+  const ftN = parseInt(feet, 10);
+  const inN = parseInt(inches, 10);
+  const wN = parseFloat(weight);
+  const heightInches =
+    Number.isFinite(ftN) && ftN >= 0 && Number.isFinite(inN) && inN >= 0
+      ? ftN * 12 + inN
+      : 0;
+  const canSave = heightInches > 0 && Number.isFinite(wN) && wN > 0 && !saving;
+
+  const handleSave = useCallback(async () => {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      await saveAnthro({ heightInches, weightLbs: wN });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // After save, profileComplete flips and the wizard's routing effect
+      // moves us to the 'choose' step automatically.
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      Alert.alert('Could not save', err?.message ?? 'Unknown error');
+    } finally {
+      setSaving(false);
+    }
+  }, [canSave, heightInches, wN, saveAnthro]);
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={styles.body}
+    >
+      <Text style={styles.title}>Set your height & weight</Text>
+      <Text style={styles.subtitle}>
+        Pulse needs both to compute your throwing workload. They get stored on
+        your profile — you only need to do this once.
+      </Text>
+
+      <View style={anthroStyles.row}>
+        <View style={anthroStyles.fieldHalf}>
+          <Text style={anthroStyles.label}>Height (ft)</Text>
+          <TextInput
+            style={anthroStyles.input}
+            value={feet}
+            onChangeText={(t) => setFeet(t.replace(/[^0-9]/g, ''))}
+            placeholder="6"
+            placeholderTextColor="#4b5563"
+            keyboardType="number-pad"
+            maxLength={2}
+            autoFocus
+            returnKeyType="next"
+          />
+        </View>
+        <View style={anthroStyles.fieldHalf}>
+          <Text style={anthroStyles.label}>Height (in)</Text>
+          <TextInput
+            style={anthroStyles.input}
+            value={inches}
+            onChangeText={(t) => setInches(t.replace(/[^0-9]/g, ''))}
+            placeholder="2"
+            placeholderTextColor="#4b5563"
+            keyboardType="number-pad"
+            maxLength={2}
+            returnKeyType="next"
+          />
+        </View>
+      </View>
+
+      <View style={anthroStyles.field}>
+        <Text style={anthroStyles.label}>Weight (lbs)</Text>
+        <TextInput
+          style={anthroStyles.input}
+          value={weight}
+          onChangeText={(t) => setWeight(t.replace(/[^0-9.]/g, ''))}
+          placeholder="185"
+          placeholderTextColor="#4b5563"
+          keyboardType="decimal-pad"
+          maxLength={6}
+          returnKeyType="done"
+          onSubmitEditing={handleSave}
+        />
+      </View>
+
+      <Pressable
+        style={({ pressed }) => [
+          styles.primaryBtn,
+          (!canSave || pressed) && { opacity: 0.7 },
+        ]}
+        disabled={!canSave}
+        onPress={handleSave}
+      >
+        {saving ? (
+          <ActivityIndicator color="#000" />
+        ) : (
+          <Text style={styles.primaryBtnText}>Save & continue</Text>
+        )}
+      </Pressable>
+
+      <Pressable style={styles.secondaryBtn} onPress={onCancel} disabled={saving}>
+        <Text style={styles.secondaryBtnText}>Cancel</Text>
+      </Pressable>
+    </KeyboardAvoidingView>
+  );
+}
+
+const anthroStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  field: {
+    marginTop: 12,
+  },
+  fieldHalf: {
+    flex: 1,
+  },
+  label: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  input: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 10,
+    borderWidth: 1,
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+});
+
+// ═════════════════════════════════════════════════════════════
 // Step: Choose
 // ═════════════════════════════════════════════════════════════
 
@@ -509,6 +707,7 @@ function ChooseStep({
   onSyncOnly,
   onStartLive,
   onDone,
+  onOpenProfile,
 }: {
   deviceName: string;
   battery: number | null;
@@ -517,6 +716,7 @@ function ChooseStep({
   profileComplete: boolean;
   onSyncOnly: () => void;
   onStartLive: () => void;
+  onOpenProfile: () => void;
   onDone: () => void;
 }) {
   const hasCached = counter > 0;
@@ -546,12 +746,15 @@ function ChooseStep({
       </View>
 
       {!profileComplete && (
-        <View style={styles.warnRow}>
+        <Pressable
+          style={({ pressed }) => [styles.warnRow, pressed && { opacity: 0.7 }]}
+          onPress={onOpenProfile}
+        >
           <Ionicons name="warning" size={14} color="#facc15" />
           <Text style={styles.warnText}>
-            Height/weight missing — workload math will be approximate.
+            Height/weight missing — tap to open profile and set them.
           </Text>
-        </View>
+        </Pressable>
       )}
 
       {dateMode === 'future' ? (
