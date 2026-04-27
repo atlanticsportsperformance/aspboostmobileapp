@@ -10,7 +10,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Modal } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
@@ -498,7 +498,7 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
         />
         {!profileComplete && (
           <Text style={styles.profileWarn}>
-            Height/weight missing — workload math is approximate
+            Height/weight missing — set them in the web app's Workload page before syncing.
           </Text>
         )}
       </View>
@@ -517,17 +517,30 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
 
       {/* Always-visible Start Live + Sync buttons right under the gauge stats.
           When not connected they're dimmed and tapping opens the wizard to
-          connect first. When live is already running they're hidden. */}
+          connect first. When live is already running they're hidden.
+          When profile is incomplete (no height/weight) BOTH buttons are
+          gated — the DB trigger computes workload = 0 for any throw we
+          sync without those values, which would pollute ACWR. The user
+          gets a clear Alert pointing at the web workload page since the
+          mobile app doesn't (yet) have a profile editor. */}
       {live.status !== 'running' && (
         <View style={styles.quickActionRow}>
           <TouchableOpacity
             style={[
               styles.quickActionBtnPrimary,
               { backgroundColor: '#9BDDFF' },
-              dev.state !== 'connected' && { opacity: 0.35 },
+              (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
             ]}
             activeOpacity={0.8}
             onPress={() => {
+              if (!profileComplete) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+                Alert.alert(
+                  'Set your height & weight',
+                  'Workload can\'t be computed without your height and weight. Open the web app, go to Workload, and fill them in. Throws synced before that point would log as zero workload.',
+                );
+                return;
+              }
               if (dev.state !== 'connected') {
                 openWizard();
                 return;
@@ -543,10 +556,18 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
             style={[
               styles.quickActionBtnSecondary,
               { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' },
-              dev.state !== 'connected' && { opacity: 0.35 },
+              (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
             ]}
             activeOpacity={0.8}
             onPress={() => {
+              if (!profileComplete) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+                Alert.alert(
+                  'Set your height & weight',
+                  'Workload can\'t be computed without your height and weight. Open the web app, go to Workload, and fill them in. Throws synced before that point would log as zero workload.',
+                );
+                return;
+              }
               if (dev.state !== 'connected') {
                 openWizard();
                 return;
