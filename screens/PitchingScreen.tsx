@@ -566,17 +566,29 @@ export default function PitchingScreen({ navigation, route }: any) {
               <TouchableOpacity style={styles.analysisButton} onPress={() => navigation.navigate('PitchingTrends', { athleteId })}>
                 <View style={styles.analysisButtonInner}>
                   <Ionicons name="analytics" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Pitch Trends</Text>
+                  <Text style={styles.analysisButtonText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Pitch Trends</Text>
                   <Ionicons name="chevron-forward" size={14} color="#4B5563" />
                 </View>
               </TouchableOpacity>
               <TouchableOpacity style={styles.analysisButton} onPress={() => navigation.navigate('PitchingCommand', { athleteId })}>
                 <View style={styles.analysisButtonInner}>
                   <Ionicons name="locate" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Command Data</Text>
+                  <Text style={styles.analysisButtonText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Command Data</Text>
                   <Ionicons name="chevron-forward" size={14} color="#4B5563" />
                 </View>
               </TouchableOpacity>
+              {/* Arm Care lives inside the pitching context — pitchers' recovery
+                  metric. Only render when the athlete actually has arm care
+                  history so non-pitchers don't see a dead button. */}
+              {armCareData && (
+                <TouchableOpacity style={styles.analysisButton} onPress={() => navigation.navigate('ArmCare', { athleteId })}>
+                  <View style={styles.analysisButtonInner}>
+                    <MaterialCommunityIcons name="arm-flex" size={16} color="#9BDDFF" />
+                    <Text style={styles.analysisButtonText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Arm Care</Text>
+                    <Ionicons name="chevron-forward" size={14} color="#4B5563" />
+                  </View>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         )}
@@ -692,7 +704,8 @@ export default function PitchingScreen({ navigation, route }: any) {
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
           { id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, isActive: true, onPress: () => navigation.navigate('PitchingHub' as never, { athleteId } as never) },
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
-          ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
+          // Arm Care moved to an inline button on the Pitching screen (above
+          // the Recent Sessions list, in line with Pitch Trends + Command Data).
           ...(forceProfileData ? [{ id: 'force', label: 'Force Profile', icon: 'lightning-bolt', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
           { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
@@ -731,10 +744,14 @@ const styles = StyleSheet.create({
   averageItem: { alignItems: 'center' },
   averageValue: { fontSize: 16, fontWeight: 'bold', color: COLORS.white },
   averageLabel: { fontSize: 8, color: COLORS.gray500, marginTop: 2 },
-  analysisButtons: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  analysisButton: { flex: 1, borderRadius: 12, overflow: 'hidden' },
-  analysisButtonInner: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(155,221,255,0.06)', borderWidth: 1, borderColor: 'rgba(155,221,255,0.15)', borderRadius: 10 },
-  analysisButtonText: { flex: 1, fontSize: 10, fontWeight: '600', color: '#E5E7EB', marginLeft: 6 },
+  // Row of analysis buttons — alignItems: 'stretch' makes every button match
+  // the tallest one, so a longer label can't make one button taller than its
+  // neighbors. We also numberOfLines={1} + adjustsFontSizeToFit on the labels
+  // to suppress wrapping in the first place.
+  analysisButtons: { flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'stretch' },
+  analysisButton: { flex: 1, flexBasis: 0, borderRadius: 12, overflow: 'hidden' },
+  analysisButtonInner: { flex: 1, flexDirection: 'row', paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center', gap: 6, backgroundColor: 'rgba(155,221,255,0.06)', borderWidth: 1, borderColor: 'rgba(155,221,255,0.15)', borderRadius: 10 },
+  analysisButtonText: { flex: 1, fontSize: 11, fontWeight: '600', color: '#E5E7EB' },
   sessionsSection: { marginBottom: 24 },
   sessionsList: { gap: 8, marginTop: 12 },
   sessionCard: { backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },

@@ -61,10 +61,23 @@ interface ArmCareData {
 
 interface ArmCareCardProps {
   data: ArmCareData;
+  /**
+   * Athlete's max pitching velocity (mph) — used to compute the
+   * Strength-to-Velocity ratio (SVR = total_strength / max_velocity), an
+   * ArmCare-standard measure of arm health relative to throwing demands.
+   * When null/0 the SVR row is hidden gracefully (e.g., a hitter with arm
+   * care data but no pitching data).
+   */
+  maxVelocity?: number | null;
 }
 
-export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps & { isActive?: boolean }) {
+export default function ArmCareCard({ data, maxVelocity, isActive = true }: ArmCareCardProps & { isActive?: boolean }) {
   const { latest, pr } = data;
+  // SVR — total strength (lbs) divided by max pitching velocity (mph).
+  const svRatio =
+    maxVelocity != null && maxVelocity > 0 && latest.total_strength > 0
+      ? latest.total_strength / maxVelocity
+      : null;
 
   // Get dynamic colors based on score
   const scoreColors = getScoreColors(latest.arm_score);
@@ -412,6 +425,22 @@ export default function ArmCareCard({ data, isActive = true }: ArmCareCardProps 
                 <Text style={styles.strengthUnit}> lbs</Text>
               </Text>
             </View>
+            {/* Strength-to-Velocity ratio — only shown when the athlete has
+                both arm care strength and a max-velocity reading. SVR is
+                strength (lbs) per mph; a higher number signals more arm
+                strength relative to throwing demands. */}
+            {svRatio != null && (
+              <>
+                <View style={styles.strengthDivider} />
+                <View style={styles.strengthRow}>
+                  <Text style={styles.strengthLabel}>S/V Ratio</Text>
+                  <Text style={styles.strengthValue}>
+                    {svRatio.toFixed(2)}
+                    <Text style={styles.strengthUnit}> lbs/mph</Text>
+                  </Text>
+                </View>
+              </>
+            )}
           </View>
         </Animated.View>
       </View>

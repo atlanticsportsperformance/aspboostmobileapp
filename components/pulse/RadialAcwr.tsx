@@ -133,13 +133,6 @@ function RadialAcwrInner({
   dateLabel,
   size = 260,
 }: Props) {
-  // PERF instrumentation.
-  const _perfT0 = performance.now();
-  useEffect(() => {
-    const dt = performance.now() - _perfT0;
-    if (dt > 2) console.log(`[WorkloadPerf]     RadialAcwr render: ${dt.toFixed(1)}ms`);
-  });
-
   const cx = size / 2;
   const cy = size / 2;
   const stroke = size * 0.065;
@@ -287,11 +280,11 @@ const styles = StyleSheet.create({
     // reads as a square halo. The gauge's own radial SVG halo does the glow.
   },
   label: {
-    color: '#6b7280',
+    color: '#9ca3af',
     fontSize: 10,
     letterSpacing: 3,
     marginTop: 6,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   acwrChip: {
     marginTop: 6,
@@ -310,10 +303,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statLabel: {
-    color: '#6b7280',
-    fontSize: 9,
+    color: '#9ca3af',
+    fontSize: 10,
     letterSpacing: 2,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   statValue: {
     fontSize: 22,
@@ -322,9 +315,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   statSub: {
-    color: '#4b5563',
-    fontSize: 9,
+    color: '#9ca3af',
+    fontSize: 10,
     marginTop: 2,
+    fontWeight: '500',
   },
   divider: {
     width: 1,

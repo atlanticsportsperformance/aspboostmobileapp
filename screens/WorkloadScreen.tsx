@@ -354,15 +354,17 @@ export default function WorkloadScreen() {
   const anchorIdx = useMemo(() => dateKeys.indexOf(selectedDate), [dateKeys, selectedDate]);
 
   const monitorData = useMemo<MonitorData>(() => {
-    const t0 = performance.now();
-    const out: MonitorData = anchorIdx < 0 ? {
-      heightInches: anthro.heightInches,
-      weightLbs: anthro.weightLbs,
-      acwr: null,
-      chronic: 0,
-      actualWDay: 0,
-      targetWDay: targets.get(selectedDate) ?? null,
-    } : {
+    if (anchorIdx < 0) {
+      return {
+        heightInches: anthro.heightInches,
+        weightLbs: anthro.weightLbs,
+        acwr: null,
+        chronic: 0,
+        actualWDay: 0,
+        targetWDay: targets.get(selectedDate) ?? null,
+      };
+    }
+    return {
       heightInches: anthro.heightInches,
       weightLbs: anthro.weightLbs,
       acwr: acwrFn(series, anchorIdx),
@@ -370,18 +372,12 @@ export default function WorkloadScreen() {
       actualWDay: series[anchorIdx] ?? 0,
       targetWDay: targets.get(selectedDate) ?? null,
     };
-    const dt = performance.now() - t0;
-    if (dt > 1) console.log(`[WorkloadPerf]   monitorData memo: ${dt.toFixed(1)}ms`);
-    return out;
   }, [anthro, series, anchorIdx, targets, selectedDate]);
 
-  const dayThrows = useMemo(() => {
-    const t0 = performance.now();
-    const out = throws.filter((t) => t.training_date === selectedDate);
-    const dt = performance.now() - t0;
-    console.log(`[WorkloadPerf]   dayThrows memo: ${dt.toFixed(1)}ms (in=${throws.length}, out=${out.length})`);
-    return out;
-  }, [throws, selectedDate]);
+  const dayThrows = useMemo(
+    () => throws.filter((t) => t.training_date === selectedDate),
+    [throws, selectedDate],
+  );
 
   const dayThrowingWorkout = useMemo(
     () => throwingWorkouts.get(selectedDate) ?? null,
@@ -389,7 +385,6 @@ export default function WorkloadScreen() {
   );
 
   const sparklineBars = useMemo(() => {
-    const t0 = performance.now();
     if (anchorIdx < 0 || series.length === 0) return [];
     const from = Math.max(0, anchorIdx - 6);
     const to = anchorIdx;
@@ -402,50 +397,12 @@ export default function WorkloadScreen() {
       if (w > max) max = w;
       raw.push({ date: dateKeys[i], w, color: hex });
     }
-    const out = raw.map((b) => ({ ...b, max }));
-    const dt = performance.now() - t0;
-    if (dt > 1) console.log(`[WorkloadPerf]   sparklineBars memo: ${dt.toFixed(1)}ms`);
-    return out;
+    return raw.map((b) => ({ ...b, max }));
   }, [series, dateKeys, anchorIdx]);
 
-  // ───── PERF INSTRUMENTATION ─────
-  // Records wall-clock for the press → commit → raf-after-paint cycle.
-  // Read the logs in Metro. If press→commit is large: JS-thread / render work.
-  // If commit→paint is large: native layout / RN Fabric work.
-  const perfRef = useRef<{ label: string; pressAt: number } | null>(null);
-  const renderStartRef = useRef<number>(0);
-  renderStartRef.current = performance.now();
-
-  useEffect(() => {
-    if (!perfRef.current) return;
-    const { label, pressAt } = perfRef.current;
-    perfRef.current = null;
-    const commitAt = performance.now();
-    console.log(
-      `[WorkloadPerf] ${label} | press→commit ${(commitAt - pressAt).toFixed(1)}ms ` +
-      `| render-fn ${(commitAt - renderStartRef.current).toFixed(1)}ms`,
-    );
-    requestAnimationFrame(() => {
-      const paintAt = performance.now();
-      console.log(
-        `[WorkloadPerf] ${label} | commit→paint ${(paintAt - commitAt).toFixed(1)}ms ` +
-        `| total ${(paintAt - pressAt).toFixed(1)}ms`,
-      );
-    });
-  });
-
-  const handlePrev = useCallback(() => {
-    perfRef.current = { label: 'PREV', pressAt: performance.now() };
-    setSelectedDate((cur) => addDaysISO(cur, -1));
-  }, []);
-  const handleNext = useCallback(() => {
-    perfRef.current = { label: 'NEXT', pressAt: performance.now() };
-    setSelectedDate((cur) => addDaysISO(cur, 1));
-  }, []);
-  const handleToday = useCallback(() => {
-    perfRef.current = { label: 'TODAY', pressAt: performance.now() };
-    setSelectedDate(todayIso);
-  }, [todayIso]);
+  const handlePrev = useCallback(() => setSelectedDate((cur) => addDaysISO(cur, -1)), []);
+  const handleNext = useCallback(() => setSelectedDate((cur) => addDaysISO(cur, 1)), []);
+  const handleToday = useCallback(() => setSelectedDate(todayIso), [todayIso]);
 
   const dateLabel = useMemo(() => {
     const d = fromISO(selectedDate);

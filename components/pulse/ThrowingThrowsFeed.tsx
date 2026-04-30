@@ -85,14 +85,6 @@ export function ThrowingThrowsFeed({
   throwsLoading: externalLoading,
   onThrowDeleted,
 }: Props) {
-  // PERF instrumentation — log render time + row count for this component.
-  const _perfT0 = performance.now();
-  useEffect(() => {
-    const dt = performance.now() - _perfT0;
-    const n = externalThrows?.length ?? 0;
-    if (dt > 2) console.log(`[WorkloadPerf]   Feed render: ${dt.toFixed(1)}ms (rows=${n}, date=${scheduledDate})`);
-  });
-
   const external = externalThrows !== undefined;
 
   const { session } = useAuth();
@@ -385,7 +377,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerLabel: {
-    color: '#6b7280',
+    color: '#9ca3af',
     fontSize: 10,
     letterSpacing: 2,
     fontWeight: '700',
@@ -401,10 +393,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emptyText: {
-    color: '#4b5563',
-    fontSize: 11,
+    // Bumped from #4b5563 — was unreadable. Empty-state copy is the only
+    // thing the user sees when no throws exist; needs full legibility.
+    color: '#9ca3af',
+    fontSize: 12,
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 17,
   },
   list: {
     maxHeight: 480,
@@ -428,10 +422,11 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   rowTime: {
-    color: '#4b5563',
+    color: '#9ca3af',
     fontSize: 11,
     fontVariant: ['tabular-nums'],
     width: 52,
+    fontWeight: '600',
   },
   rowMetric: {
     flexDirection: 'row',
@@ -452,11 +447,12 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   rowUnit: {
-    color: '#4b5563',
+    color: '#9ca3af',
     fontSize: 10,
+    fontWeight: '600',
   },
   rowSource: {
-    color: '#374151',
+    color: '#9ca3af',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 1,
@@ -475,7 +471,7 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
   },
   rowWorkloadUnit: {
-    color: '#4b5563',
+    color: '#9ca3af',
     fontSize: 9,
     fontWeight: '700',
   },

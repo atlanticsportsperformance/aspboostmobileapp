@@ -40,6 +40,8 @@ export default function PitchingHubScreen() {
   const [prVelo, setPrVelo] = useState<number | null>(null);
   const [todayW, setTodayW] = useState<number | null>(null);
   const [todayThrows, setTodayThrows] = useState<number>(0);
+  const [lastArmScore, setLastArmScore] = useState<number | null>(null);
+  const [lastArmExamDate, setLastArmExamDate] = useState<string | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
@@ -71,7 +73,7 @@ export default function PitchingHubScreen() {
     if (!athleteId) return;
     (async () => {
       const todayIso = new Date().toISOString().split('T')[0];
-      const [pr, today] = await Promise.all([
+      const [pr, today, lastArm] = await Promise.all([
         supabase
           .from('trackman_pitch_data')
           .select('rel_speed')
@@ -84,11 +86,24 @@ export default function PitchingHubScreen() {
           .eq('athlete_id', athleteId)
           .eq('training_date', todayIso)
           .maybeSingle(),
+        supabase
+          .from('armcare_sessions')
+          .select('arm_score, exam_date')
+          .eq('athlete_id', athleteId)
+          .not('arm_score', 'is', null)
+          .order('exam_date', { ascending: false })
+          .order('exam_time', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
       ]);
       if (pr.data?.[0]?.rel_speed) setPrVelo(Number(pr.data[0].rel_speed));
       if (today.data) {
         setTodayW(today.data.w_day != null ? Number(today.data.w_day) : null);
         setTodayThrows(today.data.throw_count ?? 0);
+      }
+      if (lastArm.data?.arm_score != null) {
+        setLastArmScore(Number(lastArm.data.arm_score));
+        setLastArmExamDate(lastArm.data.exam_date ?? null);
       }
     })();
   }, [athleteId]);
@@ -161,12 +176,49 @@ export default function PitchingHubScreen() {
               </Text>
             </View>
           )}
+
+          <HubCard
+            accent="#F87171"
+            accentDeep="#EF4444"
+            icon={<MaterialCommunityIcons name="arm-flex" size={28} color="#F87171" />}
+            eyebrow="ASSESS"
+            title="Arm Care"
+            subtitle="Activ5 strength test · ArmScore · ER:IR balance"
+            stat={
+              lastArmScore != null
+                ? `ArmScore ${lastArmScore.toFixed(0)}${lastArmExamDate ? ' · ' + formatRelativeDate(lastArmExamDate) : ''}`
+                : 'Take your first test'
+            }
+            onPress={() =>
+              athleteId && navigation.navigate('ArmCareHub', { athleteId })
+            }
+          />
         </Animated.View>
 
         <View style={{ height: 120 }} />
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+// ─────────────────────────────────────────────────────────────
+// helpers
+// ─────────────────────────────────────────────────────────────
+
+function formatRelativeDate(isoDate: string): string {
+  const d = new Date(isoDate);
+  if (isNaN(d.getTime())) return '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round(
+    (today.getTime() - target.getTime()) / (24 * 60 * 60 * 1000),
+  );
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ─────────────────────────────────────────────────────────────

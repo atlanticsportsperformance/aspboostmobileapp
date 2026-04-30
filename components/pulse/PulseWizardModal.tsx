@@ -389,15 +389,13 @@ function ConnectStep({
         </View>
         <Text style={styles.title}>Bluetooth not available</Text>
         <Text style={styles.subtitle}>{ble.reason ?? 'This build does not support BLE.'}</Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.secondaryBtn,
-            pressed && { transform: [{ scale: 0.97 }] },
-          ]}
+        <TouchableOpacity
+          style={styles.secondaryBtn}
+          activeOpacity={0.85}
           onPress={onCancel}
         >
           <Text style={styles.secondaryBtnText}>Close</Text>
-        </Pressable>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -483,10 +481,14 @@ function ConnectStep({
       <Text style={styles.subtitle}>{subtitle}</Text>
 
       {/* Primary button only when there's something to tap. While the scan is
-          in flight or the handshake just completed, we auto-advance. */}
+          in flight or the handshake just completed, we auto-advance.
+          Switched from Pressable to TouchableOpacity because the
+          (pressed)=>[styles, override] callback was reportedly rendering as
+          dark-on-dark on simulator/iOS — defensive: hard-code the styles. */}
       {!isWorking && !isConnected && (
-        <Pressable
-          style={({ pressed }) => [
+        <TouchableOpacity
+          activeOpacity={0.85}
+          style={[
             styles.primaryBtn,
             needsSettings
               ? {
@@ -495,33 +497,30 @@ function ConnectStep({
                   borderColor: 'rgba(255,255,255,0.15)',
                   shadowOpacity: 0,
                 }
-              : { backgroundColor: '#9BDDFF' },
-            pressed && { transform: [{ scale: 0.97 }] },
+              : null,
           ]}
           onPress={onPrimary}
         >
           {needsSettings ? (
-            <Ionicons name="settings-outline" size={16} color="#fff" />
+            <Ionicons name="settings-outline" size={18} color="#fff" />
           ) : isError ? (
-            <Ionicons name="refresh" size={16} color="#000" />
+            <Ionicons name="refresh" size={18} color="#000" />
           ) : (
-            <Ionicons name="bluetooth" size={16} color="#000" />
+            <Ionicons name="bluetooth" size={18} color="#000" />
           )}
           <Text style={[styles.primaryBtnText, needsSettings && { color: '#fff' }]}>
             {primaryLabel}
           </Text>
-        </Pressable>
+        </TouchableOpacity>
       )}
       {!isConnected && (
-        <Pressable
-          style={({ pressed }) => [
-            styles.secondaryBtn,
-            pressed && { transform: [{ scale: 0.97 }] },
-          ]}
+        <TouchableOpacity
+          style={styles.secondaryBtn}
+          activeOpacity={0.85}
           onPress={onCancel}
         >
           <Text style={styles.secondaryBtnText}>{isError ? 'Close' : 'Cancel'}</Text>
-        </Pressable>
+        </TouchableOpacity>
       )}
     </View>
   );
@@ -639,12 +638,10 @@ function SetAnthroStep({
         />
       </View>
 
-      <Pressable
-        style={({ pressed }) => [
-          styles.primaryBtn,
-          (!canSave || pressed) && { opacity: 0.7 },
-        ]}
+      <TouchableOpacity
+        style={[styles.primaryBtn, !canSave && { opacity: 0.55 }]}
         disabled={!canSave}
+        activeOpacity={0.85}
         onPress={handleSave}
       >
         {saving ? (
@@ -652,11 +649,16 @@ function SetAnthroStep({
         ) : (
           <Text style={styles.primaryBtnText}>Save & continue</Text>
         )}
-      </Pressable>
+      </TouchableOpacity>
 
-      <Pressable style={styles.secondaryBtn} onPress={onCancel} disabled={saving}>
+      <TouchableOpacity
+        style={styles.secondaryBtn}
+        onPress={onCancel}
+        disabled={saving}
+        activeOpacity={0.85}
+      >
         <Text style={styles.secondaryBtnText}>Cancel</Text>
-      </Pressable>
+      </TouchableOpacity>
     </KeyboardAvoidingView>
   );
 }
@@ -746,15 +748,16 @@ function ChooseStep({
       </View>
 
       {!profileComplete && (
-        <Pressable
-          style={({ pressed }) => [styles.warnRow, pressed && { opacity: 0.7 }]}
+        <TouchableOpacity
+          style={styles.warnRow}
+          activeOpacity={0.7}
           onPress={onOpenProfile}
         >
           <Ionicons name="warning" size={14} color="#facc15" />
           <Text style={styles.warnText}>
             Height/weight missing — tap to open profile and set them.
           </Text>
-        </Pressable>
+        </TouchableOpacity>
       )}
 
       {dateMode === 'future' ? (
@@ -763,32 +766,29 @@ function ChooseStep({
           <Text style={styles.subtitle}>
             No throws can be logged on a future date.
           </Text>
-          <Pressable style={styles.primaryBtn} onPress={onDone}>
+          <TouchableOpacity style={styles.primaryBtn} activeOpacity={0.85} onPress={onDone}>
             <Text style={styles.primaryBtnText}>Got it</Text>
-          </Pressable>
+          </TouchableOpacity>
         </>
       ) : canLive ? (
         <View style={styles.choiceRow}>
-          <Pressable
-            style={({ pressed }) => [
+          <TouchableOpacity
+            style={[
               styles.choiceBtn,
               styles.choiceBtnPrimary,
               !profileComplete && { opacity: 0.5 },
-              pressed && { transform: [{ scale: 0.97 }] },
             ]}
             disabled={!profileComplete}
+            activeOpacity={0.85}
             onPress={onStartLive}
           >
             <Ionicons name="play" size={22} color="#000" />
             <Text style={styles.choiceBtnPrimaryText}>Start Live</Text>
-          </Pressable>
+          </TouchableOpacity>
 
-          <Pressable
-            style={({ pressed }) => [
-              styles.choiceBtn,
-              styles.choiceBtnSecondary,
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
+          <TouchableOpacity
+            style={[styles.choiceBtn, styles.choiceBtnSecondary]}
+            activeOpacity={0.85}
             onPress={onSyncOnly}
           >
             <Ionicons name="cloud-download" size={22} color="#9BDDFF" />
@@ -798,7 +798,7 @@ function ChooseStep({
                 <Text style={styles.syncCountBadgeText}>{counter}</Text>
               </View>
             )}
-          </Pressable>
+          </TouchableOpacity>
         </View>
       ) : hasCached ? (
         <>
@@ -807,16 +807,10 @@ function ChooseStep({
             {counter} {counter === 1 ? 'throw is' : 'throws are'} ready to commit
             from your sensor.
           </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
-            onPress={onSyncOnly}
-          >
+          <TouchableOpacity style={styles.primaryBtn} activeOpacity={0.85} onPress={onSyncOnly}>
             <Ionicons name="cloud-download" size={16} color="#000" />
             <Text style={styles.primaryBtnText}>Sync {counter}</Text>
-          </Pressable>
+          </TouchableOpacity>
         </>
       ) : (
         <>
@@ -825,19 +819,13 @@ function ChooseStep({
             Live mode only works in real time. Sync any cached throws if the
             sensor recorded some earlier.
           </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.secondaryBtn,
-              pressed && { transform: [{ scale: 0.97 }] },
-            ]}
-            onPress={onSyncOnly}
-          >
+          <TouchableOpacity style={styles.secondaryBtn} activeOpacity={0.85} onPress={onSyncOnly}>
             <Ionicons name="cloud-download" size={16} color="#9BDDFF" />
             <Text style={styles.secondaryBtnText}>Sync</Text>
-          </Pressable>
-          <Pressable style={styles.primaryBtn} onPress={onDone}>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.primaryBtn} activeOpacity={0.85} onPress={onDone}>
             <Text style={styles.primaryBtnText}>Got it</Text>
-          </Pressable>
+          </TouchableOpacity>
         </>
       )}
     </View>
@@ -873,8 +861,9 @@ function SyncingStep({
           : `${packets} packets received`}
       </Text>
       {error && <Text style={styles.errText}>{error}</Text>}
-      <View style={[styles.primaryBtn, { opacity: 0.35 }]}>
-        <Text style={styles.primaryBtnText}>Working…</Text>
+      <View style={styles.workingPill}>
+        <ActivityIndicator size="small" color="#9BDDFF" />
+        <Text style={styles.workingPillText}>Working…</Text>
       </View>
     </View>
   );
@@ -1067,10 +1056,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   subtitle: {
-    color: '#9ca3af',
-    fontSize: 13,
+    // Bumped from #9ca3af → #d1d5db (gray-300) so the body copy is actually
+    // legible on the wizard's near-black sheet. The previous shade was on the
+    // edge of the AAA threshold and read as "shitty dark text" in low light.
+    color: '#d1d5db',
+    fontSize: 14,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 19,
     paddingHorizontal: 16,
     maxWidth: 320,
   },
@@ -1113,7 +1105,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   sensorMeta: {
-    color: '#9ca3af',
+    color: '#d1d5db',
     fontSize: 12,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
@@ -1150,6 +1142,10 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   primaryBtn: {
+    // Solid cyan fill, NO iOS shadow (some iOS renders were dropping the fill
+    // when shadowOpacity > 0 on a flex parent — the screenshot showed
+    // "Try again" as black text on black bg). A solid 2px border guarantees
+    // the button is always visible even if the platform glitches the fill.
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1158,18 +1154,20 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 14,
     backgroundColor: '#9BDDFF',
+    borderWidth: 2,
+    borderColor: '#9BDDFF',
     marginTop: 8,
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
   },
   primaryBtnText: {
     color: '#000',
-    fontWeight: '700',
+    fontWeight: '800',
     fontSize: 16,
+    letterSpacing: 0.3,
   },
   secondaryBtn: {
+    // Bumped fill opacity (10% → 18%) and border weight so the button is
+    // actually visible on the dark sheet — at 10% alpha against #0a0a0a the
+    // button bg blended into the background and only the thin border read.
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1177,14 +1175,14 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     paddingVertical: 14,
     borderRadius: 14,
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
-    borderWidth: 1.5,
+    backgroundColor: 'rgba(155, 221, 255, 0.18)',
+    borderWidth: 2,
     borderColor: '#9BDDFF',
     marginTop: 10,
   },
   secondaryBtnText: {
     color: '#9BDDFF',
-    fontWeight: '700',
+    fontWeight: '800',
     fontSize: 15,
   },
   choiceRow: {
@@ -1206,10 +1204,8 @@ const styles = StyleSheet.create({
   },
   choiceBtnPrimary: {
     backgroundColor: '#9BDDFF',
-    shadowColor: '#9BDDFF',
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
+    borderWidth: 2,
+    borderColor: '#9BDDFF',
   },
   choiceBtnPrimaryText: {
     color: '#000',
@@ -1264,6 +1260,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
   },
+  workingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    alignSelf: 'stretch',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(155,221,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.4)',
+    marginTop: 8,
+  },
+  workingPillText: {
+    color: '#9BDDFF',
+    fontWeight: '700',
+    fontSize: 14,
+    letterSpacing: 0.4,
+  },
   liveHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1295,13 +1310,15 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   liveLast: {
-    color: '#6b7280',
-    fontSize: 12,
+    // Bumped two shades brighter — was unreadable at #6b7280 on near-black.
+    color: '#d1d5db',
+    fontSize: 13,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
     marginTop: 4,
   },
   liveWaiting: {
-    color: '#4b5563',
+    color: '#9ca3af',
     fontSize: 13,
     fontStyle: 'italic',
     marginTop: 8,

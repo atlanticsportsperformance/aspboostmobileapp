@@ -9,22 +9,11 @@
  * directly.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withTiming,
-  withSequence,
-  cancelAnimation,
-  Easing,
-} from 'react-native-reanimated';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
-import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { RadialAcwr } from './RadialAcwr';
 import { usePulse } from '../../lib/pulse/PulseProvider';
@@ -67,16 +56,15 @@ interface Props {
    * pre-fetch-once architecture to avoid the day-switcher wedge.
    */
   data?: MonitorData;
+  /**
+   * If provided, render a small "hide" button in the top row (next to the
+   * date label) that calls this when tapped. The WorkoutLoggerScreen passes
+   * this so athletes without a Pulse can collapse the entire tracker.
+   */
+  onHide?: () => void;
 }
 
-export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data }: Props) {
-  // PERF instrumentation — log render time for this component.
-  const _perfT0 = performance.now();
-  useEffect(() => {
-    const dt = performance.now() - _perfT0;
-    if (dt > 2) console.log(`[WorkloadPerf]   Monitor render: ${dt.toFixed(1)}ms (date=${scheduledDate})`);
-  });
-
+export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data, onHide }: Props) {
   const external = data !== undefined;
   const navigation = useNavigation<any>();
   // Determine date mode: today / past / future. Past/future days cannot use
@@ -376,34 +364,6 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live red dot pulse. The withRepeat(-1) loop must be explicitly cancelled
-  // when live stops or on unmount — reassigning `pulseVal.value = 1` does NOT
-  // cancel the underlying worklet loop, which would leak across start/stop
-  // cycles and contribute to the idle slowdown.
-  const pulseVal = useSharedValue(1);
-  useEffect(() => {
-    if (live.status === 'running') {
-      pulseVal.value = withRepeat(
-        withSequence(
-          withTiming(1.6, { duration: 600, easing: Easing.inOut(Easing.sin) }),
-          withTiming(1, { duration: 600, easing: Easing.inOut(Easing.sin) }),
-        ),
-        -1,
-        false,
-      );
-    } else {
-      cancelAnimation(pulseVal);
-      pulseVal.value = 1;
-    }
-    return () => {
-      cancelAnimation(pulseVal);
-    };
-  }, [live.status, pulseVal]);
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseVal.value }],
-    opacity: live.status === 'running' ? 2 - pulseVal.value : 1,
-  }));
-
   // Memoize the date-derived strings so we don't allocate a Date + run
   // Intl.DateTimeFormat on every Monitor render. Saves two Date allocations
   // and two formatter invocations per day switch (and per re-render in
@@ -433,57 +393,20 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data 
 
   return (
     <View style={styles.container}>
-      {/* Top strip — date label on the left, single pulse entry point on
-          the right. The right slot flips between three states:
-            • LIVE chip when a live session is running (tap to open wizard)
-            • Connected info button (battery + cached throw count) when idle
-            • "Open Pulse" button when disconnected
-          Every tap opens the wizard modal — there's no inline action UI. */}
+      {/* Top strip — just the date label. The Pulse-sensor entry point now
+          lives in the screen header (PulseHeaderChip in BlockOverview's
+          topRightSlot), in line with the Back button — not jammed into this
+          panel where it conflicted with the date column. */}
       <View style={styles.topRow}>
         <Text style={styles.panelLabel}>{dateHeader}</Text>
-        {live.status === 'running' ? (
+        {onHide && (
           <Pressable
-            style={({ pressed }) => [
-              styles.topLiveChip,
-              pressed && { opacity: 0.8 },
-            ]}
-            onPress={openWizard}
+            onPress={onHide}
+            hitSlop={8}
+            style={({ pressed }) => [styles.hideBtn, pressed && { opacity: 0.7 }]}
           >
-            <Animated.View style={[styles.liveDot, pulseStyle]} />
-            <Text style={styles.liveChipText}>LIVE</Text>
-            {live.throwCount > 0 && (
-              <Text style={styles.liveChipCount}>· {live.throwCount}</Text>
-            )}
-          </Pressable>
-        ) : dev.state === 'connected' ? (
-          <Pressable
-            onPress={openWizard}
-            style={({ pressed }) => [
-              styles.topConnectedBtn,
-              pressed && { opacity: 0.8 },
-            ]}
-          >
-            <View style={styles.connectedDot} />
-            <Text style={styles.topConnectedText}>
-              {dev.battery != null ? `${dev.battery}%` : 'Pulse'}
-            </Text>
-            {(dev.counter ?? 0) > 0 && (
-              <View style={styles.topCachedBadge}>
-                <Ionicons name="flash" size={10} color="#000" />
-                <Text style={styles.topCachedBadgeText}>{dev.counter}</Text>
-              </View>
-            )}
-          </Pressable>
-        ) : (
-          <Pressable
-            onPress={openWizard}
-            style={({ pressed }) => [
-              styles.topOpenBtn,
-              pressed && { opacity: 0.8 },
-            ]}
-          >
-            <Ionicons name="bluetooth" size={14} color="#9BDDFF" />
-            <Text style={styles.topOpenBtnText}>Open Pulse</Text>
+            <Ionicons name="eye-off-outline" size={12} color="#9ca3af" />
+            <Text style={styles.hideBtnText}>Hide</Text>
           </Pressable>
         )}
       </View>
@@ -621,10 +544,29 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   panelLabel: {
-    color: '#6b7280',
+    color: '#9ca3af',
     fontSize: 10,
     letterSpacing: 2,
     fontWeight: '600',
+  },
+  hideBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  hideBtnText: {
+    color: '#d1d5db',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    includeFontPadding: false,
   },
   profileWarn: {
     color: 'rgba(253, 224, 71, 0.85)',
@@ -698,97 +640,5 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
     fontSize: 12,
     fontWeight: '700',
-  },
-  // Top-right pulse entry point — three variants (disconnected / connected / live)
-  topOpenBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(155,221,255,0.08)',
-    borderColor: 'rgba(155,221,255,0.3)',
-    borderWidth: 1,
-  },
-  topOpenBtnText: {
-    color: '#9BDDFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  topConnectedBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(52,211,153,0.05)',
-    borderColor: 'rgba(52,211,153,0.25)',
-    borderWidth: 1,
-  },
-  topConnectedText: {
-    color: '#e5e7eb',
-    fontSize: 13,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  topCachedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-    backgroundColor: '#9BDDFF',
-  },
-  topCachedBadgeText: {
-    color: '#000',
-    fontSize: 11,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
-  },
-  topLiveChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(248,113,113,0.08)',
-    borderColor: 'rgba(248,113,113,0.3)',
-    borderWidth: 1,
-  },
-  liveChipCount: {
-    color: '#fca5a5',
-    fontSize: 12,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#f87171',
-    shadowColor: '#f87171',
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  liveChipText: {
-    color: '#fca5a5',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-  },
-  connectedDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#34d399',
-    shadowColor: '#34d399',
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 0 },
   },
 });

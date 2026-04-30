@@ -102,6 +102,11 @@ interface BlockOverviewProps {
   headerSlot?: React.ReactNode;
   /** Optional slot rendered at the BOTTOM of the scroll content (below routines). */
   footerSlot?: React.ReactNode;
+  /** Optional slot rendered in the top-right of the screen header (in line
+   *  with the Back button + workout title). Used by throwing workouts to
+   *  surface the Pulse-sensor entry point next to navigation, NOT inside
+   *  the scrollable workload panel. */
+  topRightSlot?: React.ReactNode;
 }
 
 // Helper: Get YouTube video ID from URL
@@ -170,6 +175,7 @@ export default function BlockOverview({
   onBack,
   headerSlot,
   footerSlot,
+  topRightSlot,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
@@ -261,7 +267,15 @@ export default function BlockOverview({
           <Text style={styles.workoutTitle} numberOfLines={1}>
             {workout.name}
           </Text>
-          <View style={styles.backButtonPlaceholder} />
+          {/* Right side of the header — used by throwing workouts for the
+              Pulse-sensor chip (mirrors Back's footprint on the left).
+              Falls back to an invisible placeholder so the title stays
+              centered when there's no slot content. */}
+          {topRightSlot ? (
+            <View style={styles.headerTopRight}>{topRightSlot}</View>
+          ) : (
+            <View style={styles.backButtonPlaceholder} />
+          )}
         </View>
 
         {/* Progress Bar */}
@@ -352,6 +366,22 @@ export default function BlockOverview({
                     separator: '\n',
                   });
 
+                  // Notes-only exercises (no measurements, no metric targets,
+                  // no legacy reps) carry all their value in `notes` — those
+                  // shouldn't be truncated at 2 lines like a metrics-row's
+                  // optional coach note. The complete-checkbox branch below
+                  // already detects this case; mirror that detection here so
+                  // the notes rendering matches.
+                  const enabledMeasurementIds = exercise.enabled_measurements || [];
+                  const hasMetricTargets =
+                    exercise.metric_targets &&
+                    Object.keys(exercise.metric_targets).length > 0;
+                  const hasLegacyReps = !!exercise.reps;
+                  const isNotesOnly =
+                    enabledMeasurementIds.length === 0 &&
+                    !hasMetricTargets &&
+                    !hasLegacyReps;
+
                   return (
                     <TouchableOpacity
                       key={exercise.id}
@@ -410,9 +440,17 @@ export default function BlockOverview({
                           </Text>
                         )}
 
-                        {/* Exercise Notes */}
+                        {/* Exercise Notes — full text for notes-only
+                            exercises (where notes ARE the content); 2-line
+                            truncated for exercises that also have metrics. */}
                         {exercise.notes && (
-                          <Text style={styles.exerciseNotes} numberOfLines={2}>
+                          <Text
+                            style={[
+                              styles.exerciseNotes,
+                              isNotesOnly && styles.exerciseNotesPrimary,
+                            ]}
+                            numberOfLines={isNotesOnly ? undefined : 2}
+                          >
                             {exercise.notes}
                           </Text>
                         )}
@@ -423,16 +461,10 @@ export default function BlockOverview({
                         )}
                       </View>
 
-                      {/* Right Section - Quick Complete Checkbox */}
+                      {/* Right Section - Quick Complete Checkbox.
+                          `isNotesOnly` is hoisted above so notes-rendering and
+                          this branch share the same detection logic. */}
                       {(() => {
-                        // Check if exercise has any trackable metrics
-                        const enabledMeasurementIds = exercise.enabled_measurements || [];
-                        const hasMetricTargets = exercise.metric_targets && Object.keys(exercise.metric_targets).length > 0;
-                        const hasLegacyReps = !!exercise.reps;
-
-                        // Notes-only exercise = no enabled_measurements, no metric_targets, no legacy reps
-                        const isNotesOnly = enabledMeasurementIds.length === 0 && !hasMetricTargets && !hasLegacyReps;
-
                         if (isNotesOnly) {
                           // Notes-only exercises show a simple complete checkbox
                           return (
@@ -834,6 +866,16 @@ const styles = StyleSheet.create({
     color: '#A3A3A3',
     marginTop: 2,
   },
+  // Notes-only exercises promote the note from "sidebar comment" styling to
+  // body-content styling: not italic, slightly larger, fuller line-height,
+  // brighter — readable as the actual instruction/cue.
+  exerciseNotesPrimary: {
+    fontSize: 13,
+    fontStyle: 'normal',
+    color: '#D4D4D4',
+    marginTop: 6,
+    lineHeight: 18,
+  },
   tempo: {
     fontSize: 12,
     fontWeight: '500',
@@ -886,6 +928,12 @@ const styles = StyleSheet.create({
   },
   backButtonPlaceholder: {
     width: 60,
+  },
+  headerTopRight: {
+    minWidth: 60,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    paddingRight: 4,
   },
   progressBarContainer: {
     marginTop: 8,

@@ -319,7 +319,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           style={styles.cardGloss}
         />
         <Text style={styles.cardTitle}>ArmCare</Text>
-        <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
+        <ArmCareCard data={armCareData} maxVelocity={pitchingData?.prs?.max_velo?.value ?? null} isActive={snapshotIndex === thisIndex} />
       </View>
     );
   }
@@ -2113,9 +2113,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => setFabOpen(false) },
           { id: 'messages', label: 'Messages', icon: 'chatbubbles', onPress: () => navigation.navigate('Messages') },
           ...(hasHittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('HittingPerformance') }] : []),
-          ...(hasPitchingData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
+          // Pitching is now also the entry point for Arm Care (inline button
+          // on the Pitching screen). Show Pitching when EITHER has data.
+          ...(hasPitchingData || hasArmCareData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('PitchingPerformance') }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => handleFabNavigate('MocapSessions') }] : []),
-          ...(hasArmCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => handleFabNavigate('ArmCare') }] : []),
           ...(hasForceData ? [{ id: 'force', label: 'Force Profile', icon: 'trending-up', onPress: () => handleFabNavigate('ForceProfile') }] : []),
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', onPress: () => handleFabNavigate('Resources') },
           { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },

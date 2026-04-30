@@ -55,6 +55,8 @@ import PitchingTrendsScreen from './screens/PitchingTrendsScreen';
 import MocapSessionsScreen from './screens/MocapSessionsScreen';
 import MocapPitchDetailScreen from './screens/MocapPitchDetailScreen';
 import ArmCareScreen from './screens/ArmCareScreen';
+import ArmCareHubScreen from './screens/ArmCareHubScreen';
+import ArmCareWizardScreen from './screens/ArmCareWizardScreen';
 import ForceProfileScreen from './screens/ForceProfileScreen';
 import TestDetailScreen from './screens/TestDetailScreen';
 import ResourcesScreen from './screens/ResourcesScreen';
@@ -195,6 +197,8 @@ function AppContent() {
             <Stack.Screen name="MocapSessions" component={MocapSessionsScreen} />
             <Stack.Screen name="MocapPitchDetail" component={MocapPitchDetailScreen} />
             <Stack.Screen name="ArmCare" component={ArmCareScreen} />
+            <Stack.Screen name="ArmCareHub" component={ArmCareHubScreen} />
+            <Stack.Screen name="ArmCareWizard" component={ArmCareWizardScreen} />
             <Stack.Screen name="ForceProfile" component={ForceProfileScreen} />
             <Stack.Screen name="TestDetail" component={TestDetailScreen} />
             <Stack.Screen name="Resources" component={ResourcesScreen} />

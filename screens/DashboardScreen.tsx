@@ -26,6 +26,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
+import ArmcareDayCard from '../components/dashboard/ArmcareDayCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
 import AnimatedLoading from '../components/AnimatedLoading';
@@ -91,6 +92,24 @@ const HEADER_HEIGHT = SCREEN_HEIGHT * 0.12;
 const CARD_HEIGHT = SCREEN_HEIGHT * 0.34;
 // Calculate calendar day size based on screen width (7 columns + gaps + padding)
 const CALENDAR_DAY_SIZE = Math.floor((SCREEN_WIDTH - 32 - 48) / 7);
+
+// One row per athlete per date — coach prescribes via plan, group calendar,
+// athlete calendar one-off, or recurring rule. The day view renders these
+// alongside workout instances.
+interface ArmcareTestInstance {
+  id: string;
+  scheduled_date: string;
+  status: 'not_started' | 'completed' | 'skipped';
+  source_type: 'plan' | 'group' | 'one_off' | 'recurring';
+  notes: string | null;
+  completed_session_id: string | null;
+  // Embedded via FK on completed_session_id. Populated only when status
+  // is 'completed' so the day card can display the actual ArmScore.
+  armcare_sessions: {
+    arm_score: number | null;
+    total_strength: number | null;
+  } | null;
+}
 
 interface WorkoutInstance {
   id: string;
@@ -377,7 +396,7 @@ const SnapshotCarousel = React.memo(function SnapshotCarousel({
           style={styles.cardGloss}
         />
         <Text style={styles.cardTitle}>ArmCare</Text>
-        <ArmCareCard data={armCareData} isActive={snapshotIndex === thisIndex} />
+        <ArmCareCard data={armCareData} maxVelocity={pitchingData?.prs?.max_velo?.value ?? null} isActive={snapshotIndex === thisIndex} />
       </View>
     );
   }
@@ -431,6 +450,10 @@ export default function DashboardScreen({ navigation }: any) {
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
   const [workoutInstances, setWorkoutInstances] = useState<WorkoutInstance[]>([]);
+  const [armcareTestInstances, setArmcareTestInstances] = useState<ArmcareTestInstance[]>([]);
+  // ISO 'YYYY-MM-DD' dates where the athlete has at least one completed
+  // armcare_sessions row. Used to paint a red dot on calendar day cells.
+  const [armcareSessionDates, setArmcareSessionDates] = useState<Set<string>>(new Set());
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [reminders, setReminders] = useState<ReminderInstance[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1212,8 +1235,14 @@ export default function DashboardScreen({ navigation }: any) {
 
     if (!sessions || sessions.length === 0) {
       setArmCareData(null);
+      setArmcareSessionDates(new Set());
       return;
     }
+
+    // Build the per-date set used to paint red dots on calendar cells.
+    setArmcareSessionDates(
+      new Set(sessions.map((s: any) => s.exam_date).filter(Boolean) as string[]),
+    );
 
     // Calculate PR (highest arm score)
     let maxArmScore = { value: 0, date: '' };
@@ -1897,6 +1926,7 @@ export default function DashboardScreen({ navigation }: any) {
           conversationParticipantsResult,
           workoutsResult,
           bookingsResult,
+          armcareTestInstancesResult,
         ] = await Promise.all([
           // Check for pitching data
           freshClient.from('trackman_pitch_data').select('id', { count: 'exact', head: true }).eq('athlete_id', athlete.id),
@@ -1960,6 +1990,25 @@ export default function DashboardScreen({ navigation }: any) {
               )
             )
           `).eq('athlete_id', athlete.id).in('status', ['booked', 'confirmed', 'waitlisted']),
+          // ArmCare test instances scheduled for this athlete (any source —
+          // plan / group / one_off / recurring). Day view renders these as
+          // standalone cards alongside workouts.
+          freshClient
+            .from('armcare_test_instances')
+            .select(`
+              id,
+              scheduled_date,
+              status,
+              source_type,
+              notes,
+              completed_session_id,
+              armcare_sessions:completed_session_id (
+                arm_score,
+                total_strength
+              )
+            `)
+            .eq('athlete_id', athlete.id)
+            .order('scheduled_date'),
         ]);
 
         // Process results
@@ -1967,6 +2016,7 @@ export default function DashboardScreen({ navigation }: any) {
         setHasMocapData((mocapPitchesResult.count || 0) > 0);
         setHasResourcesData((resourcesResult.count || 0) > 0);
         setWorkoutInstances((workoutsResult.data as any) || []);
+        setArmcareTestInstances(((armcareTestInstancesResult as any)?.data ?? []) as ArmcareTestInstance[]);
 
         // Normalize bookings data - Supabase may return nested objects as arrays
         const normalizedBookings = (bookingsResult.data || [])
@@ -2099,6 +2149,14 @@ export default function DashboardScreen({ navigation }: any) {
     return workoutInstances.filter(w => w.scheduled_date === dateStr);
   }
 
+  function getArmcareTestsForDate(date: Date): ArmcareTestInstance[] {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${d}`;
+    return armcareTestInstances.filter(t => t.scheduled_date === dateStr);
+  }
+
   function getBookingsForDate(date: Date): Booking[] {
     // Compare in local time to handle UTC offset correctly
     const year = date.getFullYear();
@@ -2203,6 +2261,7 @@ export default function DashboardScreen({ navigation }: any) {
   const selectedDateWorkouts = selectedDate ? getWorkoutsForDate(selectedDate) : [];
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
   const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
+  const selectedDateArmcareTests = selectedDate ? getArmcareTestsForDate(selectedDate) : [];
 
   const toIsoKey = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -2412,6 +2471,7 @@ export default function DashboardScreen({ navigation }: any) {
               const dayReminders = getRemindersForDate(date);
               const today = isToday(date);
               const dayWorkload = workloadByDate.get(toIsoKey(date));
+              const hasArmcareTest = armcareSessionDates.has(toIsoKey(date));
 
               return (
                 <TouchableOpacity
@@ -2429,9 +2489,16 @@ export default function DashboardScreen({ navigation }: any) {
                   <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
                     {date.getDate()}
                   </Text>
-                  {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0) && (
+                  {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0 || hasArmcareTest) && (
                     <View style={styles.dayDots}>
-                      {dayWorkouts.slice(0, 2).map((workout, i) => (
+                      {/* ArmCare dot rendered FIRST so it can't get clipped or
+                          wrapped off the visible row when other dots stack up. */}
+                      {hasArmcareTest && (
+                        <View
+                          style={[styles.dayDot, styles.dayDotArmcare]}
+                        />
+                      )}
+                      {dayWorkouts.slice(0, hasArmcareTest ? 1 : 2).map((workout, i) => (
                         <View
                           key={`workout-${i}`}
                           style={[styles.dayDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]}
@@ -2490,6 +2557,7 @@ export default function DashboardScreen({ navigation }: any) {
                       const dayBookings = getBookingsForDate(date);
                       const dayReminders = getRemindersForDate(date);
                       const dayWorkload = workloadByDate.get(toIsoKey(date));
+                      const hasArmcareTest = armcareSessionDates.has(toIsoKey(date));
 
                       return (
                         <TouchableOpacity
@@ -2521,10 +2589,14 @@ export default function DashboardScreen({ navigation }: any) {
                           ]}>
                             {date.getDate()}
                           </Text>
-                          {/* Activity Dots */}
-                          {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0) && (
+                          {/* Activity Dots — armcare rendered first to survive
+                              any wrap/clip when other dots stack up. */}
+                          {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0 || hasArmcareTest) && (
                             <View style={styles.weekDayDots}>
-                              {dayWorkouts.slice(0, 2).map((workout, i) => (
+                              {hasArmcareTest && (
+                                <View style={[styles.weekDayDot, styles.weekDayDotArmcare]} />
+                              )}
+                              {dayWorkouts.slice(0, hasArmcareTest ? 1 : 2).map((workout, i) => (
                                 <View
                                   key={`workout-${i}`}
                                   style={[
@@ -2550,6 +2622,21 @@ export default function DashboardScreen({ navigation }: any) {
               {/* Workouts for Selected Date - SCROLLABLE */}
               <Animated.View style={{ flex: 1, opacity: dayViewOpacity, transform: [{ translateY: dayViewTranslateY }] }}>
               <ScrollView style={styles.workoutsScrollView} contentContainerStyle={styles.workoutsContainer}>
+                {/* ArmCare prescribed tests for this date — rendered above
+                    workouts so a coach-prescribed test that gates the throwing
+                    session is visually first. */}
+                {selectedDateArmcareTests.map((test) => (
+                  <ArmcareDayCard
+                    key={test.id}
+                    test={test}
+                    onPress={() => {
+                      navigation.navigate('ArmCareWizard', {
+                        athleteId,
+                        testInstanceId: test.id,
+                      });
+                    }}
+                  />
+                ))}
                 {/* Combined throwing + workload hero card (renders when both exist) */}
                 {useCombinedThrowingCard && selectedDateThrowingWorkout && selectedDateWorkload && (
                   <CombinedThrowingDayCard
@@ -2906,11 +2993,11 @@ export default function DashboardScreen({ navigation }: any) {
           { id: 'performance', label: 'Performance', icon: 'stats-chart', onPress: () => navigation.navigate('Performance', { athleteId }) },
           // CONDITIONAL items
           ...(hittingData ? [{ id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) }] : []),
-          // Pitching opens the hub (gateway to Performance + Workload). Shown
-          // for anyone with trackman data OR active membership (workload access).
-          ...(hasPitchingData || isMember ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingHub', { athleteId }) }] : []),
+          // Pitching opens the hub (gateway to Performance + Workload + Arm
+          // Care). Shown for anyone with trackman data, arm care data, OR
+          // active membership — Arm Care now lives inside the Pitching screen.
+          ...(hasPitchingData || armCareData || isMember ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingHub', { athleteId }) }] : []),
           ...(hasMocapData ? [{ id: 'mocap', label: 'Motion Capture', icon: 'body', onPress: () => navigation.navigate('MocapSessions', { athleteId }) }] : []),
-          ...(armCareData ? [{ id: 'armcare', label: 'Arm Care', icon: 'arm-flex', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('ArmCare', { athleteId }) }] : []),
           ...(forceProfile && valdProfileId ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
           // Notes/Resources with badge
           { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
@@ -3137,6 +3224,16 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.6,
     shadowRadius: 3,
     elevation: 3,
+  },
+  // ArmCare dot — slightly brighter red + ring outline so it stays distinct
+  // from the hitting-category dot (also red) and the throwing dot (blue).
+  dayDotArmcare: {
+    backgroundColor: '#ff5e5e',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.55)',
+    shadowColor: '#ff3a3a',
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
   },
   dayViewContainer: {
     flex: 1,
@@ -3568,6 +3665,11 @@ const styles = StyleSheet.create({
     width: 4,
     height: 4,
     borderRadius: 2,
+  },
+  weekDayDotArmcare: {
+    backgroundColor: '#ff5e5e',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.6)',
   },
   workoutsScrollView: {
     flex: 1,

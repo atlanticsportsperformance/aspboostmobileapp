@@ -4,9 +4,13 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
+  Pressable,
+  Text,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import BlockOverview from './block-overview';
 import ExerciseDetailView from './exercise-detail-view';
@@ -14,6 +18,7 @@ import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMon
 import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
 import { PulseWizardModal, PulseAutoOpener } from '../components/pulse/PulseWizardModal';
+import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 // Types
@@ -147,6 +152,11 @@ export default function WorkoutLoggerScreen() {
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
   // Org id for pulse monitor (separate fetch; keeps the existing athlete query untouched)
   const [orgId, setOrgId] = useState<string | null>(null);
+  // Per-athlete preference for showing the workload tracker (Pulse Monitor +
+  // throws feed) on throwing workouts. Persisted in AsyncStorage so an
+  // athlete who doesn't own a Pulse sensor can hide it once and never see it
+  // again. `null` = not loaded yet (assume shown until we know otherwise).
+  const [pulseTrackerHidden, setPulseTrackerHidden] = useState<boolean>(false);
   useEffect(() => {
     if (!athleteId) return;
     (async () => {
@@ -481,6 +491,38 @@ export default function WorkoutLoggerScreen() {
       return () => clearInterval(interval);
     }
   }, [viewMode]);
+
+  // Hydrate per-athlete Pulse-tracker preference from AsyncStorage on mount.
+  // Athletes without a Pulse can hide the tracker once; this restores their
+  // choice across app launches.
+  useEffect(() => {
+    if (!athleteId) return;
+    let active = true;
+    (async () => {
+      try {
+        const v = await AsyncStorage.getItem(pulseTrackerKey(athleteId));
+        if (active && v === '1') setPulseTrackerHidden(true);
+      } catch {
+        // non-fatal — default to shown
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [athleteId]);
+
+  const savePulseTrackerHidden = useCallback(
+    (hidden: boolean) => {
+      setPulseTrackerHidden(hidden);
+      if (athleteId) {
+        AsyncStorage.setItem(
+          pulseTrackerKey(athleteId),
+          hidden ? '1' : '0',
+        ).catch(() => {});
+      }
+    },
+    [athleteId],
+  );
 
   const handleCompleteWorkout = async () => {
     const { error } = await supabase
@@ -951,21 +993,38 @@ export default function WorkoutLoggerScreen() {
   // via their optional headerSlot + footerSlot props. Does NOT touch drill state.
   const isThrowing = workout.category === 'throwing';
   const scheduledDate = workoutInstance?.scheduled_date ?? undefined;
+  const showPulseTracker = isThrowing && !pulseTrackerHidden;
   const throwingHeaderSlot =
     isThrowing && athleteId && orgId ? (
-      <ThrowingWorkloadMonitor
-        athleteId={athleteId}
-        orgId={orgId}
-        scheduledDate={scheduledDate}
-      />
+      showPulseTracker ? (
+        <ThrowingWorkloadMonitor
+          athleteId={athleteId}
+          orgId={orgId}
+          scheduledDate={scheduledDate}
+          onHide={() => savePulseTrackerHidden(true)}
+        />
+      ) : (
+        <Pressable
+          style={loggerStyles.showPulseRow}
+          onPress={() => savePulseTrackerHidden(false)}
+          hitSlop={6}
+        >
+          <Ionicons name="bluetooth-outline" size={14} color="#9BDDFF" />
+          <Text style={loggerStyles.showPulseText}>Show Pulse tracker</Text>
+        </Pressable>
+      )
     ) : null;
   const throwingFooterSlot =
-    isThrowing && athleteId ? (
+    isThrowing && athleteId && showPulseTracker ? (
       <ThrowingThrowsFeed
         athleteId={athleteId}
         scheduledDate={scheduledDate}
       />
     ) : null;
+
+  // Pulse-sensor chip in the screen header (in line with Back + workout
+  // title). Only shows when the user hasn't hidden the tracker.
+  const throwingTopRightSlot = showPulseTracker ? <PulseHeaderChip /> : null;
 
   const body =
     viewMode === 'overview' ? (
@@ -980,6 +1039,7 @@ export default function WorkoutLoggerScreen() {
         onBack={handleExitWorkout}
         headerSlot={throwingHeaderSlot}
         footerSlot={throwingFooterSlot}
+        topRightSlot={throwingTopRightSlot}
       />
     ) : viewMode === 'exercise' && currentExercise && currentRoutine ? (
       <ExerciseDetailView
@@ -1010,7 +1070,10 @@ export default function WorkoutLoggerScreen() {
   // Wrap throwing workouts in the PulseProvider so the Monitor can read BLE
   // state from context and the wizard modal has somewhere to live. Non-throwing
   // workouts don't mount the Monitor, so they skip the provider entirely.
-  if (isThrowing && athleteId && orgId) {
+  // Athletes who've hidden the tracker still see the "Show Pulse tracker"
+  // chip from the header slot but don't pay BLE/wizard cost — only re-enter
+  // the provider tree when they un-hide.
+  if (isThrowing && athleteId && orgId && showPulseTracker) {
     return (
       <PulseProvider athleteId={athleteId} orgId={orgId}>
         {body}
@@ -1029,5 +1092,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0A0A',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+});
+
+// AsyncStorage key for the per-athlete "hide Pulse tracker" preference.
+function pulseTrackerKey(athleteId: string): string {
+  return `pulse_tracker_hidden:${athleteId}`;
+}
+
+// Inline styles for the hide/show Pulse-tracker controls.
+const loggerStyles = StyleSheet.create({
+  showPulseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.18)',
+    backgroundColor: 'rgba(155,221,255,0.04)',
+  },
+  showPulseText: {
+    color: '#9BDDFF',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
 });

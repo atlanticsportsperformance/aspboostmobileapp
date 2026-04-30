@@ -2963,19 +2963,13 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                 <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Hitting</Text>
               </TouchableOpacity>
 
-              {hasPitchingData && (
+              {(hasPitchingData || hasArmCareData) && (
                 <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('PitchingPerformance', { athleteId }); }}>
                   <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
                   <Text style={styles.fabMenuLabel}>Pitching</Text>
                 </TouchableOpacity>
               )}
-
-              {hasArmCareData && (
-                <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('ArmCare', { athleteId }); }}>
-                  <MaterialCommunityIcons name="arm-flex" size={20} color="#10B981" />
-                  <Text style={styles.fabMenuLabel}>Arm Care</Text>
-                </TouchableOpacity>
-              )}
+              {/* Arm Care moved inline onto the Pitching screen. */}
 
               {hasForceData && (
                 <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('ForceProfile', { athleteId }); }}>
