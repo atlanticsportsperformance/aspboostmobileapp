@@ -153,8 +153,17 @@ export class Activ5DeviceRN {
         );
       }, timeoutMs);
 
-      // Activ5 advertises under "ACTIV5-AP-XXXX" or "ActivBody Activ5".
-      // Match on case-insensitive substring.
+      // Activ5 sensors advertise under several names depending on firmware/SKU:
+      //   - "ACTIV5-AP-XXXX"        (Activbody original)
+      //   - "ActivBody Activ5"      (newer SKU)
+      //   - "WSPR2-IMU"             (newer rebranded units)
+      // Some units also strip the name from the advertising packet entirely on
+      // iOS, leaving only the F0F0 service UUID as a reliable signal. Match
+      // on EITHER a known name pattern OR the service UUID.
+      const SERVICE_UUID_LOWER = ACTIV5.SERVICE_UUID.toLowerCase();
+      const SERVICE_SHORT = '0000f0f0';
+      const NAME_PATTERNS = ['activ', 'wspr'];
+
       mgr.startDeviceScan(null, { allowDuplicates: false }, (err, device) => {
         if (err) {
           clearTimeout(timer);
@@ -163,8 +172,27 @@ export class Activ5DeviceRN {
           return;
         }
         if (!device) return;
-        const candidate = (device.name ?? device.localName ?? '').toLowerCase();
-        if (candidate.includes('activ')) {
+
+        const rawName = device.name ?? device.localName ?? '';
+        const candidate = rawName.toLowerCase();
+        const services = (device.serviceUUIDs ?? []).map((s) => s.toLowerCase());
+
+        const nameMatches = NAME_PATTERNS.some((p) => candidate.includes(p));
+        const serviceMatches = services.some(
+          (s) => s === SERVICE_UUID_LOWER || s.startsWith(SERVICE_SHORT),
+        );
+
+        // Visibility for diagnosing real-world advertisements. Filtered to
+        // only print devices that have ANY identifier so we don't spam the
+        // log with every empty advertisement on a busy floor.
+        if (rawName || services.length > 0) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[Activ5 scan] name="${rawName}" services=[${services.join(',')}] match=${nameMatches || serviceMatches}`,
+          );
+        }
+
+        if (nameMatches || serviceMatches) {
           clearTimeout(timer);
           mgr.stopDeviceScan();
           resolve(new Activ5DeviceRN(device));

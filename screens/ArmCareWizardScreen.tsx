@@ -90,7 +90,7 @@ export default function ArmCareWizardScreen() {
   // CTA: 'rep' → "Retry rep" (returns to rep-instructions for the same index),
   // 'save' → "Retry save" (re-runs handleSave from the AsyncStorage draft),
   // null → just a Close button.
-  const [errorContext, setErrorContext] = useState<'rep' | 'save' | null>(null);
+  const [errorContext, setErrorContext] = useState<'rep' | 'save' | 'connect' | null>(null);
   const [sensorInfo, setSensorInfo] = useState<Activ5Info | null>(null);
 
   // Athlete profile defaults
@@ -138,6 +138,7 @@ export default function ArmCareWizardScreen() {
   // ───── Connect ─────
   const handleConnect = useCallback(async () => {
     setErrorMsg(null);
+    setErrorContext(null);
     unlockCues();
     setPhase('connecting');
     try {
@@ -150,6 +151,7 @@ export default function ArmCareWizardScreen() {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to connect.';
       setErrorMsg(msg);
+      setErrorContext('connect');
       setPhase('error');
     }
   }, []);
@@ -625,6 +627,9 @@ export default function ArmCareWizardScreen() {
             )}
             {errorContext === 'save' && (
               <PrimaryButton label="Retry save" onPress={handleRetrySave} />
+            )}
+            {errorContext === 'connect' && (
+              <PrimaryButton label="Retry connect" onPress={handleConnect} />
             )}
             <Pressable onPress={handleClose} hitSlop={8} style={styles.linkBtn}>
               <Text style={styles.linkBtnText}>
