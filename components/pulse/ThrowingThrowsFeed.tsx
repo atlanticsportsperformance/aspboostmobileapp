@@ -25,6 +25,7 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 // No reanimated imports — per-row press feedback is handled by Pressable's
 // {pressed} callback, which is dramatically cheaper than allocating a
@@ -246,7 +247,15 @@ export function ThrowingThrowsFeed({
           </Text>
         </View>
       ) : (
-        <View style={styles.list}>
+        // Capped vertical area with its own scroll so a long throws log
+        // doesn't push the workout below it off the screen. ~5 rows
+        // visible before the user has to scroll inside the list.
+        <ScrollView
+          style={styles.listScroll}
+          contentContainerStyle={styles.list}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+        >
           {throws.map((t, i) => (
             <ThrowRow
               key={t.id}
@@ -256,7 +265,7 @@ export function ThrowingThrowsFeed({
               onDelete={onDelete}
             />
           ))}
-        </View>
+        </ScrollView>
       )}
     </View>
   );
@@ -400,8 +409,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 17,
   },
+  // Throws feed lives in its own tab inside the workout logger now, so
+  // it can use whatever vertical space the tab body provides — no cap
+  // needed. The flex:1 lets the inner ScrollView fill that space.
+  listScroll: {
+    flexGrow: 0,
+  },
   list: {
-    maxHeight: 480,
+    paddingBottom: 4,
   },
   row: {
     flexDirection: 'row',

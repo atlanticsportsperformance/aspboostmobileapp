@@ -107,6 +107,11 @@ interface BlockOverviewProps {
    *  surface the Pulse-sensor entry point next to navigation, NOT inside
    *  the scrollable workload panel. */
   topRightSlot?: React.ReactNode;
+  /** Throwing-only: throws feed content. When provided, BlockOverview
+   *  renders a [Workout / Throws] segmented control between the header
+   *  and body; selecting Throws swaps the exercise list out for this
+   *  content so a long throws log can't push the workout off-screen. */
+  throwsTabContent?: React.ReactNode;
 }
 
 // Helper: Get YouTube video ID from URL
@@ -140,19 +145,39 @@ function isExerciseCompleted(exerciseId: string, completedSets: Record<string, b
 
 // Get gradient colors based on workout category - BLACK at top, color at bottom
 // Uses the exact same colors as the dashboard workout cards
-function getCategoryGradient(category: string): [string, string, string, string, string] {
-  const cat = category?.toLowerCase() || '';
+// Segmented tab control used when a throwing workout has both a workout
+// body and a throws feed — letting the athlete swap between them rather
+// than scroll one past the other.
+function TabButton({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={[styles.tabBtn, active && styles.tabBtnActive]}
+      hitSlop={6}
+    >
+      <Text style={[styles.tabBtnText, active && styles.tabBtnTextActive]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
 
-  if (cat.includes('hitting')) {
-    // Hitting - dark red (matches #7f1d1d from dashboard)
-    return ['#000000', '#000000', '#000000', '#0a0505', '#7f1d1d'];
-  }
-  if (cat.includes('throwing')) {
-    // Throwing - dark blue (matches #1e3a8a from dashboard)
-    return ['#000000', '#000000', '#000000', '#05080a', '#1e3a8a'];
-  }
-  // Default strength_conditioning - dark green (matches #0a1f0d from dashboard)
-  return ['#000000', '#000000', '#000000', '#050a06', '#0a1f0d'];
+function getCategoryGradient(category: string): [string, string, string, string, string] {
+  // Background is plain black across all categories — the previous design
+  // bled a category-tinted color into the bottom of the screen (deep blue
+  // for throwing, deep red for hitting, etc) which read as a stray glowing
+  // line above the home indicator. Category coloring lives in the header
+  // accent + dots, not the page background.
+  return ['#000000', '#000000', '#000000', '#000000', '#000000'];
 }
 
 // Get accent color for category (matches dashboard dot colors)
@@ -176,9 +201,13 @@ export default function BlockOverview({
   headerSlot,
   footerSlot,
   topRightSlot,
+  throwsTabContent,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
+  // Throwing-only tab toggle. Workout = exercise list, Throws = sensor feed.
+  const [viewMode, setViewMode] = useState<'workout' | 'throws'>('workout');
+  const hasThrowsTab = !!throwsTabContent;
   const [videoModalId, setVideoModalId] = useState<string | null>(null);
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
@@ -302,6 +331,32 @@ export default function BlockOverview({
         {/* Optional top slot — throwing workload monitor mounts here */}
         {headerSlot}
 
+        {/* Throwing-only tab bar — splits the body between the workout
+            (exercises) and the throws feed so a long throws log doesn't
+            compete with the exercise list for vertical space. */}
+        {hasThrowsTab && (
+          <View style={styles.tabBar}>
+            <TabButton
+              label="Workout"
+              active={viewMode === 'workout'}
+              onPress={() => setViewMode('workout')}
+            />
+            <TabButton
+              label="Throws"
+              active={viewMode === 'throws'}
+              onPress={() => setViewMode('throws')}
+            />
+          </View>
+        )}
+
+        {/* THROWS tab — render the feed and skip the workout body below. */}
+        {hasThrowsTab && viewMode === 'throws' && (
+          <View style={styles.throwsTabBody}>{throwsTabContent}</View>
+        )}
+
+        {/* WORKOUT tab (default when no tab bar) — render notes + body. */}
+        {(!hasThrowsTab || viewMode === 'workout') && (
+          <>
         {/* Workout Notes */}
         {(workout.notes || workout.description) && (
           <View style={styles.workoutNotesBanner}>
@@ -517,29 +572,30 @@ export default function BlockOverview({
           </View>
         );
       })}
+          </>
+        )}
 
-      {/* Optional bottom slot — throwing throws feed mounts here */}
+      {/* Optional bottom slot — kept for any future use; throws feed
+          is no longer routed here (lives in the Throws tab above). */}
       {footerSlot}
       </ScrollView>
 
-      {/* Complete Workout Button (Fixed Bottom) */}
+      {/* Complete Workout / Finish Early Button (Fixed Bottom).
+          When all sets are completed it's a full-width primary action;
+          when there's still work left it's a compact secondary pill so
+          it doesn't dominate the screen and accidentally invite
+          early-quit taps. */}
       <View style={styles.completeButtonContainer}>
         <LinearGradient
           colors={['transparent', 'rgba(10,10,10,0.98)', '#0A0A0A']}
           style={styles.completeButtonGradient}
         >
-          <TouchableOpacity
-            style={styles.completeButton}
-            onPress={() => {
-              if (allSetsCompleted) {
-                onCompleteWorkout();
-              } else {
-                setShowIncompleteModal(true);
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            {allSetsCompleted ? (
+          {allSetsCompleted ? (
+            <TouchableOpacity
+              style={styles.completeButton}
+              onPress={onCompleteWorkout}
+              activeOpacity={0.8}
+            >
               <LinearGradient
                 colors={['#10B981', '#059669']}
                 start={{ x: 0, y: 0 }}
@@ -549,18 +605,17 @@ export default function BlockOverview({
                 <Text style={styles.completeButtonIcon}>✓</Text>
                 <Text style={styles.completeButtonText}>COMPLETE WORKOUT</Text>
               </LinearGradient>
-            ) : (
-              <LinearGradient
-                colors={['#F59E0B', '#D97706']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.completeButtonActive}
-              >
-                <Text style={styles.completeButtonIcon}>⚡</Text>
-                <Text style={styles.completeButtonText}>FINISH EARLY</Text>
-              </LinearGradient>
-            )}
-          </TouchableOpacity>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.finishEarlyPill}
+              onPress={() => setShowIncompleteModal(true)}
+              activeOpacity={0.7}
+              hitSlop={6}
+            >
+              <Text style={styles.finishEarlyText}>Finish early</Text>
+            </TouchableOpacity>
+          )}
         </LinearGradient>
       </View>
 
@@ -712,6 +767,38 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'transparent',
   },
+
+  // Throwing-only [Workout / Throws] segmented control
+  tabBar: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 999,
+    padding: 3,
+    marginTop: 8,
+    marginBottom: 14,
+  },
+  tabBtn: {
+    paddingHorizontal: 22,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  tabBtnActive: {
+    backgroundColor: '#9BDDFF',
+  },
+  tabBtnText: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  tabBtnTextActive: {
+    color: '#000',
+  },
+  throwsTabBody: {
+    minHeight: 240,
+  },
+
   contentContainer: {
     paddingHorizontal: 16,
     paddingBottom: 96,
@@ -1017,6 +1104,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#FFFFFF',
+  },
+  // Compact "Finish early" pill — only shown when the workout still has
+  // sets remaining. Deliberately small so it reads as a secondary
+  // affordance instead of competing with the per-exercise primary CTAs.
+  finishEarlyPill: {
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.4)',
+    backgroundColor: 'rgba(245,158,11,0.10)',
+  },
+  finishEarlyText: {
+    color: '#F59E0B',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.4,
   },
   lockIcon: {
     fontSize: 20,

@@ -20,12 +20,14 @@ import {
   ActivityIndicator,
   TextInput,
   AppState,
+  Animated,
+  Easing,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import Svg, { Circle, Polyline } from 'react-native-svg';
+import Svg, { Polyline } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import {
   Activ5DeviceRN,
@@ -34,6 +36,8 @@ import {
 } from '../lib/armcare/ble/activ5-rn';
 import { computeSession, toArmcareSessionRow } from '../lib/armcare/scoring';
 import { CUES, unlockCues } from '../lib/armcare/cues';
+import { BluetoothPermissionSheet } from '../components/BluetoothPermissionSheet';
+import { getBluetoothState } from '../lib/ble/permissions';
 import {
   clearDraft,
   draftAgeLabel,
@@ -92,6 +96,11 @@ export default function ArmCareWizardScreen() {
   // null → just a Close button.
   const [errorContext, setErrorContext] = useState<'rep' | 'save' | 'connect' | null>(null);
   const [sensorInfo, setSensorInfo] = useState<Activ5Info | null>(null);
+  // Pre-connect Bluetooth permission gate. Opens before we touch the BLE
+  // driver so the user gets a clean "we need Bluetooth" rationale → OS
+  // prompt → state-aware copy (Settings deep-link if denied, etc.) instead
+  // of an inscrutable "Bluetooth Unauthorized" error.
+  const [btSheetOpen, setBtSheetOpen] = useState(false);
 
   // Athlete profile defaults
   const [bodyweight, setBodyweight] = useState<string>('');
@@ -136,7 +145,8 @@ export default function ArmCareWizardScreen() {
   }, []);
 
   // ───── Connect ─────
-  const handleConnect = useCallback(async () => {
+  // Internal: actually run the scan + connect once we know Bluetooth is on.
+  const performConnect = useCallback(async () => {
     setErrorMsg(null);
     setErrorContext(null);
     unlockCues();
@@ -155,6 +165,19 @@ export default function ArmCareWizardScreen() {
       setPhase('error');
     }
   }, []);
+
+  // User-facing entry point. Pre-flights the Bluetooth permission state:
+  //   - on  → connect immediately
+  //   - anything else → open the permission sheet so the user can grant
+  //     access, turn the radio on, or deep-link to Settings.
+  const handleConnect = useCallback(async () => {
+    const state = await getBluetoothState();
+    if (state === 'on') {
+      performConnect();
+    } else {
+      setBtSheetOpen(true);
+    }
+  }, [performConnect]);
 
   // ───── Setup → Calibrate prompt ─────
   const handleStartSession = useCallback(() => {
@@ -186,6 +209,17 @@ export default function ArmCareWizardScreen() {
   const handleStartRep = useCallback(() => {
     setPhase('rep-countdown');
   }, []);
+
+  // Redo the previous rep — drops the most recent RepResult and bounces
+  // the cursor back one slot. Only valid on rep-instructions (the timer-
+  // free beat between reps); during countdown / push it'd race with
+  // active intervals.
+  const handleRedoRep = useCallback(() => {
+    if (repIndex === 0) return;
+    setResults((prev) => prev.slice(0, -1));
+    setRepIndex((i) => Math.max(0, i - 1));
+    setPhase('rep-instructions');
+  }, [repIndex]);
 
   // ───── Countdown effect ─────
   useEffect(() => {
@@ -539,7 +573,7 @@ export default function ArmCareWizardScreen() {
         )}
 
         {phase === 'connecting' && (
-          <CenteredSpinner label="Pairing with sensor…" />
+          <Searching onCancel={handleClose} />
         )}
 
         {phase === 'setup' && (
@@ -572,6 +606,8 @@ export default function ArmCareWizardScreen() {
             repNumber={repIndex + 1}
             totalReps={REP_SCHEDULE.length}
             onStart={handleStartRep}
+            onRedoPrevious={repIndex > 0 ? handleRedoRep : null}
+            previousRepNumber={repIndex}
           />
         )}
 
@@ -639,6 +675,15 @@ export default function ArmCareWizardScreen() {
           </View>
         )}
       </ScrollView>
+
+      <BluetoothPermissionSheet
+        visible={btSheetOpen}
+        context="armcare"
+        onReady={() => {
+          performConnect();
+        }}
+        onClose={() => setBtSheetOpen(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -820,6 +865,8 @@ function Instructions({
   repNumber,
   totalReps,
   onStart,
+  onRedoPrevious,
+  previousRepNumber,
 }: {
   test: string;
   side: string;
@@ -828,6 +875,9 @@ function Instructions({
   repNumber: number;
   totalReps: number;
   onStart: () => void;
+  /** Null on the first rep — there's nothing to redo. */
+  onRedoPrevious: (() => void) | null;
+  previousRepNumber: number;
 }) {
   return (
     <View style={{ alignItems: 'center', gap: 12 }}>
@@ -847,6 +897,15 @@ function Instructions({
       </Text>
 
       <PrimaryButton label="Start" onPress={onStart} />
+
+      {/* Redo previous rep — only shown after the first rep so there's
+          actually something to redo. Drops the last RepResult and rewinds
+          repIndex by one. */}
+      {onRedoPrevious && (
+        <Pressable onPress={onRedoPrevious} hitSlop={8} style={styles.linkBtn}>
+          <Text style={styles.linkBtnText}>← Redo rep {previousRepNumber}</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -913,11 +972,14 @@ function LiveGauge({
   history: { t: number; lbf: number }[];
   maxLbf: number;
 }) {
-  const SIZE = 240;
+  // Larger gauge — the wizard had ~half the screen empty below the rep
+  // controls, so the half-circle, the chart, and the live number all get
+  // bumped to match.
+  const SIZE = 320;
   const CENTER = SIZE / 2;
-  const R = SIZE / 2 - 16;
+  const R = SIZE / 2 - 18;
   const ratio = Math.min(1, Math.max(0, lbf / maxLbf));
-  const TICKS = 40;
+  const TICKS = 44;
   const filled = Math.round(ratio * TICKS);
 
   const chart = useMemo(() => {
@@ -938,13 +1000,14 @@ function LiveGauge({
   }, [history]);
 
   return (
-    <View style={{ width: SIZE, alignItems: 'center', gap: 12 }}>
-      <View style={{ width: SIZE, height: SIZE / 2 + 30, position: 'relative' }}>
+    <View style={{ width: '100%', alignItems: 'center', gap: 18 }}>
+      {/* Half-circle gauge with oversized live number inside */}
+      <View style={{ width: SIZE, height: SIZE / 2 + 40, position: 'relative' }}>
         <Svg width={SIZE} height={SIZE}>
           {Array.from({ length: TICKS }).map((_, i) => {
             // -90° to +90° sweep across the top half
             const angle = -Math.PI + (i / (TICKS - 1)) * Math.PI;
-            const inner = R - 12;
+            const inner = R - 14;
             const outer = R;
             const x1 = CENTER + Math.cos(angle) * inner;
             const y1 = CENTER + Math.sin(angle) * inner;
@@ -958,7 +1021,7 @@ function LiveGauge({
                 key={i}
                 points={`${x1.toFixed(1)},${y1.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`}
                 stroke={i < filled ? filledColor : '#27272a'}
-                strokeWidth={3}
+                strokeWidth={4}
                 strokeLinecap="round"
               />
             );
@@ -970,12 +1033,23 @@ function LiveGauge({
         </View>
       </View>
 
+      {/* Peak readout — naked on canvas, no card */}
       <View style={styles.peakCard}>
-        <Text style={styles.peakCardLabel}>HIGH</Text>
+        <Text style={styles.peakCardLabel}>PEAK</Text>
         <Text style={styles.peakCardValue}>{peakLbf.toFixed(1)}</Text>
         <Text style={styles.peakCardUnit}>lbs</Text>
-        {chart.length > 0 && (
-          <Svg viewBox="0 0 100 30" preserveAspectRatio="none" width="100%" height={48} style={{ marginTop: 8 }}>
+      </View>
+
+      {/* Hairline rule + bigger trend line */}
+      {chart.length > 0 && (
+        <>
+          <View style={styles.sectionRule} />
+          <Svg
+            viewBox="0 0 100 30"
+            preserveAspectRatio="none"
+            width="100%"
+            height={110}
+          >
             <Polyline
               points={chart}
               fill="none"
@@ -986,8 +1060,8 @@ function LiveGauge({
               vectorEffect="non-scaling-stroke"
             />
           </Svg>
-        )}
-      </View>
+        </>
+      )}
     </View>
   );
 }
@@ -1029,19 +1103,23 @@ function Review({
   ];
 
   return (
-    <View style={{ gap: 16 }}>
+    <View style={{ gap: 0 }}>
       <Text style={styles.h1}>Session complete</Text>
-      <Text style={styles.bodyText}>
-        Total {session.totalStrengthLbf.toFixed(1)} lbs ·
-        Bodyweight {session.bodyweightLbs} lbs
-      </Text>
 
-      <View style={styles.armScoreCard}>
+      {/* Naked ArmScore hero — no card surface, just oversized type. */}
+      <View style={[styles.armScoreCard, { marginTop: 24 }]}>
         <Text style={styles.armScoreLabel}>ARMSCORE</Text>
         <Text style={styles.armScoreValue}>{session.armScore.toFixed(0)}</Text>
         <Text style={styles.armScoreCaption}>strength ÷ bodyweight × 100</Text>
       </View>
 
+      <View style={styles.sectionRule} />
+
+      <Text style={[styles.bodyText, { marginBottom: 8 }]}>
+        Total {session.totalStrengthLbf.toFixed(1)} lbs · Bodyweight {session.bodyweightLbs} lbs
+      </Text>
+
+      {/* Per-test rows on canvas — hairline-divided, no surrounding card. */}
       <View style={styles.reviewTable}>
         <View style={[styles.reviewRow, styles.reviewHeader]}>
           <Text style={styles.reviewCellLabel}>Test</Text>
@@ -1054,26 +1132,18 @@ function Review({
             <Text style={styles.reviewCellLabel}>{r.test}</Text>
             <Text style={styles.reviewCellValue}>{r.rep1.toFixed(1)}</Text>
             <Text style={styles.reviewCellValue}>{r.rep2.toFixed(1)}</Text>
-            <Text style={[styles.reviewCellValue, { color: '#fff', fontWeight: '800' }]}>
+            <Text style={[styles.reviewCellValue, styles.reviewCellValueTop]}>
               {r.top.toFixed(1)}
             </Text>
           </View>
         ))}
       </View>
 
-      <View style={{ flexDirection: 'row', gap: 10 }}>
-        <Pressable
-          onPress={onCancel}
-          style={({ pressed }) => [
-            styles.secondaryBtn,
-            pressed && { opacity: 0.6 },
-          ]}
-        >
-          <Text style={styles.secondaryBtnText}>Discard</Text>
+      <View style={{ marginTop: 28 }}>
+        <PrimaryButton label="Save Session" onPress={onSave} />
+        <Pressable onPress={onCancel} hitSlop={8} style={styles.linkBtn}>
+          <Text style={styles.linkBtnText}>Discard exam</Text>
         </Pressable>
-        <View style={{ flex: 1 }}>
-          <PrimaryButton label="Save Session" onPress={onSave} />
-        </View>
       </View>
     </View>
   );
@@ -1084,6 +1154,105 @@ function CenteredSpinner({ label }: { label: string }) {
     <View style={styles.center}>
       <ActivityIndicator size="large" color={ACCENT} />
       <Text style={styles.bodyText}>{label}</Text>
+    </View>
+  );
+}
+
+/**
+ * Searching — replaces the bare ActivityIndicator that used to live in the
+ * `connecting` phase. Three concentric red rings pulse outward in a
+ * staggered loop, conveying active scanning. Title + tip list let the
+ * athlete know what to do while waiting; Cancel link bails to the previous
+ * screen (no sensor is paired yet so nothing to disconnect).
+ */
+function Searching({ onCancel }: { onCancel: () => void }) {
+  // Three rings, each animating opacity 0.6 → 0 and scale 1 → 1.6 over a
+  // 1600 ms cycle. Stagger by 530 ms so the rings overlap and read as a
+  // continuous radar pulse rather than three discrete pops.
+  const ring1 = useRef(new Animated.Value(0)).current;
+  const ring2 = useRef(new Animated.Value(0)).current;
+  const ring3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const make = (val: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(val, {
+            toValue: 1,
+            duration: 1600,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(val, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+    const a = make(ring1, 0);
+    const b = make(ring2, 530);
+    const c = make(ring3, 1060);
+    a.start();
+    b.start();
+    c.start();
+    return () => {
+      a.stop();
+      b.stop();
+      c.stop();
+    };
+  }, [ring1, ring2, ring3]);
+
+  const ringStyle = (val: Animated.Value, baseSize: number) => ({
+    width: baseSize,
+    height: baseSize,
+    borderRadius: baseSize / 2,
+    borderWidth: 1.5,
+    borderColor: ACCENT,
+    position: 'absolute' as const,
+    opacity: val.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+    transform: [
+      {
+        scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 1.7] }),
+      },
+    ],
+  });
+
+  return (
+    <View style={styles.center}>
+      <View style={styles.searchPulseWrap}>
+        <Animated.View style={ringStyle(ring1, 80)} />
+        <Animated.View style={ringStyle(ring2, 80)} />
+        <Animated.View style={ringStyle(ring3, 80)} />
+        <View style={styles.searchPulseCore}>
+          <Ionicons name="bluetooth" size={32} color={ACCENT} />
+        </View>
+      </View>
+
+      <Text style={styles.h1}>Searching for ArmCare sensor</Text>
+      <Text style={styles.bodyText}>
+        Looking for a nearby Activ5 device. This usually takes a few seconds.
+      </Text>
+
+      <View style={styles.searchTipList}>
+        <SearchTip text="Make sure the sensor is on" />
+        <SearchTip text="Close the official ArmCare app" />
+        <SearchTip text="Stay within ~10 feet of the sensor" />
+      </View>
+
+      <Pressable onPress={onCancel} hitSlop={10} style={styles.linkBtn}>
+        <Text style={styles.linkBtnText}>Cancel</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function SearchTip({ text }: { text: string }) {
+  return (
+    <View style={styles.searchTipRow}>
+      <View style={styles.searchTipDot} />
+      <Text style={styles.searchTipText}>{text}</Text>
     </View>
   );
 }
@@ -1350,37 +1519,49 @@ const styles = StyleSheet.create({
     lineHeight: 124,
   },
 
+  // Live gauge text — sits inside the half-arc. The number reads as the
+  // primary live readout so it's intentionally oversized.
   gaugeNumberWrap: {
     position: 'absolute',
-    top: 30,
+    top: 50,
     left: 0,
     right: 0,
     alignItems: 'center',
   },
   gaugeNumber: {
     color: ACCENT,
-    fontSize: 62,
+    fontSize: 96,
     fontWeight: '900',
-    letterSpacing: -2,
+    letterSpacing: -3,
+    fontVariant: ['tabular-nums'],
+    lineHeight: 100,
   },
-  gaugeUnit: { color: '#6b7280', fontSize: 12, marginTop: 4 },
+  gaugeUnit: { color: '#6b7280', fontSize: 13, marginTop: 6, letterSpacing: 0.3 },
 
+  // PEAK readout sits naked on the canvas below the gauge — no card, no
+  // background, just an eyebrow + tabular number on a row.
   peakCard: {
-    width: 220,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 4,
+    width: '100%',
   },
   peakCardLabel: {
     color: '#6b7280',
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 1.5,
+    letterSpacing: 2,
   },
-  peakCardValue: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 2 },
-  peakCardUnit: { color: '#6b7280', fontSize: 10, marginTop: -2 },
+  peakCardValue: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.5,
+  },
+  peakCardUnit: { color: '#6b7280', fontSize: 12, fontWeight: '600' },
 
   repPeak: {
     color: ACCENT,
@@ -1390,48 +1571,47 @@ const styles = StyleSheet.create({
     lineHeight: 92,
   },
 
+  // Section shell — sits naked on the canvas. Spacing + a thin top hairline
+  // separate it from the previous section. No background, no border radius.
   armScoreCard: {
     alignItems: 'center',
-    padding: 24,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    paddingTop: 8,
+    paddingBottom: 4,
   },
   armScoreLabel: {
     color: '#6b7280',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 2,
+    letterSpacing: 2.4,
   },
   armScoreValue: {
     color: '#fff',
-    fontSize: 64,
+    fontSize: 96,
+    lineHeight: 100,
     fontWeight: '900',
-    letterSpacing: -2,
-    marginTop: 4,
+    letterSpacing: -3,
+    fontVariant: ['tabular-nums'],
+    marginTop: 6,
   },
-  armScoreCaption: { color: '#6b7280', fontSize: 11, marginTop: 4 },
+  armScoreCaption: { color: '#6b7280', fontSize: 12, marginTop: 8, letterSpacing: 0.3 },
 
-  reviewTable: {
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-  },
+  // Per-test table — bare flex rows on the canvas. No surrounding container.
+  reviewTable: {},
   reviewRow: {
     flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 4,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.07)',
   },
-  reviewHeader: { borderTopWidth: 0, backgroundColor: 'rgba(255,255,255,0.04)' },
+  reviewHeader: {
+    borderBottomColor: 'rgba(255,255,255,0.12)',
+    paddingVertical: 10,
+  },
   reviewCellLabel: {
     flex: 1.2,
     color: '#fff',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '700',
   },
   reviewCellNum: {
@@ -1439,27 +1619,45 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 1.2,
     textAlign: 'right',
     textTransform: 'uppercase',
   },
   reviewCellValue: {
     flex: 1,
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
+    color: '#9ca3af',
+    fontSize: 14,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
     textAlign: 'right',
   },
+  reviewCellValueTop: {
+    color: '#fff',
+    fontWeight: '900',
+  },
 
+  // Thin section divider rule used between blocks on naked-canvas layouts.
+  sectionRule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    alignSelf: 'stretch',
+    marginVertical: 18,
+  },
+
+  // Secondary button is no longer a filled pill. The few surviving callsites
+  // use it as a thin ghost button. The "Discard" affordance on review uses
+  // `linkBtn` instead — so the only place secondaryBtn still appears is the
+  // fallback close path on errors.
   secondaryBtn: {
-    flex: 1,
-    height: 56,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  secondaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  secondaryBtnText: { color: '#fff', fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
 
   primaryShadow: {
     alignSelf: 'stretch',
@@ -1486,5 +1684,48 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.4,
+  },
+
+  // ─── Searching (connecting phase) ───
+  // Outer wrap reserves a fixed area for the pulsing rings + center icon so
+  // the absolute-positioned rings have a stable bounding box. Rings
+  // animate scale + opacity from this same origin.
+  searchPulseWrap: {
+    width: 200,
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  searchPulseCore: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(248,113,113,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: ACCENT,
+  },
+  searchTipList: {
+    alignSelf: 'stretch',
+    gap: 8,
+    marginTop: 6,
+    paddingHorizontal: 12,
+  },
+  searchTipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  searchTipDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#6b7280',
+  },
+  searchTipText: {
+    color: '#9ca3af',
+    fontSize: 13,
   },
 });

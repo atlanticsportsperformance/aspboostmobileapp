@@ -45,6 +45,10 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { usePulse } from '../../lib/pulse/PulseProvider';
+// Bluetooth permission UX is handled INSIDE this wizard's own Connect /
+// Error steps (bt-off / unauthorized) — we no longer stack the shared
+// BluetoothPermissionSheet on top, since it duplicated the same rationale
+// screen the wizard already shows.
 
 /**
  * PulseAutoOpener — effect-only component that opens the wizard once when
@@ -148,22 +152,12 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     // 'requesting' / 'connecting' — stay on connect step with spinner
   }, [wizardOpen, dev.state, live.status, sync.status, profileComplete]);
 
-  // Auto-trigger the BLE scan when the wizard opens if Pulse is idle. This
-  // collapses "Open Pulse → tap Connect" into a single tap. The athlete sees
-  // the spinner immediately instead of a static "Connect Pulse" screen.
-  useEffect(() => {
-    if (!wizardOpen) return;
-    if (!ble.supported) return;
-    if (dev.state === 'idle' || dev.state === 'disconnected') {
-      console.log('[PulseWizard] auto-connect on open, state=', dev.state);
-      dev.connect().catch((err) => {
-        console.warn('[PulseWizard] auto-connect failed', err?.message);
-      });
-    }
-    // Intentionally only deps on wizardOpen flip + ble.supported — we don't
-    // want this effect firing every time dev.state changes (would recurse).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wizardOpen, ble.supported]);
+  // BLE scan is no longer auto-triggered when the wizard opens. The
+  // wizard now lands on its static Connect step and waits for the
+  // athlete to tap the Connect button — `handleConnect` runs the
+  // pre-flight + scan there. Avoids the "modal pops, spinner spins,
+  // permission prompt blasts the user" experience when they didn't ask
+  // to engage the sensor yet.
 
   // ─────────────────────────────────────────────────────────────
   // Actions
@@ -171,6 +165,10 @@ export function PulseWizardModal({ scheduledDate }: Props) {
 
   const handleConnect = useCallback(async () => {
     Haptics.selectionAsync().catch(() => {});
+    // Just call connect. The BLE driver throws specific errors for
+    // bt-off / unauthorized / timeout, and the wizard's error step
+    // already renders the correct CTA (Open Settings vs Try Again).
+    // No second sheet stacked on top.
     await dev.connect();
   }, [dev]);
 

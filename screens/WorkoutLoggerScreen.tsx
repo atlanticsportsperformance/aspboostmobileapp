@@ -17,7 +17,7 @@ import ExerciseDetailView from './exercise-detail-view';
 import { ThrowingWorkloadMonitor } from '../components/pulse/ThrowingWorkloadMonitor';
 import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
-import { PulseWizardModal, PulseAutoOpener } from '../components/pulse/PulseWizardModal';
+import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
@@ -155,8 +155,19 @@ export default function WorkoutLoggerScreen() {
   // Per-athlete preference for showing the workload tracker (Pulse Monitor +
   // throws feed) on throwing workouts. Persisted in AsyncStorage so an
   // athlete who doesn't own a Pulse sensor can hide it once and never see it
-  // again. `null` = not loaded yet (assume shown until we know otherwise).
+  // again.
   const [pulseTrackerHidden, setPulseTrackerHidden] = useState<boolean>(false);
+  // Whether the day this workout is scheduled for has a coach-prescribed
+  // workload target (`pulse_athlete_workload_day` row). When false the
+  // Pulse tracker auto-hides so a non-throwing-load day doesn't hand the
+  // athlete a giant 0/no-target gauge to ignore.
+  const [hasWorkloadTarget, setHasWorkloadTarget] = useState<boolean | null>(null);
+  // Session-level override — set when the athlete explicitly taps the
+  // "Show Pulse tracker" row on a no-target day. Wins over the auto-hide
+  // gate so the athlete can engage the sensor for a free-form session
+  // without a coach-prescribed target. Not persisted; resets on next
+  // workout open.
+  const [manualShowPulse, setManualShowPulse] = useState(false);
   useEffect(() => {
     if (!athleteId) return;
     (async () => {
@@ -168,6 +179,28 @@ export default function WorkoutLoggerScreen() {
       if (data?.org_id) setOrgId(data.org_id);
     })();
   }, [athleteId]);
+
+  // Probe whether the scheduled day has a workload target set. We do a
+  // tiny count query so the result lands fast on screen open. If there's
+  // no row, the Pulse cluster stays hidden until the athlete opts in.
+  useEffect(() => {
+    if (!athleteId || !workoutInstance?.scheduled_date) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('pulse_athlete_workload_day')
+        .select('target_w_day')
+        .eq('athlete_id', athleteId)
+        .eq('target_date', workoutInstance.scheduled_date)
+        .maybeSingle();
+      if (cancelled) return;
+      const hasTarget = !!data && Number(data.target_w_day) > 0;
+      setHasWorkloadTarget(hasTarget);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [athleteId, workoutInstance?.scheduled_date]);
 
   // Load workout data
   useEffect(() => {
@@ -993,7 +1026,19 @@ export default function WorkoutLoggerScreen() {
   // via their optional headerSlot + footerSlot props. Does NOT touch drill state.
   const isThrowing = workout.category === 'throwing';
   const scheduledDate = workoutInstance?.scheduled_date ?? undefined;
-  const showPulseTracker = isThrowing && !pulseTrackerHidden;
+  // Default-hide the Pulse tracker on throwing days that don't have a
+  // coach-prescribed workload target — those are usually flat-throwing /
+  // recovery days where the gauge would just show "no target / 0.0 W"
+  // and clutter the screen. Athlete can still un-hide via the "Show
+  // Pulse tracker" row (sets manualShowPulse), and the AsyncStorage
+  // pulseTrackerHidden preference still hides it when explicitly set.
+  const showPulseTracker =
+    isThrowing &&
+    !pulseTrackerHidden &&
+    (hasWorkloadTarget === null || hasWorkloadTarget === true || manualShowPulse);
+  // The workload monitor (gauge + Start Live / Sync controls) pins above
+  // the body. The throws feed lives in a separate tab so a long throws
+  // log can't push the workout below the fold.
   const throwingHeaderSlot =
     isThrowing && athleteId && orgId ? (
       showPulseTracker ? (
@@ -1001,12 +1046,18 @@ export default function WorkoutLoggerScreen() {
           athleteId={athleteId}
           orgId={orgId}
           scheduledDate={scheduledDate}
-          onHide={() => savePulseTrackerHidden(true)}
+          onHide={() => {
+            savePulseTrackerHidden(true);
+            setManualShowPulse(false);
+          }}
         />
       ) : (
         <Pressable
           style={loggerStyles.showPulseRow}
-          onPress={() => savePulseTrackerHidden(false)}
+          onPress={() => {
+            savePulseTrackerHidden(false);
+            setManualShowPulse(true);
+          }}
           hitSlop={6}
         >
           <Ionicons name="bluetooth-outline" size={14} color="#9BDDFF" />
@@ -1014,13 +1065,21 @@ export default function WorkoutLoggerScreen() {
         </Pressable>
       )
     ) : null;
-  const throwingFooterSlot =
+
+  // Throws-tab content. BlockOverview renders a [Workout / Throws]
+  // segmented control above the body when this is provided; tapping
+  // Throws swaps the exercise list for this feed. Hidden entirely when
+  // the Pulse tracker is hidden (athlete doesn't want it).
+  const throwingThrowsContent =
     isThrowing && athleteId && showPulseTracker ? (
       <ThrowingThrowsFeed
         athleteId={athleteId}
         scheduledDate={scheduledDate}
       />
     ) : null;
+
+  // Footer slot retired — throws feed lives in the Throws tab.
+  const throwingFooterSlot = null;
 
   // Pulse-sensor chip in the screen header (in line with Back + workout
   // title). Only shows when the user hasn't hidden the tracker.
@@ -1040,6 +1099,7 @@ export default function WorkoutLoggerScreen() {
         headerSlot={throwingHeaderSlot}
         footerSlot={throwingFooterSlot}
         topRightSlot={throwingTopRightSlot}
+        throwsTabContent={throwingThrowsContent}
       />
     ) : viewMode === 'exercise' && currentExercise && currentRoutine ? (
       <ExerciseDetailView
@@ -1078,7 +1138,10 @@ export default function WorkoutLoggerScreen() {
       <PulseProvider athleteId={athleteId} orgId={orgId}>
         {body}
         <PulseWizardModal scheduledDate={scheduledDate} />
-        <PulseAutoOpener />
+        {/* PulseAutoOpener removed — the wizard is no longer forced on
+            mount. Athletes open the connect flow explicitly via the
+            Monitor's "Connect Pulse" / "Open Pulse" button when they
+            actually want to capture throws. */}
       </PulseProvider>
     );
   }

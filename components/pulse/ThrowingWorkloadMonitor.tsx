@@ -411,27 +411,107 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data,
         )}
       </View>
 
-      {/* Gauge */}
-      <View style={{ alignItems: 'center' }}>
+      {/* Gauge row — Start Live and Sync flank the radial gauge so the
+          monitor uses horizontal real estate instead of stacking
+          another row of buttons underneath. Dramatically shorter
+          vertically. */}
+      <View style={styles.gaugeRow}>
+        {/* LEFT — Start Live (hidden while live is running so the row
+            doesn't gain/lose width mid-session) */}
+        {live.status !== 'running' && (
+          <View style={styles.flankColumn}>
+            <TouchableOpacity
+              style={[
+                styles.flankBtn,
+                styles.flankBtnPrimary,
+                (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
+              ]}
+              activeOpacity={0.8}
+              onPress={() => {
+                if (!profileComplete) {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+                  Alert.alert(
+                    'Set your height & weight',
+                    "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Open profile', onPress: () => navigation.navigate('Profile') },
+                    ],
+                  );
+                  return;
+                }
+                if (dev.state !== 'connected') {
+                  openWizard();
+                  return;
+                }
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                live.start().catch((err) => console.warn('[monitor] live start failed', err));
+              }}
+            >
+              <Ionicons name="play" size={16} color="#000" />
+            </TouchableOpacity>
+            <Text style={styles.flankBtnPrimaryText}>LIVE</Text>
+          </View>
+        )}
+
+        {/* CENTER — gauge */}
         <RadialAcwr
           value={effAcwr}
           dayW={effActualWDay}
           chronic={effChronic}
           target={effTargetWDay}
           dateLabel={gaugeDateLabel}
-          size={290}
+          size={200}
         />
-        {!profileComplete && (
-          <Text style={styles.profileWarn}>
-            Height/weight missing — set them in the web app's Workload page before syncing.
-          </Text>
+
+        {/* RIGHT — Sync */}
+        {live.status !== 'running' && (
+          <View style={styles.flankColumn}>
+            <TouchableOpacity
+              style={[
+                styles.flankBtn,
+                styles.flankBtnSecondary,
+                (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
+              ]}
+              activeOpacity={0.8}
+              onPress={() => {
+                if (!profileComplete) {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+                  Alert.alert(
+                    'Set your height & weight',
+                    "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Open profile', onPress: () => navigation.navigate('Profile') },
+                    ],
+                  );
+                  return;
+                }
+                if (dev.state !== 'connected') {
+                  openWizard();
+                  return;
+                }
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                syncM.runAndCommit().catch((err) =>
+                  console.warn('[monitor] sync failed', err),
+                );
+              }}
+            >
+              <Ionicons name="cloud-download" size={16} color="#9BDDFF" />
+            </TouchableOpacity>
+            <Text style={styles.flankBtnSecondaryText}>
+              {(dev.counter ?? 0) > 0 ? `SYNC ${dev.counter}` : 'SYNC'}
+            </Text>
+          </View>
         )}
       </View>
 
-      {/* Action buttons when connected — Start Live Session + Sync. Placed
-          directly under the gauge so the athlete doesn't have to dig into
-          the wizard modal just to kick off a session. The wizard still
-          exists for error / connect / permissions flows via the top chip. */}
+      {!profileComplete && (
+        <Text style={styles.profileWarn}>
+          Height/weight missing — set them in the web app's Workload page before syncing.
+        </Text>
+      )}
+
       {/* Processing throw indicator — shows between counter tick and decode */}
       {processingThrow && live.status === 'running' && (
         <View style={styles.processingRow}>
@@ -440,87 +520,24 @@ export function ThrowingWorkloadMonitor({ athleteId, orgId, scheduledDate, data,
         </View>
       )}
 
-      {/* Always-visible Start Live + Sync buttons right under the gauge stats.
-          When not connected they're dimmed and tapping opens the wizard to
-          connect first. When live is already running they're hidden.
-          When profile is incomplete (no height/weight) BOTH buttons are
-          gated — the DB trigger computes workload = 0 for any throw we
-          sync without those values, which would pollute ACWR. The user
-          gets a clear Alert pointing at the web workload page since the
-          mobile app doesn't (yet) have a profile editor. */}
-      {live.status !== 'running' && (
+      {/* (Old quickActionRow removed — buttons now flank the gauge above.) */}
+      {false && live.status !== 'running' && (
         <View style={styles.quickActionRow}>
           <TouchableOpacity
-            style={[
-              styles.quickActionBtnPrimary,
-              { backgroundColor: '#9BDDFF' },
-              (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
-            ]}
+            style={[styles.quickActionBtnPrimary]}
             activeOpacity={0.8}
-            onPress={() => {
-              if (!profileComplete) {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                Alert.alert(
-                  'Set your height & weight',
-                  "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Open profile',
-                      onPress: () => navigation.navigate('Profile'),
-                    },
-                  ],
-                );
-                return;
-              }
-              if (dev.state !== 'connected') {
-                openWizard();
-                return;
-              }
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-              live.start().catch((err) => console.warn('[monitor] live start failed', err));
-            }}
+            onPress={() => {}}
           >
             <Ionicons name="play" size={20} color="#000" />
             <Text style={styles.quickActionPrimaryText}>Start Live</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[
-              styles.quickActionBtnSecondary,
-              { backgroundColor: 'rgba(155,221,255,0.1)', borderColor: '#9BDDFF' },
-              (dev.state !== 'connected' || !profileComplete) && { opacity: 0.35 },
-            ]}
+            style={[styles.quickActionBtnSecondary]}
             activeOpacity={0.8}
-            onPress={() => {
-              if (!profileComplete) {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                Alert.alert(
-                  'Set your height & weight',
-                  "Workload can't be computed without your height and weight. Tap Open profile to add them now.",
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Open profile',
-                      onPress: () => navigation.navigate('Profile'),
-                    },
-                  ],
-                );
-                return;
-              }
-              if (dev.state !== 'connected') {
-                openWizard();
-                return;
-              }
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-              syncM.runAndCommit().catch((err) =>
-                console.warn('[monitor] sync failed', err),
-              );
-            }}
+            onPress={() => {}}
           >
             <Ionicons name="cloud-download" size={20} color="#9BDDFF" />
-            <Text style={styles.quickActionSecondaryText}>
-              {(dev.counter ?? 0) > 0 ? `Sync ${dev.counter}` : 'Sync'}
-            </Text>
+            <Text style={styles.quickActionSecondaryText}>Sync</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -602,6 +619,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     lineHeight: 17,
   },
+  // Horizontal row that holds [Start Live] [Gauge] [Sync] inline.
+  // Vertically centered so the buttons sit at the gauge's mid-line.
+  gaugeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  // Tight icon-only circles flanking the gauge — minimal so they don't
+  // compete with the gauge itself for visual weight. Tiny label sits
+  // under the circle (outside the tap target) so the function is still
+  // readable without the button being giant.
+  flankBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  flankBtnPrimary: {
+    backgroundColor: '#9BDDFF',
+  },
+  flankBtnPrimaryText: {
+    color: '#9BDDFF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  flankBtnSecondary: {
+    backgroundColor: 'rgba(155,221,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.5)',
+  },
+  flankBtnSecondaryText: {
+    color: '#9BDDFF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  flankColumn: {
+    alignItems: 'center',
+    gap: 0,
+  },
+
   quickActionRow: {
     flexDirection: 'row',
     gap: 10,

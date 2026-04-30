@@ -14,6 +14,7 @@
 
 import React, { useEffect, useMemo } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle } from 'react-native-svg';
 import Animated, {
   FadeIn,
@@ -279,144 +280,178 @@ export function CombinedThrowingDayCard({
 
   return (
     <Animated.View entering={FadeIn.duration(300)}>
-      <View
-        style={[
-          combinedStyles.shell,
-          { borderColor: `${hex}40` },
-        ]}
-      >
-        {/* Top strip — badge + start button on right */}
-        <View style={combinedStyles.topStrip}>
-          <View
-            style={[
-              combinedStyles.badge,
-              {
-                borderColor: `${hex}66`,
-                backgroundColor: `${hex}15`,
-              },
-            ]}
-          >
-            <Text style={[combinedStyles.badgeText, { color: hex }]}>
-              THROWING
-            </Text>
-          </View>
-          <View style={{ flex: 1 }} />
-          {isCompleted && (
-            <View style={combinedStyles.completedChip}>
-              <Text style={combinedStyles.completedChipText}>✓ DONE</Text>
-            </View>
-          )}
-          <Pressable
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-              onStart();
-            }}
-            hitSlop={8}
-            style={{ marginLeft: 8 }}
-          >
-            {({ pressed }) => (
-              <View style={[combinedStyles.startButtonCompact, pressed && { opacity: 0.82 }]}>
-                <Text style={combinedStyles.startButtonCompactText}>
-                  {isCompleted ? 'View' : 'Start'}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
-
-        <Text style={combinedStyles.workoutName} numberOfLines={1}>
-          {workoutName}
-        </Text>
-        {durationMin != null && (
-          <Text style={combinedStyles.duration}>{durationMin} min</Text>
-        )}
-
-        {/* Hero row — big ring + metric stack */}
-        <View style={combinedStyles.heroRow}>
-          <AnimatedRing
-            size={84}
-            stroke={7}
-            hex={hex}
-            pct={pct}
-            centerLabel={centerLabel}
+      <View style={combinedStyles.row}>
+        {/* Hairline rule on top — matches the rest of the day-detail
+            stack (workouts, armcare, bookings). */}
+        <View style={combinedStyles.hairline} />
+        <View style={combinedStyles.inner}>
+          {/* Faint cyan-tinted wash for category identity. */}
+          <LinearGradient
+            colors={[`${hex}14`, `${hex}05`, 'transparent']}
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={StyleSheet.absoluteFillObject}
+            pointerEvents="none"
           />
-          <View style={combinedStyles.metricCol}>
-            <Text style={combinedStyles.metricLabel}>TODAY&rsquo;S TARGET</Text>
-            <Text style={[combinedStyles.metricValue, { color: hex }]}>
-              {showMetric}
-            </Text>
-            <View style={combinedStyles.statusRow}>
-              <View
-                style={[
-                  combinedStyles.statusDot,
-                  { backgroundColor: status.hex },
-                ]}
-              />
-              <Text
-                style={[combinedStyles.statusLabel, { color: status.hex }]}
-              >
-                {status.label.toUpperCase()}
-              </Text>
-            </View>
-            {throwCount > 0 && (
-              <View style={combinedStyles.metaRow}>
-                <Text style={combinedStyles.meta}>
-                  {throwCount} throw{throwCount === 1 ? '' : 's'}
+          {/* Thin colored accent stripe on the left. */}
+          <View style={[combinedStyles.accent, { backgroundColor: hex }]} />
+
+          <View style={combinedStyles.body}>
+            {/* Eyebrow row — THROWING + Done chip + Start pill on right */}
+            <View style={combinedStyles.headerRow}>
+              <View style={combinedStyles.eyebrowRow}>
+                <Text style={[combinedStyles.eyebrow, { color: hex }]}>
+                  THROWING
                 </Text>
+                {isCompleted && (
+                  <>
+                    <Text style={combinedStyles.dotSep}>·</Text>
+                    <Text style={combinedStyles.doneInline}>Done</Text>
+                  </>
+                )}
               </View>
+              <Pressable
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                  onStart();
+                }}
+                hitSlop={8}
+              >
+                {({ pressed }) => (
+                  <View
+                    style={[
+                      combinedStyles.startPill,
+                      { backgroundColor: hex },
+                      pressed && { opacity: 0.82 },
+                    ]}
+                  >
+                    <Text style={combinedStyles.startPillText}>
+                      {isCompleted ? 'View' : 'Start'}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+            </View>
+
+            {/* Title + duration */}
+            <Text style={combinedStyles.workoutName} numberOfLines={1}>
+              {workoutName}
+            </Text>
+            {durationMin != null && (
+              <Text style={combinedStyles.duration}>{durationMin} min</Text>
             )}
+
+            {/* Compact ring + metric strip — workload at a glance without
+                the boxed hero look. */}
+            <View style={combinedStyles.heroRow}>
+              <AnimatedRing
+                size={56}
+                stroke={5}
+                hex={hex}
+                pct={pct}
+                centerLabel={centerLabel}
+              />
+              <View style={combinedStyles.metricCol}>
+                <Text style={combinedStyles.metricLabel}>TODAY&rsquo;S TARGET</Text>
+                <Text style={[combinedStyles.metricValue, { color: hex }]}>
+                  {showMetric}
+                </Text>
+                <View style={combinedStyles.statusRow}>
+                  <View
+                    style={[
+                      combinedStyles.statusDot,
+                      { backgroundColor: status.hex },
+                    ]}
+                  />
+                  <Text
+                    style={[combinedStyles.statusLabel, { color: status.hex }]}
+                  >
+                    {status.label.toUpperCase()}
+                  </Text>
+                  {throwCount > 0 && (
+                    <>
+                      <Text style={combinedStyles.dotSep}>·</Text>
+                      <Text style={combinedStyles.meta}>
+                        {throwCount} throw{throwCount === 1 ? '' : 's'}
+                      </Text>
+                    </>
+                  )}
+                </View>
+              </View>
+            </View>
           </View>
         </View>
-
       </View>
     </Animated.View>
   );
 }
 
 const combinedStyles = StyleSheet.create({
-  shell: {
-    marginBottom: 12,
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    backgroundColor: 'rgba(155,221,255,0.04)',
+  // Editorial row — matches Workout / ArmCare / Booking rows above and
+  // below it in the day-detail stack. Hairline + 3px accent + soft
+  // tinted gradient wash, no boxed card.
+  row: {},
+  hairline: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  topStrip: {
+  inner: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    paddingTop: 14,
+    paddingBottom: 16,
+    paddingRight: 4,
+    gap: 0,
+    position: 'relative',
+  },
+  accent: {
+    width: 3,
+    alignSelf: 'stretch',
+    borderRadius: 2,
+    marginRight: 12,
+  },
+  body: {
+    flex: 1,
+    minWidth: 0,
+  },
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
   },
-  badge: {
-    paddingHorizontal: 11,
-    paddingVertical: 5,
-    borderRadius: 999,
-    borderWidth: 1,
+  eyebrowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
-  badgeText: {
+  eyebrow: {
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1.3,
+    letterSpacing: 1.6,
   },
-  completedChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: 'rgba(52,211,153,0.15)',
-    borderColor: 'rgba(52,211,153,0.4)',
-    borderWidth: 1,
-  },
-  completedChipText: {
-    color: '#6ee7b7',
+  dotSep: { color: '#4b5563', fontSize: 10, fontWeight: '700' },
+  doneInline: {
+    color: '#34D399',
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.6,
+  },
+  startPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  startPillText: {
+    color: '#0A0A0A',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
   workoutName: {
     color: '#ffffff',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
-    marginTop: 10,
     letterSpacing: -0.3,
   },
   duration: {
@@ -428,36 +463,36 @@ const combinedStyles = StyleSheet.create({
   heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 12,
     marginTop: 12,
-    marginBottom: 12,
   },
   metricCol: {
     flex: 1,
     minWidth: 0,
   },
   metricLabel: {
-    color: '#4b5563',
+    color: '#6b7280',
     fontSize: 9,
-    letterSpacing: 2,
-    fontWeight: '700',
+    letterSpacing: 1.4,
+    fontWeight: '800',
   },
   metricValue: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
-    marginTop: 4,
+    marginTop: 2,
     letterSpacing: -0.3,
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 10,
+    marginTop: 4,
+    flexWrap: 'wrap',
   },
   statusDot: {
-    width: 6,
-    height: 6,
+    width: 5,
+    height: 5,
     borderRadius: 3,
   },
   statusLabel: {

@@ -31,6 +31,9 @@ import PitchingCard from '../components/dashboard/PitchingCard';
 import UpcomingEventsCard from '../components/dashboard/UpcomingEventsCard';
 import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
+import { UpcomingPreview } from '../components/dashboard/feed/UpcomingPreview';
+import { DataFeed } from '../components/dashboard/feed/DataFeed';
+import { BluetoothPermissionSheet } from '../components/BluetoothPermissionSheet';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 import { consumeWorkoutListDirty } from '../lib/workoutRefreshSignal';
@@ -100,7 +103,11 @@ interface ArmcareTestInstance {
   id: string;
   scheduled_date: string;
   status: 'not_started' | 'completed' | 'skipped';
-  source_type: 'plan' | 'group' | 'one_off' | 'recurring';
+  // 'ad_hoc' is synthesized in JS from a standalone armcare_sessions row that
+  // has no matching armcare_test_instances entry — i.e. the athlete just
+  // tapped "Start Exam" without a coach assignment. Real DB rows will only
+  // ever be 'plan' / 'group' / 'one_off' / 'recurring'.
+  source_type: 'plan' | 'group' | 'one_off' | 'recurring' | 'ad_hoc';
   notes: string | null;
   completed_session_id: string | null;
   // Embedded via FK on completed_session_id. Populated only when status
@@ -182,6 +189,17 @@ interface ForceProfile {
   percentile_rank: number;
   best_metric: { name: string; percentile: number; value: number } | null;
   worst_metric: { name: string; percentile: number; value: number } | null;
+  // Per-metric percentile breakdown — drives the dashboard's hexagon
+  // radar plot. Up to ~6 entries (one per test type, or per metric within
+  // a type). Order is deterministic so the radar shape is stable across
+  // renders.
+  metrics: Array<{
+    name: string;
+    percentile: number;
+    value: number;
+    test_type: string;
+    metric: string;
+  }>;
 }
 
 interface HittingData {
@@ -209,6 +227,18 @@ interface ArmCareData {
     arm_score: number;
     date: string;
   };
+  // Most-recent session breakdown — per-test peak (lbs of force) and the
+  // bodyweight at that exam, so the dashboard can render % of bodyweight
+  // per direction (ER / IR / Scaption / Grip) and color-code each.
+  perTestLatest: {
+    examDate: string | null;
+    bodyweightLbs: number | null;
+    irLbs: number | null;
+    erLbs: number | null;
+    scaptionLbs: number | null;
+    gripLbs: number | null;
+    erIrRatio: number | null;
+  } | null;
 }
 
 interface StuffPlusByPitch {
@@ -233,6 +263,16 @@ interface PitchingData {
     overallBest: number | null; // Highest stuff+ overall
     overallRecent: number | null; // Highest stuff+ from recent session
   } | null;
+  // Per-pitch-type arsenal — ordered by overall pitch count (most-used
+  // first). Drives the dashboard's pitching arsenal rows.
+  arsenal: Array<{
+    pitchType: string;
+    maxVelo: number;
+    avgVelo: number;
+    count: number;
+    usagePct: number;
+    stuffPlus: number | null;
+  }>;
 }
 
 const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string; button: string; label: string } } = {
@@ -454,6 +494,13 @@ export default function DashboardScreen({ navigation }: any) {
   // ISO 'YYYY-MM-DD' dates where the athlete has at least one completed
   // armcare_sessions row. Used to paint a red dot on calendar day cells.
   const [armcareSessionDates, setArmcareSessionDates] = useState<Set<string>>(new Set());
+  // Sessions grouped by exam_date so the day-view can synthesize an "ad_hoc"
+  // completed card for any session that isn't already linked to a coach-
+  // assigned armcare_test_instances row. Without this, a self-initiated exam
+  // shows a calendar dot but no card on the day page.
+  const [armcareSessionsByDate, setArmcareSessionsByDate] = useState<
+    Map<string, { id: string; arm_score: number | null; total_strength: number | null }[]>
+  >(new Map());
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [reminders, setReminders] = useState<ReminderInstance[]>([]);
   const [loading, setLoading] = useState(true);
@@ -487,6 +534,9 @@ export default function DashboardScreen({ navigation }: any) {
 
   // Settings dropdown state
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Surfaced from the settings dropdown's "Bluetooth" row so users can
+  // check / repair their permission state without leaving the dashboard.
+  const [bluetoothSheetOpen, setBluetoothSheetOpen] = useState(false);
 
   // Expanded workout card state
   const [expandedWorkoutId, setExpandedWorkoutId] = useState<string | null>(null);
@@ -966,6 +1016,7 @@ export default function DashboardScreen({ navigation }: any) {
       percentile_rank: compositeScore,
       best_metric: best,
       worst_metric: worst,
+      metrics: percentiles,
     });
   }
 
@@ -1236,6 +1287,7 @@ export default function DashboardScreen({ navigation }: any) {
     if (!sessions || sessions.length === 0) {
       setArmCareData(null);
       setArmcareSessionDates(new Set());
+      setArmcareSessionsByDate(new Map());
       return;
     }
 
@@ -1243,6 +1295,26 @@ export default function DashboardScreen({ navigation }: any) {
     setArmcareSessionDates(
       new Set(sessions.map((s: any) => s.exam_date).filter(Boolean) as string[]),
     );
+
+    // Group sessions by exam_date so the day-view can render a card for any
+    // ad-hoc (athlete-initiated) session that lacks a coach-assigned
+    // test-instance — fixes the "calendar shows a dot but day has no card".
+    const byDate = new Map<
+      string,
+      { id: string; arm_score: number | null; total_strength: number | null }[]
+    >();
+    for (const s of sessions as any[]) {
+      const d = s.exam_date;
+      if (!d || !s.id) continue;
+      const list = byDate.get(d) ?? [];
+      list.push({
+        id: String(s.id),
+        arm_score: s.arm_score != null ? Number(s.arm_score) : null,
+        total_strength: s.total_strength != null ? Number(s.total_strength) : null,
+      });
+      byDate.set(d, list);
+    }
+    setArmcareSessionsByDate(byDate);
 
     // Calculate PR (highest arm score)
     let maxArmScore = { value: 0, date: '' };
@@ -1284,6 +1356,31 @@ export default function DashboardScreen({ navigation }: any) {
       return sessionDate >= thirtyDaysAgo;
     }).length;
 
+    // Per-test breakdown for the most-recent session — drives the
+    // dashboard's "% of bodyweight by direction" rows. Source columns
+    // are the *_max_lbs peaks written by the iOS wizard (and matching
+    // legacy *_strength fallbacks for older rows).
+    const latestSession = sessions[0];
+    const peakLbs = (max: any, fallback: any) => {
+      const v = Number(max ?? fallback);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+    const perTestLatest = {
+      examDate: latestSession.exam_date ?? null,
+      bodyweightLbs:
+        latestSession.weight_lbs != null && Number(latestSession.weight_lbs) > 0
+          ? Number(latestSession.weight_lbs)
+          : null,
+      irLbs: peakLbs(latestSession.irtarm_max_lbs, latestSession.irtarm_strength),
+      erLbs: peakLbs(latestSession.ertarm_max_lbs, latestSession.ertarm_strength),
+      scaptionLbs: peakLbs(latestSession.starm_max_lbs, latestSession.starm_strength),
+      gripLbs: peakLbs(latestSession.gtarm_max_lbs, latestSession.gtarm_strength),
+      erIrRatio:
+        latestSession.shoulder_balance != null
+          ? Number(latestSession.shoulder_balance)
+          : null,
+    };
+
     setArmCareData({
       pr: maxArmScore.value > 0 ? { arm_score: maxArmScore.value, date: maxArmScore.date } : { arm_score: 0, date: '' },
       latest: {
@@ -1292,6 +1389,7 @@ export default function DashboardScreen({ navigation }: any) {
         avg_strength_30d: avg90DayTotalStrength, // 90-day average of total strength
         tests_30d: tests30d,
       },
+      perTestLatest,
     });
   }
 
@@ -1484,6 +1582,54 @@ export default function DashboardScreen({ navigation }: any) {
       };
     }
 
+    // Per-pitch-type arsenal — restricted to the last 30 days so the
+    // dashboard reflects current form rather than career-long aggregates.
+    // Velo: max + average per type. Stuff+: best stuff+ recorded for that
+    // type within the same 30-day window (so the bar stays consistent
+    // with the velo numbers above it).
+    const arsenalMap = new Map<
+      string,
+      { maxVelo: number; sum: number; count: number; bestStuff: number | null }
+    >();
+    let arsenalTotalCount = 0;
+    for (const pitch of last30DayPitches) {
+      const type = pitch.tagged_pitch_type;
+      if (!type) continue;
+      const v = parseFloat(pitch.rel_speed || '0');
+      if (!Number.isFinite(v) || v <= 0) continue;
+      const cur = arsenalMap.get(type) ?? {
+        maxVelo: 0,
+        sum: 0,
+        count: 0,
+        bestStuff: null as number | null,
+      };
+      cur.maxVelo = Math.max(cur.maxVelo, v);
+      cur.sum += v;
+      cur.count += 1;
+      // Pull stuff+ from the joined record on this pitch (set at fetch
+      // time via stuffPlusMap). Track the best stuff+ for this pitch
+      // type within the 30-day window.
+      const stuff = pitch.stuff_plus?.stuff_plus;
+      if (stuff != null && Number.isFinite(Number(stuff))) {
+        const sNum = Number(stuff);
+        if (cur.bestStuff == null || sNum > cur.bestStuff) {
+          cur.bestStuff = sNum;
+        }
+      }
+      arsenalMap.set(type, cur);
+      arsenalTotalCount += 1;
+    }
+    const arsenal = Array.from(arsenalMap.entries())
+      .map(([pitchType, agg]) => ({
+        pitchType,
+        maxVelo: agg.maxVelo,
+        avgVelo: agg.count > 0 ? agg.sum / agg.count : 0,
+        count: agg.count,
+        usagePct: arsenalTotalCount > 0 ? (agg.count / arsenalTotalCount) * 100 : 0,
+        stuffPlus: agg.bestStuff,
+      }))
+      .sort((a, b) => b.count - a.count);
+
     setPitchingData({
       prs: {
         max_velo: maxVelo.value > 0 ? maxVelo : null,
@@ -1495,6 +1641,7 @@ export default function DashboardScreen({ navigation }: any) {
         timestamp: mostRecentSession.game_date_utc,
       },
       stuffPlus: stuffPlusData,
+      arsenal,
     });
   }
 
@@ -2154,7 +2301,34 @@ export default function DashboardScreen({ navigation }: any) {
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
     const dateStr = `${y}-${m}-${d}`;
-    return armcareTestInstances.filter(t => t.scheduled_date === dateStr);
+
+    // 1) Real coach-assigned / scheduled instances on this date.
+    const real = armcareTestInstances.filter(t => t.scheduled_date === dateStr);
+
+    // 2) Sessions on this date that are NOT already linked from a real
+    //    instance via `completed_session_id` → these are athlete-initiated
+    //    (ad-hoc) exams. Synthesize a completed test instance per session so
+    //    the day view renders it the same way a coach-assigned one renders.
+    const linkedSessionIds = new Set(
+      real.map((t) => t.completed_session_id).filter(Boolean) as string[],
+    );
+    const sessionsToday = armcareSessionsByDate.get(dateStr) ?? [];
+    const adHoc: ArmcareTestInstance[] = sessionsToday
+      .filter((s) => !linkedSessionIds.has(s.id))
+      .map((s) => ({
+        id: `adhoc-${s.id}`,
+        scheduled_date: dateStr,
+        status: 'completed',
+        source_type: 'ad_hoc',
+        notes: null,
+        completed_session_id: s.id,
+        armcare_sessions: {
+          arm_score: s.arm_score,
+          total_strength: s.total_strength,
+        },
+      }));
+
+    return [...real, ...adHoc];
   }
 
   function getBookingsForDate(date: Date): Booking[] {
@@ -2370,6 +2544,22 @@ export default function DashboardScreen({ navigation }: any) {
               </View>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={styles.settingsMenuItem}
+              onPress={() => {
+                setSettingsOpen(false);
+                // tiny defer so the Settings modal is visually closed before
+                // the BT sheet animates in — avoids stacked-modal jank.
+                setTimeout(() => setBluetoothSheetOpen(true), 220);
+              }}
+            >
+              <Ionicons name="bluetooth-outline" size={20} color="#9CA3AF" />
+              <View style={styles.settingsMenuItemContent}>
+                <Text style={styles.settingsMenuLabel}>Bluetooth</Text>
+                <Text style={styles.settingsMenuDescription}>Sensor permission &amp; status</Text>
+              </View>
+            </TouchableOpacity>
+
             <View style={styles.settingsDivider} />
 
             <TouchableOpacity
@@ -2395,54 +2585,11 @@ export default function DashboardScreen({ navigation }: any) {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
           }
         >
-        {/* Snapshot Cards */}
-        {showSnapshotCarousel && viewMode === 'month' && (
-          <View style={styles.snapshotContainer}>
-            <SnapshotCarousel
-              scrollX={scrollX}
-              snapshotIndex={snapshotIndex}
-              setSnapshotIndex={setSnapshotIndex}
-              valdProfileId={valdProfileId}
-              forceProfile={forceProfile}
-              latestPrediction={latestPrediction}
-              batSpeedPrediction={batSpeedPrediction}
-              bodyweightData={bodyweightData}
-              armCareData={armCareData}
-              hittingData={hittingData}
-              pitchingData={pitchingData}
-              upcomingEvents={bookings}
-              onEventPress={handleBookingPress}
-            />
-            {/* Pagination Dots */}
-            {snapshotSlides.length > 1 && (
-              <View style={styles.paginationDots}>
-                {snapshotSlides.map((_, i) => {
-                  const dotOpacity = scrollX.interpolate({
-                    inputRange: [(i - 1) * CARD_WIDTH, i * CARD_WIDTH, (i + 1) * CARD_WIDTH],
-                    outputRange: [0.3, 1, 0.3],
-                    extrapolate: 'clamp',
-                  });
-                  const dotScale = scrollX.interpolate({
-                    inputRange: [(i - 1) * CARD_WIDTH, i * CARD_WIDTH, (i + 1) * CARD_WIDTH],
-                    outputRange: [1, 1.4, 1],
-                    extrapolate: 'clamp',
-                  });
-                  return (
-                    <Animated.View
-                      key={i}
-                      style={[
-                        styles.paginationDot,
-                        { opacity: dotOpacity, transform: [{ scale: dotScale }] },
-                      ]}
-                    />
-                  );
-                })}
-              </View>
-            )}
-          </View>
-        )}
+        {/* (SnapshotCarousel removed — replaced by the editorial DataFeed
+            below the calendar. The memoized `SnapshotCarousel` function is
+            left in place above for potential rollback.) */}
 
-        {/* Calendar */}
+        {/* Calendar — now the top of the scrollable feed */}
         <Animated.View style={[styles.calendarContainer, { opacity: calendarOpacity, transform: [{ translateY: calendarTranslateY }] }]}>
           <View style={styles.monthHeader}>
             <TouchableOpacity onPress={handlePrevMonth} style={styles.monthButton}>
@@ -2521,6 +2668,38 @@ export default function DashboardScreen({ navigation }: any) {
             })}
           </View>
         </Animated.View>
+
+        {/* New scrollable feed (staged in alongside the carousel; carousel
+            is removed in the final pass). Renders nothing if there's no
+            upcoming content / no relevant data sections. */}
+        <UpcomingPreview
+          bookings={bookings}
+          armcareTests={armcareTestInstances}
+          reminders={reminders}
+          onSelectDate={(d) => {
+            setSelectedDate(d);
+            setViewMode('day');
+          }}
+        />
+        <DataFeed
+          athleteId={athleteId}
+          isMember={isMember}
+          navigation={navigation}
+          workloadByDate={workloadByDate}
+          forceProfile={forceProfile}
+          valdProfileId={valdProfileId}
+          pitchPrediction={latestPrediction}
+          batSpeedPrediction={batSpeedPrediction}
+          bodyweight={bodyweightData}
+          hittingData={hittingData}
+          pitchingData={pitchingData}
+          armCareData={armCareData}
+          onOpenWorkload={() => navigation.navigate('Workload')}
+          onOpenPitching={() => navigation.navigate('PitchingHub', { athleteId })}
+          onOpenHitting={() => navigation.navigate('HittingPerformance', { athleteId })}
+          onOpenForceProfile={() => navigation.navigate('ForceProfile', { athleteId })}
+          onOpenArmCare={() => navigation.navigate('ArmCareHub', { athleteId })}
+        />
         </ScrollView>
       ) : (
         <View style={styles.dayViewContainer}>
@@ -2630,10 +2809,18 @@ export default function DashboardScreen({ navigation }: any) {
                     key={test.id}
                     test={test}
                     onPress={() => {
-                      navigation.navigate('ArmCareWizard', {
-                        athleteId,
-                        testInstanceId: test.id,
-                      });
+                      // Ad-hoc cards represent already-saved sessions, so
+                      // tapping should open history (not the capture wizard).
+                      // Real instances follow their existing routing — wizard
+                      // for not-started, history for already-completed.
+                      if (test.source_type === 'ad_hoc' || test.status === 'completed') {
+                        navigation.navigate('ArmCare', { athleteId });
+                      } else {
+                        navigation.navigate('ArmCareWizard', {
+                          athleteId,
+                          testInstanceId: test.id,
+                        });
+                      }
                     }}
                   />
                 ))}
@@ -2686,17 +2873,38 @@ export default function DashboardScreen({ navigation }: any) {
 
                       return (
                         <View key={workout.id} style={styles.workoutCard}>
+                          {/* Hairline divider above each row */}
+                          <View style={styles.workoutCardHairline} />
+                          {/* Editorial row layout: thin accent stripe on the
+                              left, eyebrow + title on the left, compact
+                              start pill on the right. Category color shows
+                              up only as the stripe + button color, not as a
+                              full-bleed gradient. */}
+                          <View style={styles.workoutCardGradient}>
+                          {/* Faint category-tinted wash that fades to
+                              transparent — adds a hint of identity to the
+                              row without the heavy card-box look. */}
                           <LinearGradient
-                            colors={[categoryInfo.bg, categoryInfo.bg, '#050505', '#000000']}
-                            locations={[0, 0.3, 0.7, 1]}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={styles.workoutCardGradient}
-                          >
+                            colors={[
+                              `${categoryInfo.dot}14`,
+                              `${categoryInfo.dot}05`,
+                              'transparent',
+                            ]}
+                            start={{ x: 0, y: 0.5 }}
+                            end={{ x: 1, y: 0.5 }}
+                            style={StyleSheet.absoluteFillObject}
+                            pointerEvents="none"
+                          />
+                          <View
+                            style={[
+                              styles.workoutCardAccent,
+                              { backgroundColor: categoryInfo.dot },
+                            ]}
+                          />
                           {/* Category Badge + Start Button */}
                           <View style={styles.workoutCardTopRow}>
-                            <View style={[styles.categoryBadge, { backgroundColor: 'rgba(0, 0, 0, 0.3)' }]}>
-                              <Text style={[styles.categoryBadgeText, { color: categoryInfo.text }]}>
+                            <View style={styles.categoryBadge}>
+                              <Text style={[styles.categoryBadgeText, { color: categoryInfo.dot }]}>
                                 {categoryInfo.label}
                               </Text>
                             </View>
@@ -2818,7 +3026,7 @@ export default function DashboardScreen({ navigation }: any) {
                               )}
                             </View>
                           )}
-                          </LinearGradient>
+                          </View>
                         </View>
                       );
                     })}
@@ -2841,39 +3049,79 @@ export default function DashboardScreen({ navigation }: any) {
                       }) : null;
 
                       return (
-                        <TouchableOpacity
-                          key={booking.id || idx}
-                          style={[
-                            styles.bookingCard,
-                            { borderLeftColor: categoryColor, backgroundColor: `${categoryColor}15` },
-                            passed && styles.bookingCardPassed
-                          ]}
-                          onPress={() => !passed && handleBookingPress(booking)}
-                          activeOpacity={passed ? 1 : 0.7}
-                          disabled={passed}
-                        >
-                          <View style={[styles.bookingIconContainer, { backgroundColor: categoryColor }]}>
-                            <Ionicons name="calendar" size={20} color="#FFFFFF" />
-                          </View>
-                          <View style={styles.bookingContent}>
-                            <Text style={[styles.bookingTitle, passed && styles.bookingTitlePassed]}>{className}</Text>
-                            {categoryName && (
-                              <Text style={[styles.bookingCategory, { color: passed ? '#9CA3AF' : categoryColor }]}>{categoryName}</Text>
-                            )}
-                            <Text style={styles.bookingTime}>
-                              {startTime}{endTime ? ` - ${endTime}` : ''}
-                            </Text>
-                          </View>
-                          {passed ? (
-                            <View style={styles.passedBadge}>
-                              <Text style={styles.passedBadgeText}>Passed</Text>
+                        <View key={booking.id || idx} style={styles.bookingRow}>
+                          <View style={styles.workoutCardHairline} />
+                          <TouchableOpacity
+                            style={[
+                              styles.bookingCard,
+                              passed && styles.bookingCardPassed,
+                            ]}
+                            onPress={() => !passed && handleBookingPress(booking)}
+                            activeOpacity={passed ? 1 : 0.7}
+                            disabled={passed}
+                          >
+                            {/* Subtle category-tinted wash for a hint of
+                                color without a boxed card look. */}
+                            <LinearGradient
+                              colors={[
+                                `${categoryColor}14`,
+                                `${categoryColor}05`,
+                                'transparent',
+                              ]}
+                              start={{ x: 0, y: 0.5 }}
+                              end={{ x: 1, y: 0.5 }}
+                              style={StyleSheet.absoluteFillObject}
+                              pointerEvents="none"
+                            />
+                            <View
+                              style={[
+                                styles.bookingAccent,
+                                { backgroundColor: categoryColor },
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.bookingIconContainer,
+                                { backgroundColor: `${categoryColor}1F`, borderColor: `${categoryColor}55` },
+                              ]}
+                            >
+                              <Ionicons name="calendar" size={16} color={categoryColor} />
                             </View>
-                          ) : booking.status === 'confirmed' ? (
-                            <View style={styles.bookingStatusBadge}>
-                              <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                            <View style={styles.bookingContent}>
+                              {categoryName ? (
+                                <Text
+                                  style={[
+                                    styles.bookingEyebrow,
+                                    { color: categoryColor },
+                                  ]}
+                                >
+                                  {categoryName.toUpperCase()}
+                                </Text>
+                              ) : (
+                                <Text style={styles.bookingEyebrow}>BOOKING</Text>
+                              )}
+                              <Text
+                                style={[styles.bookingTitle, passed && styles.bookingTitlePassed]}
+                                numberOfLines={1}
+                              >
+                                {className}
+                              </Text>
+                              <Text style={styles.bookingTime}>
+                                {startTime}
+                                {endTime ? ` – ${endTime}` : ''}
+                              </Text>
                             </View>
-                          ) : null}
-                        </TouchableOpacity>
+                            {passed ? (
+                              <View style={styles.passedBadge}>
+                                <Text style={styles.passedBadgeText}>Passed</Text>
+                              </View>
+                            ) : booking.status === 'confirmed' ? (
+                              <View style={styles.bookingStatusBadge}>
+                                <Ionicons name="checkmark-circle" size={14} color="#34D399" />
+                              </View>
+                            ) : null}
+                          </TouchableOpacity>
+                        </View>
                       );
                     })}
 
@@ -3016,6 +3264,14 @@ export default function DashboardScreen({ navigation }: any) {
           setShowBookingSheet(false);
           setSelectedBooking(null);
         }}
+      />
+
+      {/* Bluetooth permission status sheet — opened from Settings dropdown */}
+      <BluetoothPermissionSheet
+        visible={bluetoothSheetOpen}
+        context="settings"
+        autoDismissWhenReady={false}
+        onClose={() => setBluetoothSheetOpen(false)}
       />
     </View>
   );
@@ -3266,19 +3522,19 @@ const styles = StyleSheet.create({
   },
   emptyDayView: {
     alignItems: 'center',
-    padding: 32,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 40,
+    paddingHorizontal: 16,
   },
   emptyDayIcon: {
-    fontSize: 48,
-    marginBottom: 16,
+    fontSize: 32,
+    marginBottom: 10,
+    opacity: 0.4,
   },
   emptyDayText: {
-    fontSize: 16,
-    color: '#9CA3AF',
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   workoutDot: {
     width: 12,
@@ -3483,30 +3739,47 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#9BDDFF',
   },
+  // Booking row matches the editorial workout/armcare row style — thin
+  // category-colored accent stripe, hairline above, no boxed background.
+  bookingRow: {},
   bookingCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    borderLeftWidth: 4,
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingRight: 4,
+    paddingLeft: 0,
+    gap: 12,
+  },
+  bookingAccent: {
+    width: 3,
+    alignSelf: 'stretch',
+    borderRadius: 2,
+    marginRight: 4,
   },
   bookingIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    borderWidth: 1,
   },
   bookingContent: {
     flex: 1,
+    gap: 2,
+  },
+  bookingEyebrow: {
+    color: '#9ca3af',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    marginBottom: 1,
   },
   bookingTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '800',
     color: '#FFFFFF',
-    marginBottom: 2,
+    letterSpacing: -0.2,
   },
   bookingCategory: {
     fontSize: 12,
@@ -3514,8 +3787,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   bookingTime: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 11,
+    color: '#9ca3af',
+    fontWeight: '600',
   },
   bookingStatusBadge: {
     marginLeft: 8,
@@ -3679,41 +3953,50 @@ const styles = StyleSheet.create({
     paddingBottom: 100, // Extra space for FAB and content visibility
   },
   workoutCard: {
-    borderRadius: 12,
-    marginBottom: 12,
-    overflow: 'hidden',
-    borderWidth: 0.5,
-    borderColor: 'rgba(180, 180, 180, 0.15)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    // No card box / gradient / shadow — the workout row blends with the
+    // dashboard's editorial feed. Visual hierarchy comes from typography
+    // + a thin accent stripe + a hairline rule on top.
+    marginBottom: 0,
+  },
+  workoutCardHairline: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  workoutCardAccent: {
+    position: 'absolute',
+    top: 16,
+    bottom: 16,
+    left: 0,
+    width: 3,
+    borderRadius: 2,
   },
   workoutCardGradient: {
-    padding: 16,
-    borderRadius: 11,
+    paddingTop: 14,
+    paddingBottom: 16,
+    paddingLeft: 14,
+    paddingRight: 4,
+    position: 'relative',
   },
   workoutCardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    alignItems: 'center',
+    marginBottom: 6,
   },
   categoryBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
   },
   categoryBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '800',
     textTransform: 'uppercase',
+    letterSpacing: 1.6,
   },
   workoutActionButton: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: 999,
     backgroundColor: '#9BDDFF',
   },
   workoutActionButtonCompleted: {
