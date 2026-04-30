@@ -68,6 +68,26 @@ function getManager(): BleManager {
   return _manager;
 }
 
+/**
+ * Tears down the singleton BleManager and forces a fresh one on the next
+ * getManager() call. Used as an automatic recovery step when the iOS BLE
+ * stack gets into a stuck state — symptom: scans never resolve, connects
+ * fail silently, and the only way out is to toggle Bluetooth in Settings.
+ *
+ * Mirrors the recreateSupabaseClient() pattern in lib/supabase.ts.
+ */
+export function recreateBleManager(): void {
+  if (_manager) {
+    try {
+      _manager.destroy();
+    } catch {
+      // already destroyed / never initialized — ignore
+    }
+  }
+  _manager = null;
+  _managerError = null;
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────────

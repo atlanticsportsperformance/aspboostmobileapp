@@ -31,13 +31,13 @@ import Svg, { Polyline } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import {
   Activ5DeviceRN,
+  recreateBleManager,
   type Activ5Sample,
   type Activ5Info,
 } from '../lib/armcare/ble/activ5-rn';
 import { computeSession, toArmcareSessionRow } from '../lib/armcare/scoring';
 import { CUES, unlockCues } from '../lib/armcare/cues';
-import { BluetoothPermissionSheet } from '../components/BluetoothPermissionSheet';
-import { getBluetoothState } from '../lib/ble/permissions';
+import { getBluetoothState, onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
 import {
   clearDraft,
   draftAgeLabel,
@@ -62,6 +62,8 @@ const ACCENT_DEEP = '#EF4444';
 
 type Phase =
   | 'intro'
+  | 'bluetooth-needed' // inline BT-permission/state recovery (replaces the
+                       // pop-out modal that used to appear here)
   | 'connecting'
   | 'setup'
   | 'calibrate-prompt'
@@ -94,13 +96,16 @@ export default function ArmCareWizardScreen() {
   // CTA: 'rep' → "Retry rep" (returns to rep-instructions for the same index),
   // 'save' → "Retry save" (re-runs handleSave from the AsyncStorage draft),
   // null → just a Close button.
-  const [errorContext, setErrorContext] = useState<'rep' | 'save' | 'connect' | null>(null);
+  const [errorContext, setErrorContext] = useState<
+    'rep' | 'save' | 'connect' | 'connect_stuck' | null
+  >(null);
   const [sensorInfo, setSensorInfo] = useState<Activ5Info | null>(null);
   // Pre-connect Bluetooth permission gate. Opens before we touch the BLE
   // driver so the user gets a clean "we need Bluetooth" rationale → OS
   // prompt → state-aware copy (Settings deep-link if denied, etc.) instead
-  // of an inscrutable "Bluetooth Unauthorized" error.
-  const [btSheetOpen, setBtSheetOpen] = useState(false);
+  // of an inscrutable "Bluetooth Unauthorized" error. The flow now lives
+  // INLINE on the wizard canvas as the 'bluetooth-needed' phase rather
+  // than a pop-out modal.
 
   // Athlete profile defaults
   const [bodyweight, setBodyweight] = useState<string>('');
@@ -146,22 +151,63 @@ export default function ArmCareWizardScreen() {
 
   // ───── Connect ─────
   // Internal: actually run the scan + connect once we know Bluetooth is on.
+  //
+  // Two robustness tricks live here:
+  //
+  //  1) Yield to React after `setPhase('connecting')` so the Searching
+  //     screen actually commits to the screen BEFORE we touch BLE. Without
+  //     this, the BLE call yields the JS thread to native fast enough that
+  //     iOS draws its peripheral-access dialog over the previous (intro)
+  //     screen, which looks like a glitch.
+  //
+  //  2) On a first-attempt failure, recreate the BleManager singleton and
+  //     retry ONCE. The iOS BLE stack occasionally gets into a stuck state
+  //     after a crash / sleep / earlier failed connect — the symptom is
+  //     scans that never resolve and connects that fail silently. The only
+  //     manual recovery is to toggle Bluetooth in Settings; this auto-
+  //     recovery saves the user that trip in most cases.
   const performConnect = useCallback(async () => {
     setErrorMsg(null);
     setErrorContext(null);
     unlockCues();
     setPhase('connecting');
-    try {
+    // Let React commit Searching before BLE work begins.
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const attempt = async () => {
       const sensor = await Activ5DeviceRN.request();
       const info = await sensor.connect();
       await sensor.startStreaming();
+      return { sensor, info };
+    };
+
+    try {
+      const { sensor, info } = await attempt();
+      sensorRef.current = sensor;
+      setSensorInfo(info);
+      setPhase('setup');
+      return;
+    } catch (firstErr: unknown) {
+      console.warn('[armcare] connect attempt 1 failed', firstErr);
+      // Fall through to recreate-and-retry.
+    }
+
+    try {
+      recreateBleManager();
+      // Tiny delay so iOS gets a beat to notice the freshly-instantiated
+      // CBCentralManager before we kick off another scan.
+      await new Promise<void>((r) => setTimeout(r, 250));
+      const { sensor, info } = await attempt();
       sensorRef.current = sensor;
       setSensorInfo(info);
       setPhase('setup');
     } catch (e: unknown) {
+      // Both attempts failed — almost always the iOS BLE stack stuck
+      // state. Route to the dedicated glitch-recovery card with the
+      // Open Settings deep-link instead of the generic connect error.
       const msg = e instanceof Error ? e.message : 'Failed to connect.';
       setErrorMsg(msg);
-      setErrorContext('connect');
+      setErrorContext('connect_stuck');
       setPhase('error');
     }
   }, []);
@@ -175,7 +221,10 @@ export default function ArmCareWizardScreen() {
     if (state === 'on') {
       performConnect();
     } else {
-      setBtSheetOpen(true);
+      // Inline BT-needed phase replaces the prior pop-out modal — full
+      // wizard page so the rationale + state + actions all read on the
+      // canvas instead of being layered over the intro behind a backdrop.
+      setPhase('bluetooth-needed');
     }
   }, [performConnect]);
 
@@ -295,9 +344,16 @@ export default function ArmCareWizardScreen() {
     // necessarily firing onDisconnected. Treat any leave-foreground event
     // during the push window as a forced retry so we never save a partial
     // rep just because the user got pulled to another app.
+    // Only react to 'background' — NOT 'inactive'. iOS fires 'inactive' for
+    // transient UI events that don't actually suspend the app (notification
+    // center swipe, control center, banner notifications, Face ID prompts,
+    // Dynamic Island animations). Treating those as a forced retry would
+    // nuke a rep every time a notification slides in mid-push. 'background'
+    // only fires on the actual home-gesture / app-switcher path, which is
+    // the only case we genuinely want to catch.
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (cancelled) return;
-      if (next === 'background' || next === 'inactive') {
+      if (next === 'background') {
         cancelled = true;
         clearTimeout(timeout);
         unsub();
@@ -572,6 +628,16 @@ export default function ArmCareWizardScreen() {
           />
         )}
 
+        {phase === 'bluetooth-needed' && (
+          <BluetoothNeeded
+            onReady={() => {
+              // BT just flipped on — kick off the connect flow.
+              performConnect();
+            }}
+            onCancel={() => setPhase('intro')}
+          />
+        )}
+
         {phase === 'connecting' && (
           <Searching onCancel={handleClose} />
         )}
@@ -653,7 +719,37 @@ export default function ArmCareWizardScreen() {
           </View>
         )}
 
-        {phase === 'error' && (
+        {phase === 'error' && errorContext === 'connect_stuck' && (
+          // Dedicated treatment for the iOS BLE-stuck case (both auto-
+          // attempts in performConnect failed). Walks the user through
+          // the manual recovery — toggle Bluetooth — without leaving
+          // them staring at a generic error message.
+          <View style={styles.center}>
+            <View
+              style={[
+                styles.btIconWrap,
+                { backgroundColor: '#FBBF2414', borderColor: '#FBBF2455' },
+              ]}
+            >
+              <Ionicons name="bluetooth" size={32} color="#FBBF24" />
+            </View>
+            <Text style={styles.h1}>Bluetooth needs a quick reset</Text>
+            <Text style={styles.bodyText}>
+              iOS sometimes hangs onto a stale Bluetooth connection. Swipe
+              down for Control Center, tap the Bluetooth icon to toggle it
+              off and on, then come back here.
+            </Text>
+            <PrimaryButton label="Try again" onPress={handleConnect} />
+            <Pressable onPress={openBluetoothSettings} hitSlop={10} style={styles.linkBtn}>
+              <Text style={[styles.linkBtnText, { color: ACCENT }]}>Open Settings</Text>
+            </Pressable>
+            <Pressable onPress={handleClose} hitSlop={10} style={styles.linkBtn}>
+              <Text style={styles.linkBtnText}>Close</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {phase === 'error' && errorContext !== 'connect_stuck' && (
           <View style={styles.center}>
             <Ionicons name="warning" size={64} color={ACCENT} />
             <Text style={styles.h2}>Something went wrong</Text>
@@ -676,14 +772,6 @@ export default function ArmCareWizardScreen() {
         )}
       </ScrollView>
 
-      <BluetoothPermissionSheet
-        visible={btSheetOpen}
-        context="armcare"
-        onReady={() => {
-          performConnect();
-        }}
-        onClose={() => setBtSheetOpen(false)}
-      />
     </SafeAreaView>
   );
 }
@@ -1257,6 +1345,182 @@ function SearchTip({ text }: { text: string }) {
   );
 }
 
+/**
+ * BluetoothNeeded — inline wizard phase that replaces the prior pop-out
+ * modal. Walks the user from "we want Bluetooth → here's why" to the live
+ * system state, with a single Open Settings deep-link when the radio is
+ * off / the app is unauthorized. Auto-advances to performConnect (via the
+ * onReady callback) the moment state flips to 'on'.
+ */
+function BluetoothNeeded({
+  onReady,
+  onCancel,
+}: {
+  onReady: () => void;
+  onCancel: () => void;
+}) {
+  // Two-step flow: rationale → live state. We don't probe BLE until the
+  // user taps Continue, because the first BleManager call triggers the
+  // iOS permission prompt and we want that to land AFTER they read why.
+  const [probed, setProbed] = useState(false);
+  const [state, setState] = useState<BluetoothPermissionState>('unknown');
+  const armedRef = useRef(false);
+
+  // Subscribe once probed. Live updates from ble-plx mean if the user
+  // toggles BT in Control Center the UI auto-advances.
+  useEffect(() => {
+    if (!probed) return;
+    let cancelled = false;
+    const unsub = onBluetoothStateChange((s) => {
+      if (cancelled) return;
+      setState(s);
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [probed]);
+
+  // Re-check state when the app comes back from Settings — covers the
+  // edge case where ble-plx doesn't re-emit immediately on resume.
+  useEffect(() => {
+    if (!probed) return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        getBluetoothState().then(setState).catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [probed]);
+
+  // Auto-advance once we're on. The armedRef gate prevents double-fires
+  // if state churns (e.g. resetting → on).
+  useEffect(() => {
+    if (state !== 'on' || armedRef.current) return;
+    armedRef.current = true;
+    const t = setTimeout(onReady, 600);
+    return () => clearTimeout(t);
+  }, [state, onReady]);
+
+  const tone = stateTone(state);
+
+  return (
+    <View style={styles.center}>
+      <View
+        style={[
+          styles.btIconWrap,
+          { backgroundColor: tone.color + '14', borderColor: tone.color + '55' },
+        ]}
+      >
+        <Ionicons name={tone.icon} size={32} color={tone.color} />
+      </View>
+
+      <Text style={styles.h1}>
+        {!probed ? 'Connect your Activ5' : tone.title}
+      </Text>
+      <Text style={styles.bodyText}>
+        {!probed
+          ? 'ASP Boost uses Bluetooth to talk to your Activ5 strength sensor — that’s how we record force, calculate ArmScore, and time each rep.'
+          : tone.body}
+      </Text>
+
+      <View style={{ height: 12 }} />
+
+      {!probed ? (
+        <PrimaryButton
+          label="Continue"
+          onPress={() => {
+            setProbed(true);
+            // First call instantiates the BleManager which triggers the
+            // iOS permission prompt on a fresh install.
+            getBluetoothState().then(setState).catch(() => {});
+          }}
+        />
+      ) : tone.primary ? (
+        <PrimaryButton label={tone.primary.label} onPress={tone.primary.onPress} />
+      ) : null}
+
+      <Pressable onPress={onCancel} hitSlop={10} style={styles.linkBtn}>
+        <Text style={styles.linkBtnText}>Cancel</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+interface BtTone {
+  color: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  body: string;
+  primary: { label: string; onPress: () => void } | null;
+}
+
+/**
+ * Map a BLE state to the right inline visual + copy + primary action.
+ * Centralized here so the JSX above stays readable.
+ */
+function stateTone(state: BluetoothPermissionState): BtTone {
+  switch (state) {
+    case 'on':
+      return {
+        color: '#34D399',
+        icon: 'checkmark-circle',
+        title: 'Bluetooth ready',
+        body: 'Looking for your Activ5 sensor — this should only take a moment.',
+        primary: null,
+      };
+    case 'off':
+      return {
+        color: '#FBBF24',
+        icon: 'bluetooth',
+        title: 'Bluetooth is off',
+        body: 'Open Settings and turn Bluetooth on, or swipe to Control Center and tap the Bluetooth icon.',
+        primary: { label: 'Open Settings', onPress: () => openBluetoothSettings() },
+      };
+    case 'unauthorized':
+      return {
+        color: '#F87171',
+        icon: 'close-circle',
+        title: 'Bluetooth permission needed',
+        body: 'ASP Boost needs Bluetooth permission to read your Activ5 sensor. Grant access in Settings → ASP Boost → Bluetooth.',
+        primary: { label: 'Open Settings', onPress: () => openBluetoothSettings() },
+      };
+    case 'resetting':
+      return {
+        color: '#FBBF24',
+        icon: 'sync',
+        title: 'Bluetooth is restarting',
+        body: 'iOS is resetting the Bluetooth radio. This usually clears in a few seconds.',
+        primary: null,
+      };
+    case 'unsupported':
+      return {
+        color: '#F87171',
+        icon: 'alert-circle',
+        title: 'Bluetooth not supported',
+        body: 'This device doesn’t support Bluetooth Low Energy. The Activ5 won’t pair here.',
+        primary: null,
+      };
+    case 'native-missing':
+      return {
+        color: '#F87171',
+        icon: 'alert-circle',
+        title: 'Dev build required',
+        body: 'Bluetooth needs the native app build. Run from a TestFlight build or development build, not Expo Go.',
+        primary: null,
+      };
+    case 'unknown':
+    default:
+      return {
+        color: '#9ca3af',
+        icon: 'bluetooth',
+        title: 'Checking Bluetooth…',
+        body: 'Reading your phone’s Bluetooth state. Should only take a moment.',
+        primary: null,
+      };
+  }
+}
+
 function PrimaryButton({
   label,
   onPress,
@@ -1706,6 +1970,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: ACCENT,
+  },
+  // Reused by the inline BluetoothNeeded phase + the connect_stuck error
+  // recovery card. Same visual shape: 80px rounded square that takes the
+  // tone color from whatever state we're conveying.
+  btIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    marginBottom: 4,
   },
   searchTipList: {
     alignSelf: 'stretch',
