@@ -2,9 +2,10 @@
  * ArmcareDayCard — coach-prescribed ArmCare test for a specific date,
  * rendered on the athlete's day-view alongside their workout cards.
  *
- * Tapping the card navigates into ArmCareWizardScreen with the
- * testInstanceId param so the wizard can stamp completed_session_id
- * back onto this row when the session saves.
+ * Tapping the card navigates into ArmCareHubScreen with the
+ * testInstanceId param. The hub forwards that id to the wizard when
+ * the athlete taps Start Exam, so the wizard can stamp
+ * completed_session_id back onto this row when the session saves.
  *
  * Editorial row layout: thin colored accent stripe on the left, hairline
  * rule above, compact start pill on the right. No card box / gradient /

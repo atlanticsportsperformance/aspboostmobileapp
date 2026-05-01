@@ -25,12 +25,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import Svg, {
-  Circle,
-  Defs,
-  RadialGradient,
-  Stop,
-} from 'react-native-svg';
+import Svg, { Circle, Path, Line } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import {
   armScoreZone,
@@ -45,7 +40,12 @@ import {
 const ACCENT = '#F87171';
 const ACCENT_DEEP = '#EF4444';
 
-type RouteParams = { athleteId?: string };
+// `testInstanceId` is optional and only present when the hub is opened
+// from a coach-prescribed test card on the dashboard. We hold onto it
+// here and forward it to the wizard when the athlete taps Start Exam, so
+// the wizard can stamp `completed_session_id` back onto that row after
+// saving.
+type RouteParams = { athleteId?: string; testInstanceId?: string };
 
 interface ArmCareSession {
   id: string;
@@ -69,7 +69,9 @@ export default function ArmCareHubScreen() {
   const params = (route.params ?? {}) as RouteParams;
 
   const [athleteId, setAthleteId] = useState<string | null>(params.athleteId ?? null);
-  const [last, setLast] = useState<ArmCareSession | null>(null);
+  const testInstanceId = params.testInstanceId;
+  const [recent, setRecent] = useState<ArmCareSession[]>([]);
+  const last = recent[0] ?? null;
   const [loading, setLoading] = useState(true);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -112,6 +114,8 @@ export default function ArmCareHubScreen() {
     if (!athleteId) return;
     (async () => {
       setLoading(true);
+      // Pull up to the 10 most recent sessions: index 0 drives the hero,
+      // the rest power the ArmScore sparkline below it.
       const { data } = await supabase
         .from('armcare_sessions')
         .select(
@@ -120,9 +124,8 @@ export default function ArmCareHubScreen() {
         .eq('athlete_id', athleteId)
         .order('exam_date', { ascending: false })
         .order('exam_time', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      setLast((data ?? null) as ArmCareSession | null);
+        .limit(10);
+      setRecent((data ?? []) as ArmCareSession[]);
       setLoading(false);
     })();
   }, [athleteId]);
@@ -174,19 +177,20 @@ export default function ArmCareHubScreen() {
         <Animated.View
           style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
         >
-          {/* Hero radar + ArmScore */}
-          <HeroCard last={last} loading={loading} zones={zones} />
+          {/* Hero — borderless, sits on the canvas */}
+          <Hero last={last} loading={loading} zones={zones} />
 
-          {/* Quick stats chips — only if we have a last session */}
+          {/* Quick stats — naked numbers in a row, no card, hairline above */}
           {last && (
             <>
+              <View style={styles.sectionRule} />
               <View style={styles.statRow}>
-                <StatChip
+                <StatNaked
                   label="ER : IR"
                   value={erIr != null ? erIr.toFixed(2) : '–'}
                   color={colorFor(zones.erIr)}
                 />
-                <StatChip
+                <StatNaked
                   label="Total"
                   value={
                     last.total_strength != null
@@ -196,7 +200,7 @@ export default function ArmCareHubScreen() {
                   unit="lbs"
                   color={colorFor(zones.total)}
                 />
-                <StatChip
+                <StatNaked
                   label="SVR"
                   value={last.svr != null ? last.svr.toFixed(2) : '–'}
                   color={colorFor(zones.svr)}
@@ -206,34 +210,43 @@ export default function ArmCareHubScreen() {
             </>
           )}
 
-          {/* View history secondary — plain View wraps row layout, Pressable
-              just owns the touch target so style-function quirks don't drop
-              flexDirection. */}
+          {/* ArmScore sparkline — only renders when we have ≥2 sessions */}
+          {recent.filter((s) => s.arm_score != null).length >= 2 && (
+            <>
+              <View style={styles.sectionRule} />
+              <View style={styles.trendHeader}>
+                <Text style={styles.trendEyebrow}>RECENT ARMSCORES</Text>
+                <Text style={styles.trendCount}>
+                  Last {recent.filter((s) => s.arm_score != null).length}
+                </Text>
+              </View>
+              <ArmScoreSparkline sessions={recent} />
+            </>
+          )}
+
+          {/* View history — naked row, hairline above */}
+          <View style={styles.sectionRule} />
           <Pressable
             onPress={() =>
               athleteId && navigation.navigate('ArmCare', { athleteId })
             }
-            android_ripple={{ color: 'rgba(255,255,255,0.06)' }}
+            android_ripple={{ color: 'rgba(255,255,255,0.04)' }}
           >
             {({ pressed }) => (
               <View
                 style={[
-                  styles.secondaryAction,
-                  pressed && { opacity: 0.6 },
+                  styles.viewHistoryRow,
+                  pressed && { opacity: 0.55 },
                 ]}
               >
-                <View style={styles.secondaryIconWrap}>
-                  <Ionicons name="trending-up" size={18} color={ACCENT} />
-                </View>
-                <View style={styles.secondaryTextCol}>
-                  <Text style={styles.secondaryTitle} numberOfLines={1}>
-                    View History
-                  </Text>
-                  <Text style={styles.secondarySubtitle} numberOfLines={1}>
+                <Ionicons name="trending-up" size={18} color={ACCENT} />
+                <View style={styles.viewHistoryText}>
+                  <Text style={styles.viewHistoryTitle}>View Full History</Text>
+                  <Text style={styles.viewHistorySubtitle}>
                     Trends, recovery, ER/IR, SVR over time
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={20} color="#6b7280" />
+                <Ionicons name="chevron-forward" size={18} color="#4b5563" />
               </View>
             )}
           </Pressable>
@@ -250,7 +263,11 @@ export default function ArmCareHubScreen() {
         <View style={styles.startBtnShadow}>
           <Pressable
             onPress={() =>
-              athleteId && navigation.navigate('ArmCareWizard', { athleteId })
+              athleteId &&
+              navigation.navigate('ArmCareWizard', {
+                athleteId,
+                ...(testInstanceId ? { testInstanceId } : {}),
+              })
             }
             style={({ pressed }) => [
               styles.startBtnPressTarget,
@@ -281,10 +298,11 @@ export default function ArmCareHubScreen() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// HeroCard — radar + ArmScore center
+// Hero — borderless ArmScore ring + meta + 4 naked peak readouts.
+// Sits on the page background (no card surface).
 // ─────────────────────────────────────────────────────────────
 
-function HeroCard({
+function Hero({
   last,
   loading,
   zones,
@@ -301,7 +319,7 @@ function HeroCard({
 }) {
   if (loading) {
     return (
-      <View style={[styles.hero, { alignItems: 'center', justifyContent: 'center', height: 360 }]}>
+      <View style={styles.heroEmptyWrap}>
         <Text style={styles.heroEmpty}>Loading…</Text>
       </View>
     );
@@ -309,7 +327,7 @@ function HeroCard({
 
   if (!last) {
     return (
-      <View style={[styles.hero, { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 }]}>
+      <View style={styles.heroEmptyWrap}>
         <View style={[styles.iconWrap, { borderColor: `${ACCENT}44`, backgroundColor: `${ACCENT}14` }]}>
           <MaterialCommunityIcons name="arm-flex" size={28} color={ACCENT} />
         </View>
@@ -331,21 +349,7 @@ function HeroCard({
 
   return (
     <View style={styles.hero}>
-      {/* Soft red glow behind the score ring */}
-      <View style={styles.heroGlow} pointerEvents="none">
-        <Svg width="100%" height="100%">
-          <Defs>
-            <RadialGradient id="hero-glow" cx="50%" cy="32%" r="50%">
-              <Stop offset="0%" stopColor={ACCENT} stopOpacity="0.20" />
-              <Stop offset="60%" stopColor={ACCENT} stopOpacity="0.05" />
-              <Stop offset="100%" stopColor={ACCENT} stopOpacity="0" />
-            </RadialGradient>
-          </Defs>
-          <Circle cx="50%" cy="32%" r="50%" fill="url(#hero-glow)" />
-        </Svg>
-      </View>
-
-      {/* Big ArmScore ring at the top — ring color reflects zone */}
+      {/* Big ArmScore ring */}
       <ScoreRing armScore={armScore} ringColor={colorFor(zones.armScore)} />
       <Text style={styles.heroCenterCaption}>ARMSCORE</Text>
       <Text style={styles.heroDate}>
@@ -357,15 +361,12 @@ function HeroCard({
         </Text>
       )}
 
-      {/* Divider */}
-      <View style={styles.heroDivider} />
-
-      {/* 4-test peak grid */}
-      <View style={styles.peakGrid}>
-        <PeakTile label="IR" lbf={peaks.ir} color={colorFor(zones.ir)} />
-        <PeakTile label="ER" lbf={peaks.er} color={colorFor(zones.er)} />
-        <PeakTile label="SCAP" lbf={peaks.scap} color={colorFor(zones.scap)} />
-        <PeakTile label="GRIP" lbf={peaks.grip} color={colorFor(zones.grip)} />
+      {/* 4-test peaks — naked, evenly spaced */}
+      <View style={styles.peakRow}>
+        <PeakNaked label="IR" lbf={peaks.ir} color={colorFor(zones.ir)} />
+        <PeakNaked label="ER" lbf={peaks.er} color={colorFor(zones.er)} />
+        <PeakNaked label="SCAP" lbf={peaks.scap} color={colorFor(zones.scap)} />
+        <PeakNaked label="GRIP" lbf={peaks.grip} color={colorFor(zones.grip)} />
       </View>
     </View>
   );
@@ -419,10 +420,10 @@ function ScoreRing({
 }
 
 // ─────────────────────────────────────────────────────────────
-// PeakTile — one of the 4 per-test peak readouts in the grid
+// PeakNaked — naked per-test peak readout (no card / border).
 // ─────────────────────────────────────────────────────────────
 
-function PeakTile({
+function PeakNaked({
   label,
   lbf,
   color,
@@ -432,12 +433,96 @@ function PeakTile({
   color: string;
 }) {
   return (
-    <View style={styles.peakTile}>
+    <View style={styles.peakNaked}>
       <Text style={styles.peakLabel}>{label}</Text>
       <Text style={[styles.peakValue, { color }]}>
         {lbf > 0 ? lbf.toFixed(0) : '–'}
       </Text>
       <Text style={styles.peakUnit}>lbs</Text>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// ArmScoreSparkline — tiny SVG line chart of recent ArmScores.
+// Uses the same red accent as the rest of the hub. Sessions are
+// passed in newest-first; we reverse for the x-axis so time runs
+// left → right.
+// ─────────────────────────────────────────────────────────────
+
+function ArmScoreSparkline({ sessions }: { sessions: ArmCareSession[] }) {
+  // Filter out sessions without an arm_score so we don't plot zeros.
+  const points = sessions
+    .filter((s) => s.arm_score != null)
+    .map((s) => Number(s.arm_score))
+    .reverse(); // oldest → newest
+
+  if (points.length < 2) return null;
+
+  const W = 320;
+  const H = 96;
+  const PAD_X = 8;
+  const PAD_Y = 12;
+  const innerW = W - PAD_X * 2;
+  const innerH = H - PAD_Y * 2;
+
+  const minV = Math.min(...points);
+  const maxV = Math.max(...points);
+  // Add a small bottom/top buffer so the line never sits exactly on
+  // the chart edges (looks pinched otherwise).
+  const range = Math.max(1, maxV - minV);
+  const yMin = minV - range * 0.15;
+  const yMax = maxV + range * 0.15;
+  const yRange = Math.max(1, yMax - yMin);
+
+  const xFor = (i: number) =>
+    PAD_X + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+  const yFor = (v: number) => PAD_Y + innerH - ((v - yMin) / yRange) * innerH;
+
+  // Cubic-ish smooth path using midpoint method (no external lib).
+  let d = `M ${xFor(0)} ${yFor(points[0])}`;
+  for (let i = 1; i < points.length; i++) {
+    const x0 = xFor(i - 1);
+    const y0 = yFor(points[i - 1]);
+    const x1 = xFor(i);
+    const y1 = yFor(points[i]);
+    const cx = (x0 + x1) / 2;
+    d += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+  }
+
+  const lastIdx = points.length - 1;
+
+  return (
+    <View style={styles.sparklineWrap}>
+      <Svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        {/* Hairline mid-rule for visual reference */}
+        <Line
+          x1={PAD_X}
+          y1={H / 2}
+          x2={W - PAD_X}
+          y2={H / 2}
+          stroke="rgba(255,255,255,0.05)"
+          strokeWidth={1}
+        />
+        {/* Trend line */}
+        <Path d={d} stroke={ACCENT} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        {/* Per-session dots */}
+        {points.map((v, i) => (
+          <Circle
+            key={i}
+            cx={xFor(i)}
+            cy={yFor(v)}
+            r={i === lastIdx ? 3.5 : 2}
+            fill={i === lastIdx ? ACCENT : '#0A0A0A'}
+            stroke={ACCENT}
+            strokeWidth={i === lastIdx ? 0 : 1.5}
+          />
+        ))}
+      </Svg>
+      <View style={styles.sparklineMetaRow}>
+        <Text style={styles.sparklineMeta}>min {Math.round(minV)}</Text>
+        <Text style={styles.sparklineMeta}>max {Math.round(maxV)}</Text>
+      </View>
     </View>
   );
 }
@@ -466,10 +551,10 @@ function ZoneKey() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// StatChip
+// StatNaked — flex column on the canvas (no card / border).
 // ─────────────────────────────────────────────────────────────
 
-function StatChip({
+function StatNaked({
   label,
   value,
   unit,
@@ -481,7 +566,7 @@ function StatChip({
   color?: string;
 }) {
   return (
-    <View style={styles.statChip}>
+    <View style={styles.statNaked}>
       <Text style={styles.statLabel}>{label}</Text>
       <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 4 }}>
         <Text style={[styles.statValue, color ? { color } : null]}>
@@ -552,23 +637,16 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
 
+  // Hero sits naked on the canvas — no fill, no border.
   hero: {
-    marginTop: 16,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    paddingVertical: 24,
-    paddingHorizontal: 16,
+    marginTop: 24,
     alignItems: 'center',
-    overflow: 'hidden',
   },
-  heroGlow: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+  heroEmptyWrap: {
+    marginTop: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
   },
   heroTitle: {
     color: '#fff',
@@ -602,13 +680,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 4,
   },
-  heroDivider: {
-    width: '70%',
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    marginTop: 22,
-    marginBottom: 18,
-  },
   scoreNumber: {
     color: '#fff',
     fontSize: 56,
@@ -616,20 +687,17 @@ const styles = StyleSheet.create({
     letterSpacing: -2,
     lineHeight: 60,
   },
-  peakGrid: {
+  peakRow: {
     flexDirection: 'row',
     width: '100%',
     paddingHorizontal: 4,
     gap: 8,
+    marginTop: 26,
   },
-  peakTile: {
+  peakNaked: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 4,
   },
   peakLabel: {
     color: '#6b7280',
@@ -640,7 +708,7 @@ const styles = StyleSheet.create({
   },
   peakValue: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: '800',
     letterSpacing: -0.5,
   },
@@ -649,6 +717,14 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '600',
     marginTop: 1,
+  },
+
+  // Hairline used between sections instead of card boundaries.
+  sectionRule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginTop: 24,
+    marginBottom: 18,
   },
 
   iconWrap: {
@@ -717,16 +793,9 @@ const styles = StyleSheet.create({
   statRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 24,
   },
-  statChip: {
+  statNaked: {
     flex: 1,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
   },
   statLabel: {
     color: '#6b7280',
@@ -737,7 +806,7 @@ const styles = StyleSheet.create({
   },
   statValue: {
     color: '#fff',
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '800',
     letterSpacing: -0.5,
   },
@@ -745,6 +814,39 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     fontSize: 11,
     fontWeight: '600',
+  },
+
+  trendHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  trendEyebrow: {
+    color: '#9ca3af',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  trendCount: {
+    color: '#6b7280',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sparklineWrap: {
+    width: '100%',
+  },
+  sparklineMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
+  sparklineMeta: {
+    color: '#6b7280',
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
 
   zoneKey: {
@@ -771,32 +873,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  secondaryAction: {
-    marginTop: 24,
+  viewHistoryRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 6,
+    gap: 12,
   },
-  secondaryIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: `${ACCENT}14`,
-    borderWidth: 1,
-    borderColor: `${ACCENT}33`,
-    marginRight: 12,
-  },
-  secondaryTextCol: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 8,
-  },
-  secondaryTitle: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  secondarySubtitle: { color: '#6b7280', fontSize: 11, marginTop: 2 },
+  viewHistoryText: { flex: 1, minWidth: 0 },
+  viewHistoryTitle: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  viewHistorySubtitle: { color: '#6b7280', fontSize: 11, marginTop: 2 },
 });
