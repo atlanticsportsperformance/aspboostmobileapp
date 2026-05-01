@@ -364,9 +364,10 @@ function buildHTML(): string {
 
   var camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.01, 100);
   // Default view rotated 180° around pelvis so we look at a right-handed
-  // pitcher from the front rather than the back. OrbitControls let the
-  // user spin around freely from there.
-  camera.position.set(-2, 1.5, -3);
+  // pitcher from the front rather than the back, and pulled 20% closer
+  // (offset from target scaled by 0.8). OrbitControls let the user spin
+  // and zoom freely from there.
+  camera.position.set(-1.6, 1.4, -2.4);
 
   var renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(container.clientWidth, container.clientHeight);
