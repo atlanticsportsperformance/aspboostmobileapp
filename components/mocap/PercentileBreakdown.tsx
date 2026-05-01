@@ -87,7 +87,7 @@ function ringRadius(pct: number) {
   return (pct / 100) * R;
 }
 
-function RadarChart({ groupScores, overallScore }: { groupScores: number[]; overallScore: number }) {
+function RadarChart({ groupScores }: { groupScores: number[] }) {
   const gridScale = useRef(new Animated.Value(0)).current;
   const axisOpacity = useRef(new Animated.Value(0)).current;
   const athleteScale = useRef(new Animated.Value(0)).current;
@@ -161,12 +161,10 @@ function RadarChart({ groupScores, overallScore }: { groupScores: number[]; over
         </Svg>
       </Animated.View>
 
-      {/* Center score — fade in */}
+      {/* Vertex labels — fade in. Center composite is shown in the
+          stats row above the radar, so we don't repeat it here. */}
       <Animated.View style={[styles.radarSvgLayer, { opacity: scoreOpacity }]}>
         <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          <SvgText x={CX} y={CY + 12} textAnchor="middle"
-            fontSize="34" fontWeight="900" fill="#FFFFFF">{Math.round(overallScore)}</SvgText>
-
           {/* Vertex labels + scores — all centered on their axis */}
           {AXES.map((a, i) => {
             const lp = rp(a.angle, 118);
@@ -541,7 +539,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
       </View>
 
       {/* ── Hero Radar ── */}
-      <RadarChart groupScores={groupScores} overallScore={overallScore} />
+      <RadarChart groupScores={groupScores} />
 
       {/* ── Zone Legend ── */}
       <View style={styles.zoneLegend}>
