@@ -1,6 +1,38 @@
-import React, { useRef, useMemo, useEffect, forwardRef, useImperativeHandle } from 'react';
+/**
+ * SkeletonViewer3D — composite of a NATIVE video (expo-av) on top + a
+ * WebView containing the Three.js skeleton on the bottom.
+ *
+ * Why native video instead of an HTMLMediaElement inside the WebView:
+ * iOS WebKit's HTMLVideoElement has a known cold-play "zombie state"
+ * where the engine reports playing internally (currentTime advances) but
+ * the renderer pipeline never wakes up — so the displayed frame stays
+ * frozen even though the element thinks it's playing. The user-side
+ * workaround was scrubbing or pause/play cycling; both of those happen
+ * to fire a real seeked event that wakes WebKit's renderer. Native
+ * AVPlayer (via expo-av) doesn't have that issue at all, so we lift the
+ * video out of the WebView entirely.
+ *
+ * Sync model:
+ *   - Video is the master clock. expo-av reports positionMillis on each
+ *     status update; we forward that into the WebView as setFrame(n).
+ *   - The skeleton WebView no longer has its own playback timer; it
+ *     just renders whatever frame setFrame() last set.
+ *   - When paused (scrubbing), React calls setPositionAsync on the
+ *     video AND injects setFrame(n) into the WebView so both are kept
+ *     in lockstep.
+ */
+
+import React, {
+  useRef,
+  useMemo,
+  useEffect,
+  forwardRef,
+  useImperativeHandle,
+  useCallback,
+} from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { Video, ResizeMode, type AVPlaybackStatus } from 'expo-av';
 
 interface SkeletonViewer3DProps {
   c3dData: {
@@ -21,10 +53,30 @@ interface SkeletonViewer3DProps {
 }
 
 const SkeletonViewer3D = forwardRef<any, SkeletonViewer3DProps>(
-  ({ c3dData, videoUrl, currentFrame, isPlaying, playSpeed, height = 600, onReady, onFrameUpdate, onPlaybackEnd }, ref) => {
+  (
+    {
+      c3dData,
+      videoUrl,
+      currentFrame,
+      isPlaying,
+      playSpeed,
+      height = 600,
+      onReady,
+      onFrameUpdate,
+      onPlaybackEnd,
+    },
+    ref,
+  ) => {
     const webViewRef = useRef<WebView>(null);
+    const videoRef = useRef<Video>(null);
     const isReadyRef = useRef(false);
     const dataSentRef = useRef(false);
+    const skeletonReadyCalledRef = useRef(false);
+    const videoReadyRef = useRef(false);
+
+    // Frame the video has been seeked / advanced to, expressed as a
+    // frame index. Used to skip redundant injectJavaScript calls.
+    const lastInjectedFrameRef = useRef<number>(-1);
 
     useImperativeHandle(ref, () => ({
       sendCommand: (cmd: string) => {
@@ -34,9 +86,20 @@ const SkeletonViewer3D = forwardRef<any, SkeletonViewer3DProps>(
       },
     }));
 
-    // Send C3D data once ready
+    const frameRate = c3dData?.frameRate ?? 360;
+
+    // ────────────────────────────────────────────────────────────────
+    // Skeleton (WebView) lifecycle
+    // ────────────────────────────────────────────────────────────────
+
+    // Send the C3D data once the WebView is ready.
     useEffect(() => {
-      if (isReadyRef.current && c3dData && !dataSentRef.current && webViewRef.current) {
+      if (
+        isReadyRef.current &&
+        c3dData &&
+        !dataSentRef.current &&
+        webViewRef.current
+      ) {
         dataSentRef.current = true;
         const msg = JSON.stringify({
           type: 'c3d',
@@ -50,80 +113,173 @@ const SkeletonViewer3D = forwardRef<any, SkeletonViewer3DProps>(
       }
     }, [c3dData]);
 
-    // Send video URL
-    useEffect(() => {
-      if (isReadyRef.current && videoUrl && webViewRef.current) {
-        webViewRef.current.injectJavaScript(`loadVideo(${JSON.stringify(videoUrl)}); true;`);
-      }
-    }, [videoUrl]);
+    // Push a setFrame to the WebView. Cheap no-op if same as last call.
+    const pushFrameToSkeleton = useCallback(
+      (frame: number) => {
+        const f = Math.round(frame);
+        if (f === lastInjectedFrameRef.current) return;
+        if (!isReadyRef.current || !webViewRef.current) return;
+        lastInjectedFrameRef.current = f;
+        webViewRef.current.injectJavaScript(`setFrame(${f}); true;`);
+      },
+      [],
+    );
 
-    // Send frame updates when paused (scrubbing)
-    useEffect(() => {
-      if (isReadyRef.current && webViewRef.current && !isPlaying) {
-        webViewRef.current.injectJavaScript(`setFrame(${Math.round(currentFrame)}); true;`);
-      }
-    }, [currentFrame, isPlaying]);
+    // ────────────────────────────────────────────────────────────────
+    // Video (native, expo-av) lifecycle
+    // ────────────────────────────────────────────────────────────────
 
-    // Play/pause
+    // Play / pause the native video when isPlaying flips.
     useEffect(() => {
-      if (!isReadyRef.current || !webViewRef.current) return;
+      const v = videoRef.current;
+      if (!v || !videoUrl) return;
       if (isPlaying) {
-        webViewRef.current.injectJavaScript(`startPlayback(${playSpeed}, ${Math.round(currentFrame)}); true;`);
+        v.playAsync().catch(() => {});
       } else {
-        webViewRef.current.injectJavaScript(`stopPlayback(); true;`);
+        v.pauseAsync().catch(() => {});
       }
-    }, [isPlaying, playSpeed]);
+    }, [isPlaying, videoUrl]);
+
+    // Apply playback rate (expo-av needs an explicit setRateAsync call).
+    // shouldCorrectPitch=false so a 0.25x rate doesn't pitch-shift audio
+    // (the videos are typically muted but this is safer either way).
+    useEffect(() => {
+      const v = videoRef.current;
+      if (!v || !videoUrl) return;
+      v.setRateAsync(playSpeed, false).catch(() => {});
+    }, [playSpeed, videoUrl]);
+
+    // Seek when scrubbing (only when paused — during playback the video
+    // is the clock and we don't want to keep yanking it).
+    useEffect(() => {
+      const v = videoRef.current;
+      if (!v || !videoUrl || isPlaying || !c3dData) return;
+      const ms = (currentFrame / frameRate) * 1000;
+      v.setPositionAsync(ms, {
+        toleranceMillisBefore: 0,
+        toleranceMillisAfter: 0,
+      }).catch(() => {});
+      pushFrameToSkeleton(currentFrame);
+    }, [currentFrame, isPlaying, videoUrl, c3dData, frameRate, pushFrameToSkeleton]);
+
+    // Status updates while playing — forward the current position into
+    // the skeleton + report it back to the parent (for the scrubber).
+    const handleStatus = useCallback(
+      (status: AVPlaybackStatus) => {
+        if (!status.isLoaded) return;
+
+        // Mark the video as "first-frame ready" once expo-av reports it
+        // loaded. We combine this with the skeleton-ready signal to
+        // call onReady exactly once.
+        if (!videoReadyRef.current) {
+          videoReadyRef.current = true;
+          maybeFireReady();
+        }
+
+        if (status.didJustFinish) {
+          onPlaybackEnd?.();
+          return;
+        }
+
+        const frame = (status.positionMillis / 1000) * frameRate;
+        pushFrameToSkeleton(frame);
+        if (status.isPlaying) {
+          onFrameUpdate?.(Math.round(frame));
+        }
+      },
+      [frameRate, onPlaybackEnd, onFrameUpdate, pushFrameToSkeleton],
+    );
+
+    // We treat the viewer as "ready" once BOTH the WebView signals it
+    // and the video has reported a loaded status. If videoUrl is null
+    // we just wait for the WebView.
+    const maybeFireReady = useCallback(() => {
+      if (skeletonReadyCalledRef.current) return;
+      const skeletonReady = isReadyRef.current;
+      const videoReady = !videoUrl || videoReadyRef.current;
+      if (skeletonReady && videoReady) {
+        skeletonReadyCalledRef.current = true;
+        onReady?.();
+      }
+    }, [videoUrl, onReady]);
+
+    // ────────────────────────────────────────────────────────────────
+    // HTML for the skeleton WebView (no <video> anymore)
+    // ────────────────────────────────────────────────────────────────
 
     const html = useMemo(() => buildHTML(), []);
 
     return (
       <View style={[styles.container, { height }]}>
-        <WebView
-          ref={webViewRef}
-          source={{ html }}
-          scrollEnabled={false}
-          bounces={false}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          originWhitelist={['*']}
-          allowsInlineMediaPlayback={true}
-          mediaPlaybackRequiresUserAction={false}
-          onMessage={(event) => {
-            try {
-              const data = JSON.parse(event.nativeEvent.data);
-              if (data.type === 'ready') {
-                isReadyRef.current = true;
-                if (c3dData && !dataSentRef.current) {
-                  dataSentRef.current = true;
-                  webViewRef.current?.postMessage(JSON.stringify({
-                    type: 'c3d',
-                    positions: c3dData.positions,
-                    rotations: c3dData.rotations,
-                    frameCount: c3dData.frameCount,
-                    segmentCount: c3dData.segmentCount,
-                    frameRate: c3dData.frameRate,
-                  }));
+        {/* Native video — top 40% of the viewer */}
+        <View style={styles.videoWrap}>
+          {videoUrl ? (
+            <Video
+              ref={videoRef}
+              source={{ uri: videoUrl }}
+              style={styles.video}
+              rate={playSpeed}
+              shouldPlay={false}
+              resizeMode={ResizeMode.CONTAIN}
+              isMuted
+              progressUpdateIntervalMillis={16}
+              onPlaybackStatusUpdate={handleStatus}
+              useNativeControls={false}
+            />
+          ) : null}
+        </View>
+
+        {/* Skeleton WebView — bottom 60% */}
+        <View style={styles.skeletonWrap}>
+          <WebView
+            ref={webViewRef}
+            source={{ html }}
+            scrollEnabled={false}
+            bounces={false}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            originWhitelist={['*']}
+            allowsInlineMediaPlayback={true}
+            mediaPlaybackRequiresUserAction={false}
+            onMessage={(event) => {
+              try {
+                const data = JSON.parse(event.nativeEvent.data);
+                if (data.type === 'ready') {
+                  isReadyRef.current = true;
+                  if (c3dData && !dataSentRef.current) {
+                    dataSentRef.current = true;
+                    webViewRef.current?.postMessage(
+                      JSON.stringify({
+                        type: 'c3d',
+                        positions: c3dData.positions,
+                        rotations: c3dData.rotations,
+                        frameCount: c3dData.frameCount,
+                        segmentCount: c3dData.segmentCount,
+                        frameRate: c3dData.frameRate,
+                      }),
+                    );
+                  }
+                  maybeFireReady();
                 }
-                if (videoUrl) {
-                  webViewRef.current?.injectJavaScript(`loadVideo(${JSON.stringify(videoUrl)}); true;`);
-                }
-                onReady?.();
-              } else if (data.type === 'frame') {
-                onFrameUpdate?.(data.frame);
-              } else if (data.type === 'ended') {
-                onPlaybackEnd?.();
-              }
-            } catch (e) {}
-          }}
-          style={styles.webview}
-        />
+              } catch {}
+            }}
+            style={styles.webview}
+          />
+        </View>
       </View>
     );
-  }
+  },
 );
 
 SkeletonViewer3D.displayName = 'SkeletonViewer3D';
 export default SkeletonViewer3D;
+
+// ────────────────────────────────────────────────────────────────────
+// Skeleton WebView HTML — Three.js only, no video element. Driven by
+// setFrame(n) from React Native; the animate loop renders Three.js
+// continuously so OrbitControls stays smooth, but it doesn't have its
+// own playback clock anymore.
+// ────────────────────────────────────────────────────────────────────
 
 function buildHTML(): string {
   return `<!DOCTYPE html>
@@ -133,18 +289,13 @@ function buildHTML(): string {
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; }
-  #video-container { width: 100%; height: 40%; background: #000; position: relative; }
-  #video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-  #skeleton-container { width: 100%; height: 60%; position: relative; }
+  #skeleton-container { width: 100%; height: 100%; position: relative; }
   canvas { display: block; width: 100%; height: 100%; }
   #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
     color: rgba(155,221,255,0.4); font-family: sans-serif; font-size: 12px; z-index: 10; }
 </style>
 </head>
 <body>
-<div id="video-container">
-  <video id="video" playsinline muted preload="auto"></video>
-</div>
 <div id="skeleton-container">
   <div id="loading">Loading skeleton...</div>
 </div>
@@ -155,30 +306,26 @@ function buildHTML(): string {
 (function() {
   'use strict';
 
-  var video = document.getElementById('video');
-
   // ─── Constants ─────────────────────────────────────────────────
   var SEGMENT_INDICES = {
     worldbody:0, head:1, torso:2, l_uarm:3, l_larm:4, l_hand:5,
     r_uarm:6, r_larm:7, r_hand:8, pelvis:9,
     l_thigh:10, l_shank:11, l_foot:12, l_toes:13,
-    r_thigh:14, r_shank:15, r_foot:16, r_toes:17, pelvis_shifted:18
+    r_thigh:14, r_shank:15, r_foot:16, r_toes:17
   };
 
   var RENDERABLE = [
     'head','torso','pelvis',
-    'r_uarm','r_larm','r_hand',
-    'l_uarm','l_larm','l_hand',
-    'r_thigh','r_shank','r_foot',
-    'l_thigh','l_shank','l_foot'
+    'l_uarm','l_larm','l_hand','r_uarm','r_larm','r_hand',
+    'l_thigh','l_shank','l_foot','r_thigh','r_shank','r_foot'
   ];
 
   var BONES = [
-    ['pelvis','torso'],['torso','head'],
-    ['torso','r_uarm'],['r_uarm','r_larm'],['r_larm','r_hand'],
-    ['torso','l_uarm'],['l_uarm','l_larm'],['l_larm','l_hand'],
-    ['pelvis','r_thigh'],['r_thigh','r_shank'],['r_shank','r_foot'],
-    ['pelvis','l_thigh'],['l_thigh','l_shank'],['l_shank','l_foot']
+    ['head','torso'], ['torso','pelvis'],
+    ['torso','l_uarm'], ['l_uarm','l_larm'], ['l_larm','l_hand'],
+    ['torso','r_uarm'], ['r_uarm','r_larm'], ['r_larm','r_hand'],
+    ['pelvis','l_thigh'], ['l_thigh','l_shank'], ['l_shank','l_foot'],
+    ['pelvis','r_thigh'], ['r_thigh','r_shank'], ['r_shank','r_foot']
   ];
 
   var MESH_MAP = {
@@ -210,7 +357,7 @@ function buildHTML(): string {
   var MESH_OFFSET = { head: [0, 0.08, -0.07] };
   var MESH_URL_BASE = 'https://aspboostapp.vercel.app/meshes/';
 
-  // ─── Scene Setup ───────────────────────────────────────────────
+  // ─── Three.js scene setup ──────────────────────────────────────
   var container = document.getElementById('skeleton-container');
   var scene = new THREE.Scene();
   scene.background = new THREE.Color('#0a0a0a');
@@ -236,7 +383,8 @@ function buildHTML(): string {
   scene.add(dirLight);
   scene.add(new THREE.GridHelper(10, 20, 0x333333, 0x222222));
 
-  // Materials
+  // Materials — meshes are body-tone PBR with a subtle cyan emissive
+  // glow; joints are bright cyan markers; bones are muted gray rods.
   var meshMat = new THREE.MeshStandardMaterial({
     color: 0xd8d8d8, roughness: 0.55, metalness: 0.1,
     emissive: new THREE.Color(0x9bddff), emissiveIntensity: 0.04, side: THREE.DoubleSide
@@ -268,7 +416,7 @@ function buildHTML(): string {
     scene.add(bone); boneObjs[pair[0] + '-' + pair[1]] = bone;
   });
 
-  // Load OBJ meshes
+  // ─── Mesh loading ──────────────────────────────────────────────
   var loader = new THREE.OBJLoader();
   var loadedGeos = {}, loadedSizes = {};
   var uniqueFiles = [], seen = {};
@@ -322,44 +470,15 @@ function buildHTML(): string {
   // ─── State ─────────────────────────────────────────────────────
   var c3d = null;
   var curFrame = 0;
-  var playing = false;
-  var speed = 0.25;
-  var frameRate = 360;
-  var lastFrameTime = 0;
   var pelvisTarget = new THREE.Vector3(0, 1, 0);
 
   // ─── API called from React Native ─────────────────────────────
-
-  window.loadVideo = function(url) {
-    video.src = url;
-    video.load();
-  };
-
+  // The video element is gone -- React drives playback natively now
+  // and forwards frame updates here. setFrame is the only entry point
+  // for changing what the skeleton displays.
   window.setFrame = function(f) {
     curFrame = f;
-    if (c3d) {
-      // Sync video to this exact frame — synchronous in WebView
-      var targetTime = f / frameRate;
-      video.currentTime = targetTime;
-    }
     updateSkeleton(f);
-    renderer.render(scene, camera);
-  };
-
-  window.startPlayback = function(spd, fromFrame) {
-    speed = spd;
-    curFrame = fromFrame;
-    playing = true;
-    video.playbackRate = spd;
-    var targetTime = fromFrame / frameRate;
-    video.currentTime = targetTime;
-    video.play().catch(function(){});
-    lastFrameTime = performance.now();
-  };
-
-  window.stopPlayback = function() {
-    playing = false;
-    video.pause();
   };
 
   // Listen for C3D data from React Native
@@ -373,8 +492,7 @@ function buildHTML(): string {
           frameCount: data.frameCount,
           segmentCount: data.segmentCount
         };
-        frameRate = data.frameRate || 360;
-        curFrame = 1; // skip crunched T-pose at frame 0
+        curFrame = 1;
         updateSkeleton(1);
       }
     } catch(err) {}
@@ -437,38 +555,16 @@ function buildHTML(): string {
   }
 
   // ─── Animation Loop ────────────────────────────────────────────
-  var frameReportCounter = 0;
-  var lastDriftCorrection = 0;
-
+  // Just keeps the Three.js scene rendering smoothly so OrbitControls
+  // is responsive. setFrame() is what actually moves the skeleton --
+  // animate() never reads any clock now. Decoupling means the skeleton
+  // responds immediately to frame updates from native side without
+  // depending on its own timing.
   function animate() {
     requestAnimationFrame(animate);
-
-    if (playing && c3d) {
-      // Use video as the master clock — read its current time and derive the C3D frame
-      // This keeps them perfectly in sync without ever setting video.currentTime during playback
-      var videoTime = video.currentTime;
-      curFrame = videoTime * frameRate;
-
-      if (curFrame >= c3d.frameCount) {
-        curFrame = c3d.frameCount - 1;
-        playing = false;
-        video.pause();
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ended' }));
-      }
-
-      updateSkeleton(curFrame);
-
-      // Report frame back to RN every 3 frames for scrubber update
-      frameReportCounter++;
-      if (frameReportCounter % 3 === 0) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'frame', frame: Math.round(curFrame) }));
-      }
-    }
-
     controls.update();
     renderer.render(scene, camera);
   }
-
   animate();
 
   function resizeRenderer() {
@@ -481,8 +577,6 @@ function buildHTML(): string {
   }
 
   window.addEventListener('resize', resizeRenderer);
-
-  // Resize after layout settles — fixes initial crushed render
   setTimeout(resizeRenderer, 100);
   setTimeout(resizeRenderer, 500);
 
@@ -497,6 +591,21 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     overflow: 'hidden',
+    backgroundColor: '#0a0a0a',
+    flexDirection: 'column',
+  },
+  videoWrap: {
+    width: '100%',
+    height: '40%',
+    backgroundColor: '#000',
+  },
+  video: {
+    width: '100%',
+    height: '100%',
+  },
+  skeletonWrap: {
+    width: '100%',
+    height: '60%',
     backgroundColor: '#0a0a0a',
   },
   webview: {
