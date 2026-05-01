@@ -363,7 +363,10 @@ function buildHTML(): string {
   scene.background = new THREE.Color('#0a0a0a');
 
   var camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.01, 100);
-  camera.position.set(2, 1.5, 3);
+  // Default view rotated 180° around pelvis so we look at a right-handed
+  // pitcher from the front rather than the back. OrbitControls let the
+  // user spin around freely from there.
+  camera.position.set(-2, 1.5, -3);
 
   var renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(container.clientWidth, container.clientHeight);
