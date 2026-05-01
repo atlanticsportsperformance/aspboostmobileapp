@@ -33,7 +33,11 @@ import AnimatedLoading from '../components/AnimatedLoading';
 import BookingCancelSheet from '../components/dashboard/BookingCancelSheet';
 import { UpcomingPreview } from '../components/dashboard/feed/UpcomingPreview';
 import { DataFeed } from '../components/dashboard/feed/DataFeed';
-import { BluetoothPermissionSheet } from '../components/BluetoothPermissionSheet';
+import {
+  onBluetoothStateChange,
+  openBluetoothSettings,
+  type BluetoothPermissionState,
+} from '../lib/ble/permissions';
 import FABMenu, { FABMenuItem } from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 import { consumeWorkoutListDirty } from '../lib/workoutRefreshSignal';
@@ -534,9 +538,15 @@ export default function DashboardScreen({ navigation }: any) {
 
   // Settings dropdown state
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Surfaced from the settings dropdown's "Bluetooth" row so users can
-  // check / repair their permission state without leaving the dashboard.
-  const [bluetoothSheetOpen, setBluetoothSheetOpen] = useState(false);
+  // Live BLE adapter / permission state, surfaced as an inline status row
+  // inside the settings dropdown. We only subscribe while the dropdown is
+  // open so we don't keep a BleManager listener alive for nothing.
+  const [btState, setBtState] = useState<BluetoothPermissionState>('unknown');
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const unsub = onBluetoothStateChange(setBtState, true);
+    return unsub;
+  }, [settingsOpen]);
 
   // Expanded workout card state
   const [expandedWorkoutId, setExpandedWorkoutId] = useState<string | null>(null);
@@ -2544,21 +2554,13 @@ export default function DashboardScreen({ navigation }: any) {
               </View>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.settingsMenuItem}
-              onPress={() => {
+            <BluetoothStatusRow
+              state={btState}
+              onOpenSettings={() => {
                 setSettingsOpen(false);
-                // tiny defer so the Settings modal is visually closed before
-                // the BT sheet animates in — avoids stacked-modal jank.
-                setTimeout(() => setBluetoothSheetOpen(true), 220);
+                openBluetoothSettings();
               }}
-            >
-              <Ionicons name="bluetooth-outline" size={20} color="#9CA3AF" />
-              <View style={styles.settingsMenuItemContent}>
-                <Text style={styles.settingsMenuLabel}>Bluetooth</Text>
-                <Text style={styles.settingsMenuDescription}>Sensor permission &amp; status</Text>
-              </View>
-            </TouchableOpacity>
+            />
 
             <View style={styles.settingsDivider} />
 
@@ -2698,7 +2700,7 @@ export default function DashboardScreen({ navigation }: any) {
           onOpenPitching={() => navigation.navigate('PitchingHub', { athleteId })}
           onOpenHitting={() => navigation.navigate('HittingPerformance', { athleteId })}
           onOpenForceProfile={() => navigation.navigate('ForceProfile', { athleteId })}
-          onOpenArmCare={() => navigation.navigate('ArmCareHub', { athleteId })}
+          onOpenArmCare={() => navigation.navigate('ArmCare', { athleteId })}
         />
         </ScrollView>
       ) : (
@@ -2810,13 +2812,17 @@ export default function DashboardScreen({ navigation }: any) {
                     test={test}
                     onPress={() => {
                       // Ad-hoc cards represent already-saved sessions, so
-                      // tapping should open history (not the capture wizard).
-                      // Real instances follow their existing routing — wizard
-                      // for not-started, history for already-completed.
+                      // tapping should open history (not the capture flow).
+                      // Coach-prescribed not-yet-started instances route to
+                      // the ArmCare hub so the athlete sees their last
+                      // ArmScore + tests context before tapping Start Exam.
+                      // The hub forwards `testInstanceId` to the wizard so
+                      // completion still stamps back onto the prescribed
+                      // row exactly like before.
                       if (test.source_type === 'ad_hoc' || test.status === 'completed') {
                         navigation.navigate('ArmCare', { athleteId });
                       } else {
-                        navigation.navigate('ArmCareWizard', {
+                        navigation.navigate('ArmCareHub', {
                           athleteId,
                           testInstanceId: test.id,
                         });
@@ -3266,14 +3272,48 @@ export default function DashboardScreen({ navigation }: any) {
         }}
       />
 
-      {/* Bluetooth permission status sheet — opened from Settings dropdown */}
-      <BluetoothPermissionSheet
-        visible={bluetoothSheetOpen}
-        context="settings"
-        autoDismissWhenReady={false}
-        onClose={() => setBluetoothSheetOpen(false)}
-      />
     </View>
+  );
+}
+
+// ─── Bluetooth inline status row (used inside Settings dropdown) ──────────
+interface BluetoothStatusRowProps {
+  state: BluetoothPermissionState;
+  onOpenSettings: () => void;
+}
+
+function BluetoothStatusRow({ state, onOpenSettings }: BluetoothStatusRowProps) {
+  // Map state → icon color, label, sublabel. The row is always tappable
+  // (deep-links to iOS Settings → Bluetooth) so the user has a single
+  // place to fix any of these states.
+  const tone = (() => {
+    switch (state) {
+      case 'on':
+        return { color: '#34D399', label: 'Bluetooth', sub: 'Ready' };
+      case 'off':
+        return { color: '#FBBF24', label: 'Bluetooth', sub: 'Off — tap to open Settings' };
+      case 'unauthorized':
+        return { color: '#F87171', label: 'Bluetooth', sub: 'Permission needed — tap to open Settings' };
+      case 'resetting':
+        return { color: '#9BDDFF', label: 'Bluetooth', sub: 'Resetting…' };
+      case 'unsupported':
+        return { color: '#9CA3AF', label: 'Bluetooth', sub: 'Not supported on this device' };
+      case 'native-missing':
+        return { color: '#9CA3AF', label: 'Bluetooth', sub: 'Unavailable in this build' };
+      case 'unknown':
+      default:
+        return { color: '#9CA3AF', label: 'Bluetooth', sub: 'Checking…' };
+    }
+  })();
+
+  return (
+    <TouchableOpacity style={styles.settingsMenuItem} onPress={onOpenSettings}>
+      <Ionicons name="bluetooth-outline" size={20} color={tone.color} />
+      <View style={styles.settingsMenuItemContent}>
+        <Text style={styles.settingsMenuLabel}>{tone.label}</Text>
+        <Text style={[styles.settingsMenuDescription, { color: tone.color }]}>{tone.sub}</Text>
+      </View>
+    </TouchableOpacity>
   );
 }
 
