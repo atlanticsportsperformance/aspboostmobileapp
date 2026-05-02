@@ -14,6 +14,8 @@ import {
   Linking,
   Image,
   PanResponder,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -538,6 +540,47 @@ export default function ExerciseDetailView({
   const [prAlertVisible, setPRAlertVisible] = useState(false);
   const [prAnimation] = useState(new Animated.Value(0));
   const [showHistory, setShowHistory] = useState(false);
+  // Coach notes / exercise description expanded state. Default expanded
+  // for the very first exercise the athlete opens this session, then
+  // collapsed on subsequent exercises so the screen stays tight. Tap the
+  // chip to flip it open or closed.
+  const [notesExpanded, setNotesExpanded] = useState(true);
+  // PR popover visibility — tapping the trophy icon in the header.
+  const [prPopoverOpen, setPRPopoverOpen] = useState(false);
+  // Set indices the user has explicitly expanded (e.g. tapped a collapsed
+  // completed set to re-edit it). The current set is always expanded; all
+  // other sets default to a one-line summary.
+  const [manuallyExpandedSets, setManuallyExpandedSets] = useState<Set<number>>(new Set());
+  // Tiny "Saved" indicator timestamp — bumped on every onInputChange.
+  // Used to fade a small confirmation under the active set so the
+  // athlete knows the keystroke landed.
+  const [lastSavedTick, setLastSavedTick] = useState<number>(0);
+  const [savedVisible, setSavedVisible] = useState(false);
+  useEffect(() => {
+    if (!lastSavedTick) return;
+    setSavedVisible(true);
+    const t = setTimeout(() => setSavedVisible(false), 900);
+    return () => clearTimeout(t);
+  }, [lastSavedTick]);
+  // Auto-fill pulse tracker — set of "setIndex:metricId" keys that
+  // were just auto-filled by the placeholder logic. Inputs with a key
+  // here briefly flash green so the athlete sees the auto-fill happened.
+  const [autoFilledKeys, setAutoFilledKeys] = useState<Set<string>>(new Set());
+  const flashAutoFill = useCallback((setIndex: number, metricId: string) => {
+    const key = `${setIndex}:${metricId}`;
+    setAutoFilledKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setTimeout(() => {
+      setAutoFilledKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }, 600);
+  }, []);
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
   const [videoError, setVideoError] = useState(false);
@@ -602,6 +645,10 @@ export default function ExerciseDetailView({
         });
       }, 100);
     }
+    // Clear any manually-expanded sets when the active set changes —
+    // keeps the screen tight as the athlete progresses. They can tap
+    // "edit" on any collapsed row to re-open it.
+    setManuallyExpandedSets(new Set());
   }, [currentSetIndex]);
 
   // Handle set card layout to track positions
@@ -609,6 +656,22 @@ export default function ExerciseDetailView({
     const { y } = event.nativeEvent.layout;
     setCardPositions.current[index] = y;
   };
+
+  // Wrap the parent's onInputChange so we can bump the "Saved" indicator
+  // tick on every successful save. Keeps the parent prop API unchanged.
+  const onInputChangeWithTick = useCallback(
+    (
+      setIndex: number,
+      metricId: string,
+      value: string | number,
+      targetExerciseId?: string,
+      autoComplete?: boolean,
+    ) => {
+      onInputChange(setIndex, metricId, value, targetExerciseId, autoComplete);
+      setLastSavedTick(Date.now());
+    },
+    [onInputChange],
+  );
 
   // Custom keypad handlers
   const handleKeypadPress = (key: string) => {
@@ -622,7 +685,7 @@ export default function ExerciseDetailView({
     if (key === '.' && currentValue.includes('.')) return;
 
     const newValue = currentValue + key;
-    onInputChange(setIndex, metricId, newValue);
+    onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
   const handleKeypadBackspace = () => {
@@ -632,7 +695,7 @@ export default function ExerciseDetailView({
     const setData = currentInputs[setIndex] || {};
     const currentValue = setData[metricId]?.toString() || '';
     const newValue = currentValue.slice(0, -1);
-    onInputChange(setIndex, metricId, newValue);
+    onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
   const handleKeypadDone = () => {
@@ -655,7 +718,8 @@ export default function ExerciseDetailView({
         const fieldValue = setData[field];
         // If this field is empty and has a placeholder, auto-fill it
         if ((fieldValue === undefined || fieldValue === null || fieldValue === '') && placeholders[field] !== undefined) {
-          onInputChange(setIndex, field, placeholders[field], undefined, true);
+          onInputChangeWithTick(setIndex, field, placeholders[field], undefined, true);
+          flashAutoFill(setIndex, field);
         }
       });
     }
@@ -883,6 +947,9 @@ export default function ExerciseDetailView({
       });
 
       onToggleSetComplete(setIndex, Object.keys(autoFillValues).length > 0 ? autoFillValues : undefined);
+      // Flash any field we just auto-filled so the athlete sees what
+      // changed (was previously silent — values just appeared).
+      Object.keys(autoFillValues).forEach((metricId) => flashAutoFill(setIndex, metricId));
     } else {
       // Unchecking - no auto-fill needed
       onToggleSetComplete(setIndex);
@@ -903,15 +970,20 @@ export default function ExerciseDetailView({
   };
 
   // Swipe gesture handler for exercise navigation
-  const SWIPE_THRESHOLD = 100; // Minimum distance for a "hard" swipe
-  const SWIPE_VELOCITY_THRESHOLD = 0.3; // Minimum velocity for swipe
+  const SWIPE_THRESHOLD = 120; // bumped up so accidental swipes mid-input
+                               // don't kick the user to another exercise
+  const SWIPE_VELOCITY_THRESHOLD = 0.5; // require a clear flick
 
   const panResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_, gestureState) => {
+      // Disable swipe-between-exercises while the numeric keypad is open —
+      // users were swiping to reach number keys and accidentally
+      // jumping to the next/prev exercise.
+      if (activeInput) return false;
       // Only capture horizontal swipes that are more horizontal than vertical
       const { dx, dy } = gestureState;
-      return Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 20;
+      return Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30;
     },
     onPanResponderRelease: (_, gestureState) => {
       const { dx, vx } = gestureState;
@@ -929,9 +1001,36 @@ export default function ExerciseDetailView({
         }
       }
     },
-  }), [hasPrev, hasNext, onPrevExercise, onNextExercise]);
+  }), [hasPrev, hasNext, onPrevExercise, onNextExercise, activeInput]);
 
   // Render set cards
+  // Build a one-line summary of a set for the collapsed row. Shows the
+  // primary input values (or targets when not yet logged) joined with a
+  // dot, e.g. "4 reps · 50 lb" or "target 4 reps × 100 lb".
+  const formatSetSummary = (
+    setIndex: number,
+    setData: Record<string, any>,
+    isCompleted: boolean,
+  ): string => {
+    if (metricFields.length === 0) return '';
+    const parts: string[] = [];
+    const max = Math.min(3, metricFields.length);
+    for (let m = 0; m < max; m++) {
+      const metricId = metricFields[m];
+      const label = getMetricLabel(metricId, customMeasurements);
+      const v = setData[metricId];
+      if (isCompleted && v != null && v !== '') {
+        parts.push(`${v} ${label.toLowerCase()}`);
+      } else {
+        const targetValue = getTargetValue(setIndex, metricId);
+        const intensityTarget = getIntensityTarget(setIndex, metricId);
+        const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
+        if (placeholderValue != null) parts.push(`${placeholderValue} ${label.toLowerCase()}`);
+      }
+    }
+    return parts.join('  ·  ');
+  };
+
   const renderSetCards = () => {
     const sets = [];
     for (let i = 0; i < exercise.sets; i++) {
@@ -939,6 +1038,53 @@ export default function ExerciseDetailView({
       const setConfig = getSetConfig(i);
       const isCompleted = isSetCompleted(i);
       const isCurrentSet = i === currentSetIndex;
+      const isExpanded = isCurrentSet || manuallyExpandedSets.has(i);
+
+      // Collapsed summary row — used for completed sets the user isn't
+      // editing AND for upcoming sets they haven't reached yet. Athletes
+      // can tap to expand and edit any set.
+      if (!isExpanded) {
+        const summary = formatSetSummary(i, setData, isCompleted);
+        sets.push(
+          <TouchableOpacity
+            key={i}
+            onLayout={(e) => handleSetCardLayout(i, e)}
+            onPress={() => {
+              setManuallyExpandedSets((prev) => {
+                const next = new Set(prev);
+                next.add(i);
+                return next;
+              });
+            }}
+            activeOpacity={0.7}
+            style={[
+              styles.setRowCollapsed,
+              isCompleted && styles.setRowCollapsedDone,
+            ]}
+          >
+            <View
+              style={[
+                styles.setRowCheck,
+                isCompleted && styles.setRowCheckDone,
+              ]}
+            >
+              {isCompleted ? <Text style={styles.setRowCheckIcon}>✓</Text> : null}
+            </View>
+            <Text style={styles.setRowLabel}>Set {i + 1}</Text>
+            <Text
+              style={[
+                styles.setRowSummary,
+                !isCompleted && styles.setRowSummaryUpcoming,
+              ]}
+              numberOfLines={1}
+            >
+              {summary || '—'}
+            </Text>
+            <Text style={styles.setRowEdit}>edit</Text>
+          </TouchableOpacity>,
+        );
+        continue;
+      }
 
       sets.push(
         <View
@@ -1018,6 +1164,7 @@ export default function ExerciseDetailView({
                         const isDecimal = metricType === 'decimal';
                         const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
+                        const justFilled = autoFilledKeys.has(`${i}:${metricId}`);
                         return (
                           <View key={metricId} style={styles.metricInput}>
                             <View style={styles.metricLabelRow}>
@@ -1028,6 +1175,7 @@ export default function ExerciseDetailView({
                                 styles.input,
                                 currentValue != null && currentValue !== '' && styles.inputFilled,
                                 isActive && styles.inputActive,
+                                justFilled && styles.inputAutoFilled,
                               ]}
                               onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
                               activeOpacity={0.7}
@@ -1072,6 +1220,7 @@ export default function ExerciseDetailView({
                           const isDecimal = metricType === 'decimal';
                           const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
+                          const justFilledBall = autoFilledKeys.has(`${i}:${metricId}`);
                           return (
                             <View key={metricId} style={styles.ballGroupMetricInput}>
                               <Text style={styles.ballGroupMetricLabel}>{label}</Text>
@@ -1080,6 +1229,7 @@ export default function ExerciseDetailView({
                                   styles.ballGroupInput,
                                   currentValue != null && currentValue !== '' && styles.inputFilled,
                                   isActive && styles.inputActive,
+                                  justFilledBall && styles.inputAutoFilled,
                                 ]}
                                 onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
                                 activeOpacity={0.7}
@@ -1109,6 +1259,12 @@ export default function ExerciseDetailView({
             <View style={styles.setNotesDisplay}>
               <Text style={styles.setNotesText}>{setConfig.notes}</Text>
             </View>
+          )}
+          {/* Subtle "Saved" affordance under the active set so the
+              athlete sees their input landed (the actual DB write is
+              debounced in the parent — this fires on every state push). */}
+          {isCurrentSet && savedVisible && (
+            <Text style={styles.savedTick}>· Saved</Text>
           )}
         </View>
       );
@@ -1257,24 +1413,45 @@ export default function ExerciseDetailView({
             <Text style={styles.backToOverviewIcon}>←</Text>
           </TouchableOpacity>
 
-          {/* Block Label - Simple text */}
+          {/* Block Label as a visible pill — was tiny grey text, easy to
+              miss. Now a small bordered chip beside the exercise name so
+              superset (A1/A2) grouping is glanceable. */}
           {blockLabel && (
-            <Text style={styles.blockLabelText}>{blockLabel}</Text>
+            <View style={styles.blockPill}>
+              <Text style={styles.blockPillText}>{blockLabel}</Text>
+            </View>
           )}
 
           {/* Exercise Name */}
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exercise.exercises.name}
           </Text>
-          {exercise.selected_variation && (
-            <Text style={styles.variationText}> ({exercise.selected_variation})</Text>
-          )}
 
-          {/* PR Trophy */}
+          {/* PR Trophy — now tappable, opens the PR popover. */}
           {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
-            <Text style={styles.headerPrTrophy}>🏆</Text>
+            <TouchableOpacity
+              onPress={() => setPRPopoverOpen(true)}
+              hitSlop={10}
+              activeOpacity={0.6}
+              accessibilityLabel="View personal records"
+            >
+              <Text style={styles.headerPrTrophy}>🏆</Text>
+            </TouchableOpacity>
           )}
         </View>
+
+        {/* Variation chip — was buried in parentheses next to the
+            exercise name. Now its own purple-tinted pill so the athlete
+            sees they're on a variation at a glance. */}
+        {exercise.selected_variation && (
+          <View style={styles.variationPillWrap}>
+            <View style={styles.variationPill}>
+              <Text style={styles.variationPillText}>
+                {exercise.selected_variation.toUpperCase()}
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Tempo only shown in header */}
         {exercise.tempo && (
@@ -1332,19 +1509,35 @@ export default function ExerciseDetailView({
         )
       )}
 
-      {/* Exercise Notes/Description - Below video, above sets */}
+      {/* Exercise Notes / Description — collapsible chip. Coach notes
+          and the exercise description used to claim ~80px even when read;
+          now they live behind a tap-to-expand row so the active set sits
+          higher on the screen. Default expanded so first-time athletes
+          still see it; one tap collapses. */}
       {(exercise.notes || exercise.exercises.description) && (
-        <View style={styles.exerciseNotesSection}>
-          {exercise.notes && (
-            <View style={styles.coachNoteRow}>
-              <Text style={styles.coachNoteIcon}>📝</Text>
-              <Text style={styles.coachNoteText}>{exercise.notes}</Text>
-            </View>
-          )}
-          {exercise.exercises.description && (
-            <View style={styles.descriptionRow}>
-              <Text style={styles.descriptionIcon}>ℹ️</Text>
-              <Text style={styles.descriptionText}>{exercise.exercises.description}</Text>
+        <View style={styles.notesAccordion}>
+          <TouchableOpacity
+            style={styles.notesAccordionHeader}
+            onPress={() => setNotesExpanded((v) => !v)}
+            activeOpacity={0.7}
+            hitSlop={6}
+          >
+            <Text style={styles.notesAccordionIcon}>📝</Text>
+            <Text style={styles.notesAccordionTitle}>
+              {exercise.notes ? 'Coach note' : 'How it works'}
+            </Text>
+            <Text style={styles.notesAccordionChev}>{notesExpanded ? '▾' : '▸'}</Text>
+          </TouchableOpacity>
+          {notesExpanded && (
+            <View style={styles.notesAccordionBody}>
+              {exercise.notes && (
+                <Text style={styles.coachNoteText}>{exercise.notes}</Text>
+              )}
+              {exercise.exercises.description && (
+                <Text style={styles.descriptionText}>
+                  {exercise.exercises.description}
+                </Text>
+              )}
             </View>
           )}
         </View>
@@ -1360,9 +1553,24 @@ export default function ExerciseDetailView({
         {renderSetCards()}
       </ScrollView>
 
-      {/* History Panel - shows above bottom nav when expanded */}
-      {showHistory && (
-        <View style={styles.historyPanel}>
+      {/* History — slide-up bottom sheet. Was previously an overlay panel
+          that floated over the set cards; now it's a proper sheet with a
+          dim backdrop, dismissable by tapping outside. */}
+      <Modal
+        visible={showHistory}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowHistory(false)}
+      >
+        <Pressable
+          style={styles.historySheetBackdrop}
+          onPress={() => setShowHistory(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={styles.historySheetCard}
+          >
+          <View style={styles.historySheetGrabber} />
           <View style={styles.historyPanelHeader}>
             <Text style={styles.historyPanelTitle}>Workout History</Text>
             <TouchableOpacity onPress={() => setShowHistory(false)} activeOpacity={0.7}>
@@ -1418,14 +1626,18 @@ export default function ExerciseDetailView({
               })
             )}
           </ScrollView>
-        </View>
-      )}
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Fixed Bottom Navigation */}
       <View style={styles.bottomNav}>
         <View style={styles.bottomNavGradient}>
           <View style={styles.bottomNavContainer}>
-            {/* History Button */}
+            {/* History Button — anchors the left edge so the bar reads
+                [utility] [primary CTA centered] [utility]. The previous
+                layout bunched both squares on the left and shoved Log Set
+                to the right, which felt off-balance. */}
             <TouchableOpacity
               style={[styles.historyButton, showHistory && styles.historyButtonActive]}
               onPress={() => setShowHistory(!showHistory)}
@@ -1433,16 +1645,6 @@ export default function ExerciseDetailView({
             >
               <Text style={styles.historyButtonIcon}>📊</Text>
               <Text style={styles.historyButtonText}>History</Text>
-            </TouchableOpacity>
-
-            {/* Overview Button */}
-            <TouchableOpacity
-              style={styles.overviewButton}
-              onPress={onBackToOverview}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.overviewButtonIcon}>☰</Text>
-              <Text style={styles.overviewButtonText}>Overview</Text>
             </TouchableOpacity>
 
             {/* Next Set / Next Exercise / DONE Button */}
@@ -1461,18 +1663,18 @@ export default function ExerciseDetailView({
                 if (isLastExercise) {
                   return (
                     <TouchableOpacity
-                      style={[styles.nextSetButton, styles.doneButton]}
+                      style={styles.nextSetButton}
                       onPress={onNextSet}
-                      activeOpacity={0.7}
+                      activeOpacity={0.85}
                     >
                       <LinearGradient
                         colors={['#10B981', '#059669']}
                         start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 0 }}
-                        style={styles.doneButtonGradient}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.nextSetButtonGradient}
                       >
-                        <Text style={styles.doneButtonIcon}>✓</Text>
-                        <Text style={styles.doneButtonText}>DONE</Text>
+                        <Text style={[styles.nextSetButtonIcon, { color: '#FFFFFF' }]}>✓</Text>
+                        <Text style={[styles.nextSetButtonText, { color: '#FFFFFF' }]}>DONE</Text>
                       </LinearGradient>
                     </TouchableOpacity>
                   );
@@ -1486,47 +1688,62 @@ export default function ExerciseDetailView({
                   <TouchableOpacity
                     style={styles.nextSetButton}
                     onPress={onNextSet}
-                    activeOpacity={0.7}
+                    activeOpacity={0.85}
                   >
-                    <Text style={styles.nextSetButtonIcon}>›</Text>
-                    <Text style={styles.nextSetButtonText}>{nextExerciseName}</Text>
+                    <LinearGradient
+                      colors={['#9BDDFF', '#5BB8E8'] as const}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.nextSetButtonGradient}
+                    >
+                      <Text style={styles.nextSetButtonIcon}>›</Text>
+                      <Text style={styles.nextSetButtonText}>{nextExerciseName}</Text>
+                    </LinearGradient>
                   </TouchableOpacity>
                 );
               }
 
+              const isDone = nextText === 'DONE' && currentSetCompleted;
+              const gradientColors = isDone
+                ? (['#10B981', '#059669'] as const)
+                : (['#9BDDFF', '#5BB8E8'] as const);
+              const label = isDone
+                ? 'DONE'
+                : !currentSetCompleted
+                  ? 'Log Set'
+                  : nextText;
+              const icon = isDone || !currentSetCompleted ? '✓' : '›';
+
+              const contentColorStyle = isDone ? { color: '#FFFFFF' } : null;
+
               return (
                 <TouchableOpacity
-                  style={[
-                    styles.nextSetButton,
-                    nextText === 'DONE' && currentSetCompleted && styles.doneButton,
-                  ]}
+                  style={styles.nextSetButton}
                   onPress={handleNextButtonPress}
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
                 >
-                  {nextText === 'DONE' && currentSetCompleted ? (
-                    <LinearGradient
-                      colors={['#10B981', '#059669']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.doneButtonGradient}
-                    >
-                      <Text style={styles.doneButtonIcon}>✓</Text>
-                      <Text style={styles.doneButtonText}>DONE</Text>
-                    </LinearGradient>
-                  ) : !currentSetCompleted ? (
-                    <>
-                      <Text style={styles.nextSetButtonIcon}>✓</Text>
-                      <Text style={styles.nextSetButtonText}>Log Set</Text>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={styles.nextSetButtonIcon}>›</Text>
-                      <Text style={styles.nextSetButtonText}>{nextText}</Text>
-                    </>
-                  )}
+                  <LinearGradient
+                    colors={gradientColors}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.nextSetButtonGradient}
+                  >
+                    <Text style={[styles.nextSetButtonIcon, contentColorStyle]}>{icon}</Text>
+                    <Text style={[styles.nextSetButtonText, contentColorStyle]}>{label}</Text>
+                  </LinearGradient>
                 </TouchableOpacity>
               );
             })()}
+
+            {/* Overview Button — anchors the right edge to balance History */}
+            <TouchableOpacity
+              style={styles.overviewButton}
+              onPress={onBackToOverview}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.overviewButtonIcon}>☰</Text>
+              <Text style={styles.overviewButtonText}>Overview</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -1542,6 +1759,66 @@ export default function ExerciseDetailView({
           hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
         />
       )}
+
+      {/* PR popover — opens when the trophy in the header is tapped.
+          Reads from the cached athleteMaxes object that's already on
+          this component, so no fetch needed. Lists each tracked metric
+          with the athlete's all-time best. */}
+      <Modal
+        visible={prPopoverOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPRPopoverOpen(false)}
+      >
+        <Pressable
+          style={styles.prPopoverBackdrop}
+          onPress={() => setPRPopoverOpen(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={styles.prPopoverCard}
+          >
+            <View style={styles.prPopoverHeader}>
+              <Text style={styles.prPopoverEyebrow}>PERSONAL RECORDS</Text>
+              <Text style={styles.prPopoverTitle} numberOfLines={1}>
+                {exercise.exercises.name}
+              </Text>
+            </View>
+            {(exercise.tracked_max_metrics ?? []).length === 0 ? (
+              <Text style={styles.prPopoverEmpty}>
+                No tracked PR metrics on this exercise yet.
+              </Text>
+            ) : (
+              <View style={styles.prPopoverList}>
+                {(exercise.tracked_max_metrics ?? []).map((metricId) => {
+                  const max = athleteMaxes[exercise.exercise_id]?.[metricId] ?? null;
+                  const label = getMetricLabel(metricId, customMeasurements);
+                  return (
+                    <View key={metricId} style={styles.prPopoverRow}>
+                      <Text style={styles.prPopoverRowLabel}>{label}</Text>
+                      <Text
+                        style={[
+                          styles.prPopoverRowValue,
+                          { color: max != null ? '#FBBF24' : '#4b5563' },
+                        ]}
+                      >
+                        {max != null ? max : '—'}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+            <TouchableOpacity
+              style={styles.prPopoverCloseBtn}
+              onPress={() => setPRPopoverOpen(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.prPopoverCloseText}>Close</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1621,6 +1898,121 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: 'rgba(255, 255, 255, 0.4)',
     marginRight: 8,
+  },
+  // Block pill — replaces the dim "A3" text with a visible cyan-tinted
+  // chip so superset grouping is obvious at a glance.
+  blockPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(155,221,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.35)',
+    marginRight: 8,
+  },
+  blockPillText: {
+    color: '#9BDDFF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  // Variation pill — was tiny text in parens, now a purple-tinted chip
+  // on its own row under the exercise name. Same visual language as
+  // category pills used elsewhere on the dashboard.
+  variationPillWrap: {
+    flexDirection: 'row',
+    paddingTop: 6,
+    paddingLeft: 36, // align under the exercise name (past the back btn)
+  },
+  variationPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(192,132,252,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(192,132,252,0.35)',
+  },
+  variationPillText: {
+    color: '#C084FC',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  // PR popover (opens when the trophy is tapped)
+  prPopoverBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  prPopoverCard: {
+    width: '100%',
+    backgroundColor: '#0d0d0d',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(251,191,36,0.25)',
+    overflow: 'hidden',
+  },
+  prPopoverHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  prPopoverEyebrow: {
+    color: '#FBBF24',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.6,
+  },
+  prPopoverTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+    marginTop: 4,
+  },
+  prPopoverEmpty: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontStyle: 'italic',
+    paddingVertical: 24,
+    paddingHorizontal: 18,
+    textAlign: 'center',
+  },
+  prPopoverList: {
+    paddingVertical: 6,
+  },
+  prPopoverRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
+  },
+  prPopoverRowLabel: {
+    color: '#e5e7eb',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  prPopoverRowValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  prPopoverCloseBtn: {
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  prPopoverCloseText: {
+    color: '#9ca3af',
+    fontSize: 13,
+    fontWeight: '700',
   },
   exerciseName: {
     flex: 1,
@@ -1801,6 +2193,37 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
   },
+  // Collapsible notes accordion — replaces the always-visible notes box.
+  notesAccordion: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  notesAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  notesAccordionIcon: { fontSize: 13 },
+  notesAccordionTitle: {
+    flex: 1,
+    color: '#e5e7eb',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  notesAccordionChev: { color: '#9ca3af', fontSize: 11 },
+  notesAccordionBody: {
+    paddingTop: 8,
+    paddingHorizontal: 4,
+    gap: 6,
+  },
   coachNoteRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1861,6 +2284,30 @@ const styles = StyleSheet.create({
   historyContent: {
     marginTop: 8,
     gap: 8,
+  },
+  // Slide-up sheet wrapper for the workout-history Modal.
+  historySheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  historySheetCard: {
+    maxHeight: '70%',
+    backgroundColor: '#0d0d0d',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingBottom: 20,
+  },
+  historySheetGrabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginTop: 10,
+    marginBottom: 8,
   },
   historyPanel: {
     position: 'absolute',
@@ -1954,6 +2401,81 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 12,
     padding: 12,
+  },
+  // Collapsed set row — used for completed and upcoming sets so only the
+  // active set occupies a full card. One-line summary, tappable to expand.
+  setRowCollapsed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  setRowCollapsedDone: {
+    borderColor: 'rgba(16,185,129,0.18)',
+    backgroundColor: 'rgba(16,185,129,0.04)',
+  },
+  setRowCheck: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setRowCheckDone: {
+    backgroundColor: '#10B981',
+    borderColor: '#10B981',
+  },
+  setRowCheckIcon: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  setRowLabel: {
+    color: '#e5e7eb',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    minWidth: 44,
+  },
+  setRowSummary: {
+    flex: 1,
+    color: '#e5e7eb',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  setRowSummaryUpcoming: {
+    color: '#6b7280',
+  },
+  setRowEdit: {
+    color: '#9BDDFF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  // Subtle "Saved" tick under the active set. Briefly visible on each
+  // input change so the athlete knows the value landed.
+  savedTick: {
+    color: '#34D399',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    marginTop: 8,
+    alignSelf: 'flex-end',
+  },
+  // Brief green highlight applied to inputs that just got auto-filled
+  // (either by completing the set checkbox or by the inter-metric
+  // auto-fill on Done/Next). Visible for ~600ms.
+  inputAutoFilled: {
+    borderColor: '#10B981',
+    borderWidth: 2,
+    backgroundColor: 'rgba(16,185,129,0.10)',
   },
   setCardCompleted: {
     borderColor: 'rgba(16, 185, 129, 0.3)',
@@ -2114,11 +2636,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  // Per-set coach note — repainted from amber to the brand cyan so it
+  // matches the rest of the app's accent palette (#9BDDFF). The amber
+  // had drifted out of the global theme.
   setNotesDisplay: {
     width: '100%',
-    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.3)',
+    borderColor: 'rgba(155, 221, 255, 0.25)',
     borderRadius: 6,
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -2126,7 +2651,7 @@ const styles = StyleSheet.create({
   },
   setNotesText: {
     fontSize: 13,
-    color: '#FCD34D',
+    color: '#9BDDFF',
     fontStyle: 'italic',
   },
   notesField: {
@@ -2159,56 +2684,59 @@ const styles = StyleSheet.create({
   },
   bottomNavContainer: {
     flexDirection: 'row',
-    gap: 4,
-    paddingHorizontal: 12,
-    maxWidth: 380,
-    alignSelf: 'center',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
     width: '100%',
   },
+  // History + Overview are compact icon-only squares so the primary
+  // Log Set / Next action can dominate the bottom bar instead of being
+  // visually equal to two utility buttons.
   historyButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    backgroundColor: '#262626',
+    width: 44,
+    height: 44,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: '#404040',
-    borderRadius: 10,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 0,
   },
   historyButtonActive: {
-    backgroundColor: '#3D2F1F',
-    borderColor: '#F59E0B',
+    backgroundColor: 'rgba(155, 221, 255, 0.15)',
+    borderColor: '#9BDDFF',
   },
   historyButtonIcon: {
-    fontSize: 14,
+    fontSize: 18,
   },
   historyButtonText: {
-    fontSize: 9,
-    color: '#E5E5E5',
-    marginTop: 2,
+    // Label removed visually — keep style as zero-height fallback.
+    fontSize: 0,
+    height: 0,
+    color: 'transparent',
   },
   overviewButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    backgroundColor: '#262626',
+    width: 44,
+    height: 44,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: '#404040',
-    borderRadius: 10,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 0,
   },
   overviewButtonIcon: {
-    fontSize: 14,
+    fontSize: 18,
     color: '#E5E5E5',
   },
   overviewButtonText: {
-    fontSize: 9,
-    color: '#E5E5E5',
-    marginTop: 2,
+    fontSize: 0,
+    height: 0,
+    color: 'transparent',
   },
   prevExerciseButton: {
     flex: 1,
@@ -2231,49 +2759,40 @@ const styles = StyleSheet.create({
     color: '#93C5FD',
     marginTop: 2,
   },
+  // Primary action button — solid gradient fill, slightly taller than the
+  // 44px utility squares so the CTA wins the visual hierarchy. The shell
+  // is just a container; the gradient does the painting.
   nextSetButton: {
-    flex: 1.2,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    backgroundColor: '#0C4A6E',
-    borderWidth: 1,
-    borderColor: '#9BDDFF',
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 0,
-  },
-  nextSetButtonIcon: {
-    fontSize: 14,
-    color: '#9BDDFF',
-  },
-  nextSetButtonText: {
-    fontSize: 9,
-    color: '#9BDDFF',
-    marginTop: 2,
-  },
-  doneButton: {
-    borderWidth: 0,
-    backgroundColor: 'transparent',
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
     overflow: 'hidden',
+    minWidth: 0,
+    shadowColor: '#9BDDFF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  doneButtonGradient: {
+  nextSetButtonGradient: {
     width: '100%',
     height: '100%',
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
-    borderRadius: 12,
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
   },
-  doneButtonIcon: {
-    fontSize: 16,
-    color: '#FFFFFF',
+  nextSetButtonIcon: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#0A1A2E',
   },
-  doneButtonText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#FFFFFF',
+  nextSetButtonText: {
+    fontSize: 14,
+    color: '#0A1A2E',
+    fontWeight: '900',
+    letterSpacing: 0.6,
   },
   emptyButton: {
     flex: 1,

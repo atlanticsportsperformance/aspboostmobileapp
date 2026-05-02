@@ -203,7 +203,7 @@ export default function ArmCareScreen() {
             <HeroAnalysisCard latest={latest} />
             <AnalysisTabs latest={latest} />
 
-            <CanIThrowCard latest={latest} previous={previous} />
+            <CanIThrowCard latest={latest} sessions={sessions} />
             <ArmScoreTrendCard sessions={chronological} />
             <IrErTrendCard sessions={chronological} />
             <ShoulderBalanceTrendCard sessions={chronological} />
@@ -760,75 +760,230 @@ function ShoulderBalanceTabContent({ latest }: { latest: SessionRow }) {
 
 function CanIThrowCard({
   latest,
-  previous,
+  sessions,
 }: {
   latest: SessionRow | null;
-  previous: SessionRow | null;
+  sessions: SessionRow[];
 }) {
   if (!latest) return null;
 
-  const armZ = armScoreZone(latest.arm_score);
+  // ─── Freshness ───────────────────────────────────────────────
+  // The verdict is only as reliable as the exam it's built on. Past ~3
+  // days, strength can drift meaningfully — bedrest, hard outing, gym
+  // session — so we should be telling the athlete to retest, not
+  // confidently green-lighting them based on day-old data.
+  function daysSinceExam(dateStr: string): number {
+    const exam = new Date(`${dateStr}T12:00:00`);
+    const now = new Date();
+    const ms = now.getTime() - exam.getTime();
+    return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
+  }
+  const daysSince = daysSinceExam(latest.exam_date);
+  const isStale = daysSince > 3;
+
+  // Personal best for total + each individual throwing-arm test, computed
+  // across ALL sessions on file (not the range-filtered subset). A single
+  // weak month shouldn't artificially lower the bar.
+  function maxOf(field: keyof SessionRow): number | null {
+    let best = 0;
+    for (const s of sessions) {
+      const v = s[field];
+      if (typeof v === 'number' && v > best) best = v;
+    }
+    return best > 0 ? best : null;
+  }
+
+  const totalMax = maxOf('total_strength');
+  const irMax = maxOf('irtarm_max_lbs');
+  const erMax = maxOf('ertarm_max_lbs');
+  const stMax = maxOf('starm_max_lbs');
+  const gtMax = maxOf('gtarm_max_lbs');
+
+  function pctOffMax(latestVal: number | null, max: number | null): number | null {
+    if (latestVal == null || max == null || max <= 0) return null;
+    return ((latestVal - max) / max) * 100;
+  }
+
+  const totalPctOff = pctOffMax(latest.total_strength, totalMax);
+  const individuals = [
+    { key: 'IR', label: 'Internal Rotation', pct: pctOffMax(latest.irtarm_max_lbs, irMax) },
+    { key: 'ER', label: 'External Rotation', pct: pctOffMax(latest.ertarm_max_lbs, erMax) },
+    { key: 'Scaption', label: 'Scaption', pct: pctOffMax(latest.starm_max_lbs, stMax) },
+    { key: 'Grip', label: 'Grip', pct: pctOffMax(latest.gtarm_max_lbs, gtMax) },
+  ];
+
   const balanceZ = erIrZone(
     latest.ertarm_max_lbs && latest.irtarm_max_lbs
       ? latest.ertarm_max_lbs / latest.irtarm_max_lbs
       : null,
   );
 
-  // Recovery delta — compare total strength to previous session.
-  let recoveryPct: number | null = null;
-  if (
-    previous?.total_strength &&
-    latest?.total_strength &&
-    previous.total_strength > 0
-  ) {
-    recoveryPct =
-      ((latest.total_strength - previous.total_strength) / previous.total_strength) * 100;
-  }
+  // Worst individual deficit (most negative pct off max)
+  const worstIndividual = individuals.reduce<{ key: string; label: string; pct: number } | null>(
+    (acc, m) =>
+      m.pct != null && (acc == null || m.pct < acc.pct)
+        ? { key: m.key, label: m.label, pct: m.pct }
+        : acc,
+    null,
+  );
 
-  // Verdict logic:
-  //   Yes      → ArmScore normal, balance normal, no >10% strength drop
-  //   Reduced  → any one of: ArmScore watch, balance watch, 5–10% drop
-  //   No       → ArmScore warning, balance warning, or >10% drop
+  // ─── Verdict ───
+  // Strength is the primary driver. Balance is a secondary signal that can
+  // downgrade only when it's truly out-of-range (warning) — a balance-watch
+  // alone with PR-level strength does NOT pull the verdict down to REDUCED;
+  // it's surfaced as an informational note instead. The athlete just hit a
+  // strength PR shouldn't be told "REDUCED" because their ER:IR ratio
+  // drifted from 0.85.
+  //
+  //   NO       → Total > 10% off max, OR any individual > 15% off max
+  //   REDUCED  → Total 5–10% off max, OR any individual 10–15% off max,
+  //              OR balance warning (real injury-risk band)
+  //   YES      → everything else (balance watch is shown as a note only)
   let verdict: 'yes' | 'reduced' | 'no' = 'yes';
-  let reason = 'ArmScore is in the normal zone.';
+  let primaryReason: string;
 
-  if (armZ === 'warning') {
-    verdict = 'no';
-    reason = 'ArmScore is below 60. Recover before throwing.';
-  } else if (recoveryPct != null && recoveryPct < -10) {
-    verdict = 'no';
-    reason = `Strength dropped ${Math.abs(recoveryPct).toFixed(0)}% vs last exam.`;
-  } else if (balanceZ === 'warning') {
-    verdict = 'no';
-    reason = 'ER:IR balance is outside the safe range.';
-  } else if (armZ === 'watch') {
-    verdict = 'reduced';
-    reason = 'ArmScore is in the watch zone — light throwing only.';
-  } else if (recoveryPct != null && recoveryPct < -5) {
-    verdict = 'reduced';
-    reason = `Strength dipped ${Math.abs(recoveryPct).toFixed(0)}% vs last exam.`;
-  } else if (balanceZ === 'watch') {
-    verdict = 'reduced';
-    reason = 'ER:IR balance is borderline — moderate volume.';
+  const strengthSoft =
+    (totalPctOff != null && totalPctOff < -2) ||
+    (worstIndividual != null && worstIndividual.pct < -5);
+
+  if (totalPctOff == null) {
+    primaryReason = 'Strength looks good — keep your normal load.';
+  } else if (totalPctOff >= 0) {
+    primaryReason = `Total strength is at your personal best — green light.`;
+  } else if (totalPctOff >= -2) {
+    primaryReason = `Total strength is essentially at max (${totalPctOff.toFixed(0)}%) — go.`;
+  } else {
+    primaryReason = `Total strength is ${Math.abs(totalPctOff).toFixed(0)}% off your max.`;
   }
 
+  if (totalPctOff != null && totalPctOff < -10) {
+    verdict = 'no';
+    primaryReason = `Total strength is ${Math.abs(totalPctOff).toFixed(0)}% off your max. Recover before throwing.`;
+  } else if (worstIndividual && worstIndividual.pct < -15) {
+    verdict = 'no';
+    primaryReason = `${worstIndividual.label} is ${Math.abs(worstIndividual.pct).toFixed(0)}% off max — too low to throw safely.`;
+  } else if (totalPctOff != null && totalPctOff < -5) {
+    verdict = 'reduced';
+    primaryReason = `Total strength is ${Math.abs(totalPctOff).toFixed(0)}% off your max — light volume only.`;
+  } else if (worstIndividual && worstIndividual.pct < -10) {
+    verdict = 'reduced';
+    primaryReason = `${worstIndividual.label} is ${Math.abs(worstIndividual.pct).toFixed(0)}% off max — keep volume moderate.`;
+  } else if (balanceZ === 'warning') {
+    // Balance way out of range is a real signal — but don't crush a PR
+    // session to "no". Reduce volume and recommend balance work.
+    verdict = 'reduced';
+    primaryReason = strengthSoft
+      ? primaryReason + ' ER:IR balance is also outside the safe range.'
+      : 'Strength is solid, but ER:IR balance is outside the safe range — keep volume moderate.';
+  }
+
+  // Balance watch: surface as a note appended to the primary reason, not a
+  // verdict downgrade. Only append if the verdict didn't already mention it.
+  const balanceNote =
+    balanceZ === 'watch' && verdict !== 'no'
+      ? ' ER:IR balance is borderline — keep monitoring.'
+      : '';
+  primaryReason = primaryReason + balanceNote;
+
+  // Per-test recommendations: anything > 5% off max gets a focus row
+  const TIPS: Record<string, string> = {
+    IR: 'Subscap-focused IR cuff — sidelying IR, IR-90/90, banded IR.',
+    ER: 'Posterior cuff — ERaT, prone ER, sidelying ER, light banded ER.',
+    Scaption: 'Scap stability — full-can scaption, Y/T/W series, prone I/Y/T.',
+    Grip: 'Grip + forearm volume — towel/FFE hangs, finger flex, wrist curls.',
+  };
+  const focusAreas = individuals
+    .filter((m): m is { key: string; label: string; pct: number } => m.pct != null && m.pct < -5)
+    .sort((a, b) => a.pct - b.pct);
+
+  // Stale data overrides the verdict. The athlete's strength snapshot
+  // from > 3 days ago can't honestly tell them whether to throw today.
+  // Two tiers: 4-7 days = soft "retest soon" notice, > 7 days = hard
+  // "retest before throwing" prompt.
+  const isVeryStale = daysSince > 7;
   const styleMap = {
     yes: { color: '#34D399', label: 'YES', icon: 'checkmark-circle' as const },
     reduced: { color: '#FBBF24', label: 'REDUCED', icon: 'alert-circle' as const },
     no: { color: '#F87171', label: 'NOT TODAY', icon: 'close-circle' as const },
+    stale: { color: '#9CA3AF', label: 'RETEST', icon: 'time-outline' as const },
   };
-  const v = styleMap[verdict];
+  const displayVerdict = isStale ? 'stale' : verdict;
+  const v = styleMap[displayVerdict];
+
+  if (isStale) {
+    primaryReason = isVeryStale
+      ? `Last test was ${daysSince} days ago. Strength can drift quickly — retest before throwing decisions.`
+      : `Last test was ${daysSince} days ago. The numbers below reflect that exam, not today — retest soon for a fresh read.`;
+  }
 
   return (
-    <View style={[styles.card, { borderColor: `${v.color}55` }]}>
+    <View style={styles.card}>
       <View style={styles.cardHeader}>
         <Ionicons name={v.icon} size={18} color={v.color} />
         <Text style={[styles.cardEyebrow, { color: v.color }]}>CAN I THROW TODAY?</Text>
       </View>
       <Text style={[styles.verdict, { color: v.color }]}>{v.label}</Text>
-      <Text style={styles.cardBody}>{reason}</Text>
+      <Text style={styles.cardBody}>{primaryReason}</Text>
+
+      {totalPctOff != null && (
+        <View style={styles.canThrowDeltaRow}>
+          <Text style={styles.canThrowDeltaLabel}>
+            {isStale
+              ? `LAST TEST (${daysSince}D AGO) vs PB`
+              : 'TOTAL vs personal best'}
+          </Text>
+          <Text
+            style={[
+              styles.canThrowDeltaValue,
+              {
+                color:
+                  totalPctOff >= -2
+                    ? '#34D399'
+                    : totalPctOff >= -5
+                      ? '#9BDDFF'
+                      : totalPctOff >= -10
+                        ? '#FBBF24'
+                        : '#F87171',
+              },
+            ]}
+          >
+            {totalPctOff >= 0 ? '+' : ''}
+            {totalPctOff.toFixed(0)}%
+          </Text>
+        </View>
+      )}
+
+      {focusAreas.length > 0 && (
+        <View style={styles.canThrowRecsBlock}>
+          <Text style={styles.canThrowRecsHeading}>FOCUS AREAS</Text>
+          {focusAreas.map((r) => {
+            const tone =
+              r.pct < -15 ? '#F87171' : r.pct < -10 ? '#FBBF24' : '#9BDDFF';
+            return (
+              <View key={r.key} style={styles.canThrowRecRow}>
+                <View
+                  style={[
+                    styles.canThrowRecPctPill,
+                    { borderColor: `${tone}66`, backgroundColor: `${tone}1f` },
+                  ]}
+                >
+                  <Text style={[styles.canThrowRecPctText, { color: tone }]}>
+                    {r.pct.toFixed(0)}%
+                  </Text>
+                </View>
+                <View style={styles.canThrowRecTextWrap}>
+                  <Text style={styles.canThrowRecName}>{r.label}</Text>
+                  <Text style={styles.canThrowRecTip}>{TIPS[r.key]}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
       <Text style={styles.cardMeta}>
         Last exam · {fmtDate(latest.exam_date)}
+        {daysSince > 0 ? ` · ${daysSince}d ago` : ' · today'}
         {latest.fresh_arm_feels ? ` · feels ${latest.fresh_arm_feels}/10` : ''}
       </Text>
     </View>
@@ -1449,6 +1604,74 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginTop: 4,
     marginBottom: 4,
+  },
+  // ─── Can I Throw Today: vs-max delta + focus areas ───
+  canThrowDeltaRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  canThrowDeltaLabel: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+  },
+  canThrowDeltaValue: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  canThrowRecsBlock: {
+    marginTop: 18,
+    gap: 12,
+  },
+  canThrowRecsHeading: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    marginBottom: 2,
+  },
+  canThrowRecRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  canThrowRecPctPill: {
+    minWidth: 56,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  canThrowRecPctText: {
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  canThrowRecTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  canThrowRecName: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
+  canThrowRecTip: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 16,
   },
   // ─── Headline + zone pill ───
   headlineRow: {

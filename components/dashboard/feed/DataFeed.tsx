@@ -73,6 +73,7 @@ interface ArmCareShape {
   pr: { arm_score: number; date: string };
   latest: {
     arm_score: number;
+    arm_score_avg_30d?: number;
     total_strength: number;
     avg_strength_30d: number;
     tests_30d: number;
@@ -105,6 +106,10 @@ export interface DataFeedProps {
   athleteId: string | null;
   isMember: boolean;
   navigation: any;
+  /** 'Youth' | 'High School' | 'College' | 'Pro' — drives the hitting
+   *  bat-speed percentile ring against age-band assessment norms. Null
+   *  when unknown; the section just hides the ring in that case. */
+  playLevel?: string | null;
 
   workloadByDate: Map<string, WorkloadDayEntry>;
   forceProfile: ForceProfileShape | null;
@@ -202,6 +207,7 @@ function SectionSlot({
       return (
         <HittingSection
           data={props.hittingData}
+          playLevel={props.playLevel ?? null}
           onOpen={props.onOpenHitting}
         />
       );

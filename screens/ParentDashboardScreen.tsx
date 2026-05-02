@@ -31,6 +31,8 @@ import HittingCard from '../components/dashboard/HittingCard';
 import ForceProfileCard from '../components/dashboard/ForceProfileCard';
 import ArmCareCard from '../components/dashboard/ArmCareCard';
 import PitchingCard from '../components/dashboard/PitchingCard';
+import { UpcomingPreview } from '../components/dashboard/feed/UpcomingPreview';
+import { DataFeed } from '../components/dashboard/feed/DataFeed';
 import { cancelBooking } from '../lib/bookingApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -111,6 +113,15 @@ interface ForceProfile {
   percentile_rank: number;
   best_metric: { name: string; percentile: number; value: number } | null;
   worst_metric: { name: string; percentile: number; value: number } | null;
+  // Optional — populated for the new editorial feed so the hex radar has
+  // axes to plot. Older code paths (legacy carousel) ignore it.
+  metrics?: Array<{
+    name: string;
+    percentile: number;
+    value: number;
+    test_type: string;
+    metric: string;
+  }>;
 }
 
 interface HittingData {
@@ -130,6 +141,7 @@ interface HittingData {
 interface ArmCareData {
   latest: {
     arm_score: number;
+    arm_score_avg_30d: number;
     total_strength: number;
     avg_strength_30d: number;
     tests_30d: number;
@@ -418,6 +430,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
   const [armCareData, setArmCareData] = useState<ArmCareData | null>(null);
   const [pitchingData, setPitchingData] = useState<PitchingData | null>(null);
   const [valdProfileId, setValdProfileId] = useState<string | null>(null);
+  const [playLevel, setPlayLevel] = useState<string | null>(null);
   const [latestPrediction, setLatestPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
   const [batSpeedPrediction, setBatSpeedPrediction] = useState<{ predicted_value: number; predicted_value_low?: number; predicted_value_high?: number } | null>(null);
   const [bodyweightData, setBodyweightData] = useState<{ current: number; previous: number | null; date: string } | null>(null);
@@ -731,6 +744,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
       if (!athlete) return;
 
+      // Stash the linked athlete's play level so the hitting section can
+      // render bat-speed / exit-velo percentile rings.
+      setPlayLevel(athlete.play_level ?? null);
+
       // Fetch all performance data in parallel
       await Promise.all([
         fetchForceProfile(athleteId, athlete.vald_profile_id, athlete.org_id),
@@ -876,6 +893,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
       percentile_rank: compositeScore,
       best_metric: best,
       worst_metric: worst,
+      metrics: percentiles,
     });
   }
 
@@ -1046,16 +1064,41 @@ export default function ParentDashboardScreen({ navigation }: any) {
 
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const tests30d = sessions.filter((session) => {
+    const sessions30d = sessions.filter((session) => {
       const sessionDate = new Date(session.exam_date);
       return sessionDate >= thirtyDaysAgo;
-    }).length;
+    });
+    const tests30d = sessions30d.length;
+
+    // 30-day ArmScore average — surfaced next to the PR in the editorial
+    // ArmCare section so the parent sees both the all-time best and the
+    // last-month trend at a glance.
+    let avg30DayArmScore = 0;
+    if (sessions30d.length > 0) {
+      const sum = sessions30d.reduce(
+        (acc, s) => acc + (s.arm_score != null ? Number(s.arm_score) : 0),
+        0,
+      );
+      avg30DayArmScore = sum / sessions30d.length;
+    }
+
+    // `latest.arm_score` should be the actual most-recent session, not
+    // the 90-day rolling mean — otherwise the dashboard contradicts the
+    // detail page (which shows the real latest exam).
+    const latestSession = sessions[0];
+    const latestArmScore =
+      latestSession?.arm_score != null ? Number(latestSession.arm_score) : 0;
+    const latestTotalStrength =
+      latestSession?.total_strength != null
+        ? Number(latestSession.total_strength)
+        : 0;
 
     setArmCareData({
       pr: maxArmScore.value > 0 ? { arm_score: maxArmScore.value, date: maxArmScore.date } : { arm_score: 0, date: '' },
       latest: {
-        arm_score: avg90DayArmScore,
-        total_strength: avg90DayTotalStrength,
+        arm_score: latestArmScore,
+        arm_score_avg_30d: avg30DayArmScore,
+        total_strength: latestTotalStrength,
         avg_strength_30d: avg90DayTotalStrength,
         tests_30d: tests30d,
       },
@@ -1672,27 +1715,6 @@ export default function ParentDashboardScreen({ navigation }: any) {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
           }
         >
-          {/* Performance Carousel - ABOVE calendar like athlete dashboard */}
-          {(upcomingEvents.length > 0 || hittingData || pitchingData || (forceProfile && valdProfileId) || armCareData) && (
-            <View style={styles.snapshotContainer}>
-              <SnapshotCarousel
-                scrollX={scrollX}
-                snapshotIndex={snapshotIndex}
-                setSnapshotIndex={setSnapshotIndex}
-                valdProfileId={valdProfileId}
-                forceProfile={forceProfile}
-                latestPrediction={latestPrediction}
-                batSpeedPrediction={batSpeedPrediction}
-                bodyweightData={bodyweightData}
-                armCareData={armCareData}
-                hittingData={hittingData}
-                pitchingData={pitchingData}
-                upcomingEvents={upcomingEvents}
-                onEventPress={() => navigation.navigate('Booking')}
-              />
-            </View>
-          )}
-
           {/* Calendar */}
           <View style={styles.calendarContainer}>
             <View style={styles.monthHeader}>
@@ -1750,6 +1772,42 @@ export default function ParentDashboardScreen({ navigation }: any) {
               })}
             </View>
           </View>
+
+          {/* Upcoming events strip — borderless tiles, swap-in for the
+              old "Upcoming" carousel slide. Tapping a tile opens the
+              existing day-detail view for that date. */}
+          <UpcomingPreview
+            bookings={upcomingEvents as any}
+            armcareTests={[]}
+            reminders={[]}
+            onSelectDate={handleDayClick}
+          />
+
+          {/* Editorial data stack — adaptive sections (Pitching /
+              Hitting / Force / ArmCare) for the first/selected linked
+              athlete. Replaces the horizontal SnapshotCarousel. The
+              Workload section is gated on isMember, which is false on
+              the parent path, so it stays hidden here. */}
+          <DataFeed
+            athleteId={selectedAthleteId ?? linkedAthletes[0]?.athlete_id ?? null}
+            isMember={false}
+            navigation={navigation}
+            playLevel={playLevel}
+            workloadByDate={new Map()}
+            forceProfile={forceProfile as any}
+            valdProfileId={valdProfileId}
+            pitchPrediction={latestPrediction}
+            batSpeedPrediction={batSpeedPrediction}
+            bodyweight={bodyweightData}
+            hittingData={hittingData}
+            pitchingData={pitchingData ? ({ ...pitchingData, arsenal: [] } as any) : null}
+            armCareData={armCareData}
+            onOpenWorkload={() => {}}
+            onOpenPitching={() => handleFabNavigate('PitchingPerformance')}
+            onOpenHitting={() => handleFabNavigate('HittingPerformance')}
+            onOpenForceProfile={() => handleFabNavigate('ForceProfile')}
+            onOpenArmCare={() => handleFabNavigate('ArmCare')}
+          />
         </ScrollView>
       ) : (
         <View style={styles.dayViewContainer}>

@@ -20,6 +20,8 @@ interface ArmCareShape {
   pr: { arm_score: number; date: string };
   latest: {
     arm_score: number;
+    /** Rolling 30-day mean of ArmScore — shown next to the PR. */
+    arm_score_avg_30d?: number;
     total_strength: number;
     avg_strength_30d: number;
     tests_30d: number;
@@ -93,7 +95,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
           {score.toFixed(1)}
         </Text>
         <View style={styles.heroSide}>
-          <Text style={styles.heroSideLabel}>ARMSCORE (90D)</Text>
+          <Text style={styles.heroSideLabel}>ARMSCORE</Text>
           <View
             style={[
               styles.zonePill,
@@ -102,9 +104,20 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
           >
             <Text style={[styles.zoneText, { color: zone.hex }]}>{zone.label}</Text>
           </View>
-          <Text style={styles.heroSideMeta}>
-            PR {data.pr.arm_score.toFixed(1)}
-          </Text>
+          <View style={styles.heroSideMetaRow}>
+            <Text style={styles.heroSideMeta}>
+              PR {data.pr.arm_score.toFixed(1)}
+            </Text>
+            {data.latest.arm_score_avg_30d != null &&
+              data.latest.arm_score_avg_30d > 0 && (
+                <>
+                  <Text style={styles.heroSideMetaDot}>·</Text>
+                  <Text style={styles.heroSideMeta}>
+                    30d {data.latest.arm_score_avg_30d.toFixed(1)}
+                  </Text>
+                </>
+              )}
+          </View>
         </View>
       </View>
 
@@ -330,7 +343,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   zoneText: { fontSize: 11, fontWeight: '800', letterSpacing: 1.4 },
+  heroSideMetaRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
   heroSideMeta: { color: '#9ca3af', fontSize: 12, fontWeight: '700' },
+  heroSideMetaDot: { color: '#4b5563', fontSize: 12, fontWeight: '700' },
 
   perTestBlock: { gap: 10, marginBottom: 18 },
   perTestHeaderRow: {

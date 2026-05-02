@@ -383,7 +383,7 @@ function ScoreRing({
   armScore: number;
   ringColor: string;
 }) {
-  const SIZE = 168;
+  const SIZE = 148;
   const STROKE = 4;
   const R = SIZE / 2 - STROKE;
   return (
@@ -460,9 +460,9 @@ function ArmScoreSparkline({ sessions }: { sessions: ArmCareSession[] }) {
   if (points.length < 2) return null;
 
   const W = 320;
-  const H = 96;
+  const H = 72;
   const PAD_X = 8;
-  const PAD_Y = 12;
+  const PAD_Y = 10;
   const innerW = W - PAD_X * 2;
   const innerH = H - PAD_Y * 2;
 
@@ -603,7 +603,7 @@ function formatExamDate(iso: string): string {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#0A0A0A' },
-  scroll: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 40 },
+  scroll: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 16 },
 
   headerRow: {
     flexDirection: 'row',
@@ -639,7 +639,7 @@ const styles = StyleSheet.create({
 
   // Hero sits naked on the canvas — no fill, no border.
   hero: {
-    marginTop: 24,
+    marginTop: 12,
     alignItems: 'center',
   },
   heroEmptyWrap: {
@@ -667,50 +667,50 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 2,
     fontWeight: '800',
-    marginTop: 14,
+    marginTop: 10,
   },
   heroDate: {
     color: '#6b7280',
     fontSize: 12,
-    marginTop: 6,
+    marginTop: 4,
   },
   heroBodyweight: {
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 3,
   },
   scoreNumber: {
     color: '#fff',
-    fontSize: 56,
+    fontSize: 48,
     fontWeight: '800',
     letterSpacing: -2,
-    lineHeight: 60,
+    lineHeight: 52,
   },
   peakRow: {
     flexDirection: 'row',
     width: '100%',
     paddingHorizontal: 4,
     gap: 8,
-    marginTop: 26,
+    marginTop: 18,
   },
   peakNaked: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   peakLabel: {
     color: '#6b7280',
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 1.4,
-    marginBottom: 4,
+    marginBottom: 3,
   },
   peakValue: {
     color: '#fff',
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
   peakUnit: {
     color: '#6b7280',
@@ -723,8 +723,8 @@ const styles = StyleSheet.create({
   sectionRule: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(255,255,255,0.06)',
-    marginTop: 24,
-    marginBottom: 18,
+    marginTop: 16,
+    marginBottom: 14,
   },
 
   iconWrap: {
@@ -806,9 +806,9 @@ const styles = StyleSheet.create({
   },
   statValue: {
     color: '#fff',
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
   statUnit: {
     color: '#6b7280',

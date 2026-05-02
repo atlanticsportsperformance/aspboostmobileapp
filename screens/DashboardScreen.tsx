@@ -223,6 +223,7 @@ interface HittingData {
 interface ArmCareData {
   latest: {
     arm_score: number;
+    arm_score_avg_30d: number;
     total_strength: number;
     avg_strength_30d: number;
     tests_30d: number;
@@ -493,6 +494,7 @@ export default function DashboardScreen({ navigation }: any) {
   const [athleteId, setAthleteId] = useState('');
   const [athleteName, setAthleteName] = useState('');
   const [firstName, setFirstName] = useState('');
+  const [playLevel, setPlayLevel] = useState<string | null>(null);
   const [workoutInstances, setWorkoutInstances] = useState<WorkoutInstance[]>([]);
   const [armcareTestInstances, setArmcareTestInstances] = useState<ArmcareTestInstance[]>([]);
   // ISO 'YYYY-MM-DD' dates where the athlete has at least one completed
@@ -1358,9 +1360,25 @@ export default function DashboardScreen({ navigation }: any) {
       avg90DayTotalStrength = sessions[0].total_strength || 0;
     }
 
-    // Count tests in last 30 days
+    // 30-day ArmScore average — surfaced next to the PR on the dashboard
+    // so the athlete can see how today's score compares to their typical
+    // last-month form, not just their all-time best.
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const sessions30d = sessions.filter((session) => {
+      const sessionDate = new Date(session.exam_date);
+      return sessionDate >= thirtyDaysAgo;
+    });
+    let avg30DayArmScore = 0;
+    if (sessions30d.length > 0) {
+      const sum = sessions30d.reduce(
+        (acc, s) => acc + (s.arm_score != null ? Number(s.arm_score) : 0),
+        0,
+      );
+      avg30DayArmScore = sum / sessions30d.length;
+    }
+
+    // Count tests in last 30 days
     const tests30d = sessions.filter((session) => {
       const sessionDate = new Date(session.exam_date);
       return sessionDate >= thirtyDaysAgo;
@@ -1391,12 +1409,24 @@ export default function DashboardScreen({ navigation }: any) {
           : null,
     };
 
+    // `latest` means the actual most-recent session — not the rolling
+    // average. Showing the 90-day mean in a field called `latest.arm_score`
+    // was making the dashboard read "101" while the ArmCare history page
+    // read "108" off the same data.
+    const latestArmScore =
+      latestSession.arm_score != null ? Number(latestSession.arm_score) : 0;
+    const latestTotalStrength =
+      latestSession.total_strength != null
+        ? Number(latestSession.total_strength)
+        : 0;
+
     setArmCareData({
       pr: maxArmScore.value > 0 ? { arm_score: maxArmScore.value, date: maxArmScore.date } : { arm_score: 0, date: '' },
       latest: {
-        arm_score: avg90DayArmScore,
-        total_strength: avg90DayTotalStrength,
-        avg_strength_30d: avg90DayTotalStrength, // 90-day average of total strength
+        arm_score: latestArmScore,
+        arm_score_avg_30d: avg30DayArmScore,
+        total_strength: latestTotalStrength,
+        avg_strength_30d: avg90DayTotalStrength, // 90-day rolling avg of total strength
         tests_30d: tests30d,
       },
       perTestLatest,
@@ -1932,7 +1962,7 @@ export default function DashboardScreen({ navigation }: any) {
           Promise.resolve(
             supabase
               .from('athletes')
-              .select('id, first_name, last_name, vald_profile_id, org_id')
+              .select('id, first_name, last_name, vald_profile_id, org_id, play_level')
               .eq('user_id', user.id)
               .single()
           ),
@@ -1959,7 +1989,7 @@ export default function DashboardScreen({ navigation }: any) {
             Promise.resolve(
               supabase
                 .from('athletes')
-                .select('id, first_name, last_name, vald_profile_id, org_id')
+                .select('id, first_name, last_name, vald_profile_id, org_id, play_level')
                 .eq('user_id', user.id)
                 .single()
             ),
@@ -2064,6 +2094,7 @@ export default function DashboardScreen({ navigation }: any) {
       setFirstName(athlete.first_name || '');
       setAthleteName(`${athlete.first_name || ''} ${athlete.last_name || ''}`);
       setValdProfileId(athlete.vald_profile_id);
+      setPlayLevel(athlete.play_level ?? null);
       console.log('[Dashboard] Athlete state set:', athlete.first_name);
 
       // Use supabase client - if it was stale, it's already been recreated above
@@ -2687,6 +2718,7 @@ export default function DashboardScreen({ navigation }: any) {
           athleteId={athleteId}
           isMember={isMember}
           navigation={navigation}
+          playLevel={playLevel}
           workloadByDate={workloadByDate}
           forceProfile={forceProfile}
           valdProfileId={valdProfileId}
@@ -2697,7 +2729,7 @@ export default function DashboardScreen({ navigation }: any) {
           pitchingData={pitchingData}
           armCareData={armCareData}
           onOpenWorkload={() => navigation.navigate('Workload')}
-          onOpenPitching={() => navigation.navigate('PitchingHub', { athleteId })}
+          onOpenPitching={() => navigation.navigate('PitchingPerformance', { athleteId })}
           onOpenHitting={() => navigation.navigate('HittingPerformance', { athleteId })}
           onOpenForceProfile={() => navigation.navigate('ForceProfile', { athleteId })}
           onOpenArmCare={() => navigation.navigate('ArmCare', { athleteId })}
