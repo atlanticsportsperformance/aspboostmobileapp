@@ -10,6 +10,11 @@ interface AuthContextType {
   isStaff: boolean;
   staffRole: string | null;
   staffOrgId: string | null;
+  /** True once account-type + staff status have BOTH resolved for the current
+   *  session. Navigation must wait for this before routing, otherwise a staff
+   *  user can briefly land on the athlete dashboard (which force-signs-out
+   *  users with no athlete record) before isStaff flips true. */
+  rolesResolved: boolean;
   isReady: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
@@ -24,6 +29,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isStaff, setIsStaff] = useState(false);
   const [staffRole, setStaffRole] = useState<string | null>(null);
   const [staffOrgId, setStaffOrgId] = useState<string | null>(null);
+  const [rolesResolved, setRolesResolved] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
   // Use refs to avoid dependency issues
@@ -83,6 +89,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // Resolve BOTH account-type and staff status, then flag rolesResolved so
+    // navigation can route correctly (staff → coach, never a flash of the
+    // athlete dashboard). Sets the flag in finally so a query error never
+    // strands the user on a blank gated screen.
+    const resolveRoles = async (userId: string) => {
+      try {
+        await checkAccountType(userId);
+        await checkStaffStatus(userId);
+      } finally {
+        if (mountedRef.current) setRolesResolved(true);
+      }
+    };
+
     const refreshToken = async (): Promise<Session | null> => {
       if (isRefreshingRef.current) return null;
       isRefreshingRef.current = true;
@@ -100,6 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setIsStaff(false);
             setStaffRole(null);
             setStaffOrgId(null);
+            setRolesResolved(false);
           }
           return null;
         }
@@ -139,15 +159,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.log('[Auth] Session expired/expiring, refreshing...');
             const refreshed = await refreshToken();
             if (refreshed) {
-              await checkAccountType(refreshed.user.id);
-              void checkStaffStatus(refreshed.user.id);
+              await resolveRoles(refreshed.user.id);
             }
           } else {
             console.log('[Auth] Session valid');
             setSession(stored);
             setUser(stored.user);
-            await checkAccountType(stored.user.id);
-            void checkStaffStatus(stored.user.id);
+            await resolveRoles(stored.user.id);
           }
         } else {
           console.log('[Auth] No stored session');
@@ -176,12 +194,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsStaff(false);
         setStaffRole(null);
         setStaffOrgId(null);
+        setRolesResolved(false);
       } else if (newSession) {
         setSession(newSession);
         setUser(newSession.user);
         if (event === 'SIGNED_IN') {
-          checkAccountType(newSession.user.id);
-          void checkStaffStatus(newSession.user.id);
+          setRolesResolved(false);
+          void resolveRoles(newSession.user.id);
         }
       }
 
@@ -267,7 +286,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ session, user, isParentAccount, isStaff, staffRole, staffOrgId, isReady, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );

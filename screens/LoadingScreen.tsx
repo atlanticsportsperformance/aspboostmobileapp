@@ -3,26 +3,21 @@ import { View, Image, ActivityIndicator, Text, StyleSheet } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function LoadingScreen({ navigation }: any) {
-  const { session, initializing, isParentAccount, isStaff } = useAuth();
+  const { session, initializing, isParentAccount, isStaff, rolesResolved } = useAuth();
 
   // Navigation logic - redirect once auth is ready
   useEffect(() => {
-    if (!initializing) {
-      if (session) {
-        let target: string;
-        if (isStaff) {
-          target = 'CoachDashboard';
-        } else if (isParentAccount) {
-          target = 'ParentDashboard';
-        } else {
-          target = 'Dashboard';
-        }
-        navigation.replace(target);
-      } else {
-        navigation.replace('Login');
-      }
+    if (initializing) return;
+    if (!session) {
+      navigation.replace('Login');
+      return;
     }
-  }, [initializing, session, isParentAccount, isStaff, navigation]);
+    // Session present — wait until staff/account roles resolve so staff route
+    // to CoachDashboard rather than flashing the athlete dashboard.
+    if (!rolesResolved) return;
+    const target = isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard';
+    navigation.replace(target);
+  }, [initializing, session, rolesResolved, isParentAccount, isStaff, navigation]);
 
   return (
     <View style={styles.container}>

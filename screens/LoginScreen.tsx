@@ -90,7 +90,7 @@ function ParticleField() {
 }
 
 export default function LoginScreen({ navigation, route }: any) {
-  const { session, isParentAccount, signIn } = useAuth();
+  const { session, isParentAccount, isStaff, rolesResolved, signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -122,13 +122,16 @@ export default function LoginScreen({ navigation, route }: any) {
   const buttonGlow = useRef(new Animated.Value(0.15)).current;
   const shakeAnimation = useRef(new Animated.Value(0)).current;
 
-  // Navigate when session becomes available
+  // Navigate when session becomes available — but WAIT until roles are
+  // resolved so staff route to CoachDashboard instead of flashing the athlete
+  // dashboard (which force-signs-out users with no athlete record).
   useEffect(() => {
-    if (session) {
-      console.log('[Login] Session detected, navigating. isParent:', isParentAccount);
-      navigation.replace(isParentAccount ? 'ParentDashboard' : 'Dashboard');
+    if (session && rolesResolved) {
+      const target = isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard';
+      console.log('[Login] Navigating. isStaff:', isStaff, 'isParent:', isParentAccount, '->', target);
+      navigation.replace(target);
     }
-  }, [session, isParentAccount, navigation]);
+  }, [session, rolesResolved, isStaff, isParentAccount, navigation]);
 
   useEffect(() => {
     checkBiometricSupport();
