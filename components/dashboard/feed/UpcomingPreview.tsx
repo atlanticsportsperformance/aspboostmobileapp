@@ -11,7 +11,7 @@
  */
 
 import React, { useMemo } from 'react';
-import { View, Text, ScrollView, Pressable, StyleSheet, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -168,14 +168,11 @@ export function UpcomingPreview({
             const catText = item.category ? item.category.toUpperCase() : null;
             const timeText = item.time ?? (item.done ? 'Completed' : 'Scheduled');
             return (
-              <Pressable
+              <TouchableOpacity
                 key={item.key}
                 onPress={() => onSelectDate(item.date)}
-                style={({ pressed }) => [
-                  styles.row,
-                  i === items.length - 1 && styles.rowLast,
-                  pressed && { opacity: 0.55 },
-                ]}
+                activeOpacity={0.6}
+                style={[styles.row, i === items.length - 1 && styles.rowLast]}
               >
                 {/* Accent rail — only on today */}
                 <View style={[styles.rail, item.isToday && styles.railToday]} />
@@ -213,7 +210,7 @@ export function UpcomingPreview({
                 ) : (
                   <Ionicons name="chevron-forward" size={18} color="#4b5563" />
                 )}
-              </Pressable>
+              </TouchableOpacity>
             );
           })}
         </ScrollView>
