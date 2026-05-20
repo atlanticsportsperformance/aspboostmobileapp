@@ -7,6 +7,9 @@ interface AuthContextType {
   session: Session | null;
   user: User | null;
   isParentAccount: boolean;
+  isStaff: boolean;
+  staffRole: string | null;
+  staffOrgId: string | null;
   isReady: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
@@ -18,6 +21,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isParentAccount, setIsParentAccount] = useState(false);
+  const [isStaff, setIsStaff] = useState(false);
+  const [staffRole, setStaffRole] = useState<string | null>(null);
+  const [staffOrgId, setStaffOrgId] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
 
   // Use refs to avoid dependency issues
@@ -56,6 +62,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    const checkStaffStatus = async (userId: string) => {
+      try {
+        const { data } = await supabase
+          .from('staff')
+          .select('role, org_id, is_active')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (data && mountedRef.current && data.is_active !== false) {
+          setIsStaff(true);
+          setStaffRole((data.role as string) ?? null);
+          setStaffOrgId((data.org_id as string) ?? null);
+        } else if (mountedRef.current) {
+          setIsStaff(false);
+          setStaffRole(null);
+          setStaffOrgId(null);
+        }
+      } catch (e) {
+        console.log('[Auth] checkStaffStatus error:', e);
+      }
+    };
+
     const refreshToken = async (): Promise<Session | null> => {
       if (isRefreshingRef.current) return null;
       isRefreshingRef.current = true;
@@ -70,6 +97,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setSession(null);
             setUser(null);
             setIsParentAccount(false);
+            setIsStaff(false);
+            setStaffRole(null);
+            setStaffOrgId(null);
           }
           return null;
         }
@@ -110,12 +140,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const refreshed = await refreshToken();
             if (refreshed) {
               await checkAccountType(refreshed.user.id);
+              void checkStaffStatus(refreshed.user.id);
             }
           } else {
             console.log('[Auth] Session valid');
             setSession(stored);
             setUser(stored.user);
             await checkAccountType(stored.user.id);
+            void checkStaffStatus(stored.user.id);
           }
         } else {
           console.log('[Auth] No stored session');
@@ -141,11 +173,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(null);
         setUser(null);
         setIsParentAccount(false);
+        setIsStaff(false);
+        setStaffRole(null);
+        setStaffOrgId(null);
       } else if (newSession) {
         setSession(newSession);
         setUser(newSession.user);
         if (event === 'SIGNED_IN') {
           checkAccountType(newSession.user.id);
+          void checkStaffStatus(newSession.user.id);
         }
       }
 
@@ -231,7 +267,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ session, user, isParentAccount, isReady, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, user, isParentAccount, isStaff, staffRole, staffOrgId, isReady, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );
