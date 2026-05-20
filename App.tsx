@@ -69,12 +69,15 @@ import BillingScreen from './screens/BillingScreen';
 import PublicBookingScreen from './screens/PublicBookingScreen';
 import WaiversScreen from './screens/WaiversScreen';
 import LoadingScreen from './screens/LoadingScreen';
+import CoachDashboardScreen from './screens/CoachDashboardScreen';
+import CoachToolsScreen from './screens/CoachToolsScreen';
+import CoachArmCareSearchScreen from './screens/CoachArmCareSearchScreen';
 import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
-  const { session, initializing, isParentAccount } = useAuth();
+  const { session, initializing, isParentAccount, isStaff } = useAuth();
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -111,10 +114,10 @@ function AppContent() {
           nav.navigate('Leaderboard');
           break;
         default:
-          nav.navigate(isParentAccount ? 'ParentDashboard' : 'Dashboard');
+          nav.navigate(isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard');
       }
     }
-  }, [session, isParentAccount]);
+  }, [session, isParentAccount, isStaff]);
 
   // Set up notification listeners
   useEffect(() => {
@@ -210,6 +213,9 @@ function AppContent() {
             <Stack.Screen name="Billing" component={BillingScreen} />
             <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
             <Stack.Screen name="Waivers" component={WaiversScreen} />
+            <Stack.Screen name="CoachDashboard" component={CoachDashboardScreen} />
+            <Stack.Screen name="CoachTools" component={CoachToolsScreen} />
+            <Stack.Screen name="CoachArmCareSearch" component={CoachArmCareSearchScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>
