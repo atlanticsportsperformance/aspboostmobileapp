@@ -74,6 +74,12 @@ export default function ArmCareHubScreen() {
   const last = recent[0] ?? null;
   const [loading, setLoading] = useState(true);
 
+  // Only the athlete themselves, or a coach/admin acting on their behalf,
+  // may start an exam. Parents/guardians (and anyone else) are read-only —
+  // they can view the data but never see a "Start Exam" CTA. This mirrors
+  // the DB: only those roles can INSERT armcare_sessions.
+  const [canTakeExam, setCanTakeExam] = useState(false);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
 
@@ -129,6 +135,41 @@ export default function ArmCareHubScreen() {
       setLoading(false);
     })();
   }, [athleteId]);
+
+  // Determine whether the signed-in user may start an exam for this athlete.
+  // Coach-act-as is always allowed. Otherwise the athleteId must be the
+  // signed-in user's OWN athlete record (athletes.user_id = auth uid). A
+  // parent viewing their kid's hub fails this check → no Start CTA.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (params.coachActAs === true) {
+        if (active) setCanTakeExam(true);
+        return;
+      }
+      if (!athleteId) {
+        if (active) setCanTakeExam(false);
+        return;
+      }
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        if (active) setCanTakeExam(false);
+        return;
+      }
+      const { data } = await supabase
+        .from('athletes')
+        .select('id')
+        .eq('id', athleteId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (active) setCanTakeExam(!!data);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [athleteId, params.coachActAs]);
 
   const erIr = useMemo(() => {
     if (!last?.ertarm_max_lbs || !last?.irtarm_max_lbs) return null;
@@ -255,10 +296,13 @@ export default function ArmCareHubScreen() {
         <View style={{ height: 24 }} />
       </ScrollView>
 
-      {/* Sticky footer: primary CTA + caption.
+      {/* Sticky footer: primary CTA + caption. Only rendered for users who
+          may actually take the exam (athlete-self or coach acting) — parents
+          and other viewers are read-only and never see this.
           Outer View carries the shadow (shadows + overflow:hidden conflict).
           LinearGradient IS the button surface; its own flex props center the
           icon + text inline as direct children. No absolute positioning. */}
+      {canTakeExam && (
       <View style={styles.footer}>
         <View style={styles.startBtnShadow}>
           <Pressable
@@ -294,6 +338,7 @@ export default function ArmCareHubScreen() {
           Connect your Activ5 sensor and run the 4 strength tests.
         </Text>
       </View>
+      )}
     </SafeAreaView>
   );
 }
