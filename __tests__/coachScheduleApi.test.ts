@@ -13,4 +13,14 @@ describe('buildSessionsUrl', () => {
     expect(url).toContain('category_id=cat-1');
     expect(url).toContain('date=2026-01-02');
   });
+
+  it('omits my_sessions when mineOnly is false (admin org-wide)', () => {
+    const url = buildSessionsUrl('https://x.com', new Date(2026, 4, 19), -300, undefined, false);
+    expect(url).toBe('https://x.com/api/schedule/sessions?date=2026-05-19&tz_offset=-300');
+    expect(url).not.toContain('my_sessions');
+  });
+  it('includes my_sessions by default (coach)', () => {
+    const url = buildSessionsUrl('https://x.com', new Date(2026, 4, 19), -300);
+    expect(url).toContain('my_sessions=true');
+  });
 });

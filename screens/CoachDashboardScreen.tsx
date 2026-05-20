@@ -7,10 +7,12 @@ import { performLogout } from '../lib/logout';
 import FABMenu, { type FABMenuItem } from '../components/FABMenu';
 import { SettingsMenu, type SettingsMenuItem } from '../components/SettingsMenu';
 import { getCoachTodaysSessions, type CoachSession } from '../lib/coachScheduleApi';
+import { useAuth } from '../contexts/AuthContext';
 import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
 
 export default function CoachDashboardScreen() {
   const navigation = useNavigation<any>();
+  const { staffRole } = useAuth();
   const [sessions, setSessions] = useState<CoachSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [fabOpen, setFabOpen] = useState(false);
@@ -24,10 +26,11 @@ export default function CoachDashboardScreen() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setSessions(await getCoachTodaysSessions(new Date())); }
+    const isAdmin = staffRole === 'admin' || staffRole === 'super_admin';
+    try { setSessions(await getCoachTodaysSessions(new Date(), undefined, !isAdmin)); }
     catch { setSessions([]); }
     finally { setLoading(false); }
-  }, []);
+  }, [staffRole]);
   useEffect(() => { load(); }, [load]);
 
   async function handleLogout() {
