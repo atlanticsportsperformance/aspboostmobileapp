@@ -3,19 +3,26 @@ import { View, Image, ActivityIndicator, Text, StyleSheet } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function LoadingScreen({ navigation }: any) {
-  const { session, initializing, isParentAccount } = useAuth();
+  const { session, initializing, isParentAccount, isStaff } = useAuth();
 
   // Navigation logic - redirect once auth is ready
   useEffect(() => {
     if (!initializing) {
       if (session) {
-        const target = isParentAccount ? 'ParentDashboard' : 'Dashboard';
+        let target: string;
+        if (isStaff) {
+          target = 'CoachDashboard';
+        } else if (isParentAccount) {
+          target = 'ParentDashboard';
+        } else {
+          target = 'Dashboard';
+        }
         navigation.replace(target);
       } else {
         navigation.replace('Login');
       }
     }
-  }, [initializing, session, isParentAccount, navigation]);
+  }, [initializing, session, isParentAccount, isStaff, navigation]);
 
   return (
     <View style={styles.container}>
