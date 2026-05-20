@@ -3,7 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
-import { useAuth } from '../contexts/AuthContext';
+import { performLogout } from '../lib/logout';
 import FABMenu, { type FABMenuItem } from '../components/FABMenu';
 import { SettingsMenu, type SettingsMenuItem } from '../components/SettingsMenu';
 import { getCoachTodaysSessions, type CoachSession } from '../lib/coachScheduleApi';
@@ -11,7 +11,6 @@ import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermission
 
 export default function CoachDashboardScreen() {
   const navigation = useNavigation<any>();
-  const { signOut } = useAuth();
   const [sessions, setSessions] = useState<CoachSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [fabOpen, setFabOpen] = useState(false);
@@ -31,10 +30,15 @@ export default function CoachDashboardScreen() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  async function handleLogout() {
+    await performLogout();
+    navigation.replace('Login', { skipAutoLogin: true });
+  }
+
   const settingsItems: SettingsMenuItem[] = [
     { id: 'profile', label: 'Profile', icon: 'person-outline', onPress: () => navigation.navigate('Profile') },
     { id: 'notifications', label: 'Notifications', icon: 'notifications-outline', onPress: () => navigation.navigate('NotificationSettings') },
-    { id: 'signout', label: 'Sign Out', icon: 'log-out-outline', destructive: true, onPress: () => { void signOut(); } },
+    { id: 'signout', label: 'Sign Out', icon: 'log-out-outline', destructive: true, onPress: () => { void handleLogout(); } },
   ];
 
   const fabItems: FABMenuItem[] = [
