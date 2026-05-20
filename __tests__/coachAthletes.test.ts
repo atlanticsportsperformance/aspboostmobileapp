@@ -1,5 +1,12 @@
 // aspboost-mobile/__tests__/coachAthletes.test.ts
-import { normalizeLinkedAthletes, filterAthletes, type LinkedAthlete } from '../lib/coachAthletes';
+import { normalizeLinkedAthletes, normalizeOrgAthletes, filterAthletes, type LinkedAthlete } from '../lib/coachAthletes';
+
+describe('normalizeOrgAthletes', () => {
+  it('maps athlete rows to LinkedAthlete', () => {
+    const rows = [{ id: 'a1', first_name: 'Jake', last_name: 'Doering' }];
+    expect(normalizeOrgAthletes(rows as any)).toEqual([{ id: 'a1', firstName: 'Jake', lastName: 'Doering' }]);
+  });
+});
 
 describe('normalizeLinkedAthletes', () => {
   it('flattens coach_athletes rows into athlete records', () => {

@@ -4,18 +4,24 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
-import { getLinkedAthletes, filterAthletes, type LinkedAthlete } from '../lib/coachAthletes';
+import { getLinkedAthletes, getOrgAthletes, filterAthletes, type LinkedAthlete } from '../lib/coachAthletes';
 
 export default function CoachArmCareSearchScreen() {
   const navigation = useNavigation<any>();
-  const { user } = useAuth();
+  const { user, staffRole, staffOrgId } = useAuth();
   const [all, setAll] = useState<LinkedAthlete[]>([]);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<LinkedAthlete | null>(null);
+  const isAdmin = staffRole === 'admin' || staffRole === 'super_admin';
 
   useEffect(() => {
-    if (user?.id) getLinkedAthletes(user.id).then(setAll);
-  }, [user?.id]);
+    const admin = staffRole === 'admin' || staffRole === 'super_admin';
+    if (admin && staffOrgId) {
+      getOrgAthletes(staffOrgId).then(setAll);
+    } else if (user?.id) {
+      getLinkedAthletes(user.id).then(setAll);
+    }
+  }, [user?.id, staffRole, staffOrgId]);
 
   const results = useMemo(() => filterAthletes(all, query), [all, query]);
 
@@ -36,7 +42,7 @@ export default function CoachArmCareSearchScreen() {
 
       <View style={styles.searchBox}>
         <Ionicons name="search" size={16} color="rgba(255,255,255,0.3)" />
-        <TextInput style={styles.input} placeholder="Search your athletes"
+        <TextInput style={styles.input} placeholder={isAdmin ? 'Search all athletes' : 'Search your athletes'}
           placeholderTextColor="rgba(255,255,255,0.3)" value={query} onChangeText={setQuery} autoFocus />
       </View>
 

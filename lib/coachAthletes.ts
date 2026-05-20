@@ -22,6 +22,23 @@ export function filterAthletes(list: LinkedAthlete[], query: string): LinkedAthl
   );
 }
 
+export function normalizeOrgAthletes(
+  rows: { id: string; first_name: string; last_name: string }[]
+): LinkedAthlete[] {
+  return rows.map((r) => ({ id: r.id, firstName: r.first_name, lastName: r.last_name }));
+}
+
+export async function getOrgAthletes(orgId: string): Promise<LinkedAthlete[]> {
+  const { data, error } = await supabase
+    .from('athletes')
+    .select('id, first_name, last_name')
+    .eq('org_id', orgId)
+    .eq('is_active', true)
+    .order('last_name', { ascending: true });
+  if (error || !data) return [];
+  return normalizeOrgAthletes(data as any);
+}
+
 export async function getLinkedAthletes(coachUserId: string): Promise<LinkedAthlete[]> {
   const { data, error } = await supabase
     .from('coach_athletes')
