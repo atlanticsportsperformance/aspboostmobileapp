@@ -7,7 +7,7 @@
  *      → (loop) rep-instructions ... → review → saving → saved
  *
  * BLE via lib/armcare/ble/activ5-rn.ts (react-native-ble-plx).
- * Cues via expo-haptics. Save via /api/armcare/sessions on the web app.
+ * Cues via expo-haptics. Save via a direct Supabase insert into armcare_sessions.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -502,42 +502,19 @@ export default function ArmCareWizardScreen() {
       await saveDraft(session.athleteId, session, maxVelo);
 
       // 3) Persist the session and capture the new row's id.
-      //    Two paths, same outcome:
-      //      • Coach act-as → POST to the web API. A direct Supabase insert
-      //        would run under the coach's JWT, which RLS won't allow for the
-      //        athlete's row. The web route authorizes coaches server-side and
-      //        builds the row itself from the SessionResult, so we send the
-      //        raw `session` object (a SessionResult). It returns { id }.
-      //      • Otherwise → existing direct Supabase insert (athlete/guardian
-      //        writing their own row under their own JWT). Unchanged.
-      let savedId: string | null = null;
-      if (coachActAs) {
-        const {
-          data: { session: authSession },
-        } = await supabase.auth.getSession();
-        const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
-        const res = await fetch(`${API_URL}/api/armcare/sessions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authSession?.access_token}`,
-          },
-          body: JSON.stringify(session),
-        });
-        if (!res.ok) throw new Error(`Save failed (${res.status})`);
-        const json = (await res.json()) as { id?: string };
-        savedId = json?.id ?? null;
-      } else {
-        // Build the column-shaped row + insert directly. No web-API hop.
-        const row = toArmcareSessionRow(session, maxVelo);
-        const { data: insertedSession, error } = await supabase
-          .from('armcare_sessions')
-          .insert(row)
-          .select('id')
-          .single();
-        if (error) throw new Error(error.message);
-        savedId = insertedSession?.id ?? null;
-      }
+      //    Always a direct Supabase insert under the current JWT. The row's
+      //    athlete_id comes from session.athleteId (the selected athlete). For
+      //    a coach acting as an athlete, an RLS policy authorizes inserting
+      //    armcare_sessions for athletes linked via coach_athletes, so the
+      //    same path works for both self-serve and coach act-as.
+      const row = toArmcareSessionRow(session, maxVelo);
+      const { data: insertedSession, error } = await supabase
+        .from('armcare_sessions')
+        .insert(row)
+        .select('id')
+        .single();
+      if (error) throw new Error(error.message);
+      const savedId: string | null = insertedSession?.id ?? null;
 
       // 4) If the wizard was launched from a coach-prescribed test instance,
       //    stamp completed_session_id back onto that row. The DB trigger
