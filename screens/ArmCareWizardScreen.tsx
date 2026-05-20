@@ -82,12 +82,17 @@ type RouteParams = {
   // Optional. When present, the wizard stamps this row's
   // completed_session_id on save so the day card flips to "Done".
   testInstanceId?: string;
+  // When true, the wizard is being run by a coach acting as this athlete.
+  // The direct Supabase insert would be RLS-scoped to the coach's own JWT
+  // (which can't write the athlete's row), so we route the save through the
+  // web API which authorizes coaches server-side.
+  coachActAs?: boolean;
 };
 
 export default function ArmCareWizardScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute();
-  const { athleteId, testInstanceId } = (route.params ?? {}) as RouteParams;
+  const { athleteId, testInstanceId, coachActAs } = (route.params ?? {}) as RouteParams;
 
   const sensorRef = useRef<Activ5DeviceRN | null>(null);
   const [phase, setPhase] = useState<Phase>('intro');
@@ -496,23 +501,52 @@ export default function ArmCareWizardScreen() {
       //    the user can recover from this draft on next mount.
       await saveDraft(session.athleteId, session, maxVelo);
 
-      // 3) Build the column-shaped row + insert directly. No web-API hop.
-      const row = toArmcareSessionRow(session, maxVelo);
-      const { data: insertedSession, error } = await supabase
-        .from('armcare_sessions')
-        .insert(row)
-        .select('id')
-        .single();
-      if (error) throw new Error(error.message);
+      // 3) Persist the session and capture the new row's id.
+      //    Two paths, same outcome:
+      //      • Coach act-as → POST to the web API. A direct Supabase insert
+      //        would run under the coach's JWT, which RLS won't allow for the
+      //        athlete's row. The web route authorizes coaches server-side and
+      //        builds the row itself from the SessionResult, so we send the
+      //        raw `session` object (a SessionResult). It returns { id }.
+      //      • Otherwise → existing direct Supabase insert (athlete/guardian
+      //        writing their own row under their own JWT). Unchanged.
+      let savedId: string | null = null;
+      if (coachActAs) {
+        const {
+          data: { session: authSession },
+        } = await supabase.auth.getSession();
+        const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
+        const res = await fetch(`${API_URL}/api/armcare/sessions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authSession?.access_token}`,
+          },
+          body: JSON.stringify(session),
+        });
+        if (!res.ok) throw new Error(`Save failed (${res.status})`);
+        const json = (await res.json()) as { id?: string };
+        savedId = json?.id ?? null;
+      } else {
+        // Build the column-shaped row + insert directly. No web-API hop.
+        const row = toArmcareSessionRow(session, maxVelo);
+        const { data: insertedSession, error } = await supabase
+          .from('armcare_sessions')
+          .insert(row)
+          .select('id')
+          .single();
+        if (error) throw new Error(error.message);
+        savedId = insertedSession?.id ?? null;
+      }
 
       // 4) If the wizard was launched from a coach-prescribed test instance,
       //    stamp completed_session_id back onto that row. The DB trigger
       //    flips status → 'completed' automatically. Failures here are
       //    non-fatal — the session itself saved.
-      if (testInstanceId && insertedSession?.id) {
+      if (testInstanceId && savedId) {
         await supabase
           .from('armcare_test_instances')
-          .update({ completed_session_id: insertedSession.id })
+          .update({ completed_session_id: savedId })
           .eq('id', testInstanceId)
           .then((res) => {
             if (res.error) console.warn('Failed to stamp test instance:', res.error.message);
@@ -530,7 +564,7 @@ export default function ArmCareWizardScreen() {
     } finally {
       setSavingInFlight(false);
     }
-  }, [session, savingInFlight, testInstanceId]);
+  }, [session, savingInFlight, testInstanceId, coachActAs]);
 
   // ───── Retry handlers for the error phase ─────
   const handleRetryRep = useCallback(() => {

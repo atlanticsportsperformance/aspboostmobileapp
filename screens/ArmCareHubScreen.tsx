@@ -45,7 +45,7 @@ const ACCENT_DEEP = '#EF4444';
 // here and forward it to the wizard when the athlete taps Start Exam, so
 // the wizard can stamp `completed_session_id` back onto that row after
 // saving.
-type RouteParams = { athleteId?: string; testInstanceId?: string };
+type RouteParams = { athleteId?: string; testInstanceId?: string; coachActAs?: boolean };
 
 interface ArmCareSession {
   id: string;
@@ -266,6 +266,7 @@ export default function ArmCareHubScreen() {
               athleteId &&
               navigation.navigate('ArmCareWizard', {
                 athleteId,
+                coachActAs: params.coachActAs === true,
                 ...(testInstanceId ? { testInstanceId } : {}),
               })
             }
