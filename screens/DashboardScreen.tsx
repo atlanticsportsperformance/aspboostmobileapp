@@ -2650,52 +2650,62 @@ export default function DashboardScreen({ navigation }: any) {
               const dayBookings = getBookingsForDate(date);
               const dayReminders = getRemindersForDate(date);
               const today = isToday(date);
-              const dayWorkload = workloadByDate.get(toIsoKey(date));
-              const hasArmcareTest = armcareSessionDates.has(toIsoKey(date));
+              // Paint an ArmCare dot for ANY armcare activity on this date —
+              // scheduled/assigned test instances AND completed exam sessions.
+              // (Previously this only looked at completed sessions via
+              // armcareSessionDates, so upcoming assigned tests showed in the
+              // Upcoming list but never got a calendar dot.)
+              const hasArmcareTest = getArmcareTestsForDate(date).length > 0;
+
+              // Build one combined, ordered list of event indicators so the dot
+              // strip stays a single line and is never clipped by the ~44px cell.
+              // ArmCare first (most distinct), then workouts, bookings, reminders.
+              const dotList: { key: string; color: string; armcare?: boolean }[] = [];
+              if (hasArmcareTest) dotList.push({ key: 'armcare', color: '#ff5e5e', armcare: true });
+              dayWorkouts.forEach((w, i) =>
+                dotList.push({ key: `w-${i}`, color: CATEGORY_COLORS[w.workouts?.category || 'strength_conditioning'].dot }),
+              );
+              if (dayBookings.length > 0) dotList.push({ key: 'booking', color: '#a855f7' });
+              if (dayReminders.length > 0) dotList.push({ key: 'reminder', color: '#f59e0b' });
+
+              const hasEvents = dotList.length > 0;
+              const visibleDots = dotList.slice(0, 3);
+              const extraDots = dotList.length - visibleDots.length;
 
               return (
                 <TouchableOpacity
                   key={date.toISOString()}
                   onPress={() => handleDayClick(date)}
-                  style={[styles.calendarDay, today && styles.calendarDayToday]}
+                  style={[
+                    styles.calendarDay,
+                    hasEvents && !today && styles.calendarDayHasEvents,
+                    today && styles.calendarDayToday,
+                  ]}
                 >
-                  {dayWorkload && (
-                    <WorkloadDayRing
-                      target={dayWorkload.target}
-                      actual={dayWorkload.actual}
-                      acwr={dayWorkload.acwr}
-                    />
+                  {/* Count badge for busy days (3+ items) */}
+                  {dotList.length >= 3 && (
+                    <View style={styles.dayCountBadge}>
+                      <Text style={styles.dayCountBadgeText}>{dotList.length}</Text>
+                    </View>
                   )}
                   <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
                     {date.getDate()}
                   </Text>
-                  {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0 || hasArmcareTest) && (
-                    <View style={styles.dayDots}>
-                      {/* ArmCare dot rendered FIRST so it can't get clipped or
-                          wrapped off the visible row when other dots stack up. */}
-                      {hasArmcareTest && (
-                        <View
-                          style={[styles.dayDot, styles.dayDotArmcare]}
-                        />
-                      )}
-                      {dayWorkouts.slice(0, hasArmcareTest ? 1 : 2).map((workout, i) => (
-                        <View
-                          key={`workout-${i}`}
-                          style={[styles.dayDot, { backgroundColor: CATEGORY_COLORS[workout.workouts?.category || 'strength_conditioning'].dot }]}
-                        />
-                      ))}
-                      {dayBookings.length > 0 && (
-                        <View
-                          style={[styles.dayDot, { backgroundColor: '#a855f7' }]}
-                        />
-                      )}
-                      {dayReminders.length > 0 && (
-                        <View
-                          style={[styles.dayDot, { backgroundColor: '#f59e0b' }]}
-                        />
-                      )}
-                    </View>
-                  )}
+                  {/* Dot strip pinned to the bottom — reserved height so it can
+                      never be pushed out of the cell on small screens. */}
+                  <View style={styles.dayDots}>
+                    {visibleDots.map((d) => (
+                      <View
+                        key={d.key}
+                        style={[
+                          styles.dayDot,
+                          { backgroundColor: d.color },
+                          d.armcare && styles.dayDotArmcare,
+                        ]}
+                      />
+                    ))}
+                    {extraDots > 0 && <Text style={styles.dayDotMore}>+{extraDots}</Text>}
+                  </View>
                 </TouchableOpacity>
               );
             })}
@@ -2770,7 +2780,8 @@ export default function DashboardScreen({ navigation }: any) {
                       const dayBookings = getBookingsForDate(date);
                       const dayReminders = getRemindersForDate(date);
                       const dayWorkload = workloadByDate.get(toIsoKey(date));
-                      const hasArmcareTest = armcareSessionDates.has(toIsoKey(date));
+                      // Scheduled/assigned tests + completed sessions (see month view note).
+                      const hasArmcareTest = getArmcareTestsForDate(date).length > 0;
 
                       return (
                         <TouchableOpacity
@@ -3516,13 +3527,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.06)',
     borderRadius: 10,
-    justifyContent: 'center',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+  },
+  // Subtle accent tint on days that have any event, so they read as
+  // "has stuff" before you even parse the dots.
+  calendarDayHasEvents: {
+    backgroundColor: 'rgba(155, 221, 255, 0.05)',
+    borderColor: 'rgba(155, 221, 255, 0.18)',
   },
   calendarDayToday: {
     borderColor: '#9BDDFF',
-    backgroundColor: 'rgba(155, 221, 255, 0.08)',
+    backgroundColor: 'rgba(155, 221, 255, 0.10)',
     shadowColor: '#9BDDFF',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.3,
@@ -3531,27 +3549,32 @@ const styles = StyleSheet.create({
   },
   dayNumber: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
     color: '#FFFFFF',
-    marginBottom: 4,
+    lineHeight: 16,
   },
   dayNumberToday: {
     color: '#9BDDFF',
   },
+  // Fixed-height bottom strip — one line, never wraps or clips.
   dayDots: {
     flexDirection: 'row',
-    gap: 2,
-    flexWrap: 'wrap',
+    gap: 3,
+    height: 7,
+    alignItems: 'center',
     justifyContent: 'center',
   },
   dayDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 3,
-    elevation: 3,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  dayDotMore: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    marginLeft: 1,
+    lineHeight: 9,
   },
   // ArmCare dot — slightly brighter red + ring outline so it stays distinct
   // from the hitting-category dot (also red) and the throwing dot (blue).
@@ -3559,9 +3582,27 @@ const styles = StyleSheet.create({
     backgroundColor: '#ff5e5e',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.55)',
-    shadowColor: '#ff3a3a',
-    shadowOpacity: 0.9,
-    shadowRadius: 4,
+  },
+  // Count pill, top-right, for days with 3+ items.
+  dayCountBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#9BDDFF',
+    borderWidth: 2,
+    borderColor: '#000000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayCountBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#000000',
+    lineHeight: 11,
   },
   dayViewContainer: {
     flex: 1,

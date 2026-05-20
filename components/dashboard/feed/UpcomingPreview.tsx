@@ -1,20 +1,23 @@
 /**
- * UpcomingPreview — thin horizontal strip of next-7-days items.
+ * UpcomingPreview — scrollable vertical agenda of the next 7 days.
  *
  * Pulls from the dashboard's already-fetched bookings, armcareTestInstances,
- * and reminders arrays — no new queries. Each tile is borderless (no
- * containers): just a thin vertical accent bar, a date stamp, a title, and
- * a meta line. Tap a tile → opens the existing day-detail view for that
- * date.
+ * and reminders arrays — no new queries. Editorial agenda rows (monospace
+ * date, hairline dividers, title + "CATEGORY · time"), an accent rail on
+ * today, and a green check on completed items. Shows ~3 rows then scrolls
+ * inside a fixed-height container with a soft bottom fade.
  *
  * Renders nothing if the next 7 days are empty.
  */
 
 import React, { useMemo } from 'react';
-import { View, Text, ScrollView, Pressable, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, Pressable, StyleSheet, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 interface BookingLike {
   id: string;
+  status?: string;
   event: {
     start_time: string;
     title?: string;
@@ -45,9 +48,11 @@ interface ReminderLike {
 interface Item {
   key: string;
   date: Date;
-  label: string;
-  meta: string | null;
-  color: string;
+  title: string;
+  category: string | null;
+  time: string | null;
+  isToday: boolean;
+  done: boolean;
 }
 
 interface Props {
@@ -57,14 +62,23 @@ interface Props {
   onSelectDate: (d: Date) => void;
 }
 
-const ARMCARE_RED = '#ef4444';
-const REMINDER_AMBER = '#f59e0b';
-const BOOKING_PURPLE = '#a855f7';
+const ACCENT = '#9BDDFF';
+// Each agenda row is ~63px tall; show exactly 3 then scroll.
+const ROW_HEIGHT = 63;
+const VISIBLE_ROWS = 3;
 
 function startOfDay(d: Date): Date {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 export function UpcomingPreview({
@@ -74,7 +88,8 @@ export function UpcomingPreview({
   onSelectDate,
 }: Props) {
   const items = useMemo<Item[]>(() => {
-    const today = startOfDay(new Date());
+    const now = new Date();
+    const today = startOfDay(now);
     const cutoff = new Date(today);
     cutoff.setDate(cutoff.getDate() + 7);
 
@@ -89,22 +104,26 @@ export function UpcomingPreview({
       merged.push({
         key: `b-${b.id}`,
         date: d,
-        label: b.event.title || tmpl?.name || cat?.name || 'Booking',
-        meta: d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-        color: cat?.color || BOOKING_PURPLE,
+        title: b.event.title || tmpl?.name || cat?.name || 'Booking',
+        category: cat?.name ?? null,
+        time: d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        isToday: isSameDay(d, now),
+        done: b.status === 'attended',
       });
     }
 
     for (const t of armcareTests) {
-      if (t.status === 'completed' || t.status === 'skipped') continue;
+      if (t.status === 'skipped') continue;
       const d = new Date(`${t.scheduled_date}T12:00:00`);
       if (d < today || d > cutoff) continue;
       merged.push({
         key: `a-${t.id}`,
         date: d,
-        label: 'ArmCare test',
-        meta: t.source_type === 'plan' ? 'Coach assigned' : null,
-        color: ARMCARE_RED,
+        title: 'ArmCare Test',
+        category: t.source_type === 'plan' ? 'Assigned' : 'ArmCare',
+        time: null,
+        isToday: isSameDay(d, now),
+        done: t.status === 'completed',
       });
     }
 
@@ -114,9 +133,11 @@ export function UpcomingPreview({
       merged.push({
         key: `r-${r.id}`,
         date: d,
-        label: r.reminder.title || 'Reminder',
-        meta: r.reminder.category,
-        color: r.reminder.color || REMINDER_AMBER,
+        title: r.reminder.title || 'Reminder',
+        category: r.reminder.category,
+        time: null,
+        isToday: isSameDay(d, now),
+        done: false,
       });
     }
 
@@ -126,103 +147,209 @@ export function UpcomingPreview({
 
   if (items.length === 0) return null;
 
+  const scrolls = items.length > VISIBLE_ROWS;
+
   return (
     <View style={styles.wrap}>
       <View style={styles.headerRow}>
         <Text style={styles.eyebrow}>UPCOMING</Text>
-        <Text style={styles.eyebrowMeta}>Next 7 days</Text>
+        <Text style={styles.eyebrowMeta}>
+          {items.length} event{items.length !== 1 ? 's' : ''}
+        </Text>
       </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.row}
-      >
-        {items.map((item) => (
-          <Pressable
-            key={item.key}
-            onPress={() => onSelectDate(item.date)}
-            style={({ pressed }) => [styles.tile, pressed && { opacity: 0.55 }]}
-          >
-            <View style={[styles.accent, { backgroundColor: item.color }]} />
-            <View style={styles.tileBody}>
-              <Text style={styles.dateStamp}>
-                {item.date
-                  .toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })
-                  .toUpperCase()}
-              </Text>
-              <Text style={styles.title} numberOfLines={1}>
-                {item.label}
-              </Text>
-              {item.meta ? (
-                <Text style={styles.meta} numberOfLines={1}>
-                  {item.meta}
-                </Text>
-              ) : null}
-            </View>
-          </Pressable>
-        ))}
-      </ScrollView>
+
+      <View style={[styles.listFrame, scrolls && { height: ROW_HEIGHT * VISIBLE_ROWS }]}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+          scrollEnabled={scrolls}
+        >
+          {items.map((item, i) => {
+            const catText = item.category ? item.category.toUpperCase() : null;
+            const timeText = item.time ?? (item.done ? 'Completed' : 'Scheduled');
+            return (
+              <Pressable
+                key={item.key}
+                onPress={() => onSelectDate(item.date)}
+                style={({ pressed }) => [
+                  styles.row,
+                  i === items.length - 1 && styles.rowLast,
+                  pressed && { opacity: 0.55 },
+                ]}
+              >
+                {/* Accent rail — only on today */}
+                <View style={[styles.rail, item.isToday && styles.railToday]} />
+
+                {/* Date block */}
+                <View style={styles.dateBlock}>
+                  <Text style={[styles.weekday, item.isToday && styles.accentText]}>
+                    {item.isToday
+                      ? 'TODAY'
+                      : item.date.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()}
+                  </Text>
+                  <Text style={[styles.dayNum, item.isToday && styles.accentText]}>
+                    {item.date.getDate()}
+                  </Text>
+                </View>
+
+                {/* Title + meta */}
+                <View style={styles.body}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  <View style={styles.metaRow}>
+                    {catText ? <Text style={styles.metaCat}>{catText}</Text> : null}
+                    <Text style={styles.meta} numberOfLines={1}>
+                      {timeText}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Trailing: green check if done, else chevron */}
+                {item.done ? (
+                  <View style={styles.checkWrap}>
+                    <Ionicons name="checkmark" size={12} color="#00ff55" />
+                  </View>
+                ) : (
+                  <Ionicons name="chevron-forward" size={18} color="#4b5563" />
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {/* Soft bottom fade hinting more rows below the fold */}
+        {scrolls && (
+          <LinearGradient
+            colors={['rgba(7,7,8,0)', 'rgba(7,7,8,0.95)']}
+            style={styles.fade}
+            pointerEvents="none"
+          />
+        )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingTop: 12,
+    paddingTop: 16,
     paddingBottom: 4,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.05)',
+    marginTop: 4,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'baseline',
-    paddingHorizontal: 16,
-    marginBottom: 8,
+    paddingHorizontal: 18,
+    marginBottom: 6,
   },
   eyebrow: {
     color: '#e5e7eb',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 2,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 2.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   eyebrowMeta: {
     color: '#6b7280',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  row: {
-    paddingHorizontal: 16,
-    gap: 10,
-  },
-  tile: {
-    flexDirection: 'row',
-    minWidth: 168,
-    paddingVertical: 4,
-  },
-  accent: {
-    width: 3,
-    borderRadius: 2,
-    marginRight: 10,
-  },
-  tileBody: {
-    flex: 1,
-    gap: 2,
-  },
-  dateStamp: {
-    color: '#9BDDFF',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-  },
-  title: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: -0.1,
-  },
-  meta: {
-    color: '#9ca3af',
     fontSize: 11,
     fontWeight: '600',
+  },
+  listFrame: {
+    paddingHorizontal: 16,
+    position: 'relative',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: ROW_HEIGHT,
+    paddingLeft: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+    position: 'relative',
+  },
+  rowLast: {
+    borderBottomWidth: 0,
+  },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 14,
+    bottom: 14,
+    width: 2.5,
+    borderRadius: 2,
+    backgroundColor: 'transparent',
+  },
+  railToday: {
+    backgroundColor: ACCENT,
+  },
+  dateBlock: {
+    width: 42,
+    marginRight: 14,
+    alignItems: 'center',
+  },
+  weekday: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: '#6b7280',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  dayNum: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#e5e7eb',
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  accentText: {
+    color: ACCENT,
+  },
+  body: {
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
+  },
+  title: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.1,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  metaCat: {
+    color: '#6b7280',
+    fontSize: 10,
+    letterSpacing: 0.6,
+    marginRight: 8,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  meta: {
+    fontSize: 11,
+    color: '#9ca3af',
+    flexShrink: 1,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  checkWrap: {
+    width: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0,255,85,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 26,
   },
 });
