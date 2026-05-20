@@ -19,5 +19,10 @@ module.exports = {
   // alias.
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
+    // The real lib/supabase.ts imports RN/ESM-only modules
+    // (react-native-url-polyfill, AsyncStorage) that ts-jest/node can't parse.
+    // Map it to a lightweight stub so tests can import modules that depend on
+    // it (e.g. lib/coachScheduleApi) and exercise their pure helpers.
+    '(^|/)supabase$': '<rootDir>/__mocks__/supabase.ts',
   },
 };
