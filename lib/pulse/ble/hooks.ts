@@ -344,6 +344,18 @@ export function usePulseSync({
     setError(null);
   }, []);
 
+  const discardSensor = useCallback(async () => {
+    try {
+      await device?.clearFlash();
+    } catch (err) {
+      console.warn('[pulse] clearFlash failed', err);
+      throw err;
+    }
+    // Drop any locally-previewed throws + reset status; the sensor counter
+    // refreshes via the device's counter subscription after the wipe.
+    discard();
+  }, [device, discard]);
+
   const reset = useCallback(() => {
     discard();
     setCommittedCount(0);
@@ -361,9 +373,10 @@ export function usePulseSync({
       runAndCommit,
       commit,
       discard,
+      discardSensor,
       reset,
     }),
-    [status, progress, decoded, skipped, error, committedCount, run, runAndCommit, commit, discard, reset],
+    [status, progress, decoded, skipped, error, committedCount, run, runAndCommit, commit, discard, discardSensor, reset],
   );
 }
 
