@@ -96,6 +96,9 @@ export function ThrowingThrowsFeed({
   const [internalLoading, setInternalLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [undoId, setUndoId] = useState<string | null>(null);
+  // Only meaningful in internal (self-fetch) mode — external mode can't
+  // re-query the deleted rows here.
+  const [showDeleted, setShowDeleted] = useState(false);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clean up any pending undo-dismiss timer on unmount.
@@ -150,7 +153,7 @@ export function ThrowingThrowsFeed({
           `${process.env.EXPO_PUBLIC_SUPABASE_URL}/rest/v1/pulse_throws?` +
           `select=id,thrown_at,training_date,torque_nm,arm_speed_dps,arm_slot_deg,workload,source,is_valid` +
           `&athlete_id=eq.${athleteId}` +
-          `&is_valid=eq.true` +
+          `&is_valid=eq.${showDeleted ? 'false' : 'true'}` +
           `&training_date=eq.${anchorIso}` +
           `&order=thrown_at.desc` +
           `&limit=50`;
@@ -180,7 +183,7 @@ export function ThrowingThrowsFeed({
       cancelled = true;
       unsubscribe();
     };
-  }, [external, athleteId, scheduledDate, token]);
+  }, [external, athleteId, scheduledDate, token, showDeleted]);
 
   // Soft-delete directly (no confirm dialog). The undo snackbar is the safety
   // net \u2014 set after a successful delete and auto-dismissed after 5s.
@@ -260,6 +263,17 @@ export function ThrowingThrowsFeed({
         )}
       </View>
 
+      {!external && (
+        <View style={styles.filterRow}>
+          <TouchableOpacity onPress={() => setShowDeleted(false)} style={[styles.filterChip, !showDeleted && styles.filterChipOn]}>
+            <Text style={[styles.filterChipText, !showDeleted && styles.filterChipTextOn]}>All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowDeleted(true)} style={[styles.filterChip, showDeleted && styles.filterChipOn]}>
+            <Text style={[styles.filterChipText, showDeleted && styles.filterChipTextOn]}>Deleted</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.emptyBlock}>
           <ActivityIndicator size="small" color="#6b7280" />
@@ -268,7 +282,9 @@ export function ThrowingThrowsFeed({
       ) : throws.length === 0 ? (
         <View style={styles.emptyBlock}>
           <Text style={styles.emptyText}>
-            No throws logged yet.{'\n'}Connect Pulse → Start live or Sync throws.
+            {showDeleted
+              ? 'No deleted throws.'
+              : `No throws logged yet.\nConnect Pulse → Start live or Sync throws.`}
           </Text>
         </View>
       ) : (
@@ -288,6 +304,8 @@ export function ThrowingThrowsFeed({
               index={i}
               deleting={deletingId === t.id}
               onDelete={onDelete}
+              showDeleted={showDeleted}
+              onRestore={onUndo}
             />
           ))}
         </ScrollView>
@@ -319,11 +337,15 @@ function ThrowRowInner({
   t,
   deleting,
   onDelete,
+  showDeleted,
+  onRestore,
 }: {
   t: Throw;
   index: number;
   deleting: boolean;
   onDelete: (id: string) => void;
+  showDeleted: boolean;
+  onRestore: (id: string) => void;
 }) {
   const hex = torqueHex(t.torque_nm);
   const time = useMemo(() => {
@@ -377,17 +399,24 @@ function ThrowRowInner({
         </Text>
         <Text style={styles.rowWorkloadUnit}>W</Text>
       </View>
-      <Pressable
-        onPress={handlePress}
-        hitSlop={16}
-        style={({ pressed }) => [styles.trashBtn, pressed && { opacity: 0.6 }]}
-      >
-        {deleting ? (
-          <ActivityIndicator size="small" color="#9ca3af" />
-        ) : (
-          <Ionicons name="trash-outline" size={18} color="#9ca3af" />
-        )}
-      </Pressable>
+      {showDeleted ? (
+        <TouchableOpacity onPress={() => onRestore(t.id)} style={styles.restoreBtn}>
+          <Ionicons name="arrow-undo" size={13} color="#9BDDFF" />
+          <Text style={styles.restoreText}>Restore</Text>
+        </TouchableOpacity>
+      ) : (
+        <Pressable
+          onPress={handlePress}
+          hitSlop={16}
+          style={({ pressed }) => [styles.trashBtn, pressed && { opacity: 0.6 }]}
+        >
+          {deleting ? (
+            <ActivityIndicator size="small" color="#9ca3af" />
+          ) : (
+            <Ionicons name="trash-outline" size={18} color="#9ca3af" />
+          )}
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -528,6 +557,13 @@ const styles = StyleSheet.create({
     padding: 10,
     marginLeft: 4,
   },
+  filterRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingBottom: 8 },
+  filterChip: { paddingHorizontal: 11, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  filterChipOn: { backgroundColor: 'rgba(155,221,255,0.12)', borderColor: 'rgba(155,221,255,0.5)' },
+  filterChipText: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.4)' },
+  filterChipTextOn: { color: '#9BDDFF' },
+  restoreBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: 'rgba(155,221,255,0.1)' },
+  restoreText: { color: '#9BDDFF', fontSize: 11, fontWeight: '700' },
   undoToast: {
     flexDirection: 'row',
     alignItems: 'center',
