@@ -253,6 +253,14 @@ export class PulseDeviceRN {
     await this.writeCmd(0x04);
   }
 
+  /** Destructive: wipe ALL throws from the sensor flash WITHOUT syncing them.
+   *  Writes 0x04 standalone (POP_OR_ADVANCE with no preceding 0x07 = full wipe).
+   *  Used by the "Discard / Clear sensor" action for leftover throws we don't
+   *  want to save (e.g. a previous athlete's session still on the device). */
+  async clearFlash(): Promise<void> {
+    await this.writeCmd(0x04);
+  }
+
   // ─── Disconnect ───
   disconnect(): void {
     this.counterSub?.remove();
