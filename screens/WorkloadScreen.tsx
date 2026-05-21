@@ -40,6 +40,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ThrowingWorkloadMonitor, MonitorData } from '../components/pulse/ThrowingWorkloadMonitor';
 import { ThrowingThrowsFeed, Throw } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
+import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import {
   acwrColor,
@@ -536,6 +537,7 @@ export default function WorkloadScreen() {
           orgId={orgId}
           initialAnthro={anthro}
         >
+        <PulseLiveBar />
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}

@@ -19,6 +19,7 @@ import { ThrowingThrowsFeed } from '../components/pulse/ThrowingThrowsFeed';
 import { PulseProvider } from '../lib/pulse/PulseProvider';
 import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
+import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 // Types
@@ -1136,6 +1137,7 @@ export default function WorkoutLoggerScreen() {
   if (isThrowing && athleteId && orgId && showPulseTracker) {
     return (
       <PulseProvider athleteId={athleteId} orgId={orgId}>
+        <PulseLiveBar />
         {body}
         <PulseWizardModal scheduledDate={scheduledDate} />
         {/* PulseAutoOpener removed — the wizard is no longer forced on
