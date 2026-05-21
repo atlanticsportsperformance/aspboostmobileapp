@@ -32,20 +32,10 @@ import {
   KeyboardAvoidingView,
   Alert,
 } from 'react-native';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withSequence,
-  withTiming,
-  cancelAnimation,
-  Easing,
-} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { usePulse } from '../../lib/pulse/PulseProvider';
-import { dpsToRpm } from '../../lib/pulse/units';
 // Bluetooth permission UX is handled INSIDE this wizard's own Connect /
 // Error steps (bt-off / unauthorized) — we no longer stack the shared
 // BluetoothPermissionSheet on top, since it duplicated the same rationale
@@ -126,10 +116,9 @@ export function PulseWizardModal({ scheduledDate }: Props) {
   useEffect(() => {
     if (!wizardOpen) return;
 
-    if (live.status === 'running') {
-      setStep('live');
-      return;
-    }
+    // Live no longer has an in-modal step — it runs on-screen via the sticky
+    // bar after handleStartLive closes the modal. We deliberately don't route
+    // to a 'live' step here anymore.
     if (sync.status === 'syncing' || sync.status === 'committing') {
       setStep('syncing');
       return;
@@ -199,50 +188,23 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     );
   }, [dev.counter, sync]);
 
-  const handleStartLive = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    setStep('live');
-    await live.start();
-  }, [live]);
-
-  const handleStopLive = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-    await live.stop();
-    setStep('done');
-  }, [live]);
-
   const handleClose = useCallback(() => {
     // Live session continues in background — the monitor's chip keeps
     // showing it and the wizard can be reopened to stop it.
     closeWizard();
   }, [closeWizard]);
 
-  // ─────────────────────────────────────────────────────────────
-  // Live red dot pulse
-  // ─────────────────────────────────────────────────────────────
-  const pulseVal = useSharedValue(1);
-  useEffect(() => {
-    if (wizardOpen && step === 'live') {
-      pulseVal.value = withRepeat(
-        withSequence(
-          withTiming(1.4, { duration: 600, easing: Easing.inOut(Easing.sin) }),
-          withTiming(1, { duration: 600, easing: Easing.inOut(Easing.sin) }),
-        ),
-        -1,
-        false,
-      );
-    } else {
-      cancelAnimation(pulseVal);
-      pulseVal.value = 1;
+  const handleStartLive = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      await live.start();
+    } catch (err) {
+      console.warn('[pulse] live start failed', err);
+      Alert.alert('Could not start live', 'Check the sensor connection and try again.');
+      return;
     }
-    return () => {
-      cancelAnimation(pulseVal);
-    };
-  }, [wizardOpen, step, pulseVal]);
-
-  const pulseDotStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseVal.value }],
-  }));
+    handleClose(); // leave the modal; live runs on-screen via the sticky bar
+  }, [live, handleClose]);
 
   // Step number for the progress dots (1-4). 'set-anthro' shares dot 1
   // with 'connect' since both are pre-flight setup.
@@ -342,15 +304,6 @@ export function PulseWizardModal({ scheduledDate }: Props) {
               decoded={sync.progress?.throwsDecoded ?? 0}
               status={sync.status}
               error={sync.error}
-            />
-          )}
-
-          {step === 'live' && (
-            <LiveStep
-              throws={live.throwCount}
-              lastThrow={live.lastThrow ?? undefined}
-              pulseDotStyle={pulseDotStyle}
-              onStop={handleStopLive}
             />
           )}
 
@@ -899,53 +852,6 @@ function SyncingStep({
 }
 
 // ═════════════════════════════════════════════════════════════
-// Step: Live
-// ═════════════════════════════════════════════════════════════
-
-function LiveStep({
-  throws,
-  lastThrow,
-  pulseDotStyle,
-  onStop,
-}: {
-  throws: number;
-  lastThrow: any;
-  pulseDotStyle: any;
-  onStop: () => void;
-}) {
-  return (
-    <View style={styles.body}>
-      <View style={styles.liveHeader}>
-        <Animated.View style={[styles.liveDot, pulseDotStyle]} />
-        <Text style={styles.liveHeaderText}>LIVE</Text>
-        <ActivityIndicator size="small" color="#9BDDFF" style={{ marginLeft: 8 }} />
-      </View>
-
-      <Text style={styles.liveBigNum}>{throws}</Text>
-      <Text style={styles.subtitle}>{throws === 1 ? 'throw' : 'throws'}</Text>
-
-      {lastThrow ? (
-        <Text style={styles.liveLast}>
-          Last:  {lastThrow.torqueNm != null ? `${Math.round(lastThrow.torqueNm)} Nm` : '—'}
-          {lastThrow.armSpeedDps != null ? `  ·  ${dpsToRpm(lastThrow.armSpeedDps)} RPM` : ''}
-        </Text>
-      ) : (
-        <Text style={styles.liveWaiting}>Throw to see data appear here</Text>
-      )}
-
-      <TouchableOpacity
-        style={[styles.stopBtn, { backgroundColor: 'rgba(248,113,113,0.15)', borderColor: '#f87171' }]}
-        onPress={onStop}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="stop" size={14} color="#fca5a5" />
-        <Text style={styles.stopBtnText}>Stop session</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════
 // Step: Done
 // ═════════════════════════════════════════════════════════════
 
@@ -1307,68 +1213,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
     letterSpacing: 0.4,
-  },
-  liveHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  liveDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#f87171',
-    shadowColor: '#f87171',
-    shadowOpacity: 0.9,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  liveHeaderText: {
-    color: '#fca5a5',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 2,
-  },
-  liveBigNum: {
-    color: '#9BDDFF',
-    fontSize: 96,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
-    lineHeight: 100,
-    letterSpacing: -2,
-    marginTop: 12,
-  },
-  liveLast: {
-    // Bumped two shades brighter — was unreadable at #6b7280 on near-black.
-    color: '#d1d5db',
-    fontSize: 13,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-    marginTop: 4,
-  },
-  liveWaiting: {
-    color: '#9ca3af',
-    fontSize: 13,
-    fontStyle: 'italic',
-    marginTop: 8,
-  },
-  stopBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    alignSelf: 'stretch',
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: 'rgba(248, 113, 113, 0.15)',
-    borderColor: '#f87171',
-    borderWidth: 2,
-    marginTop: 20,
-  },
-  stopBtnText: {
-    color: '#fca5a5',
-    fontWeight: '800',
-    fontSize: 16,
   },
   discardRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
