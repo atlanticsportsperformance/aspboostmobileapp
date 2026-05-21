@@ -179,6 +179,26 @@ export function PulseWizardModal({ scheduledDate }: Props) {
     await sync.runAndCommit();
   }, [sync]);
 
+  const handleDiscard = useCallback(() => {
+    const n = dev.counter ?? 0;
+    Alert.alert(
+      n > 0 ? `Discard ${n} throw${n === 1 ? '' : 's'}?` : 'Clear sensor?',
+      "These were recorded on the sensor and will be wiped WITHOUT being saved to this athlete. Use this for leftover throws from a previous session.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            sync.discardSensor?.().catch((e: any) =>
+              Alert.alert('Discard failed', e?.message ?? 'Could not clear the sensor.'),
+            );
+          },
+        },
+      ],
+    );
+  }, [dev.counter, sync]);
+
   const handleStartLive = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setStep('live');
@@ -312,6 +332,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
               onStartLive={handleStartLive}
               onDone={handleClose}
               onOpenProfile={handleOpenProfile}
+              onDiscard={handleDiscard}
             />
           )}
 
@@ -709,6 +730,7 @@ function ChooseStep({
   onStartLive,
   onDone,
   onOpenProfile,
+  onDiscard,
 }: {
   deviceName: string;
   battery: number | null;
@@ -719,6 +741,7 @@ function ChooseStep({
   onStartLive: () => void;
   onOpenProfile: () => void;
   onDone: () => void;
+  onDiscard: () => void;
 }) {
   const hasCached = counter > 0;
   const canLive = dateMode === 'today';
@@ -826,6 +849,13 @@ function ChooseStep({
             <Text style={styles.primaryBtnText}>Got it</Text>
           </TouchableOpacity>
         </>
+      )}
+
+      {counter > 0 && (
+        <TouchableOpacity style={styles.discardRow} activeOpacity={0.8} onPress={onDiscard}>
+          <Ionicons name="trash-outline" size={14} color="#fca5a5" />
+          <Text style={styles.discardRowText}>Discard {counter} throws on sensor</Text>
+        </TouchableOpacity>
       )}
     </View>
   );
@@ -1340,4 +1370,10 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 16,
   },
+  discardRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    width: '100%', paddingVertical: 11, borderRadius: 12, borderWidth: 1,
+    borderColor: 'rgba(248,113,113,0.3)', backgroundColor: 'rgba(248,113,113,0.06)', marginTop: 4,
+  },
+  discardRowText: { color: '#fca5a5', fontSize: 13, fontWeight: '700' },
 });
