@@ -345,6 +345,7 @@ export function usePulseSync({
   }, []);
 
   const discardSensor = useCallback(async () => {
+    if (status === 'syncing' || status === 'committing') return; // don't wipe mid-sync
     try {
       await device?.clearFlash();
     } catch (err) {
@@ -354,7 +355,7 @@ export function usePulseSync({
     // Drop any locally-previewed throws + reset status; the sensor counter
     // refreshes via the device's counter subscription after the wipe.
     discard();
-  }, [device, discard]);
+  }, [status, device, discard]);
 
   const reset = useCallback(() => {
     discard();

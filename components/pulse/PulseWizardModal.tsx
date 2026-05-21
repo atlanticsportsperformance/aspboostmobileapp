@@ -169,6 +169,7 @@ export function PulseWizardModal({ scheduledDate }: Props) {
   }, [sync]);
 
   const handleDiscard = useCallback(() => {
+    if (live.status === 'running') return; // never wipe mid-live
     const n = dev.counter ?? 0;
     Alert.alert(
       n > 0 ? `Discard ${n} throw${n === 1 ? '' : 's'}?` : 'Clear sensor?',
@@ -186,11 +187,11 @@ export function PulseWizardModal({ scheduledDate }: Props) {
         },
       ],
     );
-  }, [dev.counter, sync]);
+  }, [live.status, dev.counter, sync]);
 
   const handleClose = useCallback(() => {
-    // Live session continues in background — the monitor's chip keeps
-    // showing it and the wizard can be reopened to stop it.
+    // Live session continues in background — the on-screen PulseLiveBar keeps
+    // showing it with a Stop control, and reopening the wizard shows Stop too.
     closeWizard();
   }, [closeWizard]);
 
@@ -204,6 +205,16 @@ export function PulseWizardModal({ scheduledDate }: Props) {
       return;
     }
     handleClose(); // leave the modal; live runs on-screen via the sticky bar
+  }, [live, handleClose]);
+
+  const handleStopLive = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    try {
+      await live.stop();
+    } catch (err) {
+      console.warn('[pulse] live stop failed', err);
+    }
+    handleClose();
   }, [live, handleClose]);
 
   // Step number for the progress dots (1-4). 'set-anthro' shares dot 1
@@ -295,6 +306,9 @@ export function PulseWizardModal({ scheduledDate }: Props) {
               onDone={handleClose}
               onOpenProfile={handleOpenProfile}
               onDiscard={handleDiscard}
+              liveRunning={live.status === 'running'}
+              liveThrowCount={live.throwCount}
+              onStop={handleStopLive}
             />
           )}
 
@@ -684,6 +698,9 @@ function ChooseStep({
   onDone,
   onOpenProfile,
   onDiscard,
+  liveRunning,
+  liveThrowCount,
+  onStop,
 }: {
   deviceName: string;
   battery: number | null;
@@ -695,6 +712,9 @@ function ChooseStep({
   onOpenProfile: () => void;
   onDone: () => void;
   onDiscard: () => void;
+  liveRunning: boolean;
+  liveThrowCount: number;
+  onStop: () => void;
 }) {
   const hasCached = counter > 0;
   const canLive = dateMode === 'today';
@@ -722,6 +742,20 @@ function ChooseStep({
         </View>
       </View>
 
+      {liveRunning ? (
+        <>
+          <View style={styles.liveRunningRow}>
+            <View style={styles.liveDotSmall} />
+            <Text style={styles.liveRunningText}>Live session running</Text>
+            <Text style={styles.liveRunningCount}>{liveThrowCount} {liveThrowCount === 1 ? 'throw' : 'throws'}</Text>
+          </View>
+          <TouchableOpacity style={styles.stopSessionBtn} activeOpacity={0.85} onPress={onStop}>
+            <Ionicons name="stop" size={16} color="#fca5a5" />
+            <Text style={styles.stopSessionText}>Stop session</Text>
+          </TouchableOpacity>
+        </>
+      ) : (
+        <>
       {!profileComplete && (
         <TouchableOpacity
           style={styles.warnRow}
@@ -809,6 +843,8 @@ function ChooseStep({
           <Ionicons name="trash-outline" size={14} color="#fca5a5" />
           <Text style={styles.discardRowText}>Discard {counter} throws on sensor</Text>
         </TouchableOpacity>
+      )}
+        </>
       )}
     </View>
   );
@@ -1220,4 +1256,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(248,113,113,0.3)', backgroundColor: 'rgba(248,113,113,0.06)', marginTop: 4,
   },
   discardRowText: { color: '#fca5a5', fontSize: 13, fontWeight: '700' },
+  liveRunningRow: { flexDirection: 'row', alignItems: 'center', gap: 8, width: '100%',
+    paddingVertical: 12, justifyContent: 'center' },
+  liveDotSmall: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#f87171' },
+  liveRunningText: { color: '#fca5a5', fontWeight: '800', letterSpacing: 1, fontSize: 13 },
+  liveRunningCount: { color: '#fff', fontFamily: 'Menlo', fontWeight: '800', fontSize: 14 },
+  stopSessionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    width: '100%', paddingVertical: 14, borderRadius: 13,
+    backgroundColor: 'rgba(248,113,113,0.15)', borderWidth: 1, borderColor: '#f87171' },
+  stopSessionText: { color: '#fca5a5', fontWeight: '700', fontSize: 15 },
 });
