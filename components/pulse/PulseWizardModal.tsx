@@ -45,6 +45,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { usePulse } from '../../lib/pulse/PulseProvider';
+import { dpsToRpm } from '../../lib/pulse/units';
 // Bluetooth permission UX is handled INSIDE this wizard's own Connect /
 // Error steps (bt-off / unauthorized) — we no longer stack the shared
 // BluetoothPermissionSheet on top, since it duplicated the same rationale
@@ -896,7 +897,7 @@ function LiveStep({
       {lastThrow ? (
         <Text style={styles.liveLast}>
           Last:  {lastThrow.torqueNm != null ? `${Math.round(lastThrow.torqueNm)} Nm` : '—'}
-          {lastThrow.armSpeedDps != null ? `  ·  ${Math.round(lastThrow.armSpeedDps)} °/s` : ''}
+          {lastThrow.armSpeedDps != null ? `  ·  ${dpsToRpm(lastThrow.armSpeedDps)} RPM` : ''}
         </Text>
       ) : (
         <Text style={styles.liveWaiting}>Throw to see data appear here</Text>

@@ -37,6 +37,7 @@ import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { pulseEvents } from '../../lib/pulse/ble/pulse-events';
 import { queuedFetch } from '../../lib/pulse/fetch-queue';
+import { dpsToRpm } from '../../lib/pulse/units';
 
 export interface Throw {
   id: string;
@@ -324,9 +325,9 @@ function ThrowRowInner({
       </View>
       <View style={styles.rowMetric}>
         <Text style={styles.rowNumMid}>
-          {t.arm_speed_dps != null ? Math.round(t.arm_speed_dps) : '—'}
+          {t.arm_speed_dps != null ? dpsToRpm(t.arm_speed_dps) : '—'}
         </Text>
-        <Text style={styles.rowUnit}>°/s</Text>
+        <Text style={styles.rowUnit}>RPM</Text>
       </View>
       <View style={styles.rowMetric}>
         <Text style={styles.rowNumMid}>
