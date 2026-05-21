@@ -17,7 +17,7 @@
  *  - Header counter spring-counts up as rows stream in
  */
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,7 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  TouchableOpacity,
 } from 'react-native';
 // No reanimated imports — per-row press feedback is handled by Pressable's
 // {pressed} callback, which is dramatically cheaper than allocating a
@@ -94,6 +95,15 @@ export function ThrowingThrowsFeed({
   const [internalThrows, setInternalThrows] = useState<Throw[]>([]);
   const [internalLoading, setInternalLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [undoId, setUndoId] = useState<string | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up any pending undo-dismiss timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+    };
+  }, []);
 
   const throws = external ? (externalThrows as Throw[]) : internalThrows;
   const loading = external ? (externalLoading ?? false) : internalLoading;
@@ -172,53 +182,67 @@ export function ThrowingThrowsFeed({
     };
   }, [external, athleteId, scheduledDate, token]);
 
+  // Soft-delete directly (no confirm dialog). The undo snackbar is the safety
+  // net \u2014 set after a successful delete and auto-dismissed after 5s.
   const onDelete = useCallback(
-    (id: string) => {
+    async (id: string) => {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-      Alert.alert(
-        'Delete throw',
-        'This throw will be removed and today\u2019s workload will recompute.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
-              setDeletingId(id);
-              try {
-                const {
-                  data: { user },
-                } = await supabase.auth.getUser();
-                const { error } = await supabase
-                  .from('pulse_throws')
-                  .update({
-                    is_valid: false,
-                    excluded_reason: 1,
-                    excluded_by: user?.id ?? null,
-                    excluded_at: new Date().toISOString(),
-                  })
-                  .eq('id', id);
-                if (error) throw error;
-                if (external) {
-                  onThrowDeleted?.(id);
-                } else {
-                  setInternalThrows((prev) => prev.filter((t) => t.id !== id));
-                }
-                Haptics.notificationAsync(
-                  Haptics.NotificationFeedbackType.Success,
-                ).catch(() => {});
-              } catch (err: any) {
-                Alert.alert('Delete failed', err?.message ?? 'Unknown error');
-              } finally {
-                setDeletingId(null);
-              }
-            },
-          },
-        ],
-      );
+      setDeletingId(id);
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const { error } = await supabase
+          .from('pulse_throws')
+          .update({
+            is_valid: false,
+            excluded_reason: 1,
+            excluded_by: user?.id ?? null,
+            excluded_at: new Date().toISOString(),
+          })
+          .eq('id', id);
+        if (error) throw error;
+        if (external) {
+          onThrowDeleted?.(id);
+        } else {
+          setInternalThrows((prev) => prev.filter((t) => t.id !== id));
+        }
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        ).catch(() => {});
+        setUndoId(id);
+        if (undoTimer.current) clearTimeout(undoTimer.current);
+        undoTimer.current = setTimeout(() => setUndoId(null), 5000);
+      } catch (err: any) {
+        Alert.alert('Delete failed', err?.message ?? 'Unknown error');
+      } finally {
+        setDeletingId(null);
+      }
     },
     [external, onThrowDeleted],
   );
+
+  // Restore a soft-deleted throw. Clears the excluded metadata and re-pulls
+  // the feed. Internal mode re-runs its own fetch via the pulseEvents emitter
+  // it already subscribes to; external mode (WorkloadScreen) has no parent
+  // un-delete hook, so the restored throw reappears on the parent's next
+  // fetch \u2014 emitting the committed event is harmless there.
+  const onUndo = useCallback(async (id: string) => {
+    try {
+      await supabase
+        .from('pulse_throws')
+        .update({
+          is_valid: true,
+          excluded_reason: null,
+          excluded_by: null,
+          excluded_at: null,
+        })
+        .eq('id', id);
+    } catch {}
+    setUndoId(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    pulseEvents.emitThrowsCommitted();
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -267,6 +291,15 @@ export function ThrowingThrowsFeed({
             />
           ))}
         </ScrollView>
+      )}
+
+      {undoId && (
+        <View style={styles.undoToast}>
+          <Text style={styles.undoText}>Throw deleted</Text>
+          <TouchableOpacity onPress={() => onUndo(undoId)}>
+            <Text style={styles.undoBtn}>UNDO</Text>
+          </TouchableOpacity>
+        </View>
       )}
     </View>
   );
@@ -494,5 +527,26 @@ const styles = StyleSheet.create({
   trashBtn: {
     padding: 10,
     marginLeft: 4,
+  },
+  undoToast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1c1c22',
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderRadius: 13,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    marginTop: 12,
+  },
+  undoText: {
+    color: '#e5e7eb',
+    fontSize: 13,
+  },
+  undoBtn: {
+    color: '#9BDDFF',
+    fontWeight: '800',
+    fontSize: 13,
   },
 });
