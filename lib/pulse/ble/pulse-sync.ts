@@ -30,7 +30,7 @@
  */
 
 import { PulseDeviceRN as PulseDevice } from './pulse-device-rn';
-import { CMD, SYNC_SILENCE_MS, LIVE_SILENCE_MS, PACKET_BYTES } from './constants';
+import { CMD, SYNC_SILENCE_MS, SYNC_MAX_WAIT_MS, LIVE_SILENCE_MS, PACKET_BYTES } from './constants';
 import { parseCmd01Stream } from './pulse-chunks';
 import { decodeEvent } from '../decoder/decode-event';
 
@@ -104,11 +104,29 @@ export async function syncAllThrows(
   };
   device.addEventListener('packet', handler);
 
+  // Detect a mid-sync disconnect so a dropped connection surfaces as a clear
+  // error instead of silently looking like a completed-but-empty sync. The
+  // PulseDeviceRN connect() wires onDisconnected → 'disconnect' emit.
+  let disconnected = false;
+  const onDisconnect = () => {
+    disconnected = true;
+  };
+  device.addEventListener('disconnect', onDisconnect);
+
   try {
     await device.writeCmd(CMD.BULK_SYNC);
-    await waitForSilence(() => lastPacketAt, SYNC_SILENCE_MS, 30_000);
+    await waitForSilence(
+      () => lastPacketAt,
+      SYNC_SILENCE_MS,
+      SYNC_MAX_WAIT_MS,
+      () =>
+        disconnected
+          ? 'Sensor disconnected during sync — move closer to your phone and try again.'
+          : null,
+    );
   } finally {
     device.removeEventListener('packet', handler);
+    device.removeEventListener('disconnect', onDisconnect);
   }
 
   const events = parseCmd01Stream(notifications);
@@ -174,10 +192,13 @@ async function waitForSilence(
   lastEventAtRef: () => number,
   silenceMs: number,
   maxWaitMs: number,
+  abort?: () => string | null,
 ): Promise<void> {
   const start = Date.now();
   const initialPacketAt = lastEventAtRef();
   while (true) {
+    const abortReason = abort?.();
+    if (abortReason) throw new Error(abortReason);
     const now = Date.now();
     if (now - start >= maxWaitMs) {
       throw new Error(`sync timed out after ${maxWaitMs}ms without silence`);

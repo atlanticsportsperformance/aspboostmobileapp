@@ -75,6 +75,23 @@ export const PACKET_FIELDS = {
 export const SYNC_SILENCE_MS = 500;
 
 /**
+ * Absolute ceiling for a single bulk sync (ms). This is a runaway guard ONLY —
+ * normal completion is detected by SYNC_SILENCE_MS of silence.
+ *
+ * The previous value (30 000 ms) was a hard cap on TOTAL transfer time, not a
+ * stall guard: a large multi-throw sync streams continuously with no 500 ms
+ * gap, so the cap fired mid-stream while data was still actively arriving. At
+ * ~290 packets/throw, anything past ~10 throws (~3 000 packets) routinely blew
+ * the 30 s budget on iOS BLE throughput, the watchdog threw, and the entire
+ * buffered stream was discarded unparsed → "picked up packets then nothing".
+ *
+ * 3 minutes comfortably covers a 250+ throw dump while still bailing on a
+ * sensor that streams junk forever. The reference iOS impl uses silence-only
+ * termination with no total cap (see motus/IOS_INTEGRATION.md Phase 3).
+ */
+export const SYNC_MAX_WAIT_MS = 180_000;
+
+/**
  * Silence window for per-throw fetches in LIVE mode. Same 500ms floor as
  * bulk sync — an earlier attempt at 150ms triggered silence before the
  * sensor even started responding to 0x07, returning an empty clip and
