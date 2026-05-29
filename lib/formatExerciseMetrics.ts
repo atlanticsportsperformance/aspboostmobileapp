@@ -55,6 +55,9 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
     if (exercise.sets && exercise.reps) {
       return `${exercise.sets} × ${exercise.reps}${exercise.weight ? ` @ ${exercise.weight}` : ''}`;
     }
+    // AMRAP-only rows (is_amrap=true, no metric_targets) — surface AMRAP
+    // explicitly instead of falling through to empty display.
+    if ((exercise as any).is_amrap) return 'AMRAP';
     return '';
   }
 

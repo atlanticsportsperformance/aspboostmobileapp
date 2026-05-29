@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
+import { parseInstructionBlock } from '../lib/instructionBlockParser';
 
 // Types
 interface Measurement {
@@ -495,20 +496,54 @@ export default function BlockOverview({
                           </Text>
                         )}
 
-                        {/* Exercise Notes — full text for notes-only
-                            exercises (where notes ARE the content); 2-line
-                            truncated for exercises that also have metrics. */}
-                        {exercise.notes && (
-                          <Text
-                            style={[
-                              styles.exerciseNotes,
-                              isNotesOnly && styles.exerciseNotesPrimary,
-                            ]}
-                            numberOfLines={isNotesOnly ? undefined : 2}
-                          >
+                        {/* Exercise Notes — for notes-only rows, parse the
+                            structured-instruction grammar into sections +
+                            bullets so a wall-of-text warmup ("HEADER: x; y;
+                            z. NEXT HEADER: ...") becomes a readable
+                            checklist. For exercises with metrics, the notes
+                            cell is just a coaching cue — render the original
+                            2-line truncated text. */}
+                        {exercise.notes && isNotesOnly ? (
+                          (() => {
+                            const parsed = parseInstructionBlock(exercise.notes);
+                            return (
+                              <View style={styles.instructionBlock}>
+                                {parsed.sections.map((section, sIdx) => (
+                                  <View
+                                    key={sIdx}
+                                    style={sIdx > 0 ? styles.instructionSectionSpaced : undefined}
+                                  >
+                                    {section.header && (
+                                      <Text style={styles.instructionHeader}>
+                                        {section.header}
+                                      </Text>
+                                    )}
+                                    {section.items.map((item, iIdx) => (
+                                      <View key={iIdx} style={styles.instructionBulletRow}>
+                                        <Text style={styles.instructionBullet}>•</Text>
+                                        <Text style={styles.instructionItem}>{item}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                ))}
+                                {parsed.callouts.length > 0 && (
+                                  <View style={styles.instructionCallout}>
+                                    {parsed.callouts.map((callout, cIdx) => (
+                                      <View key={cIdx} style={styles.instructionCalloutRow}>
+                                        <Text style={styles.instructionCalloutIcon}>⚠</Text>
+                                        <Text style={styles.instructionCalloutText}>{callout}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                )}
+                              </View>
+                            );
+                          })()
+                        ) : exercise.notes ? (
+                          <Text style={styles.exerciseNotes} numberOfLines={2}>
                             {exercise.notes}
                           </Text>
-                        )}
+                        ) : null}
 
                         {/* Tempo */}
                         {exercise.tempo && (
@@ -962,6 +997,65 @@ const styles = StyleSheet.create({
     color: '#D4D4D4',
     marginTop: 6,
     lineHeight: 18,
+  },
+  // Structured instruction block (parsed notes_only content): header +
+  // bulleted items + optional bracketed callouts.
+  instructionBlock: {
+    marginTop: 6,
+  },
+  instructionSectionSpaced: {
+    marginTop: 8,
+  },
+  instructionHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#A5B4FC',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    lineHeight: 16,
+  },
+  instructionBulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 3,
+  },
+  instructionBullet: {
+    fontSize: 13,
+    color: '#818CF8',
+    marginRight: 6,
+    marginTop: 0,
+    lineHeight: 18,
+  },
+  instructionItem: {
+    flex: 1,
+    fontSize: 13,
+    color: '#D4D4D4',
+    lineHeight: 18,
+  },
+  instructionCallout: {
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+  },
+  instructionCalloutRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  instructionCalloutIcon: {
+    fontSize: 12,
+    color: '#FBBF24',
+    marginRight: 6,
+    lineHeight: 16,
+  },
+  instructionCalloutText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#FCD34D',
+    lineHeight: 16,
   },
   tempo: {
     fontSize: 12,
