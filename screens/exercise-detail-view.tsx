@@ -22,6 +22,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
 import { calculateThrowingTarget, isThrowingVelocityMetric } from '../lib/throwingConversions';
+import { parseInstructionBlock } from '../lib/instructionBlockParser';
 
 // Types
 interface Measurement {
@@ -54,6 +55,12 @@ interface IntensityTarget {
   source_exercise_id?: string | null;
   source_exercise_name?: string | null;
   source_metric_id?: string | null;
+  // Set-relative intensity ("90% of Set 1"). When relative_to='set',
+  // reference_set (1-indexed) names the prior set whose logged value is the
+  // base instead of an all-time max. When relative_to is unset/'max', the
+  // legacy max-anchored behavior applies.
+  relative_to?: 'max' | 'set';
+  reference_set?: number;
 }
 
 interface SetConfiguration {
@@ -857,6 +864,32 @@ export default function ExerciseDetailView({
     if (intensityTargets) {
       const target = intensityTargets.find(t => t.metric === metricId);
       if (target) {
+        // Set-relative intensity: "90% of Set 1" anchors on the prior set's
+        // actually-logged value, not on an all-time max. This is how wave
+        // loading with `set<N>:intensity_of_set` was imported from the CSV.
+        if (target.relative_to === 'set' && target.reference_set != null) {
+          const refIdx = target.reference_set - 1; // 1-indexed → 0-indexed
+          if (refIdx >= 0 && refIdx < setIndex) {
+            const refSetInputs = exerciseInputs[exercise.id]?.[refIdx] || {};
+            const refValue = refSetInputs[metricId];
+            const refNum = typeof refValue === 'string' ? Number(refValue) : refValue;
+            if (refNum != null && Number.isFinite(refNum) && refNum > 0) {
+              const calculatedValue = Math.round((refNum as number) * (target.percent / 100));
+              return {
+                percent: target.percent,
+                calculatedValue,
+                sourceExerciseName: `Set ${target.reference_set}`,
+              };
+            }
+            // Reference set not yet logged — surface the percentage so
+            // athlete sees the prescription, but no calculated value yet.
+            return {
+              percent: target.percent,
+              sourceExerciseName: `Set ${target.reference_set} (not logged yet)`,
+            };
+          }
+        }
+
         // Determine source exercise for max lookup
         // If source_exercise_id is set, use that exercise's max
         // Otherwise, use the current exercise's max
@@ -1032,6 +1065,56 @@ export default function ExerciseDetailView({
   };
 
   const renderSetCards = () => {
+    // Notes-only exercises (no measurement fields and/or notes_only=true)
+    // are instruction cards, not loggable sets. Render the parsed
+    // structured notes (sections + bullets + callouts) instead of looping
+    // exercise.sets-many fake set cards (which would either be 0 — null
+    // coerces to 0 in the for-loop — OR if some upstream caller fell back
+    // to 3, three "No metrics configured" placeholders that demand input
+    // and never complete).
+    const isNotesOnly = metricFields.length === 0 || (exercise as any).notes_only;
+    if (isNotesOnly) {
+      const notesText: string | null | undefined = (exercise as any).notes;
+      const parsed = parseInstructionBlock(notesText);
+      if (parsed.sections.length === 0 && parsed.callouts.length === 0) {
+        return (
+          <View style={instructionStyles.empty}>
+            <Text style={instructionStyles.emptyText}>Instruction block</Text>
+          </View>
+        );
+      }
+      return (
+        <View style={instructionStyles.container}>
+          {parsed.sections.map((section, sIdx) => (
+            <View
+              key={sIdx}
+              style={sIdx > 0 ? instructionStyles.sectionSpaced : undefined}
+            >
+              {section.header && (
+                <Text style={instructionStyles.header}>{section.header}</Text>
+              )}
+              {section.items.map((item, iIdx) => (
+                <View key={iIdx} style={instructionStyles.bulletRow}>
+                  <Text style={instructionStyles.bullet}>•</Text>
+                  <Text style={instructionStyles.item}>{item}</Text>
+                </View>
+              ))}
+            </View>
+          ))}
+          {parsed.callouts.length > 0 && (
+            <View style={instructionStyles.callout}>
+              {parsed.callouts.map((callout, cIdx) => (
+                <View key={cIdx} style={instructionStyles.calloutRow}>
+                  <Text style={instructionStyles.calloutIcon}>⚠</Text>
+                  <Text style={instructionStyles.calloutText}>{callout}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+    }
+
     const sets = [];
     for (let i = 0; i < exercise.sets; i++) {
       const setData = exerciseInputs[exercise.id]?.[i] || {};
@@ -2796,5 +2879,75 @@ const styles = StyleSheet.create({
   },
   emptyButton: {
     flex: 1,
+  },
+});
+
+const instructionStyles = StyleSheet.create({
+  container: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  sectionSpaced: {
+    marginTop: 14,
+  },
+  header: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#A5B4FC',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 4,
+  },
+  bullet: {
+    fontSize: 14,
+    color: '#818CF8',
+    marginRight: 8,
+    lineHeight: 20,
+  },
+  item: {
+    flex: 1,
+    fontSize: 14,
+    color: '#E5E7EB',
+    lineHeight: 20,
+  },
+  callout: {
+    marginTop: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+  },
+  calloutRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  calloutIcon: {
+    fontSize: 14,
+    color: '#FBBF24',
+    marginRight: 8,
+    lineHeight: 18,
+  },
+  calloutText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#FCD34D',
+    lineHeight: 18,
+  },
+  empty: {
+    paddingHorizontal: 16,
+    paddingVertical: 24,
+  },
+  emptyText: {
+    fontSize: 13,
+    fontStyle: 'italic',
+    color: '#A5B4FC',
+    textAlign: 'center',
   },
 });

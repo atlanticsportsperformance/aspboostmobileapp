@@ -274,7 +274,7 @@ export default function WorkoutLoggerScreen() {
       workoutData.routines.forEach((routine: Routine) => {
         // Filter out placeholder exercises
         routine.routine_exercises = routine.routine_exercises.filter(
-          (re: RoutineExercise) => !re.exercises?.is_placeholder
+          (re: RoutineExercise) => !re.is_placeholder
         );
         routine.routine_exercises.sort((a, b) => a.order_index - b.order_index);
 
@@ -367,17 +367,20 @@ export default function WorkoutLoggerScreen() {
         const setsData = Array(ex.sets).fill(null).map(() => ({}));
         const completedArray = Array(ex.sets).fill(false);
 
-        // Fill in logged data
+        // Fill in logged data. DB stores actual values in dedicated columns
+        // (actual_reps/actual_weight/actual_duration_seconds/actual_distance)
+        // and custom metrics in metric_data JSONB. Map back to the local
+        // property names the rest of the screen consumes.
         exLogs.forEach((log: any) => {
           const setIndex = log.set_number - 1; // Convert to 0-indexed
           if (setIndex >= 0 && setIndex < ex.sets) {
             setsData[setIndex] = {
-              reps: log.reps,
-              weight: log.weight,
-              time_seconds: log.time_seconds,
-              distance: log.distance,
+              reps: log.actual_reps,
+              weight: log.actual_weight,
+              time_seconds: log.actual_duration_seconds,
+              distance: log.actual_distance,
               notes: log.notes,
-              ...log.custom_metrics,
+              ...(log.metric_data || {}),
             };
 
             // Mark as completed if has data
@@ -408,12 +411,12 @@ export default function WorkoutLoggerScreen() {
           id,
           routine_exercise_id,
           set_number,
-          reps,
-          weight,
-          time_seconds,
-          distance,
+          actual_reps,
+          actual_weight,
+          actual_duration_seconds,
+          actual_distance,
           notes,
-          custom_metrics,
+          metric_data,
           workout_instances!inner (
             id,
             scheduled_date,
@@ -456,14 +459,16 @@ export default function WorkoutLoggerScreen() {
             historyMap[exerciseId].push(workoutEntry);
           }
 
+          // Map dedicated actual_* DB columns back to local field names so
+          // history-rendering code keeps reading the same shape.
           workoutEntry.sets.push({
             set_number: log.set_number,
-            reps: log.reps,
-            weight: log.weight,
-            time_seconds: log.time_seconds,
-            distance: log.distance,
+            reps: log.actual_reps,
+            weight: log.actual_weight,
+            time_seconds: log.actual_duration_seconds,
+            distance: log.actual_distance,
             notes: log.notes,
-            ...log.custom_metrics,
+            ...(log.metric_data || {}),
           });
         });
 
@@ -627,21 +632,31 @@ export default function WorkoutLoggerScreen() {
             .maybeSingle();
 
           if (!existingLog) {
-            // Create a minimal log entry to mark as completed
-            await supabase
+            // exercise_logs requires athlete_id + exercise_id NOT NULL. The
+            // completion column is `is_complete` (not `completed`). Look up
+            // the routine_exercise to grab its exercise_id and emit a
+            // schema-correct insert; without these the row is silently
+            // rejected and the athlete's completion never persists.
+            const rExercise = allExercises.find(ex => ex.id === exerciseId);
+            if (!rExercise?.exercise_id) continue;
+            const { error: insErr } = await supabase
               .from('exercise_logs')
               .insert({
                 workout_instance_id: workoutInstanceId,
                 routine_exercise_id: exerciseId,
+                exercise_id: rExercise.exercise_id,
+                athlete_id: athleteId,
                 set_number: setIndex + 1,
-                completed: true,
+                is_complete: true,
               });
+            if (insErr) console.error('Quick-complete insert failed:', insErr);
           } else {
             // Update existing to mark completed
-            await supabase
+            const { error: updErr } = await supabase
               .from('exercise_logs')
-              .update({ completed: true })
+              .update({ is_complete: true })
               .eq('id', existingLog.id);
+            if (updErr) console.error('Quick-complete update failed:', updErr);
           }
         }
       } catch (error) {
@@ -661,52 +676,62 @@ export default function WorkoutLoggerScreen() {
       const exercise = allExercises.find(ex => ex.id === exerciseId);
       if (!exercise) return;
 
-      // Check if log already exists
+      // exercise_logs schema:
+      //   actual_reps INT, actual_weight NUMERIC, actual_duration_seconds INT,
+      //   actual_distance NUMERIC, metric_data JSONB, notes TEXT.
+      // Previously this code wrote `reps`/`weight`/`time_seconds`/`distance`/
+      // `custom_metrics` columns that don't exist, so every insert was either
+      // silently rejected (NOT NULL on athlete_id/exercise_id) or coerced
+      // blank on reload. Map field → actual_<column> and emit the required
+      // ids.
       const { data: existingLog } = await supabase
         .from('exercise_logs')
-        .select('id, custom_metrics')
+        .select('id, metric_data')
         .eq('workout_instance_id', workoutInstanceId)
         .eq('routine_exercise_id', exerciseId)
         .eq('set_number', setIndex + 1)
         .maybeSingle();
 
-      // Build update/insert data
       const logData: any = {
         workout_instance_id: workoutInstanceId,
         routine_exercise_id: exerciseId,
+        exercise_id: exercise.exercise_id,
+        athlete_id: athleteId,
         set_number: setIndex + 1,
       };
 
-      // Map fields to DB columns
-      if (field === 'reps') logData.reps = value || null;
-      else if (field === 'weight') logData.weight = value || null;
-      else if (field === 'time_seconds') logData.time_seconds = value || null;
-      else if (field === 'distance') logData.distance = value || null;
+      // Built-in fields go to dedicated actual_<x> columns; custom
+      // measurements go into metric_data JSONB.
+      if (field === 'reps') logData.actual_reps = value === '' || value == null ? null : Number(value);
+      else if (field === 'weight') logData.actual_weight = value === '' || value == null ? null : Number(value);
+      else if (field === 'time_seconds') logData.actual_duration_seconds = value === '' || value == null ? null : Number(value);
+      else if (field === 'distance') logData.actual_distance = value === '' || value == null ? null : Number(value);
       else if (field === 'notes') logData.notes = value || null;
       else {
-        // Custom measurement - store in custom_metrics JSON
-        const existingMetrics = existingLog?.custom_metrics || {};
-        logData.custom_metrics = {
+        const existingMetrics = (existingLog as any)?.metric_data || {};
+        logData.metric_data = {
           ...existingMetrics,
           [field]: value,
         };
       }
 
       if (existingLog) {
-        // Update existing log
-        await supabase
+        const { error: updErr } = await supabase
           .from('exercise_logs')
           .update(logData)
           .eq('id', existingLog.id);
+        if (updErr) console.error('saveSetData update failed:', updErr, 'payload:', logData);
       } else {
-        // Insert new log
-        await supabase
+        const { error: insErr } = await supabase
           .from('exercise_logs')
           .insert(logData);
+        if (insErr) console.error('saveSetData insert failed:', insErr, 'payload:', logData);
       }
 
     } catch (error) {
-      // Silent fail - data will be saved on next attempt
+      // Surface unexpected runtime errors. Previously silent → coaches had
+      // no idea iOS athletes' logs were vanishing.
+      console.error('saveSetData unexpected error:', error);
     }
   };
 
@@ -1008,7 +1033,7 @@ export default function WorkoutLoggerScreen() {
     if (!workout || !currentRoutine || !activeExerciseId) return undefined;
     const routineIndex = workout.routines.findIndex(r => r.id === currentRoutine.id);
     const exerciseIndex = currentRoutine.routine_exercises
-      .filter(ex => !ex.exercises?.is_placeholder)
+      .filter(ex => !ex.is_placeholder)
       .findIndex(ex => ex.id === activeExerciseId);
     if (exerciseIndex === -1) return undefined;
     const letter = String.fromCharCode(65 + routineIndex); // A, B, C...

@@ -73,6 +73,10 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [reopening, setReopening] = useState(false);
+  // Custom measurements with primary/secondary metric IDs + names — used to
+  // give paired-metric logs (e.g. Baseball (5oz) reps + mph) proper labels
+  // and units instead of dumping raw numbers.
+  const [customMeasurements, setCustomMeasurements] = useState<any[]>([]);
 
   useEffect(() => {
     loadCompletedWorkout();
@@ -98,15 +102,31 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
             routines (
               id,
               name,
+              scheme,
               order_index,
               notes,
               description,
               text_info,
+              rest_between_rounds_seconds,
+              superset_block_name,
               routine_exercises (
                 id,
                 exercise_id,
                 sets,
                 order_index,
+                notes,
+                notes_only,
+                is_placeholder,
+                placeholder_name,
+                is_amrap,
+                selected_variation,
+                tempo,
+                rest_seconds,
+                metric_targets,
+                enabled_measurements,
+                set_configurations,
+                intensity_targets,
+                tracked_max_metrics,
                 exercises (
                   id,
                   name
@@ -142,6 +162,16 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
 
       if (logsError) throw logsError;
       setExerciseLogs(logsData || []);
+
+      // Fetch custom measurements once per screen open. Used to map raw
+      // metric IDs (e.g. 'baseball_5oz_mph') back to display names + units
+      // when formatting the per-set log lines.
+      const { data: measData } = await supabase
+        .from('custom_measurements')
+        .select(
+          'id, name, category, primary_metric_id, primary_metric_name, secondary_metric_id, secondary_metric_name'
+        );
+      setCustomMeasurements(measData || []);
 
     } catch (error) {
       console.error('Error loading completed workout:', error);
@@ -244,27 +274,56 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
       .sort((a, b) => a.set_number - b.set_number);
   }
 
+  // Paired-measurement aware log formatter. Looks up each metric_id in the
+  // custom_measurements library to render proper labels and unit suffixes,
+  // so a weighted-ball log of {baseball_5oz_reps: 8, baseball_5oz_mph: 85}
+  // shows "8 reps · 85 mph (Baseball (5oz))" instead of "8 · 85".
+  function labelForMetricId(metricId: string): { label: string; unit: string; group: string | null } {
+    // Built-ins first.
+    if (metricId === 'reps') return { label: 'Reps', unit: 'reps', group: null };
+    if (metricId === 'weight') return { label: 'Weight', unit: 'lbs', group: null };
+    if (metricId === 'time') return { label: 'Time', unit: 's', group: null };
+    if (metricId === 'distance') return { label: 'Distance', unit: '', group: null };
+    // Custom measurement: find by primary or secondary metric id.
+    for (const m of customMeasurements) {
+      if (m.primary_metric_id === metricId) {
+        return {
+          label: m.primary_metric_name || metricId,
+          unit: (m.primary_metric_name || '').toLowerCase(),
+          group: m.name,
+        };
+      }
+      if (m.secondary_metric_id === metricId) {
+        return {
+          label: m.secondary_metric_name || metricId,
+          unit: (m.secondary_metric_name || '').toLowerCase(),
+          group: m.name,
+        };
+      }
+    }
+    // Last-resort: render the raw id with no unit.
+    return { label: metricId, unit: '', group: null };
+  }
+
   function formatSetLog(log: ExerciseLog): string {
     const parts: string[] = [];
+    const groups = new Set<string>();
 
-    if (log.actual_reps != null) {
-      parts.push(`${log.actual_reps} reps`);
-    }
+    if (log.actual_reps != null) parts.push(`${log.actual_reps} reps`);
+    if (log.actual_weight != null) parts.push(`${log.actual_weight} lbs`);
 
-    if (log.actual_weight != null) {
-      parts.push(`${log.actual_weight} lbs`);
-    }
-
-    // Check metric_data for additional values
     if (log.metric_data) {
-      Object.entries(log.metric_data).forEach(([key, value]) => {
-        if (value != null && key !== 'reps' && key !== 'weight') {
-          parts.push(`${value}`);
-        }
-      });
+      for (const [key, value] of Object.entries(log.metric_data)) {
+        if (value == null || value === '' || key === 'reps' || key === 'weight') continue;
+        const info = labelForMetricId(key);
+        parts.push(info.unit ? `${value} ${info.unit}` : `${value}`);
+        if (info.group) groups.add(info.group);
+      }
     }
 
-    return parts.length > 0 ? parts.join(' @ ') : 'Completed';
+    if (parts.length === 0) return 'Completed';
+    const joined = parts.join(' · ');
+    return groups.size > 0 ? `${joined} (${Array.from(groups).join(', ')})` : joined;
   }
 
   if (loading) {
@@ -377,10 +436,20 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
               )}
 
               {routine.routine_exercises
-                .sort((a, b) => a.order_index - b.order_index)
-                .map((exercise, exerciseIndex) => {
+                .filter((ex: any) => !ex.is_placeholder || ex.notes_only)
+                .sort((a: any, b: any) => a.order_index - b.order_index)
+                .map((exercise: any, exerciseIndex: number) => {
                   const logs = getLogsForExercise(exercise.id);
                   const hasLogs = logs.length > 0;
+                  // CSV-imported notes-only blocks (and any other coach
+                  // instruction rows that landed as placeholders) carry their
+                  // title in placeholder_name, not exercises.name. Without
+                  // this fallback the renderer null-derefs and the entire
+                  // workout review screen crashes for plans with warmups.
+                  const displayName =
+                    exercise.exercises?.name ||
+                    exercise.placeholder_name ||
+                    'Unnamed';
 
                   return (
                     <View key={exercise.id} style={styles.exerciseCard}>
@@ -391,7 +460,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
                           </Text>
                         </View>
                         <Text style={styles.exerciseName}>
-                          {exercise.exercises.name}
+                          {displayName}
                         </Text>
                         {hasLogs ? (
                           <View style={styles.loggedBadge}>

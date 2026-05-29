@@ -3049,10 +3049,10 @@ export default function DashboardScreen({ navigation }: any) {
                                         )}
 
                                         {/* Exercises - Filter out placeholders */}
-                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.exercises?.is_placeholder).length > 0 && (
+                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.is_placeholder).length > 0 && (
                                           <View style={styles.exercisesList}>
                                             {routine.routine_exercises
-                                              .filter(re => !re.exercises?.is_placeholder)
+                                              .filter(re => !re.is_placeholder)
                                               .sort((a, b) => a.order_index - b.order_index)
                                               .map((routineExercise, exerciseIdx) => (
                                                 <View key={routineExercise.id} style={styles.exercisePreview}>

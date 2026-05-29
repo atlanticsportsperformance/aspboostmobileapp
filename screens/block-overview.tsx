@@ -261,7 +261,7 @@ export default function BlockOverview({
   const totalSets = workout.routines.reduce(
     (sum, routine) =>
       sum + routine.routine_exercises
-        .filter(ex => !ex.exercises?.is_placeholder)
+        .filter(ex => !ex.is_placeholder)
         .reduce((s, ex) => s + ex.sets, 0),
     0
   );
@@ -399,11 +399,22 @@ export default function BlockOverview({
               </View>
             )}
 
+            {/* Inter-round rest pill — coaches prescribe this on supersets/
+                circuits/EMOMs. Previously the value was on the routine row
+                but never surfaced to the athlete. */}
+            {isExpanded && (routine as any).rest_between_rounds_seconds ? (
+              <View style={styles.restBetweenRoundsRow}>
+                <Text style={styles.restBetweenRoundsLabel}>
+                  ⏱ Rest between rounds: {(routine as any).rest_between_rounds_seconds}s
+                </Text>
+              </View>
+            ) : null}
+
             {/* Exercise List */}
             {isExpanded && (
               <View style={styles.exerciseList}>
                 {routine.routine_exercises
-                  .filter(ex => !ex.exercises?.is_placeholder)
+                  .filter(ex => !ex.is_placeholder)
                   .map((exercise, exerciseIndex) => {
                   // Skip exercises where the join to exercises table failed
                   if (!exercise.exercises) {
@@ -997,6 +1008,22 @@ const styles = StyleSheet.create({
     color: '#D4D4D4',
     marginTop: 6,
     lineHeight: 18,
+  },
+  // Inter-round rest indicator on supersets/circuits/EMOMs.
+  restBetweenRoundsRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 6,
+    backgroundColor: 'rgba(155, 221, 255, 0.08)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#9BDDFF',
+  },
+  restBetweenRoundsLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9BDDFF',
   },
   // Structured instruction block (parsed notes_only content): header +
   // bulleted items + optional bracketed callouts.
