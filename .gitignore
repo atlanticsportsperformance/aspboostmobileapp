@@ -18,6 +18,13 @@ expo-env.d.ts
 *.key
 *.mobileprovision
 
+# Google Play Console service account JSON — used for headless eas submit.
+# Lives outside the repo root by default (see eas.json submit.production.android),
+# but belt-and-suspenders pattern match here in case anyone drops one in.
+*play-key*.json
+*play_key*.json
+google-play-*.json
+
 # Metro
 .metro-health-check*
 

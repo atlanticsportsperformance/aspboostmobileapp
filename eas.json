@@ -19,6 +19,11 @@
     "production": {
       "ios": {
         "ascAppId": "6755901105"
+      },
+      "android": {
+        "serviceAccountKeyPath": "../aspboost-play-key.json",
+        "track": "internal",
+        "releaseStatus": "draft"
       }
     }
   }
