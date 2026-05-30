@@ -23,6 +23,7 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
 import { calculateThrowingTarget, isThrowingVelocityMetric } from '../lib/throwingConversions';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
+import { getSupersetContext } from '../lib/supersetContext';
 
 // Types
 interface Measurement {
@@ -1208,11 +1209,17 @@ export default function ExerciseDetailView({
               .find(t => t !== null);
             if (!intensityTarget) return null;
 
+            // Build a readable label: "@90% of Set 1" for set-relative,
+            // "@70% of Barbell Bench max" for cross-exercise. Detect set-
+            // relative by the "Set N" pattern we set in sourceExerciseName.
+            const src = intensityTarget.sourceExerciseName || null;
+            const isSetRef = src ? /^Set \d/.test(src) : false;
+            const label = src
+              ? `@${intensityTarget.percent}% of ${src}${isSetRef ? '' : ' max'}`
+              : `@${intensityTarget.percent}%`;
             return (
               <View style={styles.intensityTag}>
-                <Text style={styles.intensityTagText}>
-                  @{intensityTarget.percent}%{intensityTarget.sourceExerciseName ? ` ${intensityTarget.sourceExerciseName}` : ''}
-                </Text>
+                <Text style={styles.intensityTagText}>{label}</Text>
               </View>
             );
           })()}
@@ -1343,6 +1350,25 @@ export default function ExerciseDetailView({
               <Text style={styles.setNotesText}>{setConfig.notes}</Text>
             </View>
           )}
+          {/* Athlete's own per-set notes — writes to exercise_logs.notes via
+              onInputChange(setIndex, 'notes', value). Debounced save lives in
+              the parent (WorkoutLoggerScreen.handleInputChange:836). Excluded
+              from the "set has data" check there so typing alone doesn't auto-
+              complete the set (line 843: key !== 'notes'). */}
+          <View style={styles.athleteNotesWrap}>
+            <Text style={styles.athleteNotesLabel}>Your notes</Text>
+            <TextInput
+              style={styles.athleteNotesInput}
+              value={(setData?.notes ?? '') as string}
+              onChangeText={(text) => onInputChangeWithTick(i, 'notes', text)}
+              placeholder="How did this set feel? Form cue, weight used, etc."
+              placeholderTextColor="rgba(255,255,255,0.28)"
+              multiline
+              maxLength={500}
+              returnKeyType="done"
+              blurOnSubmit
+            />
+          </View>
           {/* Subtle "Saved" affordance under the active set so the
               athlete sees their input landed (the actual DB write is
               debounced in the parent — this fires on every state push). */}
@@ -1591,6 +1617,55 @@ export default function ExerciseDetailView({
           </View>
         )
       )}
+
+      {/* Superset progress pills — for supersets/circuits, show a small
+          horizontal row of pills with each exercise's letter+number and
+          set progress ("A1 2/3 · A2 1/3"). Current exercise highlighted in
+          accent, completed exercises in green, others muted. */}
+      {(() => {
+        const ctx = getSupersetContext(routine, exercise.id, currentSetIndex, completedSets);
+        if (!ctx || ctx.exercises.length <= 1) return null;
+        return (
+          <View style={styles.supersetPillsWrap}>
+            {ctx.blockName && (
+              <Text style={styles.supersetBlockName}>{ctx.blockName.toUpperCase()}</Text>
+            )}
+            <View style={styles.supersetPillsRow}>
+              {(() => {
+                // Block letter reflects the routine's position in the
+                // workout (A, B, C…). blockLabel string from the parent
+                // would be ideal, but we can derive a stable letter from
+                // the FIRST exercise's code letter via the prop. Fall back
+                // to 'A' if not provided — same convention used elsewhere.
+                const blockLetter = (blockLabel || 'A').toString().charAt(0).toUpperCase();
+                return ctx.exercises.map((ex, idx) => {
+                  const code = `${blockLetter}${idx + 1}`; // A1, A2, A3…
+                  const isCurrent = idx === ctx.currentExerciseIndex;
+                  const isDone = ex.completedSets >= ex.totalSets;
+                  const stateStyle = isCurrent
+                    ? styles.supersetPillCurrent
+                    : isDone
+                    ? styles.supersetPillDone
+                    : styles.supersetPillIdle;
+                  const textStyle = isCurrent
+                    ? styles.supersetPillTextCurrent
+                    : isDone
+                    ? styles.supersetPillTextDone
+                    : styles.supersetPillTextIdle;
+                  return (
+                    <View key={ex.id} style={[styles.supersetPill, stateStyle]}>
+                      <Text style={[styles.supersetPillLetter, textStyle]}>{code}</Text>
+                      <Text style={[styles.supersetPillProgress, textStyle]}>
+                        {ex.completedSets}/{ex.totalSets}
+                      </Text>
+                    </View>
+                  );
+                });
+              })()}
+            </View>
+          </View>
+        );
+      })()}
 
       {/* Coach Instructions — prominent, always-visible panel that
           consolidates everything the athlete needs to read before lifting:
@@ -2337,6 +2412,56 @@ const styles = StyleSheet.create({
   // Prominent coach-instructions panel — replaces the muted accordion so the
   // athlete actually sees what the coach wrote, with bulleted parsing for
   // "; "-separated cues.
+  // Superset progress pills (A1 2/3 · A2 1/3)
+  supersetPillsWrap: {
+    marginHorizontal: 16,
+    marginTop: 10,
+  },
+  supersetBlockName: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: 'rgba(255,255,255,0.55)',
+    marginBottom: 6,
+  },
+  supersetPillsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  supersetPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  supersetPillCurrent: {
+    backgroundColor: 'rgba(155,221,255,0.16)',
+    borderColor: 'rgba(155,221,255,0.55)',
+  },
+  supersetPillDone: {
+    backgroundColor: 'rgba(0,255,85,0.10)',
+    borderColor: 'rgba(0,255,85,0.35)',
+  },
+  supersetPillIdle: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: 'rgba(255,255,255,0.10)',
+  },
+  supersetPillLetter: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  supersetPillProgress: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  supersetPillTextCurrent: { color: '#9BDDFF' },
+  supersetPillTextDone: { color: '#7ef0a8' },
+  supersetPillTextIdle: { color: 'rgba(255,255,255,0.6)' },
   coachPanel: {
     marginHorizontal: 16,
     marginTop: 10,
@@ -2874,6 +2999,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9BDDFF',
     fontStyle: 'italic',
+  },
+  // Athlete-typed "Your notes" — a small textbox under each set so the
+  // athlete can capture how it felt / form cues / actual weight, etc.
+  athleteNotesWrap: {
+    marginTop: 8,
+    paddingHorizontal: 2,
+  },
+  athleteNotesLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    color: 'rgba(255,255,255,0.55)',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  athleteNotesInput: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#E5E7EB',
+    minHeight: 36,
+    textAlignVertical: 'top',
   },
   notesField: {
     width: '100%',
