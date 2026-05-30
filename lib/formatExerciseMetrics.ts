@@ -224,6 +224,20 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
     summaries.push(displayText);
   });
 
+  // Prepend the set count to each measurement line so the overview reads as
+  // "3 × Reps (3)" instead of just "Reps (3)" — the legacy `sets × reps` path
+  // already does this; this brings parity to the modern set_configurations /
+  // metric_targets paths. Resolve the count from set_configurations.length,
+  // then fall back to exercise.sets.
+  const setCount =
+    (exercise.set_configurations && exercise.set_configurations.length) ||
+    exercise.sets ||
+    0;
+  if (setCount > 0 && summaries.length > 0) {
+    const decorated = summaries.map((s) => `${setCount} × ${s}`);
+    return decorated.join(separator);
+  }
+
   return summaries.join(separator);
 }
 

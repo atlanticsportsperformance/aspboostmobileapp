@@ -118,6 +118,12 @@ interface RoutineExercise {
   is_amrap?: boolean;
   set_configurations?: SetConfiguration[];
   selected_variation?: string | null;
+  // Notes-only / placeholder rows hold warm-up text (and similar) — they have
+  // no joined exercise. Typing them so they survive the prop boundary into
+  // ExerciseDetailView, where they're already handled.
+  is_placeholder?: boolean;
+  notes_only?: boolean;
+  placeholder_name?: string | null;
   exercises: Exercise;
 }
 
@@ -272,9 +278,13 @@ export default function WorkoutLoggerScreen() {
       // Sort routines and exercises by order_index, filter out placeholders
       workoutData.routines.sort((a: Routine, b: Routine) => a.order_index - b.order_index);
       workoutData.routines.forEach((routine: Routine) => {
-        // Filter out placeholder exercises
+        // Keep notes_only rows (e.g. warm-up text blocks stored as
+        // is_placeholder=true, notes_only=true, exercises=null) so the block
+        // can render their placeholder_name + parsed bulleted notes. Drop
+        // only "true" placeholders (placeholder without notes_only).
+        // Matches CompletedWorkoutScreen.tsx:439.
         routine.routine_exercises = routine.routine_exercises.filter(
-          (re: RoutineExercise) => !re.is_placeholder
+          (re: RoutineExercise) => !re.is_placeholder || re.notes_only
         );
         routine.routine_exercises.sort((a, b) => a.order_index - b.order_index);
 

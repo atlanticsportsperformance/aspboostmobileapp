@@ -414,15 +414,21 @@ export default function BlockOverview({
             {isExpanded && (
               <View style={styles.exerciseList}>
                 {routine.routine_exercises
-                  .filter(ex => !ex.is_placeholder)
+                  // Keep notes_only / placeholder rows (e.g. warm-up text blocks
+                  // whose joined exercise is null) so the block renders their
+                  // placeholder_name + parsed bulleted notes. Drop only "true"
+                  // placeholders. Matches CompletedWorkoutScreen.tsx:439.
+                  .filter(ex => !ex.is_placeholder || (ex as any).notes_only)
                   .map((exercise, exerciseIndex) => {
-                  // Skip exercises where the join to exercises table failed
-                  if (!exercise.exercises) {
+                  const isNotesOnlyRow = !exercise.exercises || !!(exercise as any).notes_only;
+                  // Bail only when we have neither an exercise join NOR notes-only
+                  // content — those rows have nothing to show.
+                  if (!exercise.exercises && !isNotesOnlyRow) {
                     console.warn(`Missing exercise data for routine_exercise ${exercise.id}`);
                     return null;
                   }
                   const exerciseCode = getExerciseCode(routineIndex, exerciseIndex);
-                  const videoId = getYouTubeVideoId(exercise.exercises.video_url || null);
+                  const videoId = getYouTubeVideoId(exercise.exercises?.video_url || null);
                   const isCompleted = isExerciseCompleted(exercise.id, completedSets);
                   const hasPRTracking = exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0;
 
@@ -492,7 +498,7 @@ export default function BlockOverview({
                         {/* Exercise Name Row */}
                         <View style={styles.exerciseNameRow}>
                           <Text style={styles.exerciseName} numberOfLines={2}>
-                            {exercise.exercises.name}
+                            {exercise.exercises?.name || (exercise as any).placeholder_name || 'Exercise'}
                           </Text>
                           {exercise.selected_variation && (
                             <Text style={styles.variationText}> ({exercise.selected_variation})</Text>
