@@ -1350,25 +1350,6 @@ export default function ExerciseDetailView({
               <Text style={styles.setNotesText}>{setConfig.notes}</Text>
             </View>
           )}
-          {/* Athlete's own per-set notes — writes to exercise_logs.notes via
-              onInputChange(setIndex, 'notes', value). Debounced save lives in
-              the parent (WorkoutLoggerScreen.handleInputChange:836). Excluded
-              from the "set has data" check there so typing alone doesn't auto-
-              complete the set (line 843: key !== 'notes'). */}
-          <View style={styles.athleteNotesWrap}>
-            <Text style={styles.athleteNotesLabel}>Your notes</Text>
-            <TextInput
-              style={styles.athleteNotesInput}
-              value={(setData?.notes ?? '') as string}
-              onChangeText={(text) => onInputChangeWithTick(i, 'notes', text)}
-              placeholder="How did this set feel? Form cue, weight used, etc."
-              placeholderTextColor="rgba(255,255,255,0.28)"
-              multiline
-              maxLength={500}
-              returnKeyType="done"
-              blurOnSubmit
-            />
-          </View>
           {/* Subtle "Saved" affordance under the active set so the
               athlete sees their input landed (the actual DB write is
               debounced in the parent — this fires on every state push). */}
@@ -2999,32 +2980,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9BDDFF',
     fontStyle: 'italic',
-  },
-  // Athlete-typed "Your notes" — a small textbox under each set so the
-  // athlete can capture how it felt / form cues / actual weight, etc.
-  athleteNotesWrap: {
-    marginTop: 8,
-    paddingHorizontal: 2,
-  },
-  athleteNotesLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    color: 'rgba(255,255,255,0.55)',
-    textTransform: 'uppercase',
-    marginBottom: 4,
-  },
-  athleteNotesInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: '#E5E7EB',
-    minHeight: 36,
-    textAlignVertical: 'top',
   },
   notesField: {
     width: '100%',
