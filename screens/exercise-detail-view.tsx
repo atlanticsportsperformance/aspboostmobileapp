@@ -1592,39 +1592,91 @@ export default function ExerciseDetailView({
         )
       )}
 
-      {/* Exercise Notes / Description — collapsible chip. Coach notes
-          and the exercise description used to claim ~80px even when read;
-          now they live behind a tap-to-expand row so the active set sits
-          higher on the screen. Default expanded so first-time athletes
-          still see it; one tap collapses. */}
-      {(exercise.notes || exercise.exercises.description) && (
-        <View style={styles.notesAccordion}>
-          <TouchableOpacity
-            style={styles.notesAccordionHeader}
-            onPress={() => setNotesExpanded((v) => !v)}
-            activeOpacity={0.7}
-            hitSlop={6}
-          >
-            <Text style={styles.notesAccordionIcon}>📝</Text>
-            <Text style={styles.notesAccordionTitle}>
-              {exercise.notes ? 'Coach note' : 'How it works'}
-            </Text>
-            <Text style={styles.notesAccordionChev}>{notesExpanded ? '▾' : '▸'}</Text>
-          </TouchableOpacity>
-          {notesExpanded && (
-            <View style={styles.notesAccordionBody}>
-              {exercise.notes && (
-                <Text style={styles.coachNoteText}>{exercise.notes}</Text>
-              )}
-              {exercise.exercises.description && (
-                <Text style={styles.descriptionText}>
-                  {exercise.exercises.description}
-                </Text>
-              )}
-            </View>
-          )}
-        </View>
-      )}
+      {/* Coach Instructions — prominent, always-visible panel that
+          consolidates everything the athlete needs to read before lifting:
+          block-level notes (routine.notes / text_info), the coach's
+          exercise-level note (parsed with the same bullet logic the
+          overview uses, so "; "-separated cues become a checklist), and
+          the exercise library description in a muted style.
+          Visible by default; tap to collapse if it's in the way. */}
+      {(() => {
+        const trim = (s: string | null | undefined) => (s ?? '').trim();
+        const routineNote = trim((routine as any).notes);
+        const routineTextInfo = trim((routine as any).text_info);
+        const exerciseCoachNote = trim((exercise as any).notes);
+        const exerciseDescription = trim((exercise.exercises as any)?.description);
+        const hasAnything =
+          !!routineNote || !!routineTextInfo || !!exerciseCoachNote || !!exerciseDescription;
+        if (!hasAnything) return null;
+        const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
+        return (
+          <View style={styles.coachPanel}>
+            <TouchableOpacity
+              style={styles.coachPanelHeader}
+              onPress={() => setNotesExpanded((v) => !v)}
+              activeOpacity={0.7}
+              hitSlop={6}
+            >
+              <Text style={styles.coachPanelIcon}>📝</Text>
+              <Text style={styles.coachPanelTitle}>Coach Instructions</Text>
+              <Text style={styles.coachPanelChev}>{notesExpanded ? '▾' : '▸'}</Text>
+            </TouchableOpacity>
+            {notesExpanded && (
+              <View style={styles.coachPanelBody}>
+                {/* Block context — what the coach said for this section */}
+                {!!routineNote && (
+                  <View style={styles.coachSection}>
+                    <Text style={styles.coachSectionLabel}>BLOCK NOTE</Text>
+                    <Text style={styles.coachSectionBody}>{routineNote}</Text>
+                  </View>
+                )}
+                {!!routineTextInfo && (
+                  <View style={styles.coachSection}>
+                    <Text style={styles.coachSectionLabel}>BLOCK INFO</Text>
+                    <Text style={styles.coachSectionBody}>{routineTextInfo}</Text>
+                  </View>
+                )}
+                {/* Exercise-level coach note, bullet-parsed */}
+                {!!parsedNote && (parsedNote.sections.length > 0 || parsedNote.callouts.length > 0) && (
+                  <View style={styles.coachSection}>
+                    <Text style={styles.coachSectionLabel}>COACH NOTE</Text>
+                    {parsedNote.sections.map((section, sIdx) => (
+                      <View key={sIdx} style={sIdx > 0 ? { marginTop: 6 } : undefined}>
+                        {!!section.header && (
+                          <Text style={styles.coachSectionHeader}>{section.header}</Text>
+                        )}
+                        {section.items.map((item, iIdx) => (
+                          <View key={iIdx} style={styles.coachBulletRow}>
+                            <Text style={styles.coachBullet}>•</Text>
+                            <Text style={styles.coachBulletText}>{item}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    ))}
+                    {parsedNote.callouts.length > 0 && (
+                      <View style={{ marginTop: 6 }}>
+                        {parsedNote.callouts.map((c, cIdx) => (
+                          <View key={cIdx} style={styles.coachBulletRow}>
+                            <Text style={styles.coachCalloutIcon}>⚠</Text>
+                            <Text style={styles.coachCalloutText}>{c}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
+                {/* Library description — muted, italic, last */}
+                {!!exerciseDescription && (
+                  <View style={styles.coachSection}>
+                    <Text style={styles.coachSectionLabel}>HOW IT WORKS</Text>
+                    <Text style={styles.coachDescription}>{exerciseDescription}</Text>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        );
+      })()}
 
       {/* Sets Section */}
       <ScrollView
@@ -2281,6 +2333,92 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 8,
     marginBottom: 8,
+  },
+  // Prominent coach-instructions panel — replaces the muted accordion so the
+  // athlete actually sees what the coach wrote, with bulleted parsing for
+  // "; "-separated cues.
+  coachPanel: {
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 10,
+    backgroundColor: 'rgba(155,221,255,0.05)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#9BDDFF',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.18)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  coachPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  coachPanelIcon: { fontSize: 14 },
+  coachPanelTitle: {
+    flex: 1,
+    color: '#e5e7eb',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  coachPanelChev: { color: '#9CA3AF', fontSize: 14 },
+  coachPanelBody: { marginTop: 10, gap: 12 },
+  coachSection: { gap: 4 },
+  coachSectionLabel: {
+    color: '#9BDDFF',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+  },
+  coachSectionBody: {
+    color: '#E5E7EB',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  coachSectionHeader: {
+    color: '#E5E7EB',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  coachBulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 3,
+  },
+  coachBullet: {
+    color: '#9BDDFF',
+    fontSize: 14,
+    lineHeight: 19,
+    width: 10,
+  },
+  coachBulletText: {
+    flex: 1,
+    color: '#E5E7EB',
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  coachCalloutIcon: {
+    color: '#FBBF24',
+    fontSize: 13,
+    lineHeight: 19,
+    width: 14,
+  },
+  coachCalloutText: {
+    flex: 1,
+    color: '#FCD34D',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  coachDescription: {
+    color: '#A3A3A3',
+    fontSize: 13,
+    lineHeight: 19,
+    fontStyle: 'italic',
   },
   notesAccordionHeader: {
     flexDirection: 'row',
