@@ -3043,12 +3043,28 @@ export default function DashboardScreen({ navigation }: any) {
                                           <Text style={styles.routinePreviewName}>{routine.name}</Text>
                                         </View>
 
-                                        {/* Routine Notes/Info */}
-                                        {(routine.notes || routine.text_info) && (
-                                          <Text style={styles.routinePreviewInfo}>
-                                            {routine.notes || routine.text_info}
-                                          </Text>
-                                        )}
+                                        {/* Block (routine) notes & text_info — rendered separately
+                                            and bulleted line-by-line. Mobile previously showed only
+                                            one of the two and as a single block of text, so multi-
+                                            line coach notes lost their structure. */}
+                                        {[routine.notes, routine.text_info].map((src, srcIdx) => {
+                                          if (!src || !String(src).trim()) return null;
+                                          const lines = String(src)
+                                            .split(/\r?\n/)
+                                            .map((l) => l.replace(/^\s*[-•*]\s*/, '').trim())
+                                            .filter(Boolean);
+                                          if (lines.length === 0) return null;
+                                          return (
+                                            <View key={`note-${srcIdx}`} style={styles.routineNoteList}>
+                                              {lines.map((line, i) => (
+                                                <View key={i} style={styles.routineNoteItem}>
+                                                  <Text style={styles.routineNoteBullet}>•</Text>
+                                                  <Text style={styles.routineNoteText}>{line}</Text>
+                                                </View>
+                                              ))}
+                                            </View>
+                                          );
+                                        })}
 
                                         {/* Exercises - Filter out placeholders AND orphaned rows
                                             whose exercises ref is null (the underlying exercise
@@ -4234,6 +4250,27 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.6)',
     marginBottom: 8,
     fontStyle: 'italic',
+  },
+  // Bulleted block-level (routine) notes / text_info, one line per bullet.
+  routineNoteList: {
+    marginBottom: 8,
+    gap: 3,
+  },
+  routineNoteItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  routineNoteBullet: {
+    fontSize: 13,
+    color: 'rgba(155,221,255,0.85)',
+    width: 12,
+    lineHeight: 17,
+  },
+  routineNoteText: {
+    flex: 1,
+    fontSize: 12.5,
+    color: 'rgba(255, 255, 255, 0.78)',
+    lineHeight: 17,
   },
   exercisesList: {
     gap: 6,
