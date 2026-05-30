@@ -781,7 +781,7 @@ export default function DashboardScreen({ navigation }: any) {
 
         setResumeWorkoutData({
           instanceId: workout.id,
-          workoutName: workout.workouts.name,
+          workoutName: workout.workouts?.name || 'Workout',
           elapsedTime,
         });
         setShowResumeModal(true);
@@ -3003,8 +3003,8 @@ export default function DashboardScreen({ navigation }: any) {
                             activeOpacity={0.7}
                           >
                             <View style={styles.workoutCardHeaderLeft}>
-                              <Text style={styles.workoutCardName}>{workout.workouts.name}</Text>
-                              {workout.workouts.estimated_duration_minutes && (
+                              <Text style={styles.workoutCardName}>{workout.workouts?.name || 'Workout'}</Text>
+                              {workout.workouts?.estimated_duration_minutes && (
                                 <Text style={styles.workoutCardDuration}>
                                   {workout.workouts.estimated_duration_minutes} min
                                 </Text>
@@ -3024,14 +3024,14 @@ export default function DashboardScreen({ navigation }: any) {
                           {isExpanded && (
                             <View style={styles.workoutPreview}>
                               {/* Workout Notes */}
-                              {workout.workouts.notes && (
+                              {workout.workouts?.notes && (
                                 <View style={styles.workoutPreviewNotes}>
                                   <Text style={styles.workoutPreviewNotesText}>{workout.workouts.notes}</Text>
                                 </View>
                               )}
 
                               {/* Routines */}
-                              {workout.workouts.routines && workout.workouts.routines.length > 0 && (
+                              {workout.workouts?.routines && workout.workouts.routines.length > 0 && (
                                 <View style={styles.routinesList}>
                                   {workout.workouts.routines
                                     .sort((a, b) => a.order_index - b.order_index)
@@ -3048,11 +3048,13 @@ export default function DashboardScreen({ navigation }: any) {
                                           </Text>
                                         )}
 
-                                        {/* Exercises - Filter out placeholders */}
-                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.is_placeholder).length > 0 && (
+                                        {/* Exercises - Filter out placeholders AND orphaned rows
+                                            whose exercises ref is null (the underlying exercise
+                                            was deleted) — those would crash the render. */}
+                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.is_placeholder && re.exercises).length > 0 && (
                                           <View style={styles.exercisesList}>
                                             {routine.routine_exercises
-                                              .filter(re => !re.is_placeholder)
+                                              .filter(re => !re.is_placeholder && re.exercises)
                                               .sort((a, b) => a.order_index - b.order_index)
                                               .map((routineExercise, exerciseIdx) => (
                                                 <View key={routineExercise.id} style={styles.exercisePreview}>
@@ -3060,7 +3062,7 @@ export default function DashboardScreen({ navigation }: any) {
                                                     {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
                                                   </Text>
                                                   <Text style={styles.exercisePreviewName}>
-                                                    {routineExercise.exercises.name}
+                                                    {routineExercise.exercises?.name || 'Exercise'}
                                                     {routineExercise.selected_variation && (
                                                       <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
                                                     )}
