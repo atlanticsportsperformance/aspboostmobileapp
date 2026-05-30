@@ -2153,6 +2153,8 @@ export default function DashboardScreen({ navigation }: any) {
                   selected_variation,
                   notes,
                   set_configurations,
+                  notes_only,
+                  placeholder_name,
                   exercises (
                     id,
                     name,
@@ -3066,17 +3068,46 @@ export default function DashboardScreen({ navigation }: any) {
                                           );
                                         })}
 
-                                        {/* Exercises - Filter out placeholders AND orphaned rows
-                                            whose exercises ref is null (the underlying exercise
-                                            was deleted) — those would crash the render. */}
-                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !re.is_placeholder && re.exercises).length > 0 && (
+                                        {/* Exercises — matches web filter: keep notes-only /
+                                            placeholder rows (e.g. Warm-Up text blocks) and only
+                                            drop rows whose joined exercise itself is flagged as a
+                                            placeholder. Notes-only rows fall back to placeholder_name
+                                            as the title and render their multi-item `notes` as a
+                                            bulleted list (semicolon- or newline-separated). */}
+                                        {routine.routine_exercises && routine.routine_exercises.filter(re => !(re as any).exercises?.is_placeholder).length > 0 && (
                                           <View style={styles.exercisesList}>
                                             {routine.routine_exercises
-                                              .filter(re => !re.is_placeholder && re.exercises)
+                                              .filter(re => !(re as any).exercises?.is_placeholder)
                                               .sort((a, b) => a.order_index - b.order_index)
                                               .map((routineExercise, exerciseIdx) => {
                                                 const reAny = routineExercise as any;
-                                                const exerciseNote: string | null = reAny.notes ?? null;
+                                                const displayName: string =
+                                                  reAny.exercises?.name || reAny.placeholder_name || 'Exercise';
+                                                const isNotesOnly: boolean = !!reAny.notes_only || !reAny.exercises;
+                                                const rawNotes: string | null = reAny.notes ?? null;
+                                                // Bullet-split coach notes: split on newlines + semicolons. If the
+                                                // first chunk is a "HEADER:" lead-in, lift it out as a header line.
+                                                let noteHeader: string | null = null;
+                                                let noteBullets: string[] = [];
+                                                if (rawNotes && String(rawNotes).trim()) {
+                                                  const text = String(rawNotes);
+                                                  const colonIdx = text.indexOf(': ');
+                                                  let body = text;
+                                                  if (colonIdx > 0 && colonIdx < 80) {
+                                                    noteHeader = text.slice(0, colonIdx).trim();
+                                                    body = text.slice(colonIdx + 2);
+                                                  }
+                                                  noteBullets = body
+                                                    .split(/\r?\n+|;\s*/)
+                                                    .map((s) => s.replace(/^\s*[-•*]\s*/, '').trim())
+                                                    .filter(Boolean);
+                                                  // If no real split happened and we lifted a header, fall back to
+                                                  // rendering header alone (no empty bullet list).
+                                                  if (noteBullets.length === 1 && !noteHeader) {
+                                                    noteHeader = noteBullets[0];
+                                                    noteBullets = [];
+                                                  }
+                                                }
                                                 const setNotes: { setNum: number; notes: string }[] = Array.isArray(reAny.set_configurations)
                                                   ? reAny.set_configurations
                                                       .map((s: any, i: number) => ({ setNum: i + 1, notes: s?.notes }))
@@ -3085,21 +3116,31 @@ export default function DashboardScreen({ navigation }: any) {
                                                 return (
                                                   <View key={routineExercise.id} style={styles.exercisePreview}>
                                                     <View style={{ flexDirection: 'row', flex: 1 }}>
-                                                      <Text style={styles.exercisePreviewCode}>
-                                                        {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
-                                                      </Text>
+                                                      {/* Skip the A1/B2 code prefix for pure notes-only rows
+                                                          (warm-up text blocks aren't lifts to number). */}
+                                                      {!isNotesOnly && (
+                                                        <Text style={styles.exercisePreviewCode}>
+                                                          {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
+                                                        </Text>
+                                                      )}
                                                       <View style={{ flex: 1 }}>
                                                         <Text style={styles.exercisePreviewName}>
-                                                          {routineExercise.exercises?.name || 'Exercise'}
+                                                          {displayName}
                                                           {routineExercise.selected_variation && (
                                                             <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
                                                           )}
                                                         </Text>
-                                                        {/* Exercise-level coach note */}
-                                                        {exerciseNote && (
-                                                          <Text style={styles.exerciseNote}>{`• ${exerciseNote}`}</Text>
+                                                        {/* Optional header line lifted from "HEADER: items" notes */}
+                                                        {noteHeader && (
+                                                          <Text style={styles.exerciseNoteHeader}>{noteHeader}</Text>
                                                         )}
-                                                        {/* Per-set notes — bulleted list */}
+                                                        {/* Bulleted coach note items */}
+                                                        {noteBullets.map((line, i) => (
+                                                          <Text key={`n-${i}`} style={styles.exerciseNote}>
+                                                            {`• ${line}`}
+                                                          </Text>
+                                                        ))}
+                                                        {/* Per-set notes — bulleted */}
                                                         {setNotes.map((s) => (
                                                           <Text key={`s-${s.setNum}`} style={styles.exerciseNote}>
                                                             {`• Set ${s.setNum}: ${s.notes}`}
@@ -4304,6 +4345,15 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 3,
     lineHeight: 16,
+  },
+  // Lifted "HEADER:" line that precedes a bulleted notes list (e.g. warm-up text).
+  exerciseNoteHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.82)',
+    marginTop: 4,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   exercisePreviewSets: {
     fontSize: 12,
