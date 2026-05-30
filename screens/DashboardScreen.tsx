@@ -2151,6 +2151,8 @@ export default function DashboardScreen({ navigation }: any) {
                   sets,
                   metric_targets,
                   selected_variation,
+                  notes,
+                  set_configurations,
                   exercises (
                     id,
                     name,
@@ -3056,19 +3058,42 @@ export default function DashboardScreen({ navigation }: any) {
                                             {routine.routine_exercises
                                               .filter(re => !re.is_placeholder && re.exercises)
                                               .sort((a, b) => a.order_index - b.order_index)
-                                              .map((routineExercise, exerciseIdx) => (
-                                                <View key={routineExercise.id} style={styles.exercisePreview}>
-                                                  <Text style={styles.exercisePreviewCode}>
-                                                    {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
-                                                  </Text>
-                                                  <Text style={styles.exercisePreviewName}>
-                                                    {routineExercise.exercises?.name || 'Exercise'}
-                                                    {routineExercise.selected_variation && (
-                                                      <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
-                                                    )}
-                                                  </Text>
-                                                </View>
-                                              ))}
+                                              .map((routineExercise, exerciseIdx) => {
+                                                const reAny = routineExercise as any;
+                                                const exerciseNote: string | null = reAny.notes ?? null;
+                                                const setNotes: { setNum: number; notes: string }[] = Array.isArray(reAny.set_configurations)
+                                                  ? reAny.set_configurations
+                                                      .map((s: any, i: number) => ({ setNum: i + 1, notes: s?.notes }))
+                                                      .filter((s: { notes?: string | null }) => s.notes && String(s.notes).trim().length > 0)
+                                                  : [];
+                                                return (
+                                                  <View key={routineExercise.id} style={styles.exercisePreview}>
+                                                    <View style={{ flexDirection: 'row', flex: 1 }}>
+                                                      <Text style={styles.exercisePreviewCode}>
+                                                        {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
+                                                      </Text>
+                                                      <View style={{ flex: 1 }}>
+                                                        <Text style={styles.exercisePreviewName}>
+                                                          {routineExercise.exercises?.name || 'Exercise'}
+                                                          {routineExercise.selected_variation && (
+                                                            <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
+                                                          )}
+                                                        </Text>
+                                                        {/* Exercise-level coach note */}
+                                                        {exerciseNote && (
+                                                          <Text style={styles.exerciseNote}>{`• ${exerciseNote}`}</Text>
+                                                        )}
+                                                        {/* Per-set notes — bulleted list */}
+                                                        {setNotes.map((s) => (
+                                                          <Text key={`s-${s.setNum}`} style={styles.exerciseNote}>
+                                                            {`• Set ${s.setNum}: ${s.notes}`}
+                                                          </Text>
+                                                        ))}
+                                                      </View>
+                                                    </View>
+                                                  </View>
+                                                );
+                                              })}
                                           </View>
                                         )}
                                       </View>
@@ -4234,6 +4259,14 @@ const styles = StyleSheet.create({
     color: '#C084FC',
     fontSize: 13,
     fontWeight: 'normal',
+  },
+  // Bulleted coach note rendered under an exercise (exercise-level or per-set).
+  exerciseNote: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontStyle: 'italic',
+    marginTop: 3,
+    lineHeight: 16,
   },
   exercisePreviewSets: {
     fontSize: 12,
