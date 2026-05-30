@@ -459,38 +459,46 @@ export default function BlockOverview({
                     <TouchableOpacity
                       key={exercise.id}
                       style={styles.exerciseCard}
-                      onPress={() => onExercisePress(exercise.id)}
-                      activeOpacity={0.7}
+                      // Notes-only rows have no exercise-detail page to open
+                      // (no joined exercise) and opening one crashes. They also
+                      // already show their full content inline, so tapping the
+                      // card is pointless. Make it a no-op + non-feedback press.
+                      onPress={isNotesOnlyRow ? undefined : () => onExercisePress(exercise.id)}
+                      activeOpacity={isNotesOnlyRow ? 1 : 0.7}
                     >
                       {/* Left Section */}
                       <View style={styles.exerciseLeft}>
                         {/* Exercise Code - Simple text */}
                         <Text style={styles.exerciseCodeText}>{exerciseCode}</Text>
 
-                        {/* Video Thumbnail */}
-                        <TouchableOpacity
-                          style={styles.videoThumbnail}
-                          onPress={(e) => {
-                            if (videoId) {
-                              e.stopPropagation();
-                              openVideoModal(videoId);
-                            }
-                          }}
-                          activeOpacity={videoId ? 0.7 : 1}
-                          disabled={!videoId}
-                        >
-                          {videoId ? (
-                            <Image
-                              source={{ uri: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` }}
-                              style={styles.thumbnailImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.noVideoPlaceholder}>
-                              <Text style={styles.playIcon}>▶</Text>
-                            </View>
-                          )}
-                        </TouchableOpacity>
+                        {/* Video Thumbnail — hidden for notes-only rows (no
+                            exercise = no video; the empty ▶ icon previously
+                            shown would crash on tap). */}
+                        {!isNotesOnlyRow && (
+                          <TouchableOpacity
+                            style={styles.videoThumbnail}
+                            onPress={(e) => {
+                              if (videoId) {
+                                e.stopPropagation();
+                                openVideoModal(videoId);
+                              }
+                            }}
+                            activeOpacity={videoId ? 0.7 : 1}
+                            disabled={!videoId}
+                          >
+                            {videoId ? (
+                              <Image
+                                source={{ uri: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` }}
+                                style={styles.thumbnailImage}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <View style={styles.noVideoPlaceholder}>
+                                <Text style={styles.playIcon}>▶</Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        )}
                       </View>
 
                       {/* Center Section */}
