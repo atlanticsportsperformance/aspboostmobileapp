@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   ActivityIndicator,
@@ -153,7 +153,12 @@ export default function WorkoutLoggerScreen() {
   // Mound velocity for throwing velocity fallback (5oz baseball PR)
   const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
   const [prAlert, setPRAlert] = useState<PRAlert | null>(null);
-  const [saveTimeout, setSaveTimeout] = useState<NodeJS.Timeout | null>(null);
+  // Debounce handle for saveSetData. useRef (not useState) because rapid
+  // input changes need to read+clear the previous timeout SYNCHRONOUSLY —
+  // useState batches and a second call within the same render tick would
+  // see the stale `null` and fail to cancel the prior timeout, firing both
+  // writes (one of them with the wrong exerciseId after navigation).
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
@@ -274,6 +279,13 @@ export default function WorkoutLoggerScreen() {
         .single();
 
       if (workoutError) throw workoutError;
+      // `.single()` returns null data without an error when the row doesn't
+      // exist (e.g. coach deleted the workout between assignment and the
+      // athlete opening it). Without this guard the .sort() below throws
+      // TypeError before the catch block can render a friendly alert.
+      if (!workoutData) {
+        throw new Error('Workout not found — it may have been deleted.');
+      }
 
       // Sort routines and exercises by order_index, filter out placeholders
       workoutData.routines.sort((a: Routine, b: Routine) => a.order_index - b.order_index);
@@ -309,10 +321,21 @@ export default function WorkoutLoggerScreen() {
       });
       setCurrentSetIndexes(indexes);
 
-      // Fetch custom measurements
-      const { data: measurements } = await supabase
-        .from('custom_measurements')
-        .select('*');
+      // Fetch custom measurements scoped to the athlete's org. Platform-wide
+      // entries (org_id IS NULL) stay visible to everyone. Without this
+      // filter the dropdown leaks every facility's measurement library.
+      const { data: athleteOrgRow } = await supabase
+        .from('athletes')
+        .select('org_id')
+        .eq('id', athleteId)
+        .maybeSingle();
+      const measQuery = athleteOrgRow?.org_id
+        ? supabase
+            .from('custom_measurements')
+            .select('*')
+            .or(`org_id.eq.${athleteOrgRow.org_id},org_id.is.null`)
+        : supabase.from('custom_measurements').select('*').is('org_id', null);
+      const { data: measurements } = await measQuery;
       setCustomMeasurements(measurements || []);
 
       // Collect all exercise IDs we need maxes for (current exercises + source exercises)
@@ -765,17 +788,27 @@ export default function WorkoutLoggerScreen() {
       const currentMax = getMaxValue(exercise.exercise_id, metric) || 0;
 
       if (value > currentMax) {
-        // NEW PR!
+        // NEW PR! Upsert against the partial unique index
+        // idx_athlete_maxes_exercise_unique = (athlete_id, exercise_id,
+        // metric_id) WHERE exercise_id IS NOT NULL — so the same metric
+        // for the same exercise updates in place instead of stacking
+        // duplicate rows on every successive beat in a session.
+        // source: 'logged' makes the "Auto" badge render in PerformanceScreen's
+        // MaxCard (line 1318) since the row originated from a live workout
+        // rather than a manual entry.
         await supabase
           .from('athlete_maxes')
-          .upsert({
-            athlete_id: athleteId,
-            exercise_id: exercise.exercise_id,
-            metric_id: metric,
-            max_value: value,
-            achieved_on: new Date().toISOString(),
-            workout_instance_id: workoutInstanceId,
-          });
+          .upsert(
+            {
+              athlete_id: athleteId,
+              exercise_id: exercise.exercise_id,
+              metric_id: metric,
+              max_value: value,
+              achieved_on: new Date().toISOString(),
+              source: 'logged',
+            },
+            { onConflict: 'athlete_id,exercise_id,metric_id' },
+          );
 
         // Update local state
         setAthleteMaxes(prev => ({
@@ -830,12 +863,15 @@ export default function WorkoutLoggerScreen() {
       };
     });
 
-    // 2. Save to database (debounced)
-    if (saveTimeout) clearTimeout(saveTimeout);
-    const timeout = setTimeout(() => {
+    // 2. Save to database (debounced). targetExerciseId is captured in the
+    // closure here — even if the user navigates to a different exercise
+    // before the 500ms elapses, the pending write still lands on the
+    // correct row. The ref avoids the React-state-batching race that would
+    // otherwise let a rapid second call skip cancelling the prior timeout.
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
       saveSetData(targetExerciseId, setIndex, field, value);
     }, 500);
-    setSaveTimeout(timeout);
 
     // 3. Check if set has data now
     const setData = exerciseInputs[targetExerciseId]?.[setIndex] || { [field]: value };
@@ -860,7 +896,7 @@ export default function WorkoutLoggerScreen() {
         checkAndSavePR(targetExerciseId, field, numValue);
       }
     }
-  }, [activeExerciseId, allExercises, exerciseInputs, saveTimeout]);
+  }, [activeExerciseId, allExercises, exerciseInputs]);
 
   // Handle next set / done - behavior changes based on routine scheme
   const handleNextSet = useCallback(() => {

@@ -22,6 +22,8 @@ interface ExerciseLog {
   set_number: number;
   actual_reps: number | null;
   actual_weight: number | null;
+  actual_duration_seconds: number | null;
+  actual_distance: number | null;
   metric_data: Record<string, any> | null;
   exercises: {
     id: string;
@@ -151,6 +153,8 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           set_number,
           actual_reps,
           actual_weight,
+          actual_duration_seconds,
+          actual_distance,
           metric_data,
           exercises (
             id,
@@ -163,14 +167,28 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
       if (logsError) throw logsError;
       setExerciseLogs(logsData || []);
 
-      // Fetch custom measurements once per screen open. Used to map raw
-      // metric IDs (e.g. 'baseball_5oz_mph') back to display names + units
-      // when formatting the per-set log lines.
-      const { data: measData } = await supabase
-        .from('custom_measurements')
-        .select(
-          'id, name, category, primary_metric_id, primary_metric_name, secondary_metric_id, secondary_metric_name'
-        );
+      // Fetch custom measurements scoped to the athlete's org. Platform-wide
+      // entries (org_id IS NULL) stay visible to everyone. Without the filter
+      // the dropdown leaks every other facility's measurement library.
+      const athleteOrgId =
+        workoutData && (workoutData as any).athlete_id
+          ? (
+              await supabase
+                .from('athletes')
+                .select('org_id')
+                .eq('id', (workoutData as any).athlete_id)
+                .maybeSingle()
+            ).data?.org_id ?? null
+          : null;
+      const measCols =
+        'id, name, category, primary_metric_id, primary_metric_name, secondary_metric_id, secondary_metric_name';
+      const measQuery = athleteOrgId
+        ? supabase
+            .from('custom_measurements')
+            .select(measCols)
+            .or(`org_id.eq.${athleteOrgId},org_id.is.null`)
+        : supabase.from('custom_measurements').select(measCols).is('org_id', null);
+      const { data: measData } = await measQuery;
       setCustomMeasurements(measData || []);
 
     } catch (error) {
@@ -311,6 +329,19 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
 
     if (log.actual_reps != null) parts.push(`${log.actual_reps} reps`);
     if (log.actual_weight != null) parts.push(`${log.actual_weight} lbs`);
+    // Cardio / timed-isometric exercises live in actual_duration_seconds +
+    // actual_distance. Previously the select dropped them and formatSetLog
+    // skipped them, so any timed plank, sled push, or run logged via mobile
+    // rendered as a bare "Completed" with no numbers visible.
+    if (log.actual_duration_seconds != null) {
+      const secs = log.actual_duration_seconds;
+      const formatted =
+        secs >= 60
+          ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+          : `${secs}s`;
+      parts.push(formatted);
+    }
+    if (log.actual_distance != null) parts.push(`${log.actual_distance} ft`);
 
     if (log.metric_data) {
       for (const [key, value] of Object.entries(log.metric_data)) {

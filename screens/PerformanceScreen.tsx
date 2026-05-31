@@ -261,10 +261,24 @@ export default function PerformanceScreen({ route, navigation }: any) {
   }
 
   async function fetchCustomMeasurements() {
-    const { data, error } = await supabase
-      .from('custom_measurements')
-      .select('*')
-      .order('name');
+    // Filter by the athlete's org so we don't leak other facilities'
+    // measurement library into the add-PR dropdown. Platform-wide
+    // measurements (org_id IS NULL) stay visible to everyone.
+    const { data: athleteRow } = await supabase
+      .from('athletes')
+      .select('org_id')
+      .eq('id', athleteId)
+      .maybeSingle();
+    const orgId = athleteRow?.org_id ?? null;
+
+    let query = supabase.from('custom_measurements').select('*').order('name');
+    if (orgId) {
+      query = query.or(`org_id.eq.${orgId},org_id.is.null`);
+    } else {
+      query = query.is('org_id', null);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error fetching custom measurements:', error);
@@ -1944,19 +1958,26 @@ function LineChart({
             />
           ))}
 
-          {/* X-axis labels */}
-          {points.length <= 7 && points.map((p, i) => (
-            <SvgText
-              key={i}
-              x={p.x}
-              y={height - 5}
-              fill="#6B7280"
-              fontSize={9}
-              textAnchor="middle"
-            >
-              {p.date}
-            </SvgText>
-          ))}
+          {/* X-axis labels — always render at least 4-6 evenly spaced
+              dates so anyone with more than a week of training still gets
+              time context (previously cut off when points.length > 7). */}
+          {(() => {
+            const target = 6;
+            const step = Math.max(1, Math.ceil(points.length / target));
+            const visible = points.filter((_, i) => i % step === 0 || i === points.length - 1);
+            return visible.map((p, i) => (
+              <SvgText
+                key={`xl-${i}`}
+                x={p.x}
+                y={height - 5}
+                fill="#6B7280"
+                fontSize={9}
+                textAnchor="middle"
+              >
+                {p.date}
+              </SvgText>
+            ));
+          })()}
         </Svg>
       </TouchableOpacity>
 
