@@ -43,6 +43,25 @@ interface AthleteMax {
   exercises?: { name: string } | null;
 }
 
+// Per-exercise stats derived client-side from exercise_logs. Lets the PR
+// cards show estimated 1RM (Epley) and a 90-day trend sparkline without
+// any new DB columns or RPCs — pure math on rows we already store.
+interface ExerciseLogStats {
+  e1RM: number;            // peak Epley across all qualifying sets
+  e1RMWeight: number;      // the weight that produced the peak e1RM
+  e1RMReps: number;        // the reps that produced the peak e1RM
+  sparkline: number[];     // peak weight per session, chronological, last 12 sessions
+}
+
+// Epley estimated 1RM. Caps at 12 reps because the formula's accuracy
+// degrades sharply past that (a 20-rep set is a conditioning effort,
+// not a strength test). Returns 0 for malformed inputs so callers can
+// `if (e1RM > 0)` gate the display.
+function epleyE1RM(weight: number | null | undefined, reps: number | null | undefined): number {
+  if (!weight || !reps || weight <= 0 || reps <= 0 || reps > 12) return 0;
+  return Math.round(weight * (1 + reps / 30));
+}
+
 interface Exercise {
   id: string;
   name: string;
@@ -178,6 +197,11 @@ export default function PerformanceScreen({ route, navigation }: any) {
 
   // Personal Records state
   const [maxes, setMaxes] = useState<AthleteMax[]>([]);
+  // Derived per-exercise stats (e1RM, sparkline). Keyed by exercise_id.
+  // Populated by fetchLogStats() after fetchMaxes() lands so we know which
+  // exercises to pull logs for — keeps the query lean instead of fetching
+  // every set the athlete has ever logged.
+  const [logStats, setLogStats] = useState<Record<string, ExerciseLogStats>>({});
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [customMeasurements, setCustomMeasurements] = useState<CustomMeasurement[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -219,12 +243,18 @@ export default function PerformanceScreen({ route, navigation }: any) {
   async function fetchData() {
     setLoading(true);
     try {
-      await Promise.all([
+      const [maxesData] = await Promise.all([
         fetchMaxes(),
         fetchExercises(),
         fetchCustomMeasurements(),
         fetchLoggedExercises(),
       ]);
+      // After maxes land, derive e1RM + sparkline data for the exercises
+      // that actually have PRs. Runs in background — doesn't block the
+      // initial render.
+      if (maxesData && maxesData.length > 0) {
+        fetchLogStats(maxesData);
+      }
     } catch (err) {
       console.error('Error fetching performance data:', err);
     } finally {
@@ -232,7 +262,90 @@ export default function PerformanceScreen({ route, navigation }: any) {
     }
   }
 
-  async function fetchMaxes() {
+  // Fetch the last ~90 days of exercise_logs for the exercises that have
+  // PRs, derive per-exercise stats client-side. Pure math on existing
+  // rows — no new tables, no RPCs. Paginated to bypass Supabase's 1000-row
+  // default in case the athlete is a high-volume logger.
+  async function fetchLogStats(maxesData: AthleteMax[]) {
+    const exerciseIds = Array.from(
+      new Set(maxesData.filter(m => m.exercise_id).map(m => m.exercise_id as string)),
+    );
+    if (exerciseIds.length === 0) return;
+
+    const dateLimit = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const BATCH = 1000;
+    type LogRow = {
+      exercise_id: string;
+      workout_instance_id: string;
+      actual_weight: number | null;
+      actual_reps: number | null;
+      created_at: string;
+    };
+    const all: LogRow[] = [];
+    let offset = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { data, error } = await supabase
+        .from('exercise_logs')
+        .select('exercise_id, workout_instance_id, actual_weight, actual_reps, created_at')
+        .eq('athlete_id', athleteId)
+        .in('exercise_id', exerciseIds)
+        .gte('created_at', dateLimit)
+        .not('actual_weight', 'is', null)
+        .order('created_at', { ascending: true })
+        .range(offset, offset + BATCH - 1);
+      if (error) {
+        console.error('fetchLogStats error:', error);
+        return;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...(data as LogRow[]));
+      if (data.length < BATCH) break;
+      offset += BATCH;
+    }
+
+    // Partition by exercise_id.
+    const byExercise: Record<string, LogRow[]> = {};
+    for (const row of all) {
+      if (!byExercise[row.exercise_id]) byExercise[row.exercise_id] = [];
+      byExercise[row.exercise_id].push(row);
+    }
+
+    // For each exercise, compute (1) the best Epley e1RM across all
+    // qualifying sets, and (2) the per-session peak weight series for
+    // the sparkline (last 12 sessions).
+    const stats: Record<string, ExerciseLogStats> = {};
+    for (const [exId, rows] of Object.entries(byExercise)) {
+      let bestE1RM = 0, bestWeight = 0, bestReps = 0;
+      for (const r of rows) {
+        const w = r.actual_weight ?? 0;
+        const reps = r.actual_reps ?? 0;
+        const e1 = epleyE1RM(w, reps);
+        if (e1 > bestE1RM) {
+          bestE1RM = e1;
+          bestWeight = w;
+          bestReps = reps;
+        }
+      }
+      // Per-session peak weight, chronological.
+      const bySession: Record<string, { peak: number; date: string }> = {};
+      for (const r of rows) {
+        if (!r.actual_weight) continue;
+        const k = r.workout_instance_id;
+        if (!bySession[k] || r.actual_weight > bySession[k].peak) {
+          bySession[k] = { peak: r.actual_weight, date: r.created_at };
+        }
+      }
+      const sparkline = Object.values(bySession)
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .slice(-12)
+        .map(s => s.peak);
+      stats[exId] = { e1RM: bestE1RM, e1RMWeight: bestWeight, e1RMReps: bestReps, sparkline };
+    }
+    setLogStats(stats);
+  }
+
+  async function fetchMaxes(): Promise<AthleteMax[]> {
     const { data, error } = await supabase
       .from('athlete_maxes')
       .select('*, exercises(name)')
@@ -241,9 +354,11 @@ export default function PerformanceScreen({ route, navigation }: any) {
 
     if (error) {
       console.error('Error fetching maxes:', error);
-      return;
+      return [];
     }
-    setMaxes(data || []);
+    const list = (data || []) as AthleteMax[];
+    setMaxes(list);
+    return list;
   }
 
   async function fetchExercises() {
@@ -625,6 +740,7 @@ export default function PerformanceScreen({ route, navigation }: any) {
           maxes={maxes}
           globalMaxes={globalMaxes}
           exerciseMaxes={exerciseMaxes}
+          logStats={logStats}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           onAdd={() => setAddModalVisible(true)}
@@ -1187,6 +1303,7 @@ function PersonalRecordsView({
   maxes,
   globalMaxes,
   exerciseMaxes,
+  logStats,
   searchQuery,
   setSearchQuery,
   onAdd,
@@ -1200,6 +1317,7 @@ function PersonalRecordsView({
   maxes: AthleteMax[];
   globalMaxes: AthleteMax[];
   exerciseMaxes: AthleteMax[];
+  logStats: Record<string, ExerciseLogStats>;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   onAdd: () => void;
@@ -1252,6 +1370,7 @@ function PersonalRecordsView({
                 <MaxCard
                   key={max.id}
                   max={max}
+                  stats={max.exercise_id ? logStats[max.exercise_id] : undefined}
                   getMetricDisplayName={getMetricDisplayName}
                   getMetricUnit={getMetricUnit}
                   isGlobalMetric={isGlobalMetric}
@@ -1271,6 +1390,7 @@ function PersonalRecordsView({
                 <MaxCard
                   key={max.id}
                   max={max}
+                  stats={max.exercise_id ? logStats[max.exercise_id] : undefined}
                   getMetricDisplayName={getMetricDisplayName}
                   getMetricUnit={getMetricUnit}
                   isGlobalMetric={isGlobalMetric}
@@ -1289,9 +1409,42 @@ function PersonalRecordsView({
   );
 }
 
+// Mini sparkline. Renders a small SVG line of the supplied numeric series.
+// No axes, no labels — purely a "shape of the trend" cue. The endpoint dot
+// gives a clear visual anchor to "most recent value". Skips render entirely
+// for series with fewer than 3 points (not enough to be meaningful).
+function Sparkline({ values, width = 120, height = 28, color = '#9BDDFF' }: {
+  values: number[];
+  width?: number;
+  height?: number;
+  color?: string;
+}) {
+  if (!values || values.length < 3) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pad = 2;
+  const stepX = (width - pad * 2) / (values.length - 1);
+  const pts = values.map((v, i) => ({
+    x: pad + i * stepX,
+    y: pad + (height - pad * 2) * (1 - (v - min) / span),
+  }));
+  const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const areaPath = `${path} L ${pts[pts.length - 1].x.toFixed(1)},${height} L ${pts[0].x.toFixed(1)},${height} Z`;
+  const last = pts[pts.length - 1];
+  return (
+    <Svg width={width} height={height}>
+      <Path d={areaPath} fill={color} fillOpacity={0.12} />
+      <Path d={path} stroke={color} strokeWidth={1.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Circle cx={last.x} cy={last.y} r={2.5} fill={color} />
+    </Svg>
+  );
+}
+
 // Max Card Component
 function MaxCard({
   max,
+  stats,
   getMetricDisplayName,
   getMetricUnit,
   isGlobalMetric,
@@ -1300,6 +1453,7 @@ function MaxCard({
   onVerify,
 }: {
   max: AthleteMax;
+  stats?: ExerciseLogStats;
   getMetricDisplayName: (id: string) => string;
   getMetricUnit: (id: string) => string;
   isGlobalMetric: (id: string) => boolean;
@@ -1310,6 +1464,16 @@ function MaxCard({
   const isGlobal = isGlobalMetric(max.metric_id);
   const unit = getMetricUnit(max.metric_id);
   const metricName = getMetricDisplayName(max.metric_id);
+  // Only show e1RM badge when:
+  //  - we have logged data
+  //  - the underlying metric is weight (e1RM doesn't apply to velo/reps/time)
+  //  - the computed e1RM beats the manually-tracked max (otherwise it's redundant)
+  const showE1RM =
+    !!stats &&
+    stats.e1RM > 0 &&
+    max.metric_id === 'weight' &&
+    stats.e1RM >= max.max_value;
+  const showSparkline = !!stats && stats.sparkline.length >= 3;
 
   return (
     <View style={styles.maxCard}>
@@ -1343,6 +1507,11 @@ function MaxCard({
           {max.max_value.toFixed(1)} {unit}
           {max.reps_at_max && <Text style={styles.maxCardReps}> ({max.reps_at_max} reps)</Text>}
         </Text>
+        {showE1RM && (
+          <Text style={styles.maxCardE1RM}>
+            e1RM {stats!.e1RM} {unit} · {stats!.e1RMWeight} × {stats!.e1RMReps}
+          </Text>
+        )}
         <Text style={styles.maxCardDate}>
           {formatDate(max.achieved_on)}
           {max.verified_by_coach && (
@@ -1351,6 +1520,11 @@ function MaxCard({
         </Text>
         {max.notes && (
           <Text style={styles.maxCardNotes} numberOfLines={1}>{max.notes}</Text>
+        )}
+        {showSparkline && (
+          <View style={styles.maxCardSparkline}>
+            <Sparkline values={stats!.sparkline} width={SCREEN_WIDTH - 80} height={32} />
+          </View>
         )}
       </View>
 
@@ -2424,6 +2598,17 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 4,
     fontStyle: 'italic',
+  },
+  maxCardE1RM: {
+    fontSize: 11,
+    color: '#FCD34D',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    marginTop: 6,
+  },
+  maxCardSparkline: {
+    marginTop: 10,
+    marginBottom: 2,
   },
   maxCardActions: {
     flexDirection: 'row',
