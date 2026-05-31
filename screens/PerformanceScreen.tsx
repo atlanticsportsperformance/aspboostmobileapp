@@ -2022,6 +2022,63 @@ function ExercisePerformanceCard({
           ))}
         </View>
       )}
+
+      {/* Last sessions table — under the chart so the athlete can see the
+          actual numbers behind each plotted point. Volume exercises show
+          peak weight + total volume; metric exercises show peak value
+          across all detected metrics for that session. PR star marks
+          the all-time highest peak weight session in view. */}
+      {hasVolumeData && chartData.length > 0 && (
+        <RecentSessionsTable logs={logs} />
+      )}
+    </View>
+  );
+}
+
+// Recent-sessions mini-table. Groups exercise_logs by workout_instance,
+// computes per-session set count, peak weight, and total volume, marks
+// the all-time best session with a star. 5 rows max — anything more is
+// noise; the chart already shows the full trend.
+function RecentSessionsTable({ logs }: { logs: ExerciseLog[] }) {
+  const rows = useMemo(() => {
+    if (!logs || logs.length === 0) return [];
+    const bySession: Record<string, { date: string; sets: number; peak: number; vol: number; reps: number }> = {};
+    for (const log of logs) {
+      const k = log.workout_instance_id || log.created_at;
+      const date = (log.workout_instances as any)?.completed_at || log.created_at;
+      const w = log.actual_weight ?? 0;
+      const r = log.actual_reps ?? 0;
+      if (!bySession[k]) bySession[k] = { date, sets: 0, peak: 0, vol: 0, reps: 0 };
+      bySession[k].sets += 1;
+      if (w > bySession[k].peak) bySession[k].peak = w;
+      bySession[k].vol += w * r;
+      bySession[k].reps += r;
+    }
+    const list = Object.values(bySession)
+      .filter(s => s.peak > 0)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    // Identify the all-time peak across the list so we can mark it with a star.
+    const allTimePeak = list.reduce((mx, s) => Math.max(mx, s.peak), 0);
+    return list.slice(0, 5).map(s => ({ ...s, isPR: s.peak === allTimePeak && allTimePeak > 0 }));
+  }, [logs]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <View style={styles.sessionsTable}>
+      <Text style={styles.sessionsTableLabel}>Last {rows.length} sessions</Text>
+      {rows.map((s, i) => (
+        <View key={i} style={[styles.sessionsTableRow, i === rows.length - 1 && styles.sessionsTableRowLast]}>
+          <Text style={styles.sessionsTableDate}>{formatDateShort(s.date)}</Text>
+          <Text style={styles.sessionsTableSets}>{s.sets} × · {s.reps} reps</Text>
+          <Text style={styles.sessionsTablePeak}>{s.peak.toFixed(0)} lb peak</Text>
+          {s.isPR ? (
+            <Text style={styles.sessionsTablePR}>★ PR</Text>
+          ) : (
+            <Text style={styles.sessionsTableVol}>{(s.vol / 1000).toFixed(1)}k vol</Text>
+          )}
+        </View>
+      ))}
     </View>
   );
 }
@@ -2609,6 +2666,62 @@ const styles = StyleSheet.create({
   maxCardSparkline: {
     marginTop: 10,
     marginBottom: 2,
+  },
+  sessionsTable: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  sessionsTableLabel: {
+    fontSize: 10,
+    color: '#9CA3AF',
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  sessionsTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 7,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.04)',
+  },
+  sessionsTableRowLast: {},
+  sessionsTableDate: {
+    flex: 1.1,
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '500',
+  },
+  sessionsTableSets: {
+    flex: 1.4,
+    fontSize: 12,
+    color: '#E5E7EB',
+    fontWeight: '600',
+  },
+  sessionsTablePeak: {
+    flex: 1.2,
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  sessionsTableVol: {
+    flex: 0.9,
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '500',
+    textAlign: 'right',
+  },
+  sessionsTablePR: {
+    flex: 0.9,
+    fontSize: 11,
+    color: '#FCD34D',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    textAlign: 'right',
   },
   maxCardActions: {
     flexDirection: 'row',
