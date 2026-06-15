@@ -173,6 +173,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [purchaseForAthleteId, setPurchaseForAthleteId] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
 
+  // Promo code state. Re-validated server-side at checkout time so a stale
+  // client preview can never bypass an expired / limit-hit code.
+  const [couponInput, setCouponInput] = useState('');
+  const [couponApplying, setCouponApplying] = useState(false);
+  const [appliedCoupon, setAppliedCoupon] = useState<{
+    coupon_id: string;
+    code: string;
+    description: string | null;
+    discount_amount_cents: number;
+    new_amount_cents: number;
+    discount_percent: number | null;
+    discount_off_cents: number | null;
+    duration: 'once' | 'repeating' | 'forever';
+    duration_in_months: number | null;
+  } | null>(null);
+  const [couponError, setCouponError] = useState<string | null>(null);
+
   // Membership management modal state
   const [selectedMembership, setSelectedMembership] = useState<Membership | null>(null);
   const [selectedMembershipAthleteId, setSelectedMembershipAthleteId] = useState<string | null>(null);
@@ -190,6 +207,78 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       setPurchaseForAthleteId(linkedAthletes[0].athlete_id);
     }
   }, [showPurchaseModal, isParent, linkedAthletes, purchaseForAthleteId]);
+
+  // Clear any applied promo code whenever the modal closes or the user
+  // switches to a different item — a code that's valid for the gold tier
+  // might not be valid for silver.
+  useEffect(() => {
+    if (!showPurchaseModal) {
+      setCouponInput('');
+      setAppliedCoupon(null);
+      setCouponError(null);
+    }
+  }, [showPurchaseModal, selectedItem?.id]);
+
+  async function applyCoupon() {
+    if (!selectedItem || !selectedItem.price_amount) return;
+    const code = couponInput.trim();
+    if (!code) {
+      setCouponError('Enter a code to apply.');
+      return;
+    }
+    const targetAthleteId = purchaseForAthleteId || athleteId;
+    if (!targetAthleteId) {
+      setCouponError('Select an athlete first.');
+      return;
+    }
+    setCouponApplying(true);
+    setCouponError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Please log in.');
+      const res = await fetch(`${API_URL}/api/stripe/validate-coupon`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          athlete_id: targetAthleteId,
+          code,
+          amount_cents: selectedItem.price_amount,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.valid) {
+        setCouponError(data.error || 'That code isn\'t valid.');
+        setAppliedCoupon(null);
+        return;
+      }
+      setAppliedCoupon({
+        coupon_id: data.coupon_id,
+        code: data.code,
+        description: data.description,
+        discount_amount_cents: data.discount_amount_cents,
+        new_amount_cents: data.new_amount_cents,
+        discount_percent: data.discount_percent,
+        discount_off_cents: data.discount_off_cents,
+        duration: data.duration,
+        duration_in_months: data.duration_in_months,
+      });
+      setCouponError(null);
+    } catch (err: any) {
+      setCouponError(err?.message || 'Could not apply code.');
+      setAppliedCoupon(null);
+    } finally {
+      setCouponApplying(false);
+    }
+  }
+
+  function removeCoupon() {
+    setAppliedCoupon(null);
+    setCouponInput('');
+    setCouponError(null);
+  }
 
   async function loadAthleteAndData() {
     try {
@@ -498,14 +587,21 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // Use mobile checkout endpoint that returns PaymentIntent for embedded Payment Sheet
       const endpoint = `${API_URL}/api/stripe/create-mobile-checkout`;
 
+      // Re-send the validated promo code so the server can re-resolve it.
+      // The validate-coupon call earlier was a preview only — the actual
+      // discount is applied here (PaymentIntent amount) and inside the
+      // subscription create call below (for recurring memberships).
+      const couponCodeForCheckout = appliedCoupon?.code || undefined;
       const bodyParams = selectedItemType === 'membership'
         ? {
             athlete_id: targetAthleteId,
             membership_type_id: selectedItem.id,
+            ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
           }
         : {
             athlete_id: targetAthleteId,
             package_type_id: selectedItem.id,
+            ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
           };
 
       console.log('[Checkout] Calling endpoint:', endpoint);
@@ -2280,6 +2376,107 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                       </View>
                     </View>
                   )}
+
+                  {/* Promo code — paid items only */}
+                  {selectedItem.price_amount && selectedItem.price_amount > 0 ? (
+                    <View style={styles.purchaseModalAthleteSection}>
+                      <View style={styles.purchaseModalValidForHeader}>
+                        <Ionicons name="pricetag" size={16} color="#FCD34D" />
+                        <Text style={styles.purchaseModalValidForTitle}>Promo code</Text>
+                      </View>
+
+                      {appliedCoupon ? (
+                        // Applied state — show savings + remove action
+                        <View style={styles.couponAppliedRow}>
+                          <View style={styles.couponAppliedInfo}>
+                            <View style={styles.couponAppliedHeader}>
+                              <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+                              <Text style={styles.couponAppliedCode}>{appliedCoupon.code}</Text>
+                            </View>
+                            <Text style={styles.couponAppliedSavings}>
+                              {appliedCoupon.discount_percent != null
+                                ? `${appliedCoupon.discount_percent}% off`
+                                : `${formatPrice(appliedCoupon.discount_off_cents || appliedCoupon.discount_amount_cents)} off`}
+                              {selectedItemType === 'membership' && appliedCoupon.duration !== 'forever' && (
+                                <Text style={styles.couponAppliedDuration}>
+                                  {appliedCoupon.duration === 'once'
+                                    ? ' · first invoice'
+                                    : ` · ${appliedCoupon.duration_in_months ?? ''} months`}
+                                </Text>
+                              )}
+                            </Text>
+                          </View>
+                          <TouchableOpacity onPress={removeCoupon} style={styles.couponRemoveBtn}>
+                            <Ionicons name="close" size={16} color="#9CA3AF" />
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        // Input state
+                        <>
+                          <View style={styles.couponInputRow}>
+                            <TextInput
+                              style={styles.couponInput}
+                              value={couponInput}
+                              onChangeText={(text) => {
+                                setCouponInput(text);
+                                if (couponError) setCouponError(null);
+                              }}
+                              placeholder="Enter code"
+                              placeholderTextColor="#6B7280"
+                              autoCapitalize="characters"
+                              autoCorrect={false}
+                              editable={!couponApplying}
+                              returnKeyType="done"
+                              onSubmitEditing={applyCoupon}
+                            />
+                            <TouchableOpacity
+                              style={[
+                                styles.couponApplyBtn,
+                                (!couponInput.trim() || couponApplying) && styles.couponApplyBtnDisabled,
+                              ]}
+                              onPress={applyCoupon}
+                              disabled={!couponInput.trim() || couponApplying}
+                            >
+                              {couponApplying ? (
+                                <ActivityIndicator size="small" color="#000" />
+                              ) : (
+                                <Text style={styles.couponApplyBtnText}>Apply</Text>
+                              )}
+                            </TouchableOpacity>
+                          </View>
+                          {couponError && (
+                            <Text style={styles.couponErrorText}>{couponError}</Text>
+                          )}
+                        </>
+                      )}
+                    </View>
+                  ) : null}
+
+                  {/* Total recap — only when a discount is in play */}
+                  {appliedCoupon && selectedItem.price_amount && selectedItem.price_amount > 0 ? (
+                    <View style={styles.totalRecap}>
+                      <View style={styles.totalRecapRow}>
+                        <Text style={styles.totalRecapLabel}>Subtotal</Text>
+                        <Text style={styles.totalRecapValue}>{formatPrice(selectedItem.price_amount)}</Text>
+                      </View>
+                      <View style={styles.totalRecapRow}>
+                        <Text style={styles.totalRecapDiscountLabel}>Discount ({appliedCoupon.code})</Text>
+                        <Text style={styles.totalRecapDiscountValue}>−{formatPrice(appliedCoupon.discount_amount_cents)}</Text>
+                      </View>
+                      <View style={styles.totalRecapDivider} />
+                      <View style={styles.totalRecapRow}>
+                        <Text style={styles.totalRecapTotalLabel}>Total today</Text>
+                        <Text style={styles.totalRecapTotalValue}>
+                          {formatPrice(appliedCoupon.new_amount_cents)}
+                          {selectedItemType === 'membership' && (
+                            <Text style={styles.totalRecapPeriod}>
+                              {getBillingPeriodShort((selectedItem as MembershipType).billing_period)}
+                            </Text>
+                          )}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
                 </>
               )}
             </ScrollView>
@@ -2307,7 +2504,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   ) : (
                     <Text style={styles.purchaseButtonText}>
                       {selectedItem?.price_amount && selectedItem.price_amount > 0
-                        ? `Checkout - ${formatPrice(selectedItem.price_amount)}`
+                        ? `Checkout - ${formatPrice(
+                            appliedCoupon ? appliedCoupon.new_amount_cents : selectedItem.price_amount,
+                          )}`
                         : 'Get Now'}
                     </Text>
                   )}
@@ -3205,6 +3404,115 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
   },
+  // ── Promo code section ─────────────────────────────────────────────
+  couponInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  couponInput: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.12)',
+    backgroundColor: '#F9FAFB',
+    fontSize: 14,
+    color: '#111827',
+    letterSpacing: 0.5,
+  },
+  couponApplyBtn: {
+    paddingHorizontal: 18,
+    backgroundColor: '#111827',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 78,
+  },
+  couponApplyBtnDisabled: {
+    backgroundColor: '#9CA3AF',
+  },
+  couponApplyBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  couponErrorText: {
+    color: '#EF4444',
+    fontSize: 12,
+    marginTop: 8,
+    fontWeight: '500',
+  },
+  couponAppliedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(16,185,129,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.3)',
+    marginTop: 12,
+  },
+  couponAppliedInfo: { flex: 1 },
+  couponAppliedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  couponAppliedCode: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#065F46',
+    letterSpacing: 0.5,
+  },
+  couponAppliedSavings: {
+    fontSize: 12,
+    color: '#047857',
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  couponAppliedDuration: {
+    fontWeight: '500',
+    color: '#059669',
+  },
+  couponRemoveBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  // ── Total recap (only shows when a coupon is applied) ──────────────
+  totalRecap: {
+    margin: 24,
+    marginTop: 0,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+  },
+  totalRecapRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    paddingVertical: 4,
+  },
+  totalRecapLabel: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  totalRecapValue: { fontSize: 14, color: '#374151', fontWeight: '600' },
+  totalRecapDiscountLabel: { fontSize: 13, color: '#047857', fontWeight: '600' },
+  totalRecapDiscountValue: { fontSize: 14, color: '#047857', fontWeight: '700' },
+  totalRecapDivider: {
+    height: 1,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    marginVertical: 8,
+  },
+  totalRecapTotalLabel: { fontSize: 15, color: '#111827', fontWeight: '700' },
+  totalRecapTotalValue: { fontSize: 18, color: '#111827', fontWeight: '800', letterSpacing: -0.3 },
+  totalRecapPeriod: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
   purchaseModalFooter: {
     padding: 24,
     paddingTop: 16,
