@@ -3367,6 +3367,7 @@ export default function DashboardScreen({ navigation }: any) {
         isOpen={fabOpen}
         onToggle={() => setFabOpen(!fabOpen)}
         totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        athleteId={athleteId}
         items={[
           // ALWAYS SHOWN items
           { id: 'home', label: 'Home', icon: 'home', isActive: true, onPress: () => {} },

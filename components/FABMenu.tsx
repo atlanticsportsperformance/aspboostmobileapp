@@ -8,6 +8,8 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import { useAcdlMembership } from '../hooks/useAcdlMembership';
 
 export interface FABMenuItem {
   id: string;
@@ -18,6 +20,8 @@ export interface FABMenuItem {
   isActive?: boolean;
   badge?: number;
   isBookButton?: boolean;
+  /** League item gets the app's purple accent instead of cyan. */
+  isLeague?: boolean;
 }
 
 interface FABMenuProps {
@@ -25,6 +29,12 @@ interface FABMenuProps {
   onToggle: () => void;
   items: FABMenuItem[];
   totalBadgeCount?: number;
+  /**
+   * The athlete whose FAB this is. Passed to the auto-injected "ACDL League"
+   * item so it gates on (and navigates for) the right athlete — defaults to the
+   * resolved athlete (athlete account or selected child) when omitted.
+   */
+  athleteId?: string | null;
 }
 
 export default function FABMenu({
@@ -32,10 +42,39 @@ export default function FABMenu({
   onToggle,
   items,
   totalBadgeCount = 0,
+  athleteId = null,
 }: FABMenuProps) {
-  const resolvedItems: FABMenuItem[] = items;
+  const navigation = useNavigation<any>();
+
+  // Auto-inject an "ACDL League" item, gated cheaply on league membership
+  // (useAcdlMembership reuses the resolved athlete id; only rostered athletes
+  // ever see it). Inserted after "Performance" when present, else at the top.
+  const { inLeague } = useAcdlMembership(athleteId);
+
+  const leagueItem: FABMenuItem = {
+    id: 'acdl-league',
+    label: 'ACDL League',
+    icon: 'trophy',
+    isLeague: true,
+    onPress: () => navigation.navigate('LeagueHub', athleteId ? { athleteId } : {}),
+  };
+
+  const resolvedItems: FABMenuItem[] = React.useMemo(() => {
+    if (!inLeague) return items;
+    if (items.some((i) => i.id === 'acdl-league')) return items;
+    const perfIdx = items.findIndex((i) => i.id === 'performance');
+    const next = [...items];
+    next.splice(perfIdx >= 0 ? perfIdx + 1 : 0, 0, leagueItem);
+    return next;
+  }, [items, inLeague]); // eslint-disable-line react-hooks/exhaustive-deps
   const renderIcon = (item: FABMenuItem) => {
-    const iconColor = item.isActive ? '#9BDDFF' : item.isBookButton ? '#000000' : '#FFFFFF';
+    const iconColor = item.isActive
+      ? '#9BDDFF'
+      : item.isLeague
+      ? '#A78BFA'
+      : item.isBookButton
+      ? '#000000'
+      : '#FFFFFF';
     const iconSize = 20;
 
     if (item.iconFamily === 'material-community') {
@@ -113,6 +152,7 @@ export default function FABMenu({
                   style={[
                     styles.fabMenuItem,
                     item.isActive && styles.fabMenuItemActive,
+                    item.isLeague && styles.fabMenuItemLeague,
                   ]}
                   onPress={() => {
                     onToggle();
@@ -133,6 +173,7 @@ export default function FABMenu({
                     style={[
                       styles.fabMenuLabel,
                       item.isActive && styles.fabMenuLabelActive,
+                      item.isLeague && styles.fabMenuLabelLeague,
                     ]}
                   >
                     {item.label}
@@ -204,6 +245,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(155, 221, 255, 0.3)',
   },
+  fabMenuItemLeague: {
+    backgroundColor: 'rgba(168, 85, 247, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
+  },
   fabMenuLabel: {
     fontSize: 16,
     color: '#FFFFFF',
@@ -211,6 +257,9 @@ const styles = StyleSheet.create({
   },
   fabMenuLabelActive: {
     color: '#9BDDFF',
+  },
+  fabMenuLabelLeague: {
+    color: '#A78BFA',
   },
   fabMenuIconContainer: {
     position: 'relative',
