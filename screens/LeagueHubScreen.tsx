@@ -11,7 +11,7 @@
  * "Next game" shows the athlete's SIDE for that game (my_team_name) vs the
  * opponent, or "Navy vs White" when no side is assigned yet.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -39,6 +39,7 @@ import {
 } from '../components/league/acdlTheme';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
+import { checkPendingLeagueWaivers } from '../lib/waiverApi';
 import {
   fetchAcdlEvents,
   fetchAcdlSeasonStats,
@@ -66,6 +67,13 @@ export default function LeagueHubScreen({ navigation, route }: any) {
 
   const [selectedSeasonId, setSelectedSeasonId] = useState<string | null>(null);
   const [nextGame, setNextGame] = useState<LeagueEvent | null>(null);
+  // League-waiver CATCH-UP gate. Runs once per athlete once we know they are
+  // rostered: any rostered ACDL athlete with an unsigned current-version
+  // league waiver (staff-pre-rostered athlete, or a version bump) is routed
+  // into the existing blocking WaiversScreen to sign before using the hub.
+  // Waivers are normally signed at registration; this is purely the catch-up
+  // surface. Uses navigation.replace so Back doesn't re-enter the ungated hub.
+  const leagueWaiverGateRef = useRef<string | null>(null);
   const [stats, setStats] = useState<LeagueSeasonStats | null>(null);
   const [athleteName, setAthleteName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,6 +99,31 @@ export default function LeagueHubScreen({ navigation, route }: any) {
       cancelled = true;
     };
   }, [athleteId]);
+
+  // ── League-waiver CATCH-UP gate ──
+  // Once membership resolves and the athlete is rostered, check for unsigned
+  // current-version league waivers and route into the blocking WaiversScreen.
+  // Runs at most once per athlete id per mount. Fail-open: a transient check
+  // failure simply lets the hub render (server-side gates remain authoritative).
+  useEffect(() => {
+    if (membershipLoading) return;
+    if (!athleteId || !inLeague) return;
+    if (leagueWaiverGateRef.current === athleteId) return;
+    leagueWaiverGateRef.current = athleteId;
+
+    let cancelled = false;
+    (async () => {
+      const { pending } = await checkPendingLeagueWaivers(athleteId);
+      if (cancelled || pending.length === 0) return;
+      // Reuse the existing blocking waiver flow. WaiversScreen re-fetches the
+      // full pending list itself (facility + league) and bounces back to the
+      // dashboard once everything required is signed.
+      navigation.replace('Waivers', { blocking: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [athleteId, inLeague, membershipLoading, navigation]);
 
   const loadSeasonData = useCallback(
     async (id: string, seasonId: string) => {

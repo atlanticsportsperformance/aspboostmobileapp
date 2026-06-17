@@ -27,11 +27,22 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 /**
- * Check if athlete has pending waivers for booking
+ * Check if athlete has pending waivers.
+ *
+ * check_type widens the server-side filter:
+ *   - 'booking' / 'signup' → facility waivers required at that gate
+ *   - 'league'             → active league-category waivers still unsigned
+ *                            (or signed on an older version) for a
+ *                            league-rostered athlete. Used by the ACDL
+ *                            catch-up gate.
+ *   - 'all'                → every pending required waiver (facility + league)
+ *
+ * The server returns the same shape for all check types; league waivers are
+ * surfaced with a non-null `category` so the app can distinguish them.
  */
 export async function checkPendingWaivers(
   athleteId: string,
-  checkType: 'booking' | 'signup' = 'booking'
+  checkType: 'booking' | 'signup' | 'league' | 'all' = 'booking'
 ): Promise<WaiverCheckResponse> {
   try {
     const headers = await getAuthHeaders();
@@ -55,6 +66,35 @@ export async function checkPendingWaivers(
   } catch (error) {
     console.error('Error checking pending waivers:', error);
     throw error;
+  }
+}
+
+/**
+ * League catch-up gate helper — returns only the ACDL league-category
+ * waivers a rostered athlete still needs to sign (unsigned or stale version).
+ *
+ * Defensive on two fronts:
+ *   1. Asks the server for league pending items via check_type='league'.
+ *   2. Filters the result to league_* categories so that even if the backend
+ *      widening also returns facility items we only gate the league entry on
+ *      league waivers (facility waivers keep their own booking/signup gates).
+ *
+ * Never throws — a transient failure returns an empty list so the ACDL hub
+ * still opens (the server-side /api/waivers/sign + facility gates remain the
+ * authoritative backstops).
+ */
+export async function checkPendingLeagueWaivers(
+  athleteId: string
+): Promise<{ pending: PendingWaiver[]; athleteIsMinor: boolean }> {
+  try {
+    const res = await checkPendingWaivers(athleteId, 'league');
+    const pending = (res.pending_waivers || []).filter(
+      (w) => w.category != null && w.category.startsWith('league_')
+    );
+    return { pending, athleteIsMinor: res.athlete_is_minor };
+  } catch (error) {
+    console.error('Error checking pending league waivers:', error);
+    return { pending: [], athleteIsMinor: false };
   }
 }
 
@@ -143,6 +183,8 @@ function transformPendingWaiver(waiver: any): PendingWaiver {
     signatureType: waiver.signature_type || 'checkbox',
     requiresGuardianSignature: waiver.requires_guardian_signature || false,
     minorAgeThreshold: waiver.minor_age_threshold || null,
+    // NULL for facility waivers; backend stamps category for league waivers.
+    category: waiver.category ?? null,
   };
 }
 

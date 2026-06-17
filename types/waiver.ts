@@ -1,5 +1,18 @@
 // Waiver System Types
 
+/**
+ * Waiver category. NULL for facility waivers (the existing signup/booking
+ * gates). The league_* categories are ACDL league waivers signed at
+ * registration and caught up here in the app when a rostered athlete has an
+ * unsigned current version. `league_liability` is required to participate;
+ * `league_media` is optional (declining just hides the athlete publicly).
+ */
+export type WaiverCategory =
+  | 'facility'
+  | 'league_liability'
+  | 'league_media'
+  | 'league_medical';
+
 export interface PendingWaiver {
   id: string;
   name: string;
@@ -9,6 +22,8 @@ export interface PendingWaiver {
   signatureType: 'checkbox' | 'typed_name' | 'drawn' | 'any';
   requiresGuardianSignature: boolean;
   minorAgeThreshold: number | null;
+  /** NULL for facility waivers; one of the league_* categories for ACDL. */
+  category: WaiverCategory | null;
 }
 
 export interface WaiverDetails {
