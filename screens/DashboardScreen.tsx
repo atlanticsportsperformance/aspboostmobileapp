@@ -3567,25 +3567,19 @@ export default function DashboardScreen({ navigation }: any) {
                         }
                       };
                       return (
-                        <View key={ev.event_id || `league-${idx}`} style={styles.bookingRow}>
-                          <View style={styles.workoutCardHairline} />
+                        <View key={ev.event_id || `league-${idx}`} style={styles.leagueDayRow}>
                           <TouchableOpacity
-                            style={styles.bookingCard}
+                            style={[styles.leagueDayCard, { borderLeftColor: accent }]}
                             onPress={onPress}
-                            activeOpacity={0.7}
+                            activeOpacity={0.75}
                           >
-                            <LinearGradient
-                              colors={[`${accent}14`, `${accent}05`, 'transparent']}
-                              start={{ x: 0, y: 0.5 }}
-                              end={{ x: 1, y: 0.5 }}
-                              style={StyleSheet.absoluteFillObject}
-                              pointerEvents="none"
-                            />
-                            <View style={[styles.bookingAccent, { backgroundColor: accent }]} />
+                            {/* Left accent bar (event-type colour) */}
+                            <View style={[styles.leagueDayAccent, { backgroundColor: accent }]} />
+                            {/* Icon tile — cream-tinted */}
                             <View
                               style={[
-                                styles.bookingIconContainer,
-                                { backgroundColor: `${accent}1F`, borderColor: `${accent}55` },
+                                styles.leagueDayIconContainer,
+                                { backgroundColor: acdlBlueAlpha(0.12), borderColor: acdlBlueAlpha(0.28) },
                               ]}
                             >
                               <Ionicons
@@ -3596,7 +3590,7 @@ export default function DashboardScreen({ navigation }: any) {
                             </View>
                             <View style={styles.bookingContent}>
                               <View style={styles.leagueEyebrowRow}>
-                                <Text style={[styles.bookingEyebrow, { color: accent }]}>
+                                <Text style={[styles.leagueDayEyebrow, { color: accent }]}>
                                   {typeLabel}
                                 </Text>
                                 {isGame && (
@@ -3606,10 +3600,10 @@ export default function DashboardScreen({ navigation }: any) {
                                   </View>
                                 )}
                               </View>
-                              <Text style={styles.bookingTitle} numberOfLines={1}>
+                              <Text style={styles.leagueDayTitle} numberOfLines={1}>
                                 {title}
                               </Text>
-                              <Text style={styles.bookingTime}>
+                              <Text style={styles.leagueDayTime}>
                                 {startTime
                                   ? `${startTime}${endTime ? ` – ${endTime}` : ''}`
                                   : 'Time TBD'}
@@ -4399,7 +4393,7 @@ const styles = StyleSheet.create({
   leagueScoreText: {
     fontSize: 12,
     fontWeight: '700',
-    color: ACDL_BLUE,
+    color: ACDL_BRAND_TEXT,
     fontVariant: ['tabular-nums'],
   },
   // Per-game SIDE tag on the dashboard day-view game cards (Navy/White/TBA).
@@ -4419,6 +4413,57 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     color: ACDL_MUT,
     textTransform: 'uppercase',
+  },
+  // ── ACDL league day-view event cards (cream, ACDL-branded) ─────────────
+  // These replace the dark bookingCard styles for league-sourced events only.
+  leagueDayRow: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+  },
+  leagueDayCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: ACDL_PAPER,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    paddingVertical: 13,
+    paddingRight: 12,
+    paddingLeft: 0,
+    gap: 10,
+    overflow: 'hidden',
+  },
+  leagueDayAccent: {
+    width: 4,
+    alignSelf: 'stretch',
+    borderRadius: 2,
+    marginRight: 2,
+  },
+  leagueDayIconContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  leagueDayEyebrow: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    marginBottom: 1,
+    textTransform: 'uppercase',
+  },
+  leagueDayTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: ACDL_INK,
+    letterSpacing: -0.2,
+  },
+  leagueDayTime: {
+    fontSize: 11,
+    color: ACDL_MUT,
+    fontWeight: '600',
   },
   // ACDL snapshot card — cream/navy/sky-blue (ACDL-website branded).
   leagueSnapshotCard: {
