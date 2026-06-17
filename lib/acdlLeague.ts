@@ -87,6 +87,31 @@ export interface LineScore {
   [key: string]: unknown;
 }
 
+/** Fielding totals for an athlete's season. */
+export interface LeagueFieldingStats {
+  po: number;
+  a: number;
+  e: number;
+  chances: number;
+  fielding_pct: number;
+  /** Per-position breakdown, e.g. { SS: { po:3, a:5, e:0, chances:8 } } */
+  by_position: Record<string, { po: number; a: number; e: number; chances: number }>;
+}
+
+/** Catcher framing metrics (TrackMan vs ump call) for an athlete's season. */
+export interface LeagueFramingStats {
+  taken: number;
+  in_zone_taken: number;
+  oz_taken: number;
+  strikes_stolen: number;
+  strikes_lost: number;
+  correct_strikes: number;
+  correct_balls: number;
+  net_strikes: number;
+  strike_rate: number;
+  shadow_strike_pct: number;
+}
+
 /**
  * acdl_athlete_season_stats — one JSON for an athlete + season. Each sub-view
  * is null when the athlete didn't bat / pitch / have a record that season.
@@ -106,6 +131,11 @@ export interface LeagueSeasonStats {
     metrics: LeagueStatRow | null;
   };
   record: LeagueStatRow | null;
+  /** Season fielding totals; null until the athlete has scored fielding data. */
+  fielding: LeagueFieldingStats | null;
+  /** Catcher framing metrics (TrackMan vs ump call); null for non-catchers or
+   * until framing data exists. */
+  framing: LeagueFramingStats | null;
 }
 
 /** A row from one of the league_* stat views (wide, schema-owned). */

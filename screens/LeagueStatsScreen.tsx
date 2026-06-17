@@ -29,6 +29,8 @@ import {
   fetchAcdlSeasonStats,
   LeagueSeasonStats,
   LeagueSeasonMembership,
+  LeagueFieldingStats,
+  LeagueFramingStats,
 } from '../lib/acdlLeague';
 import {
   num,
@@ -184,6 +186,10 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
         ) : (
           <PitchingView stats={stats} season={season ?? null} />
         )}
+
+        {/* Fielding + Framing — shown below whichever tab is active */}
+        <FieldingView fielding={stats?.fielding ?? null} />
+        <FramingView framing={stats?.framing ?? null} />
       </ScrollView>
     </View>
   );
@@ -367,6 +373,117 @@ function PitchingView({
       <Text style={styles.note}>
         W-L = your pitcher decisions{sv > 0 ? ` · ${sv} save${sv === 1 ? '' : 's'}` : ''}. TrackMan
         metrics shown across all pitch types.
+      </Text>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FIELDING
+// ─────────────────────────────────────────────────────────────────────────
+function FieldingView({ fielding }: { fielding: LeagueFieldingStats | null }) {
+  if (!fielding) return null;
+
+  const positions = Object.entries(fielding.by_position ?? {});
+
+  return (
+    <>
+      <Text style={styles.subEyebrow}>FIELDING</Text>
+      <View style={styles.heroCard}>
+        <View style={styles.swingCountRow}>
+          <Text style={styles.sectionTitle}>Season Fielding</Text>
+        </View>
+        <View style={styles.statPrRow}>
+          <HeroItem value={fmtInt(fielding.po)} label="PO" unit="putouts" />
+          <HeroItem value={fmtInt(fielding.a)} label="A" unit="assists" bordered />
+          <HeroItem value={fmtInt(fielding.e)} label="E" unit={`${fmtInt(fielding.chances)} CH`} />
+        </View>
+        <View style={[styles.fieldingFldRow]}>
+          <Text style={styles.fieldingFldLabel}>FLD%</Text>
+          <Text style={styles.fieldingFldValue}>{fmt3(fielding.fielding_pct)}</Text>
+        </View>
+        {positions.length > 0 && (
+          <View style={styles.fieldingByPos}>
+            {positions.map(([pos, row]) => (
+              <View key={pos} style={styles.fieldingPosChip}>
+                <Text style={styles.fieldingPosLabel}>{pos}</Text>
+                <Text style={styles.fieldingPosStat}>
+                  {fmtInt(row.po)} PO · {fmtInt(row.a)} A · {fmtInt(row.e)} E
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FRAMING
+// ─────────────────────────────────────────────────────────────────────────
+function FramingView({ framing }: { framing: LeagueFramingStats | null }) {
+  if (!framing) return null;
+
+  const net = framing.net_strikes;
+  const netStr = net > 0 ? `+${net}` : String(net);
+
+  return (
+    <>
+      <Text style={styles.subEyebrow}>FRAMING · TRACKMAN VS UMP CALL</Text>
+
+      {/* Hero: stolen strikes */}
+      <View style={styles.heroCard}>
+        <View style={styles.swingCountRow}>
+          <Text style={styles.sectionTitle}>Catcher Framing</Text>
+          <Text style={styles.scount}>
+            {fmtInt(framing.taken)} taken pitches
+          </Text>
+        </View>
+        <View style={styles.statPrRow}>
+          <HeroItem
+            value={fmtInt(framing.strikes_stolen)}
+            label="Stolen K"
+            unit="strikes added"
+          />
+          <HeroItem
+            value={fmtInt(framing.strikes_lost)}
+            label="Lost"
+            unit="strikes given"
+            bordered
+          />
+          <HeroItem
+            value={netStr}
+            label="Net"
+            unit="net strikes"
+          />
+        </View>
+      </View>
+
+      {/* Rate metrics */}
+      <View style={styles.gridCards}>
+        <MetricCard
+          value={fmtPct(framing.strike_rate)}
+          label="STRIKE RATE"
+          sub="tm strikes / taken"
+          accent
+        />
+        <MetricCard
+          value={fmtPct(framing.shadow_strike_pct)}
+          label="SHADOW%"
+          sub="shadow zone"
+          accent
+        />
+        <MetricCard
+          value={fmtInt(framing.correct_strikes)}
+          label="CORRECT K"
+          sub="agreed calls"
+          accent
+        />
+      </View>
+
+      <Text style={styles.note}>
+        Framing = TrackMan call vs ump call on taken pitches. Stolen = ball called as strike by ump that TrackMan scored a strike.
       </Text>
     </>
   );
@@ -616,4 +733,59 @@ const styles = StyleSheet.create({
   },
   emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700' },
   emptyStateSubtext: { fontSize: 14, color: ACDL_INK_2, marginTop: 8, textAlign: 'center', lineHeight: 20 },
+
+  // fielding
+  fieldingFldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: ACDL_LINE,
+    gap: 8,
+  },
+  fieldingFldLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    color: ACDL_MUT,
+    textTransform: 'uppercase',
+  },
+  fieldingFldValue: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: ACDL_BRAND_TEXT,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.5,
+  },
+  fieldingByPos: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 10,
+  },
+  fieldingPosChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: ACDL_CREAM_2,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  fieldingPosLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: ACDL_BRAND_TEXT,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  fieldingPosStat: {
+    fontSize: 11,
+    color: ACDL_INK_2,
+    fontVariant: ['tabular-nums'],
+  },
 });
