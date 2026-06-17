@@ -55,6 +55,7 @@ import {
   ACDL_BAND_TEXT,
   ACDL_BAND_MUT,
 } from '../components/league/acdlTheme';
+import { AcdlCrest } from '../components/league/AcdlCrest';
 
 type Mode = 'hitting' | 'pitching';
 
@@ -150,11 +151,7 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
           <View style={styles.headerRow}>
-            <Image
-              source={require('../assets/acdl-crest.png')}
-              style={styles.crest}
-              resizeMode="contain"
-            />
+            <AcdlCrest size={44} />
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>STATS</Text>
               <Text style={styles.title}>League Stats</Text>

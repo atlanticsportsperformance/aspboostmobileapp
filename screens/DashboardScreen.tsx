@@ -67,6 +67,7 @@ import {
 } from '../components/league/acdlTheme';
 import { gameSide } from '../lib/leagueFormat';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
+import { AcdlCrest } from '../components/league/AcdlCrest';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -2892,11 +2893,7 @@ export default function DashboardScreen({ navigation }: any) {
           return (
             <View style={styles.leagueSnapshotCard}>
               <View style={styles.leagueSnapshotHeader}>
-                <Image
-                  source={require('../assets/acdl-crest.png')}
-                  style={styles.leagueSnapshotCrest}
-                  resizeMode="contain"
-                />
+                <AcdlCrest size={40} />
                 <Text style={styles.leagueSnapshotEyebrow}>ACDL LEAGUE</Text>
               </View>
               {metaParts.length > 0 && (

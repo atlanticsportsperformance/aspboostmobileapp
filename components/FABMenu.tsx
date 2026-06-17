@@ -12,6 +12,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { ACDL_CREAM, ACDL_NAVY, ACDL_LINE } from './league/acdlTheme';
+import { AcdlCrest } from './league/AcdlCrest';
 
 export interface FABMenuItem {
   id: string;
@@ -73,11 +74,7 @@ export default function FABMenu({
     // ACDL League item shows the real crest (white circle reads on dark).
     if (item.isLeague) {
       return (
-        <Image
-          source={require('../assets/acdl-crest.png')}
-          style={styles.leagueCrest}
-          resizeMode="contain"
-        />
+        <AcdlCrest size={22} />
       );
     }
 

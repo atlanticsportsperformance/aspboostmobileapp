@@ -43,6 +43,7 @@ import {
   ACDL_BAND_MUT,
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
+import { AcdlCrest } from '../components/league/AcdlCrest';
 
 // Segmented filter → which league_events.type values it admits.
 type FilterKey = 'all' | 'games' | 'practices' | 'training' | 'other';
@@ -210,11 +211,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
           <View style={styles.headerRow}>
-            <Image
-              source={require('../assets/acdl-crest.png')}
-              style={styles.crest}
-              resizeMode="contain"
-            />
+            <AcdlCrest size={44} />
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>SCHEDULE</Text>
               <Text style={styles.title}>Schedule</Text>

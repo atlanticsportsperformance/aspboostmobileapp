@@ -56,6 +56,7 @@ import {
   formatGameDate,
   formatEventTime,
 } from '../lib/leagueFormat';
+import { AcdlCrest } from '../components/league/AcdlCrest';
 
 export default function LeagueHubScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -204,11 +205,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
             <Text style={styles.backTextBand}>Back</Text>
           </TouchableOpacity>
           <View style={styles.hubHeader}>
-            <Image
-              source={require('../assets/acdl-crest.png')}
-              style={styles.crest}
-              resizeMode="contain"
-            />
+            <AcdlCrest size={52} />
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrowBand}>ATLANTIC COLLEGIATE DEVELOPMENT LEAGUE</Text>
               <Text style={styles.hhName}>{athleteName || 'Player'}</Text>

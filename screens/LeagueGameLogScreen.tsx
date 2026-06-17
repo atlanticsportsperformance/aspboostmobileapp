@@ -45,6 +45,7 @@ import {
   ACDL_WIN,
   ACDL_LOSS,
 } from '../components/league/acdlTheme';
+import { AcdlCrest } from '../components/league/AcdlCrest';
 
 export default function LeagueGameLogScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -127,11 +128,7 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
           <View style={styles.headerRow}>
-            <Image
-              source={require('../assets/acdl-crest.png')}
-              style={styles.crest}
-              resizeMode="contain"
-            />
+            <AcdlCrest size={44} />
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>GAME LOG</Text>
               <Text style={styles.title}>Game Log</Text>
