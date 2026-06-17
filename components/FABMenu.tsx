@@ -11,7 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
-import { ACDL_BLUE, acdlBlueAlpha } from './league/acdlTheme';
+import { ACDL_CREAM, ACDL_NAVY, ACDL_LINE } from './league/acdlTheme';
 
 export interface FABMenuItem {
   id: string;
@@ -257,9 +257,9 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(155, 221, 255, 0.3)',
   },
   fabMenuItemLeague: {
-    backgroundColor: acdlBlueAlpha(0.18),
+    backgroundColor: ACDL_CREAM,
     borderWidth: 1,
-    borderColor: acdlBlueAlpha(0.35),
+    borderColor: ACDL_LINE,
   },
   leagueCrest: {
     width: 22,
@@ -274,7 +274,7 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
   },
   fabMenuLabelLeague: {
-    color: ACDL_BLUE,
+    color: ACDL_NAVY,
   },
   fabMenuIconContainer: {
     position: 'relative',

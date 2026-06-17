@@ -4392,13 +4392,11 @@ const styles = StyleSheet.create({
   leagueSnapshotCard: {
     marginHorizontal: 16,
     marginBottom: 16,
-    backgroundColor: ACDL_CREAM,
+    backgroundColor: ACDL_PAPER,
     borderRadius: 18,
     padding: 18,
     borderWidth: 1,
     borderColor: ACDL_LINE,
-    borderLeftWidth: 4,
-    borderLeftColor: ACDL_BLUE,
     overflow: 'hidden',
   },
   leagueSnapshotHeader: {
@@ -4454,16 +4452,12 @@ const styles = StyleSheet.create({
   leagueSnapshotCta: {
     marginTop: 16,
     alignSelf: 'flex-start',
-    backgroundColor: ACDL_BLUE,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
   },
   leagueSnapshotCtaText: {
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 0.3,
-    color: ACDL_ON_ACCENT,
+    color: ACDL_BRAND_TEXT,
   },
   // Reminder Card Styles
   reminderCard: {
