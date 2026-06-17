@@ -52,6 +52,11 @@ import {
   type LeagueEvent,
   type LeagueSeasonStats,
 } from '../lib/acdlLeague';
+import {
+  ACDL_BLUE,
+  ACDL_NAVY,
+  acdlBlueAlpha,
+} from '../components/league/acdlTheme';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
@@ -311,13 +316,14 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
     button: '#10b981',
     label: 'Strength & Conditioning',
   },
-  // ACDL league events (games / practices / training). Purple accent matches
-  // the league experience across the app (LeagueHub, LeagueGameDetail).
+  // ACDL league events (games / practices / training). ACDL sky-blue accent
+  // on navy — matches the league experience across the app (LeagueHub,
+  // LeagueGameDetail) and the ACDL brand (aspwebsite app/acdl/acdl.css).
   league: {
-    bg: '#2e1065',
-    text: '#d8b4fe',
-    dot: '#a855f7',
-    button: '#9333ea',
+    bg: ACDL_NAVY,
+    text: ACDL_BLUE,
+    dot: ACDL_BLUE,
+    button: ACDL_BLUE,
     label: 'League',
   },
 };
@@ -2841,9 +2847,9 @@ export default function DashboardScreen({ navigation }: any) {
 
         {/* ACDL LEAGUE snapshot card — only for athletes rostered in a season.
             Uses the snapshotCard idiom (radius 24 + gloss gradient) with the
-            league purple accent. Taps through to the League hub. */}
+            ACDL sky-blue accent. Taps through to the League hub. */}
         {inLeague && leagueSeason && (() => {
-          const accent = CATEGORY_COLORS.league.dot; // #a855f7
+          const accent = CATEGORY_COLORS.league.dot; // ACDL_BLUE
           const num = (v: unknown): number | null =>
             typeof v === 'number' ? v : v == null ? null : Number(v);
           const fmt3 = (v: number | null) =>
@@ -2877,16 +2883,18 @@ export default function DashboardScreen({ navigation }: any) {
           return (
             <View style={[styles.snapshotCard, styles.leagueSnapshotCard]}>
               <LinearGradient
-                colors={['rgba(168,85,247,0.16)', 'transparent', 'rgba(0,0,0,0.3)']}
+                colors={[acdlBlueAlpha(0.16), 'transparent', 'rgba(0,0,0,0.3)']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.cardGloss}
                 pointerEvents="none"
               />
               <View style={styles.leagueSnapshotHeader}>
-                <View style={[styles.leagueSnapshotBadge, { borderColor: `${accent}55`, backgroundColor: `${accent}1F` }]}>
-                  <Ionicons name="trophy" size={14} color={accent} />
-                </View>
+                <Image
+                  source={require('../assets/acdl-crest.png')}
+                  style={styles.leagueSnapshotCrest}
+                  resizeMode="contain"
+                />
                 <Text style={[styles.leagueSnapshotEyebrow, { color: accent }]}>ACDL LEAGUE</Text>
               </View>
               {metaParts.length > 0 && (
@@ -3469,14 +3477,26 @@ export default function DashboardScreen({ navigation }: any) {
 
                     {/* ACDL League events (games / practices / training) */}
                     {selectedDateLeagueEvents.map((ev, idx) => {
-                      const accent = CATEGORY_COLORS.league.dot;
+                      // Per-type accent (mirrors LeagueScheduleScreen):
+                      // game=ACDL blue, practice=green, training=amber,
+                      // assessment/other=muted. Drives the chip + left accent.
                       const isGame = ev.type === 'game';
+                      const accent =
+                        ev.type === 'game'
+                          ? ACDL_BLUE
+                          : ev.type === 'practice'
+                          ? '#34D399'
+                          : ev.type === 'training_day'
+                          ? '#F59E0B'
+                          : '#9CA3AF';
                       const typeLabel = isGame
                         ? 'GAME'
                         : ev.type === 'practice'
                         ? 'PRACTICE'
-                        : ev.type === 'training'
+                        : ev.type === 'training_day'
                         ? 'TRAINING'
+                        : ev.type === 'assessment'
+                        ? 'ASSESSMENT'
                         : (ev.type || 'EVENT').toUpperCase();
                       const home = ev.home_team_name || 'Home';
                       const away = ev.away_team_name || 'Away';
@@ -4331,26 +4351,31 @@ const styles = StyleSheet.create({
   leagueScoreBadge: {
     paddingVertical: 4,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(168, 85, 247, 0.18)',
+    backgroundColor: acdlBlueAlpha(0.18),
     borderRadius: 6,
     marginLeft: 8,
   },
   leagueScoreText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#d8b4fe',
+    color: ACDL_BLUE,
   },
   leagueSnapshotCard: {
     marginHorizontal: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.35)',
+    borderColor: acdlBlueAlpha(0.35),
     overflow: 'hidden',
   },
   leagueSnapshotHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     zIndex: 10,
+  },
+  leagueSnapshotCrest: {
+    width: 28,
+    height: 28,
+    marginRight: 8,
   },
   leagueSnapshotBadge: {
     width: 28,

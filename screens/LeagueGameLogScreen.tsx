@@ -25,6 +25,7 @@ import { useAthleteId } from '../hooks/useAthleteId';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { fetchAcdlGameLog, LeagueGameLogRow } from '../lib/acdlLeague';
 import { num, fmtInt, ipFromOuts, formatShortDate } from '../lib/leagueFormat';
+import { ACDL_BLUE } from '../components/league/acdlTheme';
 
 export default function LeagueGameLogScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -78,7 +79,7 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
   if (membershipLoading || loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#A78BFA" />
+        <ActivityIndicator size="large" color={ACDL_BLUE} />
         <Text style={styles.loadingText}>Loading game log...</Text>
       </View>
     );
@@ -99,7 +100,7 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#A78BFA" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
         }
       >
         <View style={styles.header}>

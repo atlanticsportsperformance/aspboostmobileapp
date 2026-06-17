@@ -2,6 +2,7 @@ import React from 'react';
 import {
   View,
   Text,
+  Image,
   TouchableOpacity,
   Modal,
   StyleSheet,
@@ -10,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
+import { ACDL_BLUE, acdlBlueAlpha } from './league/acdlTheme';
 
 export interface FABMenuItem {
   id: string;
@@ -20,7 +22,7 @@ export interface FABMenuItem {
   isActive?: boolean;
   badge?: number;
   isBookButton?: boolean;
-  /** League item gets the app's purple accent instead of cyan. */
+  /** League item gets the ACDL sky-blue accent + crest icon. */
   isLeague?: boolean;
 }
 
@@ -68,10 +70,19 @@ export default function FABMenu({
     return next;
   }, [items, inLeague]); // eslint-disable-line react-hooks/exhaustive-deps
   const renderIcon = (item: FABMenuItem) => {
+    // ACDL League item shows the real crest (white circle reads on dark).
+    if (item.isLeague) {
+      return (
+        <Image
+          source={require('../assets/acdl-crest.png')}
+          style={styles.leagueCrest}
+          resizeMode="contain"
+        />
+      );
+    }
+
     const iconColor = item.isActive
       ? '#9BDDFF'
-      : item.isLeague
-      ? '#A78BFA'
       : item.isBookButton
       ? '#000000'
       : '#FFFFFF';
@@ -246,9 +257,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(155, 221, 255, 0.3)',
   },
   fabMenuItemLeague: {
-    backgroundColor: 'rgba(168, 85, 247, 0.2)',
+    backgroundColor: acdlBlueAlpha(0.18),
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.35)',
+    borderColor: acdlBlueAlpha(0.35),
+  },
+  leagueCrest: {
+    width: 22,
+    height: 22,
   },
   fabMenuLabel: {
     fontSize: 16,
@@ -259,7 +274,7 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
   },
   fabMenuLabelLeague: {
-    color: '#A78BFA',
+    color: ACDL_BLUE,
   },
   fabMenuIconContainer: {
     position: 'relative',

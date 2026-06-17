@@ -73,6 +73,7 @@ import CoachDashboardScreen from './screens/CoachDashboardScreen';
 import CoachToolsScreen from './screens/CoachToolsScreen';
 import CoachArmCareSearchScreen from './screens/CoachArmCareSearchScreen';
 import LeagueHubScreen from './screens/LeagueHubScreen';
+import LeagueScheduleScreen from './screens/LeagueScheduleScreen';
 import LeagueStatsScreen from './screens/LeagueStatsScreen';
 import LeagueGameLogScreen from './screens/LeagueGameLogScreen';
 import LeagueGameDetailScreen from './screens/LeagueGameDetailScreen';
@@ -221,6 +222,7 @@ function AppContent() {
             <Stack.Screen name="CoachTools" component={CoachToolsScreen} />
             <Stack.Screen name="CoachArmCareSearch" component={CoachArmCareSearchScreen} />
             <Stack.Screen name="LeagueHub" component={LeagueHubScreen} />
+            <Stack.Screen name="LeagueSchedule" component={LeagueScheduleScreen} />
             <Stack.Screen name="LeagueStats" component={LeagueStatsScreen} />
             <Stack.Screen name="LeagueGameLog" component={LeagueGameLogScreen} />
             <Stack.Screen name="LeagueGameDetail" component={LeagueGameDetailScreen} />

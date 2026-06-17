@@ -40,6 +40,7 @@ import {
   fmtSigned,
   ipFromOuts,
 } from '../lib/leagueFormat';
+import { ACDL_BLUE, ACDL_ON_ACCENT } from '../components/league/acdlTheme';
 
 type Mode = 'hitting' | 'pitching';
 
@@ -104,7 +105,7 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
   if (membershipLoading || loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#A78BFA" />
+        <ActivityIndicator size="large" color={ACDL_BLUE} />
         <Text style={styles.loadingText}>Loading league stats...</Text>
       </View>
     );
@@ -125,7 +126,7 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#A78BFA" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
         }
       >
         {/* Header */}
@@ -458,9 +459,9 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  toggleButtonActive: { backgroundColor: '#A855F7' },
+  toggleButtonActive: { backgroundColor: ACDL_BLUE },
   toggleText: { fontSize: 14, fontWeight: '600', color: '#9CA3AF' },
-  toggleTextActive: { color: '#FFFFFF' },
+  toggleTextActive: { color: ACDL_ON_ACCENT },
 
   prBlock: { paddingHorizontal: 16 },
   swingCountRow: {
@@ -494,7 +495,7 @@ const styles = StyleSheet.create({
     marginTop: 22,
     marginBottom: 12,
   },
-  subEyebrowAccent: { color: '#A78BFA' },
+  subEyebrowAccent: { color: ACDL_BLUE },
 
   // line table
   tableCard: {
@@ -525,7 +526,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     textAlign: 'center',
   },
-  tdHi: { color: '#A78BFA', fontWeight: '800' },
+  tdHi: { color: ACDL_BLUE, fontWeight: '800' },
 
   // metric cards
   gridCards: {
@@ -545,7 +546,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
   },
-  mcardAccent: { borderLeftWidth: 3, borderLeftColor: '#A855F7' },
+  mcardAccent: { borderLeftWidth: 3, borderLeftColor: ACDL_BLUE },
   mv: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 },
   ml: { fontSize: 9, color: '#6B7280', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   ms: { fontSize: 9, color: '#9CA3AF', marginTop: 1 },

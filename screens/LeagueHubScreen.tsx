@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -27,6 +28,11 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import {
+  ACDL_BLUE,
+  ACDL_NAVY,
+  acdlBlueAlpha,
+} from '../components/league/acdlTheme';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import {
@@ -115,7 +121,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
   if (membershipLoading || (loading && inLeague)) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#A78BFA" />
+        <ActivityIndicator size="large" color={ACDL_BLUE} />
         <Text style={styles.loadingText}>Loading league hub...</Text>
       </View>
     );
@@ -143,7 +149,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
     );
   }
 
-  const teamColor = season.team_color || '#A855F7';
+  const teamColor = season.team_color || ACDL_BLUE;
   const positions = (season.positions || []).join('/');
   const roleLine = [
     season.jersey_number != null ? `#${season.jersey_number}` : null,
@@ -167,7 +173,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#A78BFA" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
         }
       >
         {/* Header */}
@@ -178,11 +184,13 @@ export default function LeagueHubScreen({ navigation, route }: any) {
           </TouchableOpacity>
         </View>
 
-        {/* Team badge + name + role */}
+        {/* Team badge + name + role — real ACDL crest (white circle reads on dark) */}
         <View style={styles.hubHeader}>
-          <View style={[styles.teamBadge, { backgroundColor: teamColor }]}>
-            <Text style={styles.teamBadgeText}>ACDL</Text>
-          </View>
+          <Image
+            source={require('../assets/acdl-crest.png')}
+            style={styles.crest}
+            resizeMode="contain"
+          />
           <View style={{ flex: 1 }}>
             <Text style={styles.hhName}>{season.team_name || 'Your Team'}</Text>
             <Text style={styles.hhRole}>{roleLine}</Text>
@@ -222,7 +230,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
                 <Text style={styles.prValueSm}>
                   {season.wins}-{season.losses}
                 </Text>
-                <View style={[styles.prAccent, { backgroundColor: '#A855F7' }]} />
+                <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>{season.saves > 0 ? `${season.saves} SV` : 'W-L'}</Text>
               </View>
               <View style={styles.prCol}>
@@ -230,7 +238,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
                 <Text style={styles.prValueSm}>
                   {nextGame ? nextGameOpponent(nextGame, season.team_id) : '—'}
                 </Text>
-                <View style={[styles.prAccent, { backgroundColor: '#9BDDFF' }]} />
+                <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>
                   {nextGame ? formatGameDate(nextGame.event_date) : 'No games'}
                 </Text>
@@ -256,16 +264,14 @@ export default function LeagueHubScreen({ navigation, route }: any) {
               navigation.navigate('LeagueStats', { athleteId, seasonId: season.season_id })
             }
           >
-            <Ionicons name="stats-chart" size={22} color="#A78BFA" />
+            <Ionicons name="stats-chart" size={22} color={ACDL_BLUE} />
             <Text style={styles.tileText}>Stats</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.tile}
-            onPress={() =>
-              navigation.navigate('LeagueGameLog', { athleteId, seasonId: season.season_id })
-            }
+            onPress={() => navigation.navigate('LeagueSchedule', { athleteId })}
           >
-            <Ionicons name="calendar" size={22} color="#A78BFA" />
+            <Ionicons name="calendar" size={22} color={ACDL_BLUE} />
             <Text style={styles.tileText}>Schedule</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -274,7 +280,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
               navigation.navigate('LeagueGameLog', { athleteId, seasonId: season.season_id })
             }
           >
-            <Ionicons name="list" size={22} color="#A78BFA" />
+            <Ionicons name="list" size={22} color={ACDL_BLUE} />
             <Text style={styles.tileText}>Game Log</Text>
           </TouchableOpacity>
         </View>
@@ -370,19 +376,15 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 4 },
 
   hubHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 8 },
-  teamBadge: {
+  crest: {
     width: 54,
     height: 54,
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#A855F7',
+    shadowColor: ACDL_BLUE,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 18,
     elevation: 6,
   },
-  teamBadgeText: { fontWeight: '800', fontSize: 14, color: '#FFFFFF' },
   hhName: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
   hhRole: { fontSize: 12, color: '#9CA3AF', marginTop: 3 },
 
@@ -397,15 +399,15 @@ const styles = StyleSheet.create({
     marginHorizontal: 4,
   },
   seasonChipActive: {
-    backgroundColor: 'rgba(168,85,247,0.2)',
-    borderColor: 'rgba(168,85,247,0.4)',
+    backgroundColor: acdlBlueAlpha(0.18),
+    borderColor: acdlBlueAlpha(0.4),
   },
   seasonChipText: { fontSize: 13, fontWeight: '600', color: '#9CA3AF' },
-  seasonChipTextActive: { color: '#A78BFA' },
+  seasonChipTextActive: { color: ACDL_BLUE },
 
   snapCardWrap: { paddingHorizontal: 16, marginTop: 4, marginBottom: 4 },
   snapCard: {
-    backgroundColor: '#000',
+    backgroundColor: ACDL_NAVY,
     borderRadius: 24,
     padding: 16,
     shadowColor: '#000',
@@ -414,13 +416,13 @@ const styles = StyleSheet.create({
     shadowRadius: 60,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: acdlBlueAlpha(0.18),
   },
   snapEyebrow: {
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 2,
-    color: '#A78BFA',
+    color: ACDL_BLUE,
     marginBottom: 4,
   },
   snapTitle: { fontSize: 20, fontWeight: '700', color: '#FFFFFF', marginBottom: 14 },
@@ -442,7 +444,7 @@ const styles = StyleSheet.create({
     marginTop: 22,
     marginBottom: 12,
   },
-  subEyebrowAccent: { color: '#A78BFA' },
+  subEyebrowAccent: { color: ACDL_BLUE },
 
   tiles: { flexDirection: 'row', gap: 8, paddingHorizontal: 16 },
   tile: {
@@ -465,7 +467,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     borderLeftWidth: 3,
-    borderLeftColor: '#A855F7',
+    borderLeftColor: ACDL_BLUE,
     borderRadius: 12,
     padding: 10,
   },
@@ -478,19 +480,19 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     borderLeftWidth: 4,
-    borderLeftColor: '#A855F7',
+    borderLeftColor: ACDL_BLUE,
   },
   gcName: { fontSize: 18, fontWeight: '700', color: '#FFFFFF', marginBottom: 8 },
   gcMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   gcCat: { fontSize: 12, color: 'rgba(255,255,255,0.7)', fontWeight: '600' },
   gcTime: { fontSize: 12, color: 'rgba(255,255,255,0.6)' },
   chipLeague: {
-    backgroundColor: 'rgba(168,85,247,0.2)',
+    backgroundColor: acdlBlueAlpha(0.18),
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
-  chipLeagueText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, color: '#A78BFA' },
+  chipLeagueText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, color: ACDL_BLUE },
 
   emptyState: {
     alignItems: 'center',

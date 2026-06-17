@@ -52,6 +52,7 @@ import {
   paResultLabel,
   isHitResult,
 } from '../lib/leagueFormat';
+import { ACDL_BLUE, ACDL_ON_ACCENT } from '../components/league/acdlTheme';
 
 type Role = 'hitter' | 'pitcher';
 
@@ -105,7 +106,7 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#A78BFA" />
+        <ActivityIndicator size="large" color={ACDL_BLUE} />
         <Text style={styles.loadingText}>Loading game detail...</Text>
       </View>
     );
@@ -496,9 +497,9 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  toggleButtonActive: { backgroundColor: '#A855F7' },
+  toggleButtonActive: { backgroundColor: ACDL_BLUE },
   toggleText: { fontSize: 14, fontWeight: '600', color: '#9CA3AF' },
-  toggleTextActive: { color: '#FFFFFF' },
+  toggleTextActive: { color: ACDL_ON_ACCENT },
 
   // at-bat / detail card
   abCard: {
@@ -583,7 +584,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
   },
-  mcardAccent: { borderLeftWidth: 3, borderLeftColor: '#A855F7' },
+  mcardAccent: { borderLeftWidth: 3, borderLeftColor: ACDL_BLUE },
   mv: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 },
   ml: { fontSize: 9, color: '#6B7280', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   ms: { fontSize: 9, color: '#9CA3AF', marginTop: 1 },
@@ -597,7 +598,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     marginBottom: 10,
   },
-  subEyebrowAccent: { color: '#A78BFA' },
+  subEyebrowAccent: { color: ACDL_BLUE },
 
   note: {
     fontSize: 10,
