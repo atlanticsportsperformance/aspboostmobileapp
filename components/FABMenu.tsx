@@ -65,9 +65,13 @@ export default function FABMenu({
   const resolvedItems: FABMenuItem[] = React.useMemo(() => {
     if (!inLeague) return items;
     if (items.some((i) => i.id === 'acdl-league')) return items;
-    const perfIdx = items.findIndex((i) => i.id === 'performance');
     const next = [...items];
-    next.splice(perfIdx >= 0 ? perfIdx + 1 : 0, 0, leagueItem);
+    // Place ACDL directly below Home; fall back to just above the Book button, else top.
+    const homeIdx = items.findIndex((i) => i.id === 'home');
+    const bookIdx = items.findIndex((i) => i.isBookButton);
+    const insertAt =
+      homeIdx >= 0 ? homeIdx + 1 : bookIdx >= 0 ? bookIdx : 0;
+    next.splice(insertAt, 0, leagueItem);
     return next;
   }, [items, inLeague]); // eslint-disable-line react-hooks/exhaustive-deps
   const renderIcon = (item: FABMenuItem) => {
