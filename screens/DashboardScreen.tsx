@@ -3560,6 +3560,7 @@ export default function DashboardScreen({ navigation }: any) {
                             // hitting/pitching has data.
                             matchupLabel: side.matchup,
                             dateLabel: formatShortDate(ev.event_date),
+                            status: ev.status ?? undefined,
                           });
                         } else {
                           navigation.navigate('LeagueHub', { athleteId });

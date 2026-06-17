@@ -169,6 +169,7 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
                     // Thread the outing length so GameDetail's footer can show
                     // the true "X.X IP" instead of deriving it from the stream.
                     ipOuts: num(row.pitching?.ip_outs) ?? undefined,
+                    status: row.status ?? undefined,
                   })
                 }
               />

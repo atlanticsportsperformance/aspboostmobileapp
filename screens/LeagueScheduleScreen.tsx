@@ -268,6 +268,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
                             // hitting/pitching has data.
                             matchupLabel: gameSide(ev).matchup,
                             dateLabel: formatGameDate(ev.event_date),
+                            status: ev.status ?? undefined,
                           });
                         }
                       }}

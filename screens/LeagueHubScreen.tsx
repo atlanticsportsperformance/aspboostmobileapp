@@ -271,26 +271,7 @@ export default function LeagueHubScreen({ navigation, route }: any) {
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>Your W-L</Text>
               </View>
-              {/* NEXT — matchup + side tag when assigned */}
-              <View style={[styles.prCol, styles.prColMid]}>
-                <Text style={styles.prLabel}>NEXT</Text>
-                {nextSide ? (
-                  <>
-                    <Text style={styles.prNext} numberOfLines={1}>
-                      {nextSide.matchup}
-                    </Text>
-                    {nextSide.mySide ? (
-                      <TeamTag name={nextGame?.my_team_name} size="sm" />
-                    ) : null}
-                  </>
-                ) : (
-                  <Text style={styles.prNext}>—</Text>
-                )}
-                <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
-                <Text style={styles.prCaption} numberOfLines={1}>
-                  {nextGame ? formatGameDate(nextGame.event_date) : 'No games'}
-                </Text>
-              </View>
+              <View style={styles.prDivider} />
               {/* GP — secondary */}
               <View style={styles.prCol}>
                 <Text style={styles.prLabel}>GP</Text>
@@ -470,18 +451,12 @@ const styles = StyleSheet.create({
   },
   snapTitle: { fontSize: 22, fontWeight: '900', color: ACDL_INK, marginBottom: 14 },
 
-  prRow: { flexDirection: 'row' },
+  prRow: { flexDirection: 'row', alignItems: 'stretch' },
   prCol: { flex: 1, alignItems: 'center', gap: 4 },
-  prColMid: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: ACDL_LINE,
-  },
+  prDivider: { width: 1, backgroundColor: ACDL_LINE, marginVertical: 2 },
   prLabel: { color: ACDL_MUT, fontSize: 9, fontWeight: '800', letterSpacing: 1.4, textAlign: 'center' },
   prValue: { fontSize: 32, fontWeight: '900', letterSpacing: -1, color: ACDL_INK, fontVariant: ['tabular-nums'] },
   prValueSm: { fontSize: 24, fontWeight: '900', letterSpacing: -0.5, color: ACDL_INK, fontVariant: ['tabular-nums'] },
-  // NEXT matchup is wider than a side label → right-sized so it fits one line.
-  prNext: { fontSize: 15, fontWeight: '900', letterSpacing: -0.2, color: ACDL_INK },
   prAccent: { height: 2, marginTop: 4, borderRadius: 1, width: 28 },
   prCaption: { color: ACDL_MUT, fontSize: 10, fontWeight: '600', textAlign: 'center' },
 

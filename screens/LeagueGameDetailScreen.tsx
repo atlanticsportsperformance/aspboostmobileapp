@@ -67,9 +67,11 @@ import {
   ACDL_BAND_TEXT,
   ACDL_BAND_MUT,
   ACDL_WIN,
+  ACDL_LIVE_DOT,
 } from '../components/league/acdlTheme';
 
 type Role = 'hitter' | 'pitcher';
+type GameStatus = 'scheduled' | 'live' | 'completed' | 'cancelled' | undefined;
 
 export default function LeagueGameDetailScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -77,6 +79,7 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   const initialRole: Role = route?.params?.role === 'pitcher' ? 'pitcher' : 'hitter';
   const matchupLabel: string = route?.params?.matchupLabel ?? 'Game Detail';
   const dateLabel: string = route?.params?.dateLabel ?? '';
+  const gameStatus: GameStatus = route?.params?.status ?? undefined;
   // True outing length (ip_outs) threaded from the Game Log row; the pitch
   // stream alone has no out count, so this drives the "X.X IP" footer.
   const ipOutsParam: number | null =
@@ -115,6 +118,14 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   const hasPitching = (detail?.pitching?.length ?? 0) > 0;
   const bothSides = hasHitting && hasPitching;
 
+  // Determine game state from status param + data presence.
+  const played = hasHitting || hasPitching;
+  const isUpcoming =
+    gameStatus === 'scheduled' ||
+    (gameStatus !== 'completed' && gameStatus !== 'live' && !played);
+  const isLiveNoData = gameStatus === 'live' && !played;
+  const isCancelled = gameStatus === 'cancelled';
+
   // If the requested role has no data but the other does, swap once loaded.
   useEffect(() => {
     if (!detail) return;
@@ -137,44 +148,76 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
         <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />
-            <Text style={styles.backText}>Game Log</Text>
+            <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
           <Text style={styles.eyebrow}>ACDL GAME</Text>
           <Text style={styles.title}>{matchupLabel}</Text>
           {dateLabel ? <Text style={styles.subtitle}>{dateLabel}</Text> : null}
         </View>
 
-        {bothSides && (
-          <View style={styles.toggleContainer}>
-            <TouchableOpacity
-              style={[styles.toggleButton, role === 'hitter' && styles.toggleButtonActive]}
-              onPress={() => setRole('hitter')}
-            >
-              <Text style={[styles.toggleText, role === 'hitter' && styles.toggleTextActive]}>
-                At Bats
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.toggleButton, role === 'pitcher' && styles.toggleButtonActive]}
-              onPress={() => setRole('pitcher')}
-            >
-              <Text style={[styles.toggleText, role === 'pitcher' && styles.toggleTextActive]}>
-                Outing
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {role === 'hitter' ? (
-          hasHitting ? (
-            <HitterDetail pas={detail!.hitting} />
-          ) : (
-            <Empty label="No plate appearances in this game" />
-          )
-        ) : hasPitching ? (
-          <PitcherDetail pitches={detail!.pitching} ipOuts={ipOutsParam} />
+        {/* ── Game state gates ── */}
+        {isCancelled ? (
+          <UpcomingCard
+            icon="close-circle-outline"
+            iconColor={ACDL_MUT}
+            heading="Game cancelled"
+            dateLabel={dateLabel}
+            body="This game was cancelled."
+            dotColor={undefined}
+          />
+        ) : isLiveNoData ? (
+          <UpcomingCard
+            icon="radio-button-on"
+            iconColor={ACDL_LIVE_DOT}
+            heading="Game in progress"
+            dateLabel={dateLabel}
+            body="Game in progress — check back soon."
+            dotColor={ACDL_LIVE_DOT}
+          />
+        ) : isUpcoming ? (
+          <UpcomingCard
+            icon="calendar-outline"
+            iconColor={ACDL_BRAND_TEXT}
+            heading="Upcoming game"
+            dateLabel={dateLabel}
+            body="Your at-bats and pitch-by-pitch will appear here once the game is played."
+            dotColor={undefined}
+          />
         ) : (
-          <Empty label="No outing in this game" />
+          <>
+            {bothSides && (
+              <View style={styles.toggleContainer}>
+                <TouchableOpacity
+                  style={[styles.toggleButton, role === 'hitter' && styles.toggleButtonActive]}
+                  onPress={() => setRole('hitter')}
+                >
+                  <Text style={[styles.toggleText, role === 'hitter' && styles.toggleTextActive]}>
+                    At Bats
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.toggleButton, role === 'pitcher' && styles.toggleButtonActive]}
+                  onPress={() => setRole('pitcher')}
+                >
+                  <Text style={[styles.toggleText, role === 'pitcher' && styles.toggleTextActive]}>
+                    Outing
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {role === 'hitter' ? (
+              hasHitting ? (
+                <HitterDetail pas={detail!.hitting} />
+              ) : (
+                <Empty label="No plate appearances in this game" />
+              )
+            ) : hasPitching ? (
+              <PitcherDetail pitches={detail!.pitching} ipOuts={ipOutsParam} />
+            ) : (
+              <Empty label="No outing in this game" />
+            )}
+          </>
         )}
       </ScrollView>
     </View>
@@ -421,6 +464,40 @@ function PitchChip({ type }: { type: string | null }) {
   return (
     <View style={[styles.pt, { backgroundColor: hexToRgba(color, 0.2) }]}>
       <Text style={[styles.ptText, { color }]}>{getPitchAbbrev(type)}</Text>
+    </View>
+  );
+}
+
+function UpcomingCard({
+  icon,
+  iconColor,
+  heading,
+  dateLabel,
+  body,
+  dotColor,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  iconColor: string;
+  heading: string;
+  dateLabel: string;
+  body: string;
+  dotColor: string | undefined;
+}) {
+  return (
+    <View style={styles.upcomingCard}>
+      <View style={styles.upcomingAccent} />
+      <View style={styles.upcomingBody}>
+        <View style={styles.upcomingHeadRow}>
+          {dotColor ? (
+            <View style={[styles.upcomingDot, { backgroundColor: dotColor }]} />
+          ) : (
+            <Ionicons name={icon} size={20} color={iconColor} />
+          )}
+          <Text style={styles.upcomingHeading}>{heading}</Text>
+        </View>
+        {dateLabel ? <Text style={styles.upcomingDate}>{dateLabel}</Text> : null}
+        <Text style={styles.upcomingBody2}>{body}</Text>
+      </View>
     </View>
   );
 }
@@ -685,4 +762,26 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700', textAlign: 'center' },
+
+  // Upcoming / live / cancelled card
+  upcomingCard: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
+    backgroundColor: ACDL_PAPER,
+    overflow: 'hidden',
+  },
+  upcomingAccent: {
+    width: 4,
+    backgroundColor: ACDL_BLUE,
+  },
+  upcomingBody: { flex: 1, padding: 18 },
+  upcomingHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  upcomingDot: { width: 10, height: 10, borderRadius: 5 },
+  upcomingHeading: { fontSize: 17, fontWeight: '900', color: ACDL_INK },
+  upcomingDate: { fontSize: 13, color: ACDL_INK_2, marginBottom: 10 },
+  upcomingBody2: { fontSize: 13, color: ACDL_MUT, lineHeight: 19 },
 });
