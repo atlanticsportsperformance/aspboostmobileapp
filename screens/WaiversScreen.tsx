@@ -42,9 +42,11 @@ export default function WaiversScreen({ navigation, route }: any) {
   // screen from the profile menu get the normal (non-blocking) experience.
   const blocking: boolean = route?.params?.blocking === true;
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(null);
-  const [athleteIsMinor, setAthleteIsMinor] = useState(false);
+  const [athleteDob, setAthleteDob] = useState<string | null>(null);
+  const [athleteIsMinor, setAthleteIsMinor] = useState(true); // fail closed by default
   const [signedWaivers, setSignedWaivers] = useState<SignedWaiver[]>([]);
   const [pendingWaivers, setPendingWaivers] = useState<PendingWaiver[]>([]);
 
@@ -62,6 +64,7 @@ export default function WaiversScreen({ navigation, route }: any) {
   const loadData = async () => {
     try {
       setLoading(true);
+      setLoadError(false);
 
       // Get current user
       const { data: { user } } = await supabase.auth.getUser();
@@ -81,8 +84,13 @@ export default function WaiversScreen({ navigation, route }: any) {
       }
 
       setAthleteId(athlete.id);
-      // Local minor computation — matches the server's 18yr default.
-      // The server re-validates with the exact waiver threshold.
+      setAthleteDob(athlete.date_of_birth ?? null);
+      // FIX 2a: fail CLOSED on unknown DOB — treat null as minor so a
+      // guardian-required waiver always demands the guardian form rather
+      // than silently allowing a self-sign when age is unknown.
+      // WaiverSigningSheet also receives athleteDob and recomputes per-waiver
+      // using minorAgeThreshold, so this flag is a fallback for when DOB is
+      // unavailable.
       if (athlete.date_of_birth) {
         const dob = new Date(athlete.date_of_birth);
         const now = new Date();
@@ -90,6 +98,9 @@ export default function WaiversScreen({ navigation, route }: any) {
         const m = now.getMonth() - dob.getMonth();
         if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) age -= 1;
         setAthleteIsMinor(age < 18);
+      } else {
+        // Unknown age → treat as minor (fail closed).
+        setAthleteIsMinor(true);
       }
 
       // Load waivers
@@ -98,6 +109,9 @@ export default function WaiversScreen({ navigation, route }: any) {
       setPendingWaivers(waiverData.pending_waivers);
     } catch (error) {
       console.error('Error loading waivers:', error);
+      // FIX 3a: surface a distinct error state so blocking mode can show
+      // a Retry button rather than leaving the user on a header-only screen.
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -114,34 +128,41 @@ export default function WaiversScreen({ navigation, route }: any) {
     setShowSigningSheet(true);
   };
 
+  const navigateToDashboard = async () => {
+    const { data: userData } = await supabase.auth.getUser();
+    const isParent = userData?.user
+      ? (
+          await supabase
+            .from('profiles')
+            .select('account_type')
+            .eq('id', userData.user.id)
+            .maybeSingle()
+        ).data?.account_type === 'parent'
+      : false;
+    navigation.reset({
+      index: 0,
+      routes: [{ name: isParent ? 'ParentDashboard' : 'Dashboard' }],
+    });
+  };
+
   const handleSigningComplete = async () => {
     setShowSigningSheet(false);
     setWaiversToSign([]);
-    await loadData(); // Refresh the list
-    // In blocking mode, bounce back to the dashboard the moment every
-    // required waiver is signed. Re-read server-side pending list to
-    // avoid trusting stale local state.
-    if (blocking && athleteId) {
-      const { data: remaining } = await supabase
-        .from('athlete_pending_waivers')
-        .select('id')
-        .eq('athlete_id', athleteId)
-        .limit(1);
-      if (!remaining || remaining.length === 0) {
-        const parent = await supabase.auth.getUser();
-        const isParent = parent?.data?.user
-          ? (
-              await supabase
-                .from('profiles')
-                .select('account_type')
-                .eq('id', parent.data.user.id)
-                .maybeSingle()
-            ).data?.account_type === 'parent'
-          : false;
-        navigation.reset({
-          index: 0,
-          routes: [{ name: isParent ? 'ParentDashboard' : 'Dashboard' }],
-        });
+    // FIX 1: loadData() refreshes pendingWaivers from /api/athletes/[id]/waivers
+    // which DOES include league participation pendings. We then gate the
+    // blocking-clear off the real refreshed list — not the athlete_pending_waivers
+    // table, which never contains league waivers.
+    await loadData();
+    if (blocking) {
+      // pendingWaivers is set synchronously by setPendingWaivers inside
+      // loadData; read the ref via a functional form isn't available here,
+      // but since loadData awaits before returning, React will have flushed
+      // the state batch. We use a local re-fetch to read the authoritative
+      // value without depending on closure-captured stale state.
+      const freshData = athleteId ? await getAthleteWaivers(athleteId) : null;
+      const remaining = freshData?.pending_waivers ?? [];
+      if (remaining.length === 0) {
+        await navigateToDashboard();
       }
     }
   };
@@ -171,6 +192,52 @@ export default function WaiversScreen({ navigation, route }: any) {
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={COLORS.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // FIX 3: error state — transient network/auth failure. Show Retry so the
+  // user isn't trapped on a header-only screen in blocking mode.
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.header}>
+          {blocking ? (
+            <View style={styles.headerPlaceholder} />
+          ) : (
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+            >
+              <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
+            </TouchableOpacity>
+          )}
+          <Text style={styles.headerTitle}>Waivers</Text>
+          <View style={styles.headerPlaceholder} />
+        </View>
+        <View style={styles.loadingContainer}>
+          <Ionicons name="cloud-offline-outline" size={48} color={COLORS.gray600} />
+          <Text style={{ color: COLORS.gray400, fontSize: 15, marginTop: 16, marginBottom: 24, textAlign: 'center', paddingHorizontal: 32 }}>
+            Could not load your waivers. Check your connection and try again.
+          </Text>
+          <TouchableOpacity
+            style={{ paddingVertical: 12, paddingHorizontal: 28, backgroundColor: COLORS.primary, borderRadius: 12 }}
+            onPress={() => loadData()}
+          >
+            <Text style={{ color: COLORS.black, fontWeight: '700', fontSize: 15 }}>Retry</Text>
+          </TouchableOpacity>
+          {blocking && (
+            <TouchableOpacity
+              style={{ marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 6 }}
+              onPress={() => navigateToDashboard()}
+            >
+              <Ionicons name="home-outline" size={14} color={COLORS.gray400} />
+              <Text style={{ color: COLORS.gray400, fontSize: 13, fontWeight: '600' }}>
+                Back to dashboard
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </SafeAreaView>
     );
@@ -392,18 +459,23 @@ export default function WaiversScreen({ navigation, route }: any) {
         </View>
       </Modal>
 
-      {/* Waiver Signing Sheet */}
+      {/* Waiver Signing Sheet.
+          FIX 3b: pass onBackToDashboard in blocking mode so a transient
+          failure (or a user choosing not to sign right now) can never
+          permanently trap someone on this screen. */}
       {athleteId && (
         <WaiverSigningSheet
           visible={showSigningSheet}
           waivers={waiversToSign}
           athleteId={athleteId}
           athleteIsMinor={athleteIsMinor}
+          athleteDob={athleteDob}
           onClose={() => {
             setShowSigningSheet(false);
             setWaiversToSign([]);
           }}
           onComplete={handleSigningComplete}
+          {...(blocking ? { onBackToDashboard: () => navigateToDashboard() } : {})}
         />
       )}
     </SafeAreaView>

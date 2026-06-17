@@ -40,13 +40,17 @@ interface WaiverSigningSheetProps {
   visible: boolean;
   waivers: PendingWaiver[];
   athleteId: string;
-  /** True when the athlete on this account is under the waiver's minor
-   * age threshold. When combined with `waiver.requiresGuardianSignature`
-   * the sheet shows a parent/guardian info form above the signature so
-   * an adult can sign on behalf of the minor from within the minor's
-   * account. The form feeds `guardian_info` into the sign payload and
-   * the server promotes relationship self → parent/guardian. */
+  /** Pre-computed minor flag from the caller (uses 18-yr default threshold).
+   * When null/undefined the sheet falls back to true (fail closed) so a
+   * guardian-required waiver always prompts for guardian info when age is
+   * unknown. Per-waiver `minorAgeThreshold` is used inside the sheet to
+   * recompute more precisely when `athleteDob` is also provided. */
   athleteIsMinor?: boolean;
+  /** ISO date string (YYYY-MM-DD) from the athlete row. When provided the
+   * sheet uses each waiver's `minorAgeThreshold` (falling back to 18) to
+   * compute `needsGuardian` precisely per waiver rather than relying solely
+   * on the caller's pre-computed flag. */
+  athleteDob?: string | null;
   onClose: () => void;
   onComplete: () => void;
   /** Optional escape hatch — shown as "Back to Dashboard" in the footer
@@ -59,7 +63,8 @@ export default function WaiverSigningSheet({
   visible,
   waivers,
   athleteId,
-  athleteIsMinor = false,
+  athleteIsMinor = true, // FIX 2: fail closed — unknown age → treat as minor
+  athleteDob,
   onClose,
   onComplete,
   onBackToDashboard,
@@ -88,8 +93,28 @@ export default function WaiverSigningSheet({
   const currentWaiver = waivers[currentIndex];
   const isLastWaiver = currentIndex === waivers.length - 1;
 
-  const needsGuardian =
-    athleteIsMinor && !!currentWaiver?.requiresGuardianSignature;
+  // FIX 2b: use the per-waiver minorAgeThreshold (falling back to 18) so a
+  // waiver with a non-standard threshold is evaluated correctly.  When
+  // athleteDob is provided we recompute per-waiver; otherwise we fall back to
+  // the caller-supplied athleteIsMinor flag (which now fails closed for null
+  // DOB — see WaiversScreen loadData).
+  const isMinorForCurrentWaiver = (() => {
+    if (!currentWaiver?.requiresGuardianSignature) return false;
+    const threshold = currentWaiver.minorAgeThreshold ?? 18;
+    if (athleteDob) {
+      const dob = new Date(athleteDob);
+      const now = new Date();
+      let age = now.getFullYear() - dob.getFullYear();
+      const m = now.getMonth() - dob.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) age -= 1;
+      return age < threshold;
+    }
+    // No DOB available — fall back to the caller's pre-computed flag which
+    // is already fail-closed (null DOB → true).
+    return athleteIsMinor;
+  })();
+
+  const needsGuardian = isMinorForCurrentWaiver && !!currentWaiver?.requiresGuardianSignature;
 
   const guardianComplete =
     guardianFirstName.trim().length > 0 &&
