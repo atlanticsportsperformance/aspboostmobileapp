@@ -19,7 +19,14 @@ import { supabase } from './supabase';
 // Row / object types — column names match the migration exactly.
 // ─────────────────────────────────────────────────────────────────────────
 
-/** One row of acdl_athlete_seasons — the athlete's membership in a season. */
+/**
+ * One row of acdl_athlete_seasons — the athlete's membership in a season.
+ *
+ * ACDL has NO fixed teams (Navy vs White, reshuffled weekly), so there is NO
+ * season-level team. The "record" is the athlete's PERSONAL record: games the
+ * athlete's SIDE won/lost across published finals (personal_wins/losses), plus
+ * their pitcher decisions (pitcher_wins/losses/saves).
+ */
 export interface LeagueSeasonMembership {
   season_id: string;
   season_name: string;
@@ -28,14 +35,15 @@ export interface LeagueSeasonMembership {
   jersey_number: number | null;
   positions: string[] | null;
   status: string | null;
-  team_id: string | null;
-  team_name: string | null;
-  team_color: string | null;
-  wins: number;
-  losses: number;
-  saves: number;
+  /** Games the athlete appeared in this season. */
   games_played: number;
-  games_pitched: number;
+  /** Games the athlete's SIDE won / lost (personal record, not a team standing). */
+  personal_wins: number;
+  personal_losses: number;
+  /** Pitcher decisions for the athlete this season. */
+  pitcher_wins: number;
+  pitcher_losses: number;
+  saves: number;
 }
 
 /** One row of acdl_athlete_events — calendar / schedule entry. */
@@ -55,6 +63,10 @@ export interface LeagueEvent {
   away_team_id: string | null;
   home_team_name: string | null;
   away_team_name: string | null;
+  /** The athlete's SIDE (Navy/White) for THIS game — changes each game; null
+   * when not yet assigned a side. */
+  my_team_id: string | null;
+  my_team_name: string | null;
   /** Only populated when publish_status in ('live','final'). */
   line_score: LineScore | null;
 }
@@ -99,6 +111,10 @@ export interface LeagueGameLogRow {
   event_date: string; // 'YYYY-MM-DD'
   home_team_name: string | null;
   away_team_name: string | null;
+  /** The athlete's SIDE (Navy/White) for THIS game; null when unassigned. */
+  my_team_name: string | null;
+  /** W/L/T for the athlete's SIDE in this game (null when not final/unknown). */
+  side_result: 'W' | 'L' | 'T' | null;
   status: string | null;
   publish_status: string | null;
   /** 'W' | 'L' | 'SV' | null (pitching decision for this athlete). */
@@ -107,6 +123,8 @@ export interface LeagueGameLogRow {
   batting: LeagueStatRow | null;
   /** league_pitching_lines row as JSON, or null if the athlete didn't pitch. */
   pitching: LeagueStatRow | null;
+  /** Present on live/final games for a score chip. */
+  line_score?: LineScore | null;
 }
 
 /**
@@ -176,6 +194,24 @@ export interface LeagueGameDetail {
 // ─────────────────────────────────────────────────────────────────────────
 
 type RpcResult<T> = { data: T; error: { message: string } | null };
+
+/**
+ * The athlete's display name ("First Last"). Used by the league Hub header —
+ * ACDL has no season team, so the header shows the ATHLETE, not "Your Team".
+ * Returns null on any error / missing row (callers fall back gracefully).
+ */
+export async function fetchAthleteName(
+  athleteId: string
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('athletes')
+    .select('first_name, last_name')
+    .eq('id', athleteId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const name = [data.first_name, data.last_name].filter(Boolean).join(' ').trim();
+  return name || null;
+}
 
 /** Every season the athlete is / was rostered in, newest first. */
 export async function fetchAcdlSeasons(

@@ -1,19 +1,23 @@
 /**
- * LeagueGameLogScreen — reverse-chron per-game log (Phase 12.3). Matches
- * mockup screen 7: session-card rows (3px accent, win/loss color, 4 stat
- * columns). Each row → date · matchup · result chip + side · the line.
- * Hitter rows show AB/HR/RBI/Max-EV; pitcher outing rows swap in IP/H/ER/K.
+ * LeagueGameLogScreen — reverse-chron per-game log.
  *
- * Tap a row → LeagueGameDetail with { gameId, athleteId, role } (role chooses
- * hitter vs pitcher view on the detail screen).
+ * Cream day-card rows (3px accent, win/loss color, 4 stat columns). Each row →
+ * date · the athlete's SIDE badge (Navy/White) + matchup · result chip · line.
+ * Hitter rows show AB/HR/RBI/BB; pitcher outing rows swap in IP/H/ER/K.
  *
- * Data: acdl_athlete_game_log (12.1). Reuses HittingPerformanceScreen's
- * session-card styles; league accent = green/red win-loss + cyan stat.
+ * ACDL has NO fixed teams — the result is the athlete's SIDE result for THAT
+ * game (side_result, W/L/T), NOT a team standing. Matchup is "Navy vs White".
+ *
+ * Styled to match the ACDL website (cream/navy/sky-blue). Tap a row →
+ * LeagueGameDetail with { gameId, athleteId, role }.
+ *
+ * Data: acdl_athlete_game_log.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -24,8 +28,23 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { fetchAcdlGameLog, LeagueGameLogRow } from '../lib/acdlLeague';
-import { num, fmtInt, ipFromOuts, formatShortDate } from '../lib/leagueFormat';
-import { ACDL_BLUE } from '../components/league/acdlTheme';
+import { num, fmtInt, ipFromOuts, formatShortDate, gameSide } from '../lib/leagueFormat';
+import {
+  ACDL_CREAM,
+  ACDL_PAPER,
+  ACDL_NAVY,
+  ACDL_INK,
+  ACDL_INK_2,
+  ACDL_MUT,
+  ACDL_BLUE,
+  ACDL_BRAND_TEXT,
+  ACDL_ON_ACCENT,
+  ACDL_LINE,
+  ACDL_BAND_TEXT,
+  ACDL_BAND_MUT,
+  ACDL_WIN,
+  ACDL_LOSS,
+} from '../components/league/acdlTheme';
 
 export default function LeagueGameLogScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -79,13 +98,12 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
   if (membershipLoading || loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={ACDL_BLUE} />
+        <ActivityIndicator size="large" color={ACDL_BRAND_TEXT} />
         <Text style={styles.loadingText}>Loading game log...</Text>
       </View>
     );
   }
 
-  const positions = (season?.positions || []).join('/');
   const subtitle = [
     season ? `#${season.jersey_number ?? '—'}` : null,
     season?.season_name,
@@ -100,21 +118,31 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
         }
       >
-        <View style={styles.header}>
+        <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
+            <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>Game Log</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          <View style={styles.headerRow}>
+            <Image
+              source={require('../assets/acdl-crest.png')}
+              style={styles.crest}
+              resizeMode="contain"
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.eyebrow}>GAME LOG</Text>
+              <Text style={styles.title}>Game Log</Text>
+              {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+            </View>
+          </View>
         </View>
 
         {rows.length === 0 ? (
           <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="clipboard-text-outline" size={44} color="#4B5563" />
+            <MaterialCommunityIcons name="clipboard-text-outline" size={44} color={ACDL_MUT} />
             <Text style={styles.emptyStateText}>No games logged yet</Text>
             <Text style={styles.emptyStateSubtext}>
               Games appear here once they're scored and published.
@@ -126,14 +154,13 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
               <GameRow
                 key={row.game_id}
                 row={row}
-                teamId={season?.team_id ?? null}
                 onPress={() =>
                   navigation.navigate('LeagueGameDetail', {
                     gameId: row.game_id,
                     athleteId,
                     // If they pitched, open pitcher view; else hitter view.
                     role: row.pitching ? 'pitcher' : 'hitter',
-                    matchupLabel: matchupLabel(row, season?.team_id ?? null),
+                    matchupLabel: gameSide(row).matchup,
                     dateLabel: formatShortDate(row.event_date),
                   })
                 }
@@ -146,26 +173,14 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
   );
 }
 
-function matchupLabel(row: LeagueGameLogRow, teamId: string | null): string {
-  const home = row.home_team_name || 'Home';
-  const away = row.away_team_name || 'Away';
-  return `${home} vs ${away}`;
-}
-
-function GameRow({
-  row,
-  teamId,
-  onPress,
-}: {
-  row: LeagueGameLogRow;
-  teamId: string | null;
-  onPress: () => void;
-}) {
+function GameRow({ row, onPress }: { row: LeagueGameLogRow; onPress: () => void }) {
   const isPitcherFirst = !!row.pitching; // pitched in this game → show outing line
+  const side = gameSide(row);
 
-  // Result chip from line_score (home/away runs) + the athlete's decision.
-  const result = computeResult(row, teamId);
-  const accentColor = result.kind === 'W' ? '#22C55E' : result.kind === 'L' ? '#EF4444' : '#22D3EE';
+  // Result chip from the athlete's SIDE result + the line score.
+  const result = computeResult(row);
+  const accentColor =
+    result.kind === 'W' ? ACDL_WIN : result.kind === 'L' ? ACDL_LOSS : ACDL_BLUE;
 
   return (
     <TouchableOpacity style={styles.sessCard} onPress={onPress} activeOpacity={0.7}>
@@ -173,9 +188,16 @@ function GameRow({
       <View style={styles.sessBody}>
         <View style={styles.sessHead}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.sessDate}>
-              {formatShortDate(row.event_date)} · {matchupLabel(row, teamId)}
-            </Text>
+            <View style={styles.sessMatchRow}>
+              {side.mySide ? (
+                <View style={styles.sideBadge}>
+                  <Text style={styles.sideBadgeText}>{side.mySide}</Text>
+                </View>
+              ) : null}
+              <Text style={styles.sessDate} numberOfLines={1}>
+                {formatShortDate(row.event_date)} · {side.matchup}
+              </Text>
+            </View>
             <View style={styles.sessSourceRow}>
               {result.label ? (
                 <View
@@ -202,10 +224,12 @@ function GameRow({
                   </Text>
                 </View>
               ) : null}
-              <Text style={styles.sessSource}>{result.side}</Text>
+              {result.decision ? (
+                <Text style={styles.sessDecision}>{result.decision}</Text>
+              ) : null}
             </View>
           </View>
-          <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
+          <Ionicons name="chevron-forward" size={16} color={ACDL_MUT} />
         </View>
 
         <View style={styles.sessStats}>
@@ -252,71 +276,87 @@ function Stat({ value, label, accent }: { value: string; label: string; accent?:
 }
 
 /**
- * Resolve a W/L/T chip from the published line_score for the athlete's team,
- * plus the home/away side. Falls back to the decision when no team context.
+ * Resolve a W/L/T chip from the athlete's SIDE result for THIS game
+ * (side_result), with the score string from line_score, plus the pitcher
+ * decision (W/L/SV) shown alongside.
  */
 function computeResult(
-  row: LeagueGameLogRow,
-  teamId: string | null
-): { kind: 'W' | 'L' | 'T' | 'NA'; label: string; side: string } {
-  // home_team_id / away_team_id are not on the log row; we only know names.
-  // Use the line_score where available for the score string; side stays blank
-  // unless the detail provides it. Keep it honest: show the decision if any.
-  const ls = (row as any).line_score as
+  row: LeagueGameLogRow
+): { kind: 'W' | 'L' | 'T' | 'NA'; label: string; decision: string } {
+  const ls = row.line_score as
     | { home?: { runs?: number }; away?: { runs?: number } }
     | null
     | undefined;
-  let kind: 'W' | 'L' | 'T' | 'NA' = 'NA';
-  let label = '';
 
+  let scoreStr = '';
   const homeR = ls?.home?.runs;
   const awayR = ls?.away?.runs;
   if (typeof homeR === 'number' && typeof awayR === 'number') {
-    label = `${homeR}–${awayR}`;
+    scoreStr = `${homeR}–${awayR}`;
   }
 
-  // Decision (W/L/SV for the pitcher of record) takes priority for the chip kind.
-  if (row.decision === 'W') kind = 'W';
-  else if (row.decision === 'L') kind = 'L';
+  let kind: 'W' | 'L' | 'T' | 'NA' = 'NA';
+  if (row.side_result === 'W') kind = 'W';
+  else if (row.side_result === 'L') kind = 'L';
+  else if (row.side_result === 'T') kind = 'T';
 
-  const labelOut =
-    row.decision === 'SV'
-      ? `SV ${label}`.trim()
-      : kind === 'W'
-      ? `W ${label}`.trim()
-      : kind === 'L'
-      ? `L ${label}`.trim()
-      : label || (row.publish_status === 'final' ? 'FINAL' : '');
+  const prefix =
+    kind === 'W' ? 'W' : kind === 'L' ? 'L' : kind === 'T' ? 'T' : '';
+  const label =
+    prefix && scoreStr
+      ? `${prefix} ${scoreStr}`
+      : prefix || scoreStr || (row.publish_status === 'final' ? 'FINAL' : '');
 
-  return { kind, label: labelOut, side: '' };
+  const decision =
+    row.decision === 'W'
+      ? 'WIN (P)'
+      : row.decision === 'L'
+      ? 'LOSS (P)'
+      : row.decision === 'SV'
+      ? 'SAVE'
+      : '';
+
+  return { kind, label, decision };
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000000' },
+  container: { flex: 1, backgroundColor: ACDL_CREAM },
   scrollView: { flex: 1 },
   scrollContent: { paddingBottom: 80 },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: ACDL_CREAM,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingText: { marginTop: 16, color: '#9CA3AF', fontSize: 14 },
-  header: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 10 },
-  backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  backText: { color: '#9CA3AF', fontSize: 14, marginLeft: 8 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#9CA3AF' },
+  loadingText: { marginTop: 16, color: ACDL_INK_2, fontSize: 14 },
 
-  sessList: { paddingHorizontal: 16, gap: 10 },
+  band: {
+    backgroundColor: ACDL_NAVY,
+    paddingTop: 56,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+    borderBottomWidth: 3,
+    borderBottomColor: ACDL_BLUE,
+  },
+  backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  crest: { width: 52, height: 52 },
+  eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
+  title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
+  subtitle: { fontSize: 13, color: ACDL_BAND_MUT },
+
+  sessList: { paddingHorizontal: 16, gap: 10, paddingTop: 14 },
   sessCard: {
     flexDirection: 'row',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 14,
+    borderColor: ACDL_LINE,
+    borderRadius: 12,
     overflow: 'hidden',
+    backgroundColor: ACDL_PAPER,
   },
-  sessAccent: { width: 3 },
+  sessAccent: { width: 4 },
   sessBody: { flex: 1, padding: 14 },
   sessHead: {
     flexDirection: 'row',
@@ -324,29 +364,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  sessDate: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', marginBottom: 5 },
+  sessMatchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  sideBadge: {
+    backgroundColor: ACDL_BLUE,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  sideBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.6, color: ACDL_ON_ACCENT },
+  sessDate: { flex: 1, fontSize: 15, fontWeight: '800', color: ACDL_INK },
   sessSourceRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sessSource: { fontSize: 9, color: '#6B7280', textTransform: 'uppercase', letterSpacing: 0.5 },
+  sessDecision: { fontSize: 9, color: ACDL_MUT, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '700' },
 
   chip: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
-  chipWin: { backgroundColor: 'rgba(34,197,94,0.2)' },
-  chipLoss: { backgroundColor: 'rgba(239,68,68,0.2)' },
-  chipNeutral: { backgroundColor: 'rgba(155,221,255,0.12)' },
-  chipText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
-  chipTextWin: { color: '#86EFAC' },
-  chipTextLoss: { color: '#fca5a5' },
-  chipTextNeutral: { color: '#9BDDFF' },
+  chipWin: { backgroundColor: 'rgba(46,125,82,0.16)' },
+  chipLoss: { backgroundColor: 'rgba(180,69,58,0.16)' },
+  chipNeutral: { backgroundColor: 'rgba(155,221,255,0.28)' },
+  chipText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4, fontVariant: ['tabular-nums'] },
+  chipTextWin: { color: ACDL_WIN },
+  chipTextLoss: { color: ACDL_LOSS },
+  chipTextNeutral: { color: ACDL_BRAND_TEXT },
 
   sessStats: { flexDirection: 'row' },
   sessStat: { flex: 1, alignItems: 'center' },
-  sessStatValue: { fontSize: 17, fontWeight: '800', color: '#FFFFFF' },
-  sessStatValueAccent: { color: '#9BDDFF' },
+  sessStatValue: { fontSize: 17, fontWeight: '900', color: ACDL_INK, fontVariant: ['tabular-nums'] },
+  sessStatValueAccent: { color: ACDL_BRAND_TEXT },
   sessStatLabel: {
     fontSize: 8,
-    color: '#6B7280',
+    color: ACDL_MUT,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginTop: 2,
+    fontWeight: '700',
   },
 
   emptyState: {
@@ -354,9 +403,12 @@ const styles = StyleSheet.create({
     paddingVertical: 48,
     paddingHorizontal: 32,
     marginHorizontal: 16,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 24,
+    marginTop: 24,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
   },
-  emptyStateText: { fontSize: 16, color: '#9CA3AF', marginTop: 16, fontWeight: '600' },
-  emptyStateSubtext: { fontSize: 14, color: '#6B7280', marginTop: 8, textAlign: 'center', lineHeight: 20 },
+  emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700' },
+  emptyStateSubtext: { fontSize: 14, color: ACDL_INK_2, marginTop: 8, textAlign: 'center', lineHeight: 20 },
 });

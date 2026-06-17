@@ -32,7 +32,7 @@ interface FABMenuProps {
   items: FABMenuItem[];
   totalBadgeCount?: number;
   /**
-   * The athlete whose FAB this is. Passed to the auto-injected "ACDL League"
+   * The athlete whose FAB this is. Passed to the auto-injected "ACDL"
    * item so it gates on (and navigates for) the right athlete — defaults to the
    * resolved athlete (athlete account or selected child) when omitted.
    */
@@ -48,14 +48,14 @@ export default function FABMenu({
 }: FABMenuProps) {
   const navigation = useNavigation<any>();
 
-  // Auto-inject an "ACDL League" item, gated cheaply on league membership
+  // Auto-inject an "ACDL" item, gated cheaply on league membership
   // (useAcdlMembership reuses the resolved athlete id; only rostered athletes
   // ever see it). Inserted after "Performance" when present, else at the top.
   const { inLeague } = useAcdlMembership(athleteId);
 
   const leagueItem: FABMenuItem = {
     id: 'acdl-league',
-    label: 'ACDL League',
+    label: 'ACDL',
     icon: 'trophy',
     isLeague: true,
     onPress: () => navigation.navigate('LeagueHub', athleteId ? { athleteId } : {}),

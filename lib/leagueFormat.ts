@@ -60,6 +60,50 @@ export function teamAbbrev(name: string | null | undefined): string {
   return first.length <= 4 ? first : first.slice(0, 3).toUpperCase();
 }
 
+/**
+ * ACDL has NO fixed teams — every game is Navy vs White, reshuffled weekly. A
+ * game is shown by the athlete's SIDE for THAT game (my_team_name), not
+ * home/away. This builds the matchup string both ways:
+ *
+ *   - withSide: when we know the athlete's side, "<MySide> vs <Opponent>"
+ *     (the athlete's side first), e.g. "Navy vs White".
+ *   - both: when the side is unknown (null), just "Navy vs White" using the
+ *     home/away names — NEVER "Away @ Home".
+ *
+ * `mySide` is the SHORT label for the athlete's side badge (e.g. "NAVY"), or
+ * null when unassigned.
+ */
+export function gameSide(g: {
+  my_team_name?: string | null;
+  home_team_name?: string | null;
+  away_team_name?: string | null;
+}): { mySide: string | null; opponent: string | null; matchup: string } {
+  const home = g.home_team_name?.trim() || null;
+  const away = g.away_team_name?.trim() || null;
+  const mine = g.my_team_name?.trim() || null;
+
+  if (mine) {
+    // Opponent is whichever named side isn't the athlete's.
+    const opponent =
+      home && home.toLowerCase() !== mine.toLowerCase()
+        ? home
+        : away && away.toLowerCase() !== mine.toLowerCase()
+        ? away
+        : null;
+    return {
+      mySide: mine.toUpperCase(),
+      opponent,
+      matchup: opponent ? `${mine} vs ${opponent}` : mine,
+    };
+  }
+
+  // No side assigned yet → show both sides (Navy vs White). Prefer the named
+  // sides; fall back to the generic ACDL Navy/White labeling.
+  const a = home || 'Navy';
+  const b = away || 'White';
+  return { mySide: null, opponent: null, matchup: `${a} vs ${b}` };
+}
+
 /** 'YYYY-MM-DD' → "Sat Jun 12" (date-only, no TZ shift). */
 export function formatGameDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '—';

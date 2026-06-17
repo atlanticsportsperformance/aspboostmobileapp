@@ -55,8 +55,17 @@ import {
 import {
   ACDL_BLUE,
   ACDL_NAVY,
+  ACDL_CREAM,
+  ACDL_PAPER,
+  ACDL_INK,
+  ACDL_INK_2,
+  ACDL_MUT,
+  ACDL_BRAND_TEXT,
+  ACDL_ON_ACCENT,
+  ACDL_LINE,
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
+import { gameSide } from '../lib/leagueFormat';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
@@ -2846,10 +2855,9 @@ export default function DashboardScreen({ navigation }: any) {
         />
 
         {/* ACDL LEAGUE snapshot card — only for athletes rostered in a season.
-            Uses the snapshotCard idiom (radius 24 + gloss gradient) with the
-            ACDL sky-blue accent. Taps through to the League hub. */}
+            Cream/navy/sky-blue branded to match the ACDL website (distinct from
+            the dark dashboard). Taps through to the League hub. */}
         {inLeague && leagueSeason && (() => {
-          const accent = CATEGORY_COLORS.league.dot; // ACDL_BLUE
           const num = (v: unknown): number | null =>
             typeof v === 'number' ? v : v == null ? null : Number(v);
           const fmt3 = (v: number | null) =>
@@ -2872,8 +2880,9 @@ export default function DashboardScreen({ navigation }: any) {
                 { label: 'K', value: fmtN(num(pit.k)) },
               ]
             : [];
+          // ACDL has no season team — the meta line is the athlete's role, not a
+          // team name (which no longer exists on the membership row).
           const metaParts = [
-            leagueSeason.team_name,
             leagueSeason.jersey_number != null ? `#${leagueSeason.jersey_number}` : null,
             leagueSeason.positions && leagueSeason.positions.length > 0
               ? leagueSeason.positions.join('/')
@@ -2881,21 +2890,14 @@ export default function DashboardScreen({ navigation }: any) {
             leagueSeason.season_name,
           ].filter(Boolean) as string[];
           return (
-            <View style={[styles.snapshotCard, styles.leagueSnapshotCard]}>
-              <LinearGradient
-                colors={[acdlBlueAlpha(0.16), 'transparent', 'rgba(0,0,0,0.3)']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.cardGloss}
-                pointerEvents="none"
-              />
+            <View style={styles.leagueSnapshotCard}>
               <View style={styles.leagueSnapshotHeader}>
                 <Image
                   source={require('../assets/acdl-crest.png')}
                   style={styles.leagueSnapshotCrest}
                   resizeMode="contain"
                 />
-                <Text style={[styles.leagueSnapshotEyebrow, { color: accent }]}>ACDL LEAGUE</Text>
+                <Text style={styles.leagueSnapshotEyebrow}>ACDL LEAGUE</Text>
               </View>
               {metaParts.length > 0 && (
                 <Text style={styles.leagueSnapshotMeta} numberOfLines={1}>
@@ -2915,9 +2917,9 @@ export default function DashboardScreen({ navigation }: any) {
               <TouchableOpacity
                 style={styles.leagueSnapshotCta}
                 onPress={() => navigation.navigate('LeagueHub', { athleteId })}
-                activeOpacity={0.7}
+                activeOpacity={0.8}
               >
-                <Text style={[styles.leagueSnapshotCtaText, { color: accent }]}>View league →</Text>
+                <Text style={styles.leagueSnapshotCtaText}>View league →</Text>
               </TouchableOpacity>
             </View>
           );
@@ -3498,10 +3500,11 @@ export default function DashboardScreen({ navigation }: any) {
                         : ev.type === 'assessment'
                         ? 'ASSESSMENT'
                         : (ev.type || 'EVENT').toUpperCase();
-                      const home = ev.home_team_name || 'Home';
-                      const away = ev.away_team_name || 'Away';
+                      // ACDL has NO fixed teams — show the athlete's SIDE for
+                      // this game (Navy/White) + "Navy vs White", never "Away @ Home".
+                      const side = gameSide(ev);
                       const title = isGame
-                        ? `${away} @ ${home}`
+                        ? side.matchup
                         : ev.title || CATEGORY_COLORS.league.label;
                       const fmtTime = (t: string | null) => {
                         if (!t) return null;
@@ -3531,7 +3534,7 @@ export default function DashboardScreen({ navigation }: any) {
                             gameId: ev.game_id,
                             athleteId,
                             role: 'hitter',
-                            matchupLabel: `${home} vs ${away}`,
+                            matchupLabel: side.matchup,
                           });
                         } else {
                           navigation.navigate('LeagueHub', { athleteId });
@@ -3566,9 +3569,16 @@ export default function DashboardScreen({ navigation }: any) {
                               />
                             </View>
                             <View style={styles.bookingContent}>
-                              <Text style={[styles.bookingEyebrow, { color: accent }]}>
-                                {typeLabel}
-                              </Text>
+                              <View style={styles.leagueEyebrowRow}>
+                                <Text style={[styles.bookingEyebrow, { color: accent }]}>
+                                  {typeLabel}
+                                </Text>
+                                {isGame && side.mySide ? (
+                                  <View style={styles.leagueSideBadge}>
+                                    <Text style={styles.leagueSideBadgeText}>{side.mySide}</Text>
+                                  </View>
+                                ) : null}
+                              </View>
                               <Text style={styles.bookingTitle} numberOfLines={1}>
                                 {title}
                               </Text>
@@ -4360,22 +4370,45 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: ACDL_BLUE,
   },
+  // Per-game SIDE badge on the dashboard day-view game cards (Navy/White).
+  leagueEyebrowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  leagueSideBadge: {
+    backgroundColor: ACDL_BLUE,
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  leagueSideBadgeText: {
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    color: ACDL_ON_ACCENT,
+  },
+  // ACDL snapshot card — cream/navy/sky-blue (ACDL-website branded).
   leagueSnapshotCard: {
     marginHorizontal: 16,
     marginBottom: 16,
+    backgroundColor: ACDL_CREAM,
+    borderRadius: 18,
+    padding: 18,
     borderWidth: 1,
-    borderColor: acdlBlueAlpha(0.35),
+    borderColor: ACDL_LINE,
+    borderLeftWidth: 4,
+    borderLeftColor: ACDL_BLUE,
     overflow: 'hidden',
   },
   leagueSnapshotHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    zIndex: 10,
   },
   leagueSnapshotCrest: {
-    width: 28,
-    height: 28,
-    marginRight: 8,
+    width: 32,
+    height: 32,
+    marginRight: 10,
   },
   leagueSnapshotBadge: {
     width: 28,
@@ -4388,44 +4421,49 @@ const styles = StyleSheet.create({
   },
   leagueSnapshotEyebrow: {
     fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    color: ACDL_BRAND_TEXT,
   },
   leagueSnapshotMeta: {
     fontSize: 14,
-    color: '#E5E7EB',
-    fontWeight: '600',
+    color: ACDL_INK_2,
+    fontWeight: '700',
     marginTop: 10,
-    zIndex: 10,
   },
   leagueSnapshotStats: {
     flexDirection: 'row',
     marginTop: 14,
-    zIndex: 10,
   },
   leagueSnapshotStat: {
     marginRight: 24,
   },
   leagueSnapshotStatValue: {
     fontSize: 22,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontWeight: '900',
+    color: ACDL_INK,
+    fontVariant: ['tabular-nums'],
   },
   leagueSnapshotStatLabel: {
     fontSize: 11,
-    color: '#9CA3AF',
-    fontWeight: '600',
+    color: ACDL_MUT,
+    fontWeight: '700',
     marginTop: 2,
     letterSpacing: 0.5,
   },
   leagueSnapshotCta: {
     marginTop: 16,
     alignSelf: 'flex-start',
-    zIndex: 10,
+    backgroundColor: ACDL_BLUE,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
   leagueSnapshotCtaText: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    color: ACDL_ON_ACCENT,
   },
   // Reminder Card Styles
   reminderCard: {

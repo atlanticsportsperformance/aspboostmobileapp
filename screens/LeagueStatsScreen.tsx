@@ -1,22 +1,22 @@
 /**
  * LeagueStatsScreen — ACDL season stats with a Hitting/Pitching segmented
- * toggle (Phase 12.2). Matches mockup screens 5 + 6:
- *   HITTING: cream/gold hero (AVG·HR·RBI), STANDARD LINE table-card
+ * toggle.
+ *   HITTING: hero (AVG·HR·RBI), STANDARD LINE table-card
  *            (G AB H 2B 3B HR RBI BB SO SB), ADVANCED metric grid
- *            (wOBA·wRC+·OPS·ISO·K%·BB%), TRACKMAN BATTED BALL cards
- *            (avg/max EV, LA, hard-hit%, max dist).
- *   PITCHING: cream/gold hero (ERA·K·W-L), STANDARD LINE table-card
- *            (G IP H R ER BB K HR ERA WHIP), TRACKMAN pitch-metric cards
- *            (velo/spin/IVB/HB/extension/zone%).
+ *            (wOBA·wRC+·OPS·ISO·K%·BB%), TRACKMAN BATTED BALL cards.
+ *   PITCHING: hero (ERA·K·W-L), STANDARD LINE table-card
+ *            (G IP H R ER BB K HR ERA WHIP), TRACKMAN pitch-metric cards.
+ *            W-L = the athlete's PITCHER decisions (pitcher_wins/losses); a
+ *            saves chip when applicable.
  *
- * Real chrome reused verbatim from HittingPerformanceScreen + PerformanceScreen
- * (back-button header, cream PR row, segmented toggle). League accent = purple.
- * Em-dash where a metric isn't in the data.
+ * Styled to match the ACDL website (aspwebsite app/acdl/acdl.css): cream/navy/
+ * sky-blue, real crest PNG. Em-dash where a metric isn't in the data.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -29,7 +29,7 @@ import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import {
   fetchAcdlSeasonStats,
   LeagueSeasonStats,
-  LeagueStatRow,
+  LeagueSeasonMembership,
 } from '../lib/acdlLeague';
 import {
   num,
@@ -40,7 +40,21 @@ import {
   fmtSigned,
   ipFromOuts,
 } from '../lib/leagueFormat';
-import { ACDL_BLUE, ACDL_ON_ACCENT } from '../components/league/acdlTheme';
+import {
+  ACDL_CREAM,
+  ACDL_CREAM_2,
+  ACDL_PAPER,
+  ACDL_NAVY,
+  ACDL_INK,
+  ACDL_INK_2,
+  ACDL_MUT,
+  ACDL_BLUE,
+  ACDL_BRAND_TEXT,
+  ACDL_ON_ACCENT,
+  ACDL_LINE,
+  ACDL_BAND_TEXT,
+  ACDL_BAND_MUT,
+} from '../components/league/acdlTheme';
 
 type Mode = 'hitting' | 'pitching';
 
@@ -105,7 +119,7 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
   if (membershipLoading || loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={ACDL_BLUE} />
+        <ActivityIndicator size="large" color={ACDL_BRAND_TEXT} />
         <Text style={styles.loadingText}>Loading league stats...</Text>
       </View>
     );
@@ -126,17 +140,27 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
         }
       >
-        {/* Header */}
-        <View style={styles.header}>
+        {/* Navy band header */}
+        <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
+            <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>League Stats</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          <View style={styles.headerRow}>
+            <Image
+              source={require('../assets/acdl-crest.png')}
+              style={styles.crest}
+              resizeMode="contain"
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.eyebrow}>STATS</Text>
+              <Text style={styles.title}>League Stats</Text>
+              {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+            </View>
+          </View>
         </View>
 
         {/* Hitting / Pitching toggle */}
@@ -162,7 +186,7 @@ export default function LeagueStatsScreen({ navigation, route }: any) {
         {mode === 'hitting' ? (
           <HittingView stats={stats} games={season?.games_played ?? 0} />
         ) : (
-          <PitchingView stats={stats} games={season?.games_pitched ?? 0} />
+          <PitchingView stats={stats} season={season ?? null} />
         )}
       </ScrollView>
     </View>
@@ -190,7 +214,7 @@ function HittingView({ stats, games }: { stats: LeagueSeasonStats | null; games:
   return (
     <>
       {/* Hero: AVG · HR · RBI */}
-      <View style={styles.prBlock}>
+      <View style={styles.heroCard}>
         <View style={styles.swingCountRow}>
           <Text style={styles.sectionTitle}>Season Line</Text>
           <Text style={styles.scount}>
@@ -223,9 +247,7 @@ function HittingView({ stats, games }: { stats: LeagueSeasonStats | null; games:
       />
 
       {/* Advanced */}
-      <Text style={styles.subEyebrow}>
-        <Text style={styles.subEyebrowAccent}>ADVANCED</Text>
-      </Text>
+      <Text style={styles.subEyebrow}>ADVANCED</Text>
       <View style={styles.gridCards}>
         <MetricCard value={fmt3(num(adv?.woba))} label="wOBA" accent />
         <MetricCard value={fmtInt(num(adv?.wrc_plus_simple))} label="wRC+" accent />
@@ -258,11 +280,16 @@ function HittingView({ stats, games }: { stats: LeagueSeasonStats | null; games:
 // ─────────────────────────────────────────────────────────────────────────
 // PITCHING
 // ─────────────────────────────────────────────────────────────────────────
-function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games: number }) {
+function PitchingView({
+  stats,
+  season,
+}: {
+  stats: LeagueSeasonStats | null;
+  season: LeagueSeasonMembership | null;
+}) {
   const s = stats?.pitching?.season ?? null;
   const adv = stats?.pitching?.advanced ?? null;
   const met = stats?.pitching?.metrics ?? null;
-  const rec = stats?.record ?? null;
 
   if (!s) {
     return (
@@ -274,9 +301,13 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
     );
   }
 
-  const wl = rec
-    ? `${fmtInt(num(rec.wins))}-${fmtInt(num(rec.losses))}`
-    : `${fmtInt(num(adv?.w))}-${fmtInt(num(adv?.l))}`;
+  // ACDL records live on the player → W-L is the athlete's pitcher decisions.
+  const pw = season?.pitcher_wins ?? 0;
+  const pl = season?.pitcher_losses ?? 0;
+  const sv = season?.saves ?? 0;
+  const wl = `${pw}-${pl}`;
+  // Games pitched: prefer the stat-view G, else fall back to season games.
+  const gp = num(s.g) ?? season?.games_played ?? 0;
   const k9 =
     num(s.ip_outs) && num(s.ip_outs)! > 0
       ? ((num(s.k) ?? 0) * 27) / (num(s.ip_outs) as number)
@@ -285,11 +316,11 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
   return (
     <>
       {/* Hero: ERA · K · W-L */}
-      <View style={styles.prBlock}>
+      <View style={styles.heroCard}>
         <View style={styles.swingCountRow}>
           <Text style={styles.sectionTitle}>Season Line</Text>
           <Text style={styles.scount}>
-            {games} GP <Text style={styles.scountDiv}>·</Text> {ipFromOuts(num(s.ip_outs))} IP
+            {gp} GP <Text style={styles.scountDiv}>·</Text> {ipFromOuts(num(s.ip_outs))} IP
           </Text>
         </View>
         <View style={styles.statPrRow}>
@@ -300,7 +331,7 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
             unit={k9 != null ? `${fmt(k9, 1)} K/9` : '—'}
             bordered
           />
-          <HeroItem value={wl} label="W-L" unit={`${fmt(num(adv?.fip_ra9), 2)} FIP`} />
+          <HeroItem value={wl} label="W-L" unit={sv > 0 ? `${sv} SV` : `${fmt(num(adv?.fip_ra9), 2)} FIP`} />
         </View>
       </View>
 
@@ -309,7 +340,7 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
       <LineTable
         headers={['G', 'IP', 'H', 'R', 'ER', 'BB', 'K', 'HR', 'ERA', 'WHIP']}
         values={[
-          String(games),
+          String(gp),
           ipFromOuts(num(s.ip_outs)),
           fmtInt(num(s.h)),
           fmtInt(num(s.r)),
@@ -324,9 +355,7 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
       />
 
       {/* TrackMan pitch metrics */}
-      <Text style={styles.subEyebrow}>
-        <Text style={styles.subEyebrowAccent}>TRACKMAN</Text> · PITCH METRICS
-      </Text>
+      <Text style={styles.subEyebrow}>TRACKMAN · PITCH METRICS</Text>
       <View style={styles.gridCards}>
         <MetricCard value={fmt(num(met?.avg_velo_mph), 1)} label="AVG VELO" sub="mph" accent />
         <MetricCard value={fmt(num(met?.max_velo_mph), 1)} label="MAX VELO" sub="mph" accent />
@@ -339,7 +368,10 @@ function PitchingView({ stats, games }: { stats: LeagueSeasonStats | null; games
         <MetricCard value={fmtPct(num(adv?.bb_pct))} label="BB%" accent />
       </View>
 
-      <Text style={styles.note}>TrackMan metrics shown across all pitch types.</Text>
+      <Text style={styles.note}>
+        W-L = your pitcher decisions{sv > 0 ? ` · ${sv} save${sv === 1 ? '' : 's'}` : ''}. TrackMan
+        metrics shown across all pitch types.
+      </Text>
     </>
   );
 }
@@ -360,10 +392,7 @@ function HeroItem({
 }) {
   return (
     <View style={[styles.statPrItem, bordered && styles.statPrItemBorder]}>
-      <View style={styles.statPrVrow}>
-        <Ionicons name="star" size={12} color="#D4AF37" />
-        <Text style={styles.statPrValue}>{value}</Text>
-      </View>
+      <Text style={styles.statPrValue}>{value}</Text>
       <Text style={styles.statPrLabel}>{label}</Text>
       <Text style={styles.statPrUnit}>{unit}</Text>
     </View>
@@ -425,7 +454,7 @@ function MetricCard({
 function EmptyStat({ icon, label, sub }: { icon: any; label: string; sub: string }) {
   return (
     <View style={styles.emptyState}>
-      <Ionicons name={icon} size={44} color="#4B5563" />
+      <Ionicons name={icon} size={44} color={ACDL_MUT} />
       <Text style={styles.emptyStateText}>{label}</Text>
       <Text style={styles.emptyStateSubtext}>{sub}</Text>
     </View>
@@ -433,100 +462,119 @@ function EmptyStat({ icon, label, sub }: { icon: any; label: string; sub: string
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000000' },
+  container: { flex: 1, backgroundColor: ACDL_CREAM },
   scrollView: { flex: 1 },
   scrollContent: { paddingBottom: 80 },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: ACDL_CREAM,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingText: { marginTop: 16, color: '#9CA3AF', fontSize: 14 },
-  header: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 10 },
-  backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  backText: { color: '#9CA3AF', fontSize: 14, marginLeft: 8 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#9CA3AF' },
+  loadingText: { marginTop: 16, color: ACDL_INK_2, fontSize: 14 },
 
-  // toggle (PerformanceScreen idiom; purple active for league)
+  band: {
+    backgroundColor: ACDL_NAVY,
+    paddingTop: 56,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+    borderBottomWidth: 3,
+    borderBottomColor: ACDL_BLUE,
+  },
+  backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  crest: { width: 52, height: 52 },
+  eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
+  title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
+  subtitle: { fontSize: 13, color: ACDL_BAND_MUT },
+
+  // toggle
   toggleContainer: {
     flexDirection: 'row',
     marginHorizontal: 16,
-    marginVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
+    marginVertical: 14,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 10,
     padding: 4,
   },
-  toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   toggleButtonActive: { backgroundColor: ACDL_BLUE },
-  toggleText: { fontSize: 14, fontWeight: '600', color: '#9CA3AF' },
+  toggleText: { fontSize: 14, fontWeight: '700', color: ACDL_INK_2 },
   toggleTextActive: { color: ACDL_ON_ACCENT },
 
-  prBlock: { paddingHorizontal: 16 },
+  heroCard: {
+    marginHorizontal: 16,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
+    padding: 16,
+  },
   swingCountRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
   },
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' },
-  scount: { fontSize: 12, color: '#9CA3AF' },
-  scountDiv: { color: '#4B5563' },
+  sectionTitle: { fontSize: 16, fontWeight: '900', color: ACDL_INK },
+  scount: { fontSize: 12, color: ACDL_INK_2 },
+  scountDiv: { color: ACDL_MUT },
 
-  statPrRow: { flexDirection: 'row', marginBottom: 16 },
+  statPrRow: { flexDirection: 'row' },
   statPrItem: { flex: 1, alignItems: 'center' },
   statPrItemBorder: {
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: ACDL_LINE,
   },
-  statPrVrow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
-  statPrValue: { fontSize: 24, fontWeight: 'bold', color: '#F5F0E6', letterSpacing: -0.5 },
-  statPrLabel: { fontSize: 9, color: '#6B7280', textTransform: 'uppercase', letterSpacing: 1 },
-  statPrUnit: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  statPrValue: { fontSize: 26, fontWeight: '900', color: ACDL_INK, letterSpacing: -0.5, fontVariant: ['tabular-nums'], marginBottom: 4 },
+  statPrLabel: { fontSize: 9, color: ACDL_MUT, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' },
+  statPrUnit: { fontSize: 12, color: ACDL_BRAND_TEXT, marginTop: 2, fontWeight: '600' },
 
   subEyebrow: {
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 2,
-    color: '#E5E7EB',
+    color: ACDL_BRAND_TEXT,
     paddingHorizontal: 16,
     marginTop: 22,
     marginBottom: 12,
   },
-  subEyebrowAccent: { color: ACDL_BLUE },
 
   // line table
   tableCard: {
     marginHorizontal: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: ACDL_LINE,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: ACDL_PAPER,
   },
-  tableHeaderRow: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.03)' },
-  tableBodyRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.05)' },
+  tableHeaderRow: { flexDirection: 'row', backgroundColor: ACDL_CREAM_2 },
+  tableBodyRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: ACDL_LINE },
   th: {
     flex: 1,
     fontSize: 9,
-    color: '#6B7280',
+    color: ACDL_MUT,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    fontWeight: '700',
+    fontWeight: '800',
     paddingVertical: 9,
     textAlign: 'center',
   },
   td: {
     flex: 1,
     fontSize: 12,
-    color: '#E5E7EB',
-    fontWeight: '600',
+    color: ACDL_INK,
+    fontWeight: '700',
     paddingVertical: 9,
     textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
-  tdHi: { color: ACDL_BLUE, fontWeight: '800' },
+  tdHi: { color: ACDL_BRAND_TEXT, fontWeight: '900' },
 
   // metric cards
   gridCards: {
@@ -537,9 +585,9 @@ const styles = StyleSheet.create({
   },
   mcard: {
     width: '31.5%',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: ACDL_PAPER,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: ACDL_LINE,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 10,
@@ -547,13 +595,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   mcardAccent: { borderLeftWidth: 3, borderLeftColor: ACDL_BLUE },
-  mv: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 },
-  ml: { fontSize: 9, color: '#6B7280', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
-  ms: { fontSize: 9, color: '#9CA3AF', marginTop: 1 },
+  mv: { fontSize: 20, fontWeight: '900', color: ACDL_INK, letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  ml: { fontSize: 9, color: ACDL_MUT, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+  ms: { fontSize: 9, color: ACDL_INK_2, marginTop: 1 },
 
   note: {
     fontSize: 10,
-    color: '#6B7280',
+    color: ACDL_MUT,
     textAlign: 'center',
     paddingHorizontal: 16,
     paddingTop: 16,
@@ -566,9 +614,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     marginHorizontal: 16,
     marginTop: 8,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 24,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
   },
-  emptyStateText: { fontSize: 16, color: '#9CA3AF', marginTop: 16, fontWeight: '600' },
-  emptyStateSubtext: { fontSize: 14, color: '#6B7280', marginTop: 8, textAlign: 'center', lineHeight: 20 },
+  emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700' },
+  emptyStateSubtext: { fontSize: 14, color: ACDL_INK_2, marginTop: 8, textAlign: 'center', lineHeight: 20 },
 });

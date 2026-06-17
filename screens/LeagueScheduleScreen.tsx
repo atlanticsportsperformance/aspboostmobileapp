@@ -1,17 +1,17 @@
 /**
- * LeagueScheduleScreen — the full ACDL season schedule (Phase 12.4).
+ * LeagueScheduleScreen — the full ACDL season schedule.
  *
  * Lists EVERY league_events row for the athlete's rostered seasons (games,
  * practices, training days, assessments, other), grouped by date and split
  * into "Upcoming" vs "Past" relative to today. A segmented type filter
  * (ALL · GAMES · PRACTICES · TRAINING · OTHER) narrows the list. Each event is
- * a day-card in the app idiom: a color-coded type chip, title, date + time
- * range, location; games also show the matchup and a LIVE badge / final score
- * when published. Tapping a game opens LeagueGameDetail (hitter view); other
- * event types are inert.
+ * a cream day-card; games show the athlete's SIDE for that game (Navy/White) +
+ * the matchup ("Navy vs White"), a LIVE badge / final score when published.
  *
- * Data: useAthleteId + fetchAcdlEvents(athleteId, null, null) — fail-silent,
- * additive. ACDL brand throughout (navy panels, sky-blue accent, real crest).
+ * Styled to match the ACDL website (aspwebsite app/acdl/acdl.css): cream/navy/
+ * sky-blue, real crest PNG. ACDL has NO fixed teams — never "Away @ Home".
+ *
+ * Data: useAthleteId + fetchAcdlEvents(athleteId, null, null) — fail-silent.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -27,11 +27,20 @@ import {
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { fetchAcdlEvents, LeagueEvent } from '../lib/acdlLeague';
-import { formatGameDate, formatEventTime } from '../lib/leagueFormat';
+import { formatGameDate, formatEventTime, gameSide } from '../lib/leagueFormat';
 import {
-  ACDL_BLUE,
+  ACDL_CREAM,
+  ACDL_PAPER,
   ACDL_NAVY,
+  ACDL_INK,
+  ACDL_INK_2,
+  ACDL_MUT,
+  ACDL_BLUE,
+  ACDL_BRAND_TEXT,
   ACDL_ON_ACCENT,
+  ACDL_LINE,
+  ACDL_BAND_TEXT,
+  ACDL_BAND_MUT,
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
 
@@ -62,22 +71,22 @@ function matchesFilter(type: string, filter: FilterKey): boolean {
   }
 }
 
-// Per-type chip color + label. game=ACDL blue, practice=green, training=amber,
-// assessment/other=muted.
+// Per-type chip color + label. game=ACDL brand-text blue, practice=green,
+// training=amber, assessment/other=muted ink.
 function typeMeta(type: string): { color: string; label: string } {
   switch (type) {
     case 'game':
-      return { color: ACDL_BLUE, label: 'GAME' };
+      return { color: ACDL_BRAND_TEXT, label: 'GAME' };
     case 'practice':
-      return { color: '#34D399', label: 'PRACTICE' };
+      return { color: '#2e7d52', label: 'PRACTICE' };
     case 'training_day':
-      return { color: '#F59E0B', label: 'TRAINING' };
+      return { color: '#b07b16', label: 'TRAINING' };
     case 'assessment':
-      return { color: '#9CA3AF', label: 'ASSESSMENT' };
+      return { color: ACDL_MUT, label: 'ASSESSMENT' };
     case 'other':
-      return { color: '#9CA3AF', label: 'OTHER' };
+      return { color: ACDL_MUT, label: 'OTHER' };
     default:
-      return { color: '#9CA3AF', label: (type || 'EVENT').toUpperCase() };
+      return { color: ACDL_MUT, label: (type || 'EVENT').toUpperCase() };
   }
 }
 
@@ -179,7 +188,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={ACDL_BLUE} />
+        <ActivityIndicator size="large" color={ACDL_BRAND_TEXT} />
         <Text style={styles.loadingText}>Loading schedule...</Text>
       </View>
     );
@@ -191,13 +200,13 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BLUE} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
         }
       >
-        {/* Header — back + crest + title */}
-        <View style={styles.header}>
+        {/* Navy band header — back + crest + title */}
+        <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
+            <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />
             <Text style={styles.backText}>League Hub</Text>
           </TouchableOpacity>
           <View style={styles.headerRow}>
@@ -207,6 +216,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
               resizeMode="contain"
             />
             <View style={{ flex: 1 }}>
+              <Text style={styles.eyebrow}>SCHEDULE</Text>
               <Text style={styles.title}>Schedule</Text>
               <Text style={styles.subtitle}>Atlantic Collegiate Development League</Text>
             </View>
@@ -239,13 +249,13 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
         {/* Empty state (per filter) */}
         {isEmpty ? (
           <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="calendar-blank-outline" size={44} color="#4B5563" />
+            <MaterialCommunityIcons name="calendar-blank-outline" size={44} color={ACDL_MUT} />
             <Text style={styles.emptyStateText}>
               {filter === 'all' ? 'No events scheduled yet' : 'No matching events'}
             </Text>
             <Text style={styles.emptyStateSubtext}>
               {filter === 'all'
-                ? "Your team's games, practices, and training days will appear here."
+                ? 'Games, practices, and training days will appear here.'
                 : 'Try a different filter to see other event types.'}
             </Text>
           </View>
@@ -266,9 +276,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
                             gameId: ev.game_id,
                             athleteId,
                             role: 'hitter',
-                            matchupLabel: `${ev.home_team_name || 'Home'} vs ${
-                              ev.away_team_name || 'Away'
-                            }`,
+                            matchupLabel: gameSide(ev).matchup,
                             dateLabel: formatGameDate(ev.event_date),
                           });
                         }
@@ -289,9 +297,8 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
   const meta = typeMeta(ev.type);
   const accent = meta.color;
   const isGame = ev.type === 'game';
-  const home = ev.home_team_name || 'Home';
-  const away = ev.away_team_name || 'Away';
-  const title = isGame ? `${away} @ ${home}` : ev.title || meta.label;
+  const side = gameSide(ev);
+  const title = isGame ? side.matchup : ev.title || meta.label;
 
   const start = formatEventTime(ev.start_time);
   const end = formatEventTime(ev.end_time);
@@ -314,16 +321,23 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
       disabled={!tappable}
     >
       <View style={styles.cardTopRow}>
-        <View style={[styles.typeChip, { backgroundColor: `${accent}26` }]}>
-          <Text style={[styles.typeChipText, { color: accent }]}>{meta.label}</Text>
+        <View style={styles.chipRow}>
+          <View style={[styles.typeChip, { backgroundColor: `${accent}1f` }]}>
+            <Text style={[styles.typeChipText, { color: accent }]}>{meta.label}</Text>
+          </View>
+          {isGame && side.mySide ? (
+            <View style={styles.sideBadge}>
+              <Text style={styles.sideBadgeText}>{side.mySide}</Text>
+            </View>
+          ) : null}
         </View>
         {isLive ? (
           <View style={styles.liveBadge}>
             <Text style={styles.liveText}>LIVE</Text>
           </View>
         ) : hasScore ? (
-          <View style={[styles.scoreBadge, { backgroundColor: acdlBlueAlpha(0.18) }]}>
-            <Text style={styles.scoreText}>{`${awayRuns}–${homeRuns}`}</Text>
+          <View style={styles.scoreBadge}>
+            <Text style={styles.scoreText}>{`${homeRuns}–${awayRuns}`}</Text>
           </View>
         ) : null}
       </View>
@@ -333,7 +347,7 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
       <Text style={styles.cardMeta}>{timeStr}</Text>
       {ev.location ? (
         <View style={styles.cardLocRow}>
-          <Ionicons name="location-outline" size={12} color="#6B7280" />
+          <Ionicons name="location-outline" size={12} color={ACDL_MUT} />
           <Text style={styles.cardLoc} numberOfLines={1}>
             {ev.location}
           </Text>
@@ -344,47 +358,55 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
+  container: { flex: 1, backgroundColor: ACDL_CREAM },
   scrollView: { flex: 1 },
   scrollContent: { paddingBottom: 60 },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: ACDL_CREAM,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingText: { marginTop: 16, color: '#9CA3AF', fontSize: 14 },
+  loadingText: { marginTop: 16, color: ACDL_INK_2, fontSize: 14 },
 
-  header: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 8 },
+  band: {
+    backgroundColor: ACDL_NAVY,
+    paddingTop: 56,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+    borderBottomWidth: 3,
+    borderBottomColor: ACDL_BLUE,
+  },
   backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
-  backText: { color: '#9CA3AF', fontSize: 14, marginLeft: 8 },
+  backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  crest: { width: 48, height: 48 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 2 },
-  subtitle: { fontSize: 12, color: '#9CA3AF' },
+  crest: { width: 52, height: 52 },
+  eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
+  title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
+  subtitle: { fontSize: 12, color: ACDL_BAND_MUT },
 
   filterRow: { paddingHorizontal: 12, paddingVertical: 12, gap: 8 },
   filterChip: {
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 8,
+    backgroundColor: ACDL_PAPER,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: ACDL_LINE,
     marginHorizontal: 2,
   },
   filterChipActive: {
     backgroundColor: ACDL_BLUE,
     borderColor: ACDL_BLUE,
   },
-  filterChipText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5, color: '#9CA3AF' },
+  filterChipText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5, color: ACDL_INK_2 },
   filterChipTextActive: { color: ACDL_ON_ACCENT },
 
   sectionHeader: {
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 2,
-    color: ACDL_BLUE,
+    color: ACDL_BRAND_TEXT,
     paddingHorizontal: 16,
     marginTop: 18,
     marginBottom: 4,
@@ -392,18 +414,18 @@ const styles = StyleSheet.create({
   dateGroup: { paddingHorizontal: 16, marginTop: 10 },
   dateLabel: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#E5E7EB',
+    fontWeight: '800',
+    color: ACDL_INK,
     marginBottom: 8,
   },
 
   card: {
-    backgroundColor: ACDL_NAVY,
-    borderRadius: 14,
+    backgroundColor: ACDL_PAPER,
+    borderRadius: 12,
     padding: 14,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: ACDL_LINE,
     borderLeftWidth: 4,
   },
   cardTopRow: {
@@ -412,26 +434,39 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 6,
   },
+  chipRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   typeChip: {
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
   typeChipText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.6 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF', marginBottom: 4 },
-  cardMeta: { fontSize: 12, color: '#9CA3AF' },
+  sideBadge: {
+    backgroundColor: ACDL_BLUE,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  sideBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.6, color: ACDL_ON_ACCENT },
+  cardTitle: { fontSize: 16, fontWeight: '800', color: ACDL_INK, marginBottom: 4 },
+  cardMeta: { fontSize: 12, color: ACDL_INK_2 },
   cardLocRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  cardLoc: { fontSize: 12, color: '#6B7280', flex: 1 },
+  cardLoc: { fontSize: 12, color: ACDL_MUT, flex: 1 },
 
   liveBadge: {
     paddingVertical: 4,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    backgroundColor: 'rgba(180, 69, 58, 0.15)',
     borderRadius: 6,
   },
-  liveText: { fontSize: 10, fontWeight: '800', color: '#f87171', letterSpacing: 0.5 },
-  scoreBadge: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 },
-  scoreText: { fontSize: 12, fontWeight: '800', color: ACDL_BLUE },
+  liveText: { fontSize: 10, fontWeight: '900', color: '#b4453a', letterSpacing: 0.5 },
+  scoreBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: acdlBlueAlpha(0.25),
+  },
+  scoreText: { fontSize: 12, fontWeight: '900', color: ACDL_BRAND_TEXT, fontVariant: ['tabular-nums'] },
 
   emptyState: {
     alignItems: 'center',
@@ -439,13 +474,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     marginHorizontal: 16,
     marginTop: 24,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 24,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
   },
-  emptyStateText: { fontSize: 16, color: '#9CA3AF', marginTop: 16, fontWeight: '600' },
+  emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700' },
   emptyStateSubtext: {
     fontSize: 14,
-    color: '#6B7280',
+    color: ACDL_INK_2,
     marginTop: 8,
     textAlign: 'center',
     lineHeight: 20,

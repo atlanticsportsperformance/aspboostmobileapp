@@ -52,7 +52,22 @@ import {
   paResultLabel,
   isHitResult,
 } from '../lib/leagueFormat';
-import { ACDL_BLUE, ACDL_ON_ACCENT } from '../components/league/acdlTheme';
+import {
+  ACDL_CREAM,
+  ACDL_CREAM_2,
+  ACDL_PAPER,
+  ACDL_NAVY,
+  ACDL_INK,
+  ACDL_INK_2,
+  ACDL_MUT,
+  ACDL_BLUE,
+  ACDL_BRAND_TEXT,
+  ACDL_ON_ACCENT,
+  ACDL_LINE,
+  ACDL_BAND_TEXT,
+  ACDL_BAND_MUT,
+  ACDL_WIN,
+} from '../components/league/acdlTheme';
 
 type Role = 'hitter' | 'pitcher';
 
@@ -106,7 +121,7 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={ACDL_BLUE} />
+        <ActivityIndicator size="large" color={ACDL_BRAND_TEXT} />
         <Text style={styles.loadingText}>Loading game detail...</Text>
       </View>
     );
@@ -115,11 +130,12 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   return (
     <View style={styles.container}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
+        <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
+            <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />
             <Text style={styles.backText}>Game Log</Text>
           </TouchableOpacity>
+          <Text style={styles.eyebrow}>ACDL GAME</Text>
           <Text style={styles.title}>{matchupLabel}</Text>
           {dateLabel ? <Text style={styles.subtitle}>{dateLabel}</Text> : null}
         </View>
@@ -212,7 +228,7 @@ function PaCard({
           <Ionicons
             name={open ? 'chevron-up' : 'chevron-down'}
             size={14}
-            color="#4B5563"
+            color={ACDL_MUT}
             style={{ marginLeft: 6 }}
           />
         </View>
@@ -234,7 +250,7 @@ function PaCard({
             ))}
           </View>
 
-          {/* Visualizations */}
+          {/* Visualizations — navy band so the (white-on-dark) plots read */}
           <View style={styles.vizWrap}>
             <View style={styles.vizCol}>
               <StrikeZonePlot
@@ -408,7 +424,7 @@ function PitchChip({ type }: { type: string | null }) {
 function Empty({ label }: { label: string }) {
   return (
     <View style={styles.emptyState}>
-      <Ionicons name="baseball-outline" size={44} color="#4B5563" />
+      <Ionicons name="baseball-outline" size={44} color={ACDL_MUT} />
       <Text style={styles.emptyStateText}>{label}</Text>
     </View>
   );
@@ -472,43 +488,55 @@ function computeOuting(pitches: Pitch[]): {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000000' },
+  container: { flex: 1, backgroundColor: ACDL_CREAM },
   scrollView: { flex: 1 },
   scrollContent: { paddingBottom: 80 },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: ACDL_CREAM,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingText: { marginTop: 16, color: '#9CA3AF', fontSize: 14 },
-  header: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 10 },
+  loadingText: { marginTop: 16, color: ACDL_INK_2, fontSize: 14 },
+  band: {
+    backgroundColor: ACDL_NAVY,
+    paddingTop: 56,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+    borderBottomWidth: 3,
+    borderBottomColor: ACDL_BLUE,
+  },
   backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  backText: { color: '#9CA3AF', fontSize: 14, marginLeft: 8 },
-  title: { fontSize: 26, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#9CA3AF' },
+  backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
+  eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
+  title: { fontSize: 24, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 4 },
+  subtitle: { fontSize: 14, color: ACDL_BAND_MUT },
 
   toggleContainer: {
     flexDirection: 'row',
     marginHorizontal: 16,
+    marginTop: 14,
     marginBottom: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 10,
     padding: 4,
   },
-  toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  toggleButton: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   toggleButtonActive: { backgroundColor: ACDL_BLUE },
-  toggleText: { fontSize: 14, fontWeight: '600', color: '#9CA3AF' },
+  toggleText: { fontSize: 14, fontWeight: '700', color: ACDL_INK_2 },
   toggleTextActive: { color: ACDL_ON_ACCENT },
 
   // at-bat / detail card
   abCard: {
     marginHorizontal: 16,
-    marginBottom: 14,
+    marginTop: 14,
+    marginBottom: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: ACDL_LINE,
     borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.02)',
+    backgroundColor: ACDL_PAPER,
     overflow: 'hidden',
   },
   abHead: {
@@ -518,32 +546,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: ACDL_LINE,
   },
-  abPa: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
+  abPa: { fontSize: 13, fontWeight: '900', color: ACDL_INK },
   abHeadRight: { flexDirection: 'row', alignItems: 'center' },
-  abRes: { fontSize: 11, fontWeight: '700' },
-  abResHit: { color: '#86EFAC' },
-  abResOut: { color: '#9CA3AF' },
+  abRes: { fontSize: 11, fontWeight: '800' },
+  abResHit: { color: ACDL_WIN },
+  abResOut: { color: ACDL_INK_2 },
 
   // pitch table
   pitchTable: { paddingHorizontal: 0 },
   ptHeaderRow: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: ACDL_CREAM_2,
     paddingVertical: 9,
     paddingHorizontal: 8,
   },
   ptRow: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
+    borderTopColor: ACDL_LINE,
     paddingVertical: 9,
     paddingHorizontal: 8,
     alignItems: 'center',
   },
-  ptTh: { fontSize: 8, color: '#6B7280', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '700' },
-  ptTd: { fontSize: 11, color: '#E5E7EB', fontWeight: '600' },
+  ptTh: { fontSize: 8, color: ACDL_MUT, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '800' },
+  ptTd: { fontSize: 11, color: ACDL_INK, fontWeight: '700', fontVariant: ['tabular-nums'] },
   // hitter table columns
   ptColNum: { width: 24, textAlign: 'center' },
   ptColType: { width: 52, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
@@ -556,12 +584,16 @@ const styles = StyleSheet.create({
   wVal: { width: 52, textAlign: 'center' },
   wCall: { width: 80, textAlign: 'left' },
 
-  // visualizations
+  // visualizations — navy band (the SVG plots draw white-on-dark)
   vizWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 16,
     padding: 14,
+    margin: 14,
+    marginTop: 0,
+    borderRadius: 12,
+    backgroundColor: ACDL_NAVY,
     alignItems: 'flex-start',
     justifyContent: 'center',
   },
@@ -572,12 +604,12 @@ const styles = StyleSheet.create({
   ptText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.3 },
 
   // metric / summary cards
-  gridCards: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, gap: 8 },
+  gridCards: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, gap: 8, marginTop: 14 },
   mcard: {
     width: '31.5%',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: ACDL_PAPER,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: ACDL_LINE,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 10,
@@ -585,24 +617,24 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   mcardAccent: { borderLeftWidth: 3, borderLeftColor: ACDL_BLUE },
-  mv: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 },
-  ml: { fontSize: 9, color: '#6B7280', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
-  ms: { fontSize: 9, color: '#9CA3AF', marginTop: 1 },
+  mv: { fontSize: 20, fontWeight: '900', color: ACDL_INK, letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  ml: { fontSize: 9, color: ACDL_MUT, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+  ms: { fontSize: 9, color: ACDL_INK_2, marginTop: 1 },
 
   subEyebrow: {
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 2,
-    color: '#E5E7EB',
+    color: ACDL_BRAND_TEXT,
     paddingHorizontal: 16,
     marginTop: 18,
     marginBottom: 10,
   },
-  subEyebrowAccent: { color: ACDL_BLUE },
+  subEyebrowAccent: { color: ACDL_BRAND_TEXT },
 
   note: {
     fontSize: 10,
-    color: '#6B7280',
+    color: ACDL_MUT,
     textAlign: 'center',
     paddingHorizontal: 16,
     paddingTop: 14,
@@ -614,8 +646,11 @@ const styles = StyleSheet.create({
     paddingVertical: 48,
     paddingHorizontal: 32,
     marginHorizontal: 16,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 24,
+    marginTop: 14,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderRadius: 16,
   },
-  emptyStateText: { fontSize: 16, color: '#9CA3AF', marginTop: 16, fontWeight: '600', textAlign: 'center' },
+  emptyStateText: { fontSize: 16, color: ACDL_INK, marginTop: 16, fontWeight: '700', textAlign: 'center' },
 });
