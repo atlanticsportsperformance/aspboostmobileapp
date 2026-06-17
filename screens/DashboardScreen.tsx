@@ -61,7 +61,6 @@ import {
   ACDL_INK_2,
   ACDL_MUT,
   ACDL_BRAND_TEXT,
-  ACDL_ON_ACCENT,
   ACDL_LINE,
   ACDL_LIVE_BG,
   ACDL_LIVE_TEXT,
@@ -80,6 +79,7 @@ import {
 } from '../lib/leagueFormat';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { AcdlCrest } from '../components/league/AcdlCrest';
+import TeamTag from '../components/league/TeamTag';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -2917,12 +2917,11 @@ export default function DashboardScreen({ navigation }: any) {
             }
             return best;
           })();
-          const nextMatchup = nextGame
-            ? `${nextGame.home_team_name || 'Navy'} vs ${nextGame.away_team_name || 'White'}`
+          const nextSideInfo = nextGame ? gameSide(nextGame) : null;
+          const nextMatchup = nextSideInfo
+            ? nextSideInfo.matchup
             : null;
-          const nextLine = nextGame
-            ? `Next: ${nextMatchup} · ${formatShortDate(nextGame.event_date)}`
-            : null;
+          const nextDateLabel = nextGame ? formatShortDate(nextGame.event_date) : null;
           return (
             <View style={styles.leagueSnapshotCard}>
               <View style={styles.leagueSnapshotHeader}>
@@ -2937,10 +2936,13 @@ export default function DashboardScreen({ navigation }: any) {
                   {metaParts.join(' · ')}
                 </Text>
               )}
-              {nextLine && (
-                <Text style={styles.leagueSnapshotNext} numberOfLines={1}>
-                  {nextLine}
-                </Text>
+              {nextGame && (
+                <View style={styles.leagueSnapshotNextRow}>
+                  <Text style={styles.leagueSnapshotNext} numberOfLines={1}>
+                    {`Next: ${nextMatchup} · ${nextDateLabel}`}
+                  </Text>
+                  <TeamTag name={nextGame.my_team_name} size="sm" />
+                </View>
               )}
               {statChips.length > 0 && (
                 <View style={styles.leagueSnapshotStats}>
@@ -3596,11 +3598,12 @@ export default function DashboardScreen({ navigation }: any) {
                                 <Text style={[styles.bookingEyebrow, { color: accent }]}>
                                   {typeLabel}
                                 </Text>
-                                {isGame && side.mySide ? (
-                                  <View style={styles.leagueSideBadge}>
-                                    <Text style={styles.leagueSideBadgeText}>{side.mySide}</Text>
+                                {isGame && (
+                                  <View style={styles.leagueSideTagWrap}>
+                                    <Text style={styles.leagueSideTagLabel}>SIDE</Text>
+                                    <TeamTag name={ev.my_team_name} size="sm" />
                                   </View>
-                                ) : null}
+                                )}
                               </View>
                               <Text style={styles.bookingTitle} numberOfLines={1}>
                                 {title}
@@ -4398,23 +4401,23 @@ const styles = StyleSheet.create({
     color: ACDL_BLUE,
     fontVariant: ['tabular-nums'],
   },
-  // Per-game SIDE badge on the dashboard day-view game cards (Navy/White).
+  // Per-game SIDE tag on the dashboard day-view game cards (Navy/White/TBA).
   leagueEyebrowRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  leagueSideBadge: {
-    backgroundColor: ACDL_BLUE,
-    borderRadius: 5,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
+  leagueSideTagWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
-  leagueSideBadgeText: {
+  leagueSideTagLabel: {
     fontSize: 8,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-    color: ACDL_ON_ACCENT,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: ACDL_MUT,
+    textTransform: 'uppercase',
   },
   // ACDL snapshot card — cream/navy/sky-blue (ACDL-website branded).
   leagueSnapshotCard: {
@@ -4453,12 +4456,18 @@ const styles = StyleSheet.create({
     color: ACDL_BRAND_TEXT,
     fontVariant: ['tabular-nums'],
   },
-  // One-line next-game under the meta line.
+  // One-line next-game under the meta line (row so TeamTag can sit beside).
+  leagueSnapshotNextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
   leagueSnapshotNext: {
     fontSize: 12,
     color: ACDL_INK_2,
     fontWeight: '600',
-    marginTop: 4,
   },
   leagueSnapshotMeta: {
     fontSize: 14,

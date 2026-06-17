@@ -56,6 +56,7 @@ import {
   formatEventTime,
 } from '../lib/leagueFormat';
 import { AcdlCrest } from '../components/league/AcdlCrest';
+import TeamTag from '../components/league/TeamTag';
 
 export default function LeagueHubScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -270,12 +271,21 @@ export default function LeagueHubScreen({ navigation, route }: any) {
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>Your W-L</Text>
               </View>
-              {/* NEXT — the matchup (e.g. "Navy vs White"); "—" only when no game */}
+              {/* NEXT — matchup + side tag when assigned */}
               <View style={[styles.prCol, styles.prColMid]}>
                 <Text style={styles.prLabel}>NEXT</Text>
-                <Text style={styles.prNext} numberOfLines={1}>
-                  {nextSide ? nextSide.matchup : '—'}
-                </Text>
+                {nextSide ? (
+                  <>
+                    <Text style={styles.prNext} numberOfLines={1}>
+                      {nextSide.matchup}
+                    </Text>
+                    {nextSide.mySide ? (
+                      <TeamTag name={nextGame?.my_team_name} size="sm" />
+                    ) : null}
+                  </>
+                ) : (
+                  <Text style={styles.prNext}>—</Text>
+                )}
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption} numberOfLines={1}>
                   {nextGame ? formatGameDate(nextGame.event_date) : 'No games'}
@@ -342,16 +352,14 @@ export default function LeagueHubScreen({ navigation, route }: any) {
         {nextGame ? (
           <View style={styles.gameCardWrap}>
             <View style={styles.gameCard}>
-              <View style={styles.gcTitleRow}>
-                {nextSide?.mySide ? (
-                  <View style={styles.sideBadge}>
-                    <Text style={styles.sideBadgeText}>{nextSide.mySide}</Text>
-                  </View>
-                ) : null}
-                <Text style={styles.gcName} numberOfLines={1}>
-                  {nextSide?.matchup ?? 'Navy vs White'}
-                </Text>
+              {/* YOUR SIDE — prominent team-color pill */}
+              <View style={styles.gcSideRow}>
+                <Text style={styles.gcSideLabel}>YOUR SIDE</Text>
+                <TeamTag name={nextGame.my_team_name} size="md" />
               </View>
+              <Text style={styles.gcName} numberOfLines={1}>
+                {nextSide?.matchup ?? 'Navy vs White'}
+              </Text>
               <View style={styles.gcMeta}>
                 <View style={styles.chipLeague}>
                   <Text style={styles.chipLeagueText}>ACDL GAME</Text>
@@ -537,15 +545,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: ACDL_BLUE,
   },
-  gcTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  sideBadge: {
-    backgroundColor: ACDL_BLUE,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  gcSideRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
   },
-  sideBadgeText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6, color: ACDL_ON_ACCENT },
-  gcName: { flex: 1, fontSize: 18, fontWeight: '800', color: ACDL_INK },
+  gcSideLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.6,
+    color: ACDL_MUT,
+    textTransform: 'uppercase',
+  },
+  gcName: { fontSize: 17, fontWeight: '800', color: ACDL_INK, marginBottom: 10 },
   gcMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   gcTime: { fontSize: 12, color: ACDL_INK_2 },
   chipLeague: {

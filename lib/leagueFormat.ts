@@ -10,7 +10,41 @@ import {
   ACDL_EVT_PRACTICE,
   ACDL_EVT_TRAINING,
   ACDL_EVT_OTHER,
+  ACDL_NAVY,
+  ACDL_CREAM,
+  ACDL_BLUE,
+  ACDL_ON_ACCENT,
+  ACDL_LINE,
+  ACDL_MUT,
 } from '../components/league/acdlTheme';
+
+/**
+ * Per-game team-side pill colors.
+ *
+ *   Navy  → navy bg (#16181c), cream text (#f5efe2)
+ *   White → cream bg (#f5efe2), navy text, thin navy hairline border
+ *   Other named side → ACDL sky-blue bg (#9bddff), ON_ACCENT text (#07202c)
+ *   Falsy / unassigned → transparent / muted — shows "TBA"
+ */
+export function teamPillStyle(teamName: string | null | undefined): {
+  bg: string;
+  text: string;
+  border: string | null;
+} {
+  if (!teamName) {
+    // TBA — muted, dashed feel
+    return { bg: 'transparent', text: ACDL_MUT, border: ACDL_LINE };
+  }
+  const lower = teamName.trim().toLowerCase();
+  if (lower === 'navy') {
+    return { bg: ACDL_NAVY, text: ACDL_CREAM, border: null };
+  }
+  if (lower === 'white') {
+    return { bg: ACDL_CREAM, text: ACDL_NAVY, border: ACDL_LINE };
+  }
+  // Any other configured team name → ACDL blue accent
+  return { bg: ACDL_BLUE, text: ACDL_ON_ACCENT, border: null };
+}
 
 /** Coerce a LeagueStatRow cell (number | numeric-string | null) to number|null. */
 export function num(v: number | string | boolean | null | undefined): number | null {

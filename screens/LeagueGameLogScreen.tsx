@@ -45,7 +45,6 @@ import {
   ACDL_MUT,
   ACDL_BLUE,
   ACDL_BRAND_TEXT,
-  ACDL_ON_ACCENT,
   ACDL_LINE,
   ACDL_BAND_TEXT,
   ACDL_BAND_MUT,
@@ -53,6 +52,7 @@ import {
   ACDL_LOSS,
 } from '../components/league/acdlTheme';
 import { AcdlCrest } from '../components/league/AcdlCrest';
+import TeamTag from '../components/league/TeamTag';
 
 export default function LeagueGameLogScreen({ navigation, route }: any) {
   const overrideAthleteId: string | null = route?.params?.athleteId ?? null;
@@ -196,11 +196,10 @@ function GameRow({ row, onPress }: { row: LeagueGameLogRow; onPress: () => void 
         <View style={styles.sessHead}>
           <View style={{ flex: 1 }}>
             <View style={styles.sessMatchRow}>
-              {side.mySide ? (
-                <View style={styles.sideBadge}>
-                  <Text style={styles.sideBadgeText}>{side.mySide}</Text>
-                </View>
-              ) : null}
+              <View style={styles.sessSideWrap}>
+                <Text style={styles.sessSideLabel}>SIDE</Text>
+                <TeamTag name={row.my_team_name} size="sm" />
+              </View>
               <Text style={styles.sessDate} numberOfLines={1}>
                 {formatShortDate(row.event_date)} · {side.matchup}
               </Text>
@@ -364,14 +363,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  sessMatchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  sideBadge: {
-    backgroundColor: ACDL_BLUE,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  sessMatchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' },
+  sessSideWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
-  sideBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.6, color: ACDL_ON_ACCENT },
+  sessSideLabel: {
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: ACDL_MUT,
+    textTransform: 'uppercase',
+  },
   sessDate: { flex: 1, fontSize: 15, fontWeight: '800', color: ACDL_INK },
   sessSourceRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sessDecision: { fontSize: 9, color: ACDL_MUT, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '700' },

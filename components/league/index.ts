@@ -1,4 +1,5 @@
 /** ACDL league SVG plot components + shared pitch-color helpers. */
+export { default as TeamTag } from './TeamTag';
 export { default as StrikeZonePlot } from './StrikeZonePlot';
 export type { ZonePitch } from './StrikeZonePlot';
 export { default as SprayChart } from './SprayChart';

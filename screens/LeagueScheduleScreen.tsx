@@ -53,6 +53,7 @@ import {
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
 import { AcdlCrest } from '../components/league/AcdlCrest';
+import TeamTag from '../components/league/TeamTag';
 
 // Segmented filter → which league_events.type values it admits.
 type FilterKey = 'all' | 'games' | 'practices' | 'training' | 'other';
@@ -315,11 +316,12 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
           <View style={[styles.typeChip, { backgroundColor: `${accent}1f` }]}>
             <Text style={[styles.typeChipText, { color: accent }]}>{meta.label}</Text>
           </View>
-          {isGame && side.mySide ? (
-            <View style={styles.sideBadge}>
-              <Text style={styles.sideBadgeText}>{side.mySide}</Text>
+          {isGame && (
+            <View style={styles.sideTagWrap}>
+              <Text style={styles.sideTagLabel}>SIDE</Text>
+              <TeamTag name={ev.my_team_name} size="sm" />
             </View>
-          ) : null}
+          )}
         </View>
         {isLive ? (
           <View style={styles.liveBadge}>
@@ -431,13 +433,18 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   typeChipText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.6 },
-  sideBadge: {
-    backgroundColor: ACDL_BLUE,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  sideTagWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
-  sideBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.6, color: ACDL_ON_ACCENT },
+  sideTagLabel: {
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: ACDL_MUT,
+    textTransform: 'uppercase',
+  },
   cardTitle: { fontSize: 16, fontWeight: '800', color: ACDL_INK, marginBottom: 4 },
   cardMeta: { fontSize: 12, color: ACDL_INK_2 },
   cardLocRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
