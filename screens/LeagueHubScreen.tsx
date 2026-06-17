@@ -189,6 +189,27 @@ export default function LeagueHubScreen({ navigation, route }: any) {
 
   const nextSide = nextGame ? gameSide(nextGame) : null;
 
+  // Role-aware headline stat for the Season Summary right column:
+  // pitcher → ERA (X.XX), hitter → AVG (.XXX). Em-dash until the stat is
+  // actually accumulated (0 IP / 0 AB / 0 GP), consistent with the glance strip.
+  const gp = season.games_played ?? 0;
+  let rightLabel: string;
+  let rightValue: string;
+  let rightCaption: string;
+  if (isPitcherView) {
+    const ipOuts = num(pit?.ip_outs);
+    const era = num(pit?.era);
+    rightLabel = 'ERA';
+    rightValue = ipOuts && ipOuts > 0 && gp > 0 ? era?.toFixed(2) ?? '—' : '—';
+    rightCaption = 'Earned run avg';
+  } else {
+    const ab = num(bat?.ab);
+    const avg = num(bat?.avg);
+    rightLabel = 'AVG';
+    rightValue = ab && ab > 0 && gp > 0 ? fmt3(avg) : '—';
+    rightCaption = 'Batting avg';
+  }
+
   // "Season at a glance" chips — built up-front so we can hide the strip when
   // every value is an em-dash (stats only post once games are scored).
   const sv = season.saves ?? 0;
@@ -272,12 +293,12 @@ export default function LeagueHubScreen({ navigation, route }: any) {
                 <Text style={styles.prCaption}>Your W-L</Text>
               </View>
               <View style={styles.prDivider} />
-              {/* GP — secondary */}
+              {/* Role headline — pitcher ERA / hitter AVG */}
               <View style={styles.prCol}>
-                <Text style={styles.prLabel}>GP</Text>
-                <Text style={styles.prValueSm}>{season.games_played}</Text>
+                <Text style={styles.prLabel}>{rightLabel}</Text>
+                <Text style={styles.prValueSm}>{rightValue}</Text>
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
-                <Text style={styles.prCaption}>Season</Text>
+                <Text style={styles.prCaption}>{rightCaption}</Text>
               </View>
             </View>
           </View>
