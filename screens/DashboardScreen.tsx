@@ -46,6 +46,13 @@ import { cancelBooking } from '../lib/bookingApi';
 import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
 import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
 import { WorkloadDaySection, CombinedThrowingDayCard } from '../components/pulse/DayDetailCards';
+import {
+  fetchAcdlEvents,
+  fetchAcdlSeasonStats,
+  type LeagueEvent,
+  type LeagueSeasonStats,
+} from '../lib/acdlLeague';
+import { useAcdlMembership } from '../hooks/useAcdlMembership';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -304,6 +311,15 @@ const CATEGORY_COLORS: { [key: string]: { bg: string; text: string; dot: string;
     button: '#10b981',
     label: 'Strength & Conditioning',
   },
+  // ACDL league events (games / practices / training). Purple accent matches
+  // the league experience across the app (LeagueHub, LeagueGameDetail).
+  league: {
+    bg: '#2e1065',
+    text: '#d8b4fe',
+    dot: '#a855f7',
+    button: '#9333ea',
+    label: 'League',
+  },
 };
 
 // Memoized Snapshot Carousel component to prevent remounting when parent state changes
@@ -509,6 +525,16 @@ export default function DashboardScreen({ navigation }: any) {
   >(new Map());
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [reminders, setReminders] = useState<ReminderInstance[]>([]);
+  // ACDL league events keyed by ISO 'YYYY-MM-DD' (local date). Populated by a
+  // dedicated fail-silent effect that runs only for league athletes; empty for
+  // everyone else so the calendar / day view are unchanged for non-members.
+  const [leagueEventsByDate, setLeagueEventsByDate] = useState<
+    Map<string, LeagueEvent[]>
+  >(new Map());
+  // Current-season league stats — powers the ACDL snapshot card's stat line.
+  // Fail-silent; null when not in league / no stats yet.
+  const [leagueSeasonStats, setLeagueSeasonStats] =
+    useState<LeagueSeasonStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -585,6 +611,77 @@ export default function DashboardScreen({ navigation }: any) {
   // Athlete lifecycle — gates the Workload FAB item on active membership.
   // Cached module-wide so every FAB screen shares a single fetch.
   const { isMember } = useAthleteLifecycle();
+
+  // ACDL league membership — gates the league calendar dots, day-view cards,
+  // and the ACDL snapshot card. Non-league athletes get inLeague=false and
+  // see no league UI at all.
+  const {
+    inLeague,
+    currentSeason: leagueSeason,
+  } = useAcdlMembership(athleteId || null);
+
+  // Fetch league events for the visible calendar month (with a small pad so a
+  // dot at the edge of the grid isn't missed). Fail-silent + gated on
+  // inLeague: a non-league athlete (or any RPC error) just leaves the map
+  // empty, so the calendar / day view render exactly as before.
+  useEffect(() => {
+    if (!athleteId || !inLeague) {
+      setLeagueEventsByDate(new Map());
+      return;
+    }
+    let cancelled = false;
+    const y = currentDate.getFullYear();
+    const m = currentDate.getMonth();
+    const pad = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+        d.getDate(),
+      ).padStart(2, '0')}`;
+    // Pad one week on each side to cover the leading/trailing month cells.
+    const from = pad(new Date(y, m, 1 - 7));
+    const to = pad(new Date(y, m + 1, 7));
+    (async () => {
+      try {
+        const { data, error } = await fetchAcdlEvents(athleteId, from, to);
+        if (cancelled || error) return;
+        const map = new Map<string, LeagueEvent[]>();
+        for (const ev of data ?? []) {
+          if (!ev.event_date) continue;
+          const list = map.get(ev.event_date);
+          if (list) list.push(ev);
+          else map.set(ev.event_date, [ev]);
+        }
+        if (!cancelled) setLeagueEventsByDate(map);
+      } catch {
+        // Fail-silent — league data is additive; never block the dashboard.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [athleteId, inLeague, currentDate]);
+
+  // Current-season stat line for the ACDL snapshot card. Fail-silent + gated:
+  // only fetched once we know the athlete is in a league and which season.
+  useEffect(() => {
+    const seasonId = leagueSeason?.season_id;
+    if (!athleteId || !inLeague || !seasonId) {
+      setLeagueSeasonStats(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await fetchAcdlSeasonStats(athleteId, seasonId);
+        if (cancelled || error) return;
+        setLeagueSeasonStats(data ?? null);
+      } catch {
+        // Fail-silent — the card just omits the stat line.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [athleteId, inLeague, leagueSeason?.season_id]);
 
   // Check if there are upcoming events (bookings in the future)
   const hasUpcomingEvents = useMemo(() => {
@@ -2395,6 +2492,16 @@ export default function DashboardScreen({ navigation }: any) {
     return reminders.filter(r => r.occurrence_date === dateStr);
   }
 
+  // ACDL league events for a calendar cell. The RPC returns event_date as a
+  // local 'YYYY-MM-DD' string, so key the lookup off the cell's local date
+  // (same construction as getArmcareTestsForDate) — no UTC drift.
+  function getLeagueEventsForDate(date: Date): LeagueEvent[] {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return leagueEventsByDate.get(`${y}-${m}-${d}`) ?? [];
+  }
+
   function isToday(date: Date): boolean {
     const today = new Date();
     return date.getDate() === today.getDate() &&
@@ -2481,6 +2588,7 @@ export default function DashboardScreen({ navigation }: any) {
   const selectedDateBookings = selectedDate ? getBookingsForDate(selectedDate) : [];
   const selectedDateReminders = selectedDate ? getRemindersForDate(selectedDate) : [];
   const selectedDateArmcareTests = selectedDate ? getArmcareTestsForDate(selectedDate) : [];
+  const selectedDateLeagueEvents = selectedDate ? getLeagueEventsForDate(selectedDate) : [];
 
   const toIsoKey = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -2670,6 +2778,8 @@ export default function DashboardScreen({ navigation }: any) {
                 dotList.push({ key: `w-${i}`, color: CATEGORY_COLORS[w.workouts?.category || 'strength_conditioning'].dot }),
               );
               if (dayBookings.length > 0) dotList.push({ key: 'booking', color: '#a855f7' });
+              if (getLeagueEventsForDate(date).length > 0)
+                dotList.push({ key: 'league', color: CATEGORY_COLORS.league.dot });
               if (dayReminders.length > 0) dotList.push({ key: 'reminder', color: '#f59e0b' });
 
               const hasEvents = dotList.length > 0;
@@ -2728,6 +2838,83 @@ export default function DashboardScreen({ navigation }: any) {
             setViewMode('day');
           }}
         />
+
+        {/* ACDL LEAGUE snapshot card — only for athletes rostered in a season.
+            Uses the snapshotCard idiom (radius 24 + gloss gradient) with the
+            league purple accent. Taps through to the League hub. */}
+        {inLeague && leagueSeason && (() => {
+          const accent = CATEGORY_COLORS.league.dot; // #a855f7
+          const num = (v: unknown): number | null =>
+            typeof v === 'number' ? v : v == null ? null : Number(v);
+          const fmt3 = (v: number | null) =>
+            v == null || Number.isNaN(v) ? '—' : v.toFixed(3).replace(/^0/, '');
+          const fmtN = (v: number | null, d = 0) =>
+            v == null || Number.isNaN(v) ? '—' : v.toFixed(d);
+          const bat = leagueSeasonStats?.batting?.season ?? null;
+          const pit = leagueSeasonStats?.pitching?.season ?? null;
+          // Prefer a hitting line (AVG · HR · RBI); fall back to pitching
+          // (ERA · K) for pitchers with no batting line.
+          const statChips: { label: string; value: string }[] = bat
+            ? [
+                { label: 'AVG', value: fmt3(num(bat.avg)) },
+                { label: 'HR', value: fmtN(num(bat.hr)) },
+                { label: 'RBI', value: fmtN(num(bat.rbi)) },
+              ]
+            : pit
+            ? [
+                { label: 'ERA', value: fmtN(num(pit.era), 2) },
+                { label: 'K', value: fmtN(num(pit.k)) },
+              ]
+            : [];
+          const metaParts = [
+            leagueSeason.team_name,
+            leagueSeason.jersey_number != null ? `#${leagueSeason.jersey_number}` : null,
+            leagueSeason.positions && leagueSeason.positions.length > 0
+              ? leagueSeason.positions.join('/')
+              : null,
+            leagueSeason.season_name,
+          ].filter(Boolean) as string[];
+          return (
+            <View style={[styles.snapshotCard, styles.leagueSnapshotCard]}>
+              <LinearGradient
+                colors={['rgba(168,85,247,0.16)', 'transparent', 'rgba(0,0,0,0.3)']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGloss}
+                pointerEvents="none"
+              />
+              <View style={styles.leagueSnapshotHeader}>
+                <View style={[styles.leagueSnapshotBadge, { borderColor: `${accent}55`, backgroundColor: `${accent}1F` }]}>
+                  <Ionicons name="trophy" size={14} color={accent} />
+                </View>
+                <Text style={[styles.leagueSnapshotEyebrow, { color: accent }]}>ACDL LEAGUE</Text>
+              </View>
+              {metaParts.length > 0 && (
+                <Text style={styles.leagueSnapshotMeta} numberOfLines={1}>
+                  {metaParts.join(' · ')}
+                </Text>
+              )}
+              {statChips.length > 0 && (
+                <View style={styles.leagueSnapshotStats}>
+                  {statChips.map((c) => (
+                    <View key={c.label} style={styles.leagueSnapshotStat}>
+                      <Text style={styles.leagueSnapshotStatValue}>{c.value}</Text>
+                      <Text style={styles.leagueSnapshotStatLabel}>{c.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              <TouchableOpacity
+                style={styles.leagueSnapshotCta}
+                onPress={() => navigation.navigate('LeagueHub', { athleteId })}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.leagueSnapshotCtaText, { color: accent }]}>View league →</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
+
         <DataFeed
           athleteId={athleteId}
           isMember={isMember}
@@ -2786,6 +2973,7 @@ export default function DashboardScreen({ navigation }: any) {
                       const dayWorkload = workloadByDate.get(toIsoKey(date));
                       // Scheduled/assigned tests + completed sessions (see month view note).
                       const hasArmcareTest = getArmcareTestsForDate(date).length > 0;
+                      const hasLeague = getLeagueEventsForDate(date).length > 0;
 
                       return (
                         <TouchableOpacity
@@ -2819,7 +3007,7 @@ export default function DashboardScreen({ navigation }: any) {
                           </Text>
                           {/* Activity Dots — armcare rendered first to survive
                               any wrap/clip when other dots stack up. */}
-                          {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0 || hasArmcareTest) && (
+                          {(dayWorkouts.length > 0 || dayBookings.length > 0 || dayReminders.length > 0 || hasArmcareTest || hasLeague) && (
                             <View style={styles.weekDayDots}>
                               {hasArmcareTest && (
                                 <View style={[styles.weekDayDot, styles.weekDayDotArmcare]} />
@@ -2835,6 +3023,9 @@ export default function DashboardScreen({ navigation }: any) {
                               ))}
                               {dayBookings.length > 0 && (
                                 <View style={[styles.weekDayDot, { backgroundColor: '#a855f7' }]} />
+                              )}
+                              {hasLeague && (
+                                <View style={[styles.weekDayDot, { backgroundColor: CATEGORY_COLORS.league.dot }]} />
                               )}
                               {dayReminders.length > 0 && (
                                 <View style={[styles.weekDayDot, { backgroundColor: '#f59e0b' }]} />
@@ -2908,7 +3099,7 @@ export default function DashboardScreen({ navigation }: any) {
                     onPress={() => navigation.navigate('Workload' as never)}
                   />
                 )}
-                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 && !selectedDateWorkload ? (
+                {selectedDateWorkouts.length === 0 && selectedDateBookings.length === 0 && selectedDateReminders.length === 0 && selectedDateLeagueEvents.length === 0 && !selectedDateWorkload ? (
                   <View style={styles.emptyDayView}>
                     <Text style={styles.emptyDayIcon}>📅</Text>
                     <Text style={styles.emptyDayText}>No activities scheduled</Text>
@@ -3275,6 +3466,114 @@ export default function DashboardScreen({ navigation }: any) {
                         </View>
                       </View>
                     ))}
+
+                    {/* ACDL League events (games / practices / training) */}
+                    {selectedDateLeagueEvents.map((ev, idx) => {
+                      const accent = CATEGORY_COLORS.league.dot;
+                      const isGame = ev.type === 'game';
+                      const typeLabel = isGame
+                        ? 'GAME'
+                        : ev.type === 'practice'
+                        ? 'PRACTICE'
+                        : ev.type === 'training'
+                        ? 'TRAINING'
+                        : (ev.type || 'EVENT').toUpperCase();
+                      const home = ev.home_team_name || 'Home';
+                      const away = ev.away_team_name || 'Away';
+                      const title = isGame
+                        ? `${away} @ ${home}`
+                        : ev.title || CATEGORY_COLORS.league.label;
+                      const fmtTime = (t: string | null) => {
+                        if (!t) return null;
+                        // start_time / end_time are 'HH:MM:SS' — render via a
+                        // dummy date so locale formatting matches bookings.
+                        const d = new Date(`1970-01-01T${t}`);
+                        if (Number.isNaN(d.getTime())) return null;
+                        return d.toLocaleTimeString('en-US', {
+                          hour: 'numeric',
+                          minute: '2-digit',
+                          hour12: true,
+                        });
+                      };
+                      const startTime = fmtTime(ev.start_time);
+                      const endTime = fmtTime(ev.end_time);
+                      const isLive = isGame && ev.publish_status === 'live';
+                      const isFinal = isGame && ev.publish_status === 'final';
+                      const homeRuns = ev.line_score?.home?.runs;
+                      const awayRuns = ev.line_score?.away?.runs;
+                      const hasScore =
+                        (isLive || isFinal) &&
+                        typeof homeRuns === 'number' &&
+                        typeof awayRuns === 'number';
+                      const onPress = () => {
+                        if (isGame && ev.game_id) {
+                          navigation.navigate('LeagueGameDetail', {
+                            gameId: ev.game_id,
+                            athleteId,
+                            role: 'hitter',
+                            matchupLabel: `${home} vs ${away}`,
+                          });
+                        } else {
+                          navigation.navigate('LeagueHub', { athleteId });
+                        }
+                      };
+                      return (
+                        <View key={ev.event_id || `league-${idx}`} style={styles.bookingRow}>
+                          <View style={styles.workoutCardHairline} />
+                          <TouchableOpacity
+                            style={styles.bookingCard}
+                            onPress={onPress}
+                            activeOpacity={0.7}
+                          >
+                            <LinearGradient
+                              colors={[`${accent}14`, `${accent}05`, 'transparent']}
+                              start={{ x: 0, y: 0.5 }}
+                              end={{ x: 1, y: 0.5 }}
+                              style={StyleSheet.absoluteFillObject}
+                              pointerEvents="none"
+                            />
+                            <View style={[styles.bookingAccent, { backgroundColor: accent }]} />
+                            <View
+                              style={[
+                                styles.bookingIconContainer,
+                                { backgroundColor: `${accent}1F`, borderColor: `${accent}55` },
+                              ]}
+                            >
+                              <Ionicons
+                                name={isGame ? 'baseball' : 'calendar'}
+                                size={16}
+                                color={accent}
+                              />
+                            </View>
+                            <View style={styles.bookingContent}>
+                              <Text style={[styles.bookingEyebrow, { color: accent }]}>
+                                {typeLabel}
+                              </Text>
+                              <Text style={styles.bookingTitle} numberOfLines={1}>
+                                {title}
+                              </Text>
+                              <Text style={styles.bookingTime}>
+                                {startTime
+                                  ? `${startTime}${endTime ? ` – ${endTime}` : ''}`
+                                  : 'Time TBD'}
+                                {ev.location ? ` · ${ev.location}` : ''}
+                              </Text>
+                            </View>
+                            {isLive ? (
+                              <View style={styles.leagueLiveBadge}>
+                                <Text style={styles.leagueLiveText}>LIVE</Text>
+                              </View>
+                            ) : hasScore ? (
+                              <View style={styles.leagueScoreBadge}>
+                                <Text style={styles.leagueScoreText}>
+                                  {`${awayRuns}–${homeRuns}`}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </TouchableOpacity>
+                        </View>
+                      );
+                    })}
                   </>
                 )}
               </ScrollView>
@@ -4014,6 +4313,94 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: '#9CA3AF',
+  },
+  // ── ACDL league day-card badges + snapshot card ──────────────────────────
+  leagueLiveBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  leagueLiveText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#f87171',
+    letterSpacing: 0.5,
+  },
+  leagueScoreBadge: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(168, 85, 247, 0.18)',
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  leagueScoreText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#d8b4fe',
+  },
+  leagueSnapshotCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
+    overflow: 'hidden',
+  },
+  leagueSnapshotHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  leagueSnapshotBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  leagueSnapshotEyebrow: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  leagueSnapshotMeta: {
+    fontSize: 14,
+    color: '#E5E7EB',
+    fontWeight: '600',
+    marginTop: 10,
+    zIndex: 10,
+  },
+  leagueSnapshotStats: {
+    flexDirection: 'row',
+    marginTop: 14,
+    zIndex: 10,
+  },
+  leagueSnapshotStat: {
+    marginRight: 24,
+  },
+  leagueSnapshotStatValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  leagueSnapshotStatLabel: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '600',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
+  leagueSnapshotCta: {
+    marginTop: 16,
+    alignSelf: 'flex-start',
+    zIndex: 10,
+  },
+  leagueSnapshotCtaText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   // Reminder Card Styles
   reminderCard: {
