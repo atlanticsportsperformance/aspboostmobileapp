@@ -63,9 +63,21 @@ import {
   ACDL_BRAND_TEXT,
   ACDL_ON_ACCENT,
   ACDL_LINE,
+  ACDL_LIVE_BG,
+  ACDL_LIVE_TEXT,
+  ACDL_LIVE_DOT,
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
-import { gameSide } from '../lib/leagueFormat';
+import {
+  gameSide,
+  num,
+  fmt,
+  fmt3,
+  formatLineScore,
+  lineScoreSide,
+  eventTypeMeta,
+  formatShortDate,
+} from '../lib/leagueFormat';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { AcdlCrest } from '../components/league/AcdlCrest';
 
@@ -2859,26 +2871,21 @@ export default function DashboardScreen({ navigation }: any) {
             Cream/navy/sky-blue branded to match the ACDL website (distinct from
             the dark dashboard). Taps through to the League hub. */}
         {inLeague && leagueSeason && (() => {
-          const num = (v: unknown): number | null =>
-            typeof v === 'number' ? v : v == null ? null : Number(v);
-          const fmt3 = (v: number | null) =>
-            v == null || Number.isNaN(v) ? '—' : v.toFixed(3).replace(/^0/, '');
-          const fmtN = (v: number | null, d = 0) =>
-            v == null || Number.isNaN(v) ? '—' : v.toFixed(d);
           const bat = leagueSeasonStats?.batting?.season ?? null;
           const pit = leagueSeasonStats?.pitching?.season ?? null;
-          // Prefer a hitting line (AVG · HR · RBI); fall back to pitching
-          // (ERA · K) for pitchers with no batting line.
-          const statChips: { label: string; value: string }[] = bat
+          // Align with the Hub: a pitcher view whenever pitching data exists
+          // (don't prefer batting). Hitter line = AVG·HR·RBI; pitcher = ERA·K.
+          const isPitcherView = pit != null;
+          const statChips: { label: string; value: string }[] = isPitcherView
+            ? [
+                { label: 'ERA', value: fmt(num(pit!.era), 2) },
+                { label: 'K', value: fmt(num(pit!.k), 0) },
+              ]
+            : bat
             ? [
                 { label: 'AVG', value: fmt3(num(bat.avg)) },
-                { label: 'HR', value: fmtN(num(bat.hr)) },
-                { label: 'RBI', value: fmtN(num(bat.rbi)) },
-              ]
-            : pit
-            ? [
-                { label: 'ERA', value: fmtN(num(pit.era), 2) },
-                { label: 'K', value: fmtN(num(pit.k)) },
+                { label: 'HR', value: fmt(num(bat.hr), 0) },
+                { label: 'RBI', value: fmt(num(bat.rbi), 0) },
               ]
             : [];
           // ACDL has no season team — the meta line is the athlete's role, not a
@@ -2890,15 +2897,49 @@ export default function DashboardScreen({ navigation }: any) {
               : null,
             leagueSeason.season_name,
           ].filter(Boolean) as string[];
+          // Compact record chip from the athlete's personal W-L.
+          const recordChip = `${leagueSeason.personal_wins}-${leagueSeason.personal_losses}`;
+          // Next upcoming GAME from the loaded league events (soonest >= today),
+          // built from home/away names (no my_team_name dependency).
+          const nextGame: LeagueEvent | null = (() => {
+            const today = (() => {
+              const d = new Date();
+              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+                d.getDate(),
+              ).padStart(2, '0')}`;
+            })();
+            let best: LeagueEvent | null = null;
+            for (const evs of leagueEventsByDate.values()) {
+              for (const ev of evs) {
+                if (ev.type !== 'game' || !ev.event_date || ev.event_date < today) continue;
+                if (!best || ev.event_date < best.event_date) best = ev;
+              }
+            }
+            return best;
+          })();
+          const nextMatchup = nextGame
+            ? `${nextGame.home_team_name || 'Navy'} vs ${nextGame.away_team_name || 'White'}`
+            : null;
+          const nextLine = nextGame
+            ? `Next: ${nextMatchup} · ${formatShortDate(nextGame.event_date)}`
+            : null;
           return (
             <View style={styles.leagueSnapshotCard}>
               <View style={styles.leagueSnapshotHeader}>
                 <AcdlCrest size={40} />
                 <Text style={styles.leagueSnapshotEyebrow}>ACDL LEAGUE</Text>
+                <View style={styles.leagueRecordChip}>
+                  <Text style={styles.leagueRecordChipText}>W-L {recordChip}</Text>
+                </View>
               </View>
               {metaParts.length > 0 && (
                 <Text style={styles.leagueSnapshotMeta} numberOfLines={1}>
                   {metaParts.join(' · ')}
+                </Text>
+              )}
+              {nextLine && (
+                <Text style={styles.leagueSnapshotNext} numberOfLines={1}>
+                  {nextLine}
                 </Text>
               )}
               {statChips.length > 0 && (
@@ -3476,27 +3517,11 @@ export default function DashboardScreen({ navigation }: any) {
 
                     {/* ACDL League events (games / practices / training) */}
                     {selectedDateLeagueEvents.map((ev, idx) => {
-                      // Per-type accent (mirrors LeagueScheduleScreen):
-                      // game=ACDL blue, practice=green, training=amber,
-                      // assessment/other=muted. Drives the chip + left accent.
+                      // Shared per-type accent + label (identical to Schedule).
                       const isGame = ev.type === 'game';
-                      const accent =
-                        ev.type === 'game'
-                          ? ACDL_BLUE
-                          : ev.type === 'practice'
-                          ? '#34D399'
-                          : ev.type === 'training_day'
-                          ? '#F59E0B'
-                          : '#9CA3AF';
-                      const typeLabel = isGame
-                        ? 'GAME'
-                        : ev.type === 'practice'
-                        ? 'PRACTICE'
-                        : ev.type === 'training_day'
-                        ? 'TRAINING'
-                        : ev.type === 'assessment'
-                        ? 'ASSESSMENT'
-                        : (ev.type || 'EVENT').toUpperCase();
+                      const meta = eventTypeMeta(ev.type);
+                      const accent = meta.color;
+                      const typeLabel = meta.label;
                       // ACDL has NO fixed teams — show the athlete's SIDE for
                       // this game (Navy/White) + "Navy vs White", never "Away @ Home".
                       const side = gameSide(ev);
@@ -3517,21 +3542,22 @@ export default function DashboardScreen({ navigation }: any) {
                       };
                       const startTime = fmtTime(ev.start_time);
                       const endTime = fmtTime(ev.end_time);
-                      const isLive = isGame && ev.publish_status === 'live';
-                      const isFinal = isGame && ev.publish_status === 'final';
-                      const homeRuns = ev.line_score?.home?.runs;
-                      const awayRuns = ev.line_score?.away?.runs;
-                      const hasScore =
-                        (isLive || isFinal) &&
-                        typeof homeRuns === 'number' &&
-                        typeof awayRuns === 'number';
+                      // LIVE keys off the GAME status, not publish_status.
+                      const isLive = isGame && ev.status === 'live';
+                      // Side-aware score (athlete's side first → matches title).
+                      const scoreStr = isGame
+                        ? formatLineScore(ev.line_score, { side: lineScoreSide(ev) })
+                        : null;
+                      const hasScore = !isLive && !!scoreStr;
                       const onPress = () => {
                         if (isGame && ev.game_id) {
                           navigation.navigate('LeagueGameDetail', {
                             gameId: ev.game_id,
                             athleteId,
-                            role: 'hitter',
+                            // Omit role → GameDetail defaults to whichever of
+                            // hitting/pitching has data.
                             matchupLabel: side.matchup,
+                            dateLabel: formatShortDate(ev.event_date),
                           });
                         } else {
                           navigation.navigate('LeagueHub', { athleteId });
@@ -3588,13 +3614,12 @@ export default function DashboardScreen({ navigation }: any) {
                             </View>
                             {isLive ? (
                               <View style={styles.leagueLiveBadge}>
+                                <View style={styles.leagueLiveDot} />
                                 <Text style={styles.leagueLiveText}>LIVE</Text>
                               </View>
                             ) : hasScore ? (
                               <View style={styles.leagueScoreBadge}>
-                                <Text style={styles.leagueScoreText}>
-                                  {`${awayRuns}–${homeRuns}`}
-                                </Text>
+                                <Text style={styles.leagueScoreText}>{scoreStr}</Text>
                               </View>
                             ) : null}
                           </TouchableOpacity>
@@ -4342,17 +4367,22 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
   },
   // ── ACDL league day-card badges + snapshot card ──────────────────────────
+  // Website LIVE idiom: navy pill, cream text, small green pulse dot (not red).
   leagueLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     paddingVertical: 4,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    backgroundColor: ACDL_LIVE_BG,
     borderRadius: 6,
     marginLeft: 8,
   },
+  leagueLiveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: ACDL_LIVE_DOT },
   leagueLiveText: {
     fontSize: 10,
-    fontWeight: '700',
-    color: '#f87171',
+    fontWeight: '900',
+    color: ACDL_LIVE_TEXT,
     letterSpacing: 0.5,
   },
   leagueScoreBadge: {
@@ -4366,6 +4396,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: ACDL_BLUE,
+    fontVariant: ['tabular-nums'],
   },
   // Per-game SIDE badge on the dashboard day-view game cards (Navy/White).
   leagueEyebrowRow: {
@@ -4399,26 +4430,35 @@ const styles = StyleSheet.create({
   leagueSnapshotHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  leagueSnapshotCrest: {
-    width: 32,
-    height: 32,
-    marginRight: 10,
-  },
-  leagueSnapshotBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
+    gap: 10,
   },
   leagueSnapshotEyebrow: {
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.5,
     color: ACDL_BRAND_TEXT,
+  },
+  // Compact record chip in the snapshot header.
+  leagueRecordChip: {
+    marginLeft: 'auto',
+    backgroundColor: acdlBlueAlpha(0.18),
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  leagueRecordChipText: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+    color: ACDL_BRAND_TEXT,
+    fontVariant: ['tabular-nums'],
+  },
+  // One-line next-game under the meta line.
+  leagueSnapshotNext: {
+    fontSize: 12,
+    color: ACDL_INK_2,
+    fontWeight: '600',
+    marginTop: 4,
   },
   leagueSnapshotMeta: {
     fontSize: 14,

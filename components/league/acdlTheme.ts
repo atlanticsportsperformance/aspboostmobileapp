@@ -62,6 +62,17 @@ export const ACDL_BAND_MUT = '#9fb0c8';
 export const ACDL_WIN = '#2e7d52';
 export const ACDL_LOSS = '#b4453a';
 
+// ── LIVE badge (website idiom) — navy pill, cream text, small green dot ──
+export const ACDL_LIVE_BG = ACDL_NAVY; // navy band background
+export const ACDL_LIVE_TEXT = ACDL_CREAM; // cream text on navy
+export const ACDL_LIVE_DOT = '#4fd596'; // small live-pulse dot (green)
+
+// ── event-type accents (shared by Dashboard day-cards + Schedule) ──
+export const ACDL_EVT_GAME = '#0f6fa6'; // deep brand blue
+export const ACDL_EVT_PRACTICE = '#2e7d52'; // green
+export const ACDL_EVT_TRAINING = '#b07b16'; // amber
+export const ACDL_EVT_OTHER = ACDL_MUT; // muted ink (assessment/other)
+
 /** Legacy alias (was a deeper navy panel bg). */
 export const ACDL_NAVY_2 = '#0f1012';
 /** Legacy alias. */
@@ -100,4 +111,11 @@ export const ACDL = {
   win: ACDL_WIN,
   loss: ACDL_LOSS,
   white: ACDL_WHITE,
+  liveBg: ACDL_LIVE_BG,
+  liveText: ACDL_LIVE_TEXT,
+  liveDot: ACDL_LIVE_DOT,
+  evtGame: ACDL_EVT_GAME,
+  evtPractice: ACDL_EVT_PRACTICE,
+  evtTraining: ACDL_EVT_TRAINING,
+  evtOther: ACDL_EVT_OTHER,
 } as const;

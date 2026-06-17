@@ -17,7 +17,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -28,7 +27,15 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { useAcdlMembership } from '../hooks/useAcdlMembership';
 import { fetchAcdlGameLog, LeagueGameLogRow } from '../lib/acdlLeague';
-import { num, fmtInt, ipFromOuts, formatShortDate, gameSide } from '../lib/leagueFormat';
+import {
+  num,
+  fmtInt,
+  ipFromOuts,
+  formatShortDate,
+  gameSide,
+  formatLineScore,
+  lineScoreSide,
+} from '../lib/leagueFormat';
 import {
   ACDL_CREAM,
   ACDL_PAPER,
@@ -159,6 +166,9 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
                     role: row.pitching ? 'pitcher' : 'hitter',
                     matchupLabel: gameSide(row).matchup,
                     dateLabel: formatShortDate(row.event_date),
+                    // Thread the outing length so GameDetail's footer can show
+                    // the true "X.X IP" instead of deriving it from the stream.
+                    ipOuts: num(row.pitching?.ip_outs) ?? undefined,
                   })
                 }
               />
@@ -241,9 +251,11 @@ function HitterStats({ row }: { row: LeagueGameLogRow }) {
   const b = row.batting;
   const h = num(b?.h) ?? 0;
   const ab = num(b?.ab) ?? 0;
+  // No PA logged (0-for-0) → em-dash rather than a misleading "0-0".
+  const hitLine = ab === 0 && h === 0 ? '—' : `${h}-${ab}`;
   return (
     <>
-      <Stat value={`${h}-${ab}`} label="AB" accent />
+      <Stat value={hitLine} label="AB" accent />
       <Stat value={fmtInt(num(b?.hr))} label="HR" />
       <Stat value={fmtInt(num(b?.rbi))} label="RBI" />
       <Stat value={fmtInt(num(b?.bb))} label="BB" />
@@ -274,23 +286,15 @@ function Stat({ value, label, accent }: { value: string; label: string; accent?:
 
 /**
  * Resolve a W/L/T chip from the athlete's SIDE result for THIS game
- * (side_result), with the score string from line_score, plus the pitcher
- * decision (W/L/SV) shown alongside.
+ * (side_result), with the score string from line_score (side-aware: the
+ * athlete's side first to match the matchup title), plus the pitcher decision
+ * (W/L/SV) shown alongside.
  */
 function computeResult(
   row: LeagueGameLogRow
 ): { kind: 'W' | 'L' | 'T' | 'NA'; label: string; decision: string } {
-  const ls = row.line_score as
-    | { home?: { runs?: number }; away?: { runs?: number } }
-    | null
-    | undefined;
-
-  let scoreStr = '';
-  const homeR = ls?.home?.runs;
-  const awayR = ls?.away?.runs;
-  if (typeof homeR === 'number' && typeof awayR === 'number') {
-    scoreStr = `${homeR}–${awayR}`;
-  }
+  // Side-aware score order matches the matchup title (athlete's side first).
+  const scoreStr = formatLineScore(row.line_score, { side: lineScoreSide(row) }) ?? '';
 
   let kind: 'W' | 'L' | 'T' | 'NA' = 'NA';
   if (row.side_result === 'W') kind = 'W';
@@ -339,7 +343,6 @@ const styles = StyleSheet.create({
   backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
   backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  crest: { width: 52, height: 52 },
   eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
   title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
   subtitle: { fontSize: 13, color: ACDL_BAND_MUT },

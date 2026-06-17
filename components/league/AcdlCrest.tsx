@@ -1,5 +1,6 @@
 import React from 'react';
 import { Image, View, StyleSheet } from 'react-native';
+import { acdlInkAlpha } from './acdlTheme';
 
 interface AcdlCrestProps {
   size: number;
@@ -40,7 +41,7 @@ export function AcdlCrest({ size }: AcdlCrestProps) {
 const styles = StyleSheet.create({
   ring: {
     borderWidth: 1,
-    borderColor: 'rgba(10,31,68,0.18)', // faint navy, reads on both cream & dark
+    borderColor: acdlInkAlpha(0.18), // faint navy, reads on both cream & dark
     overflow: 'hidden',
   },
 });

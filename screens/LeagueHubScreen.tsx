@@ -15,7 +15,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -189,6 +188,26 @@ export default function LeagueHubScreen({ navigation, route }: any) {
 
   const nextSide = nextGame ? gameSide(nextGame) : null;
 
+  // "Season at a glance" chips — built up-front so we can hide the strip when
+  // every value is an em-dash (stats only post once games are scored).
+  const sv = season.saves ?? 0;
+  const pitcherWL = `${season.pitcher_wins}-${season.pitcher_losses}${
+    sv > 0 ? ` · ${sv} SV` : ''
+  }`;
+  const glanceChips: { label: string; value: string }[] = isPitcherView
+    ? [
+        { label: 'ERA / WHIP', value: `${fmt(num(pit?.era))} / ${fmt(num(pitAdv?.whip))}` },
+        { label: 'K', value: fmt(num(pit?.k), 0) },
+        { label: 'W-L', value: pitcherWL },
+      ]
+    : [
+        { label: 'AVG / OPS', value: `${fmt3(num(bat?.avg))} / ${fmt3(num(batAdv?.ops))}` },
+        { label: 'HR / RBI', value: `${fmt(num(bat?.hr), 0)} / ${fmt(num(bat?.rbi), 0)}` },
+        { label: 'wRC+', value: fmt(num(batAdv?.wrc_plus_simple), 0) },
+      ];
+  // True when every chip is purely em-dashes (no scored games yet).
+  const glanceEmpty = glanceChips.every((c) => /^[—\s/]*$/.test(c.value));
+
   return (
     <View style={styles.container}>
       <ScrollView
@@ -242,27 +261,30 @@ export default function LeagueHubScreen({ navigation, route }: any) {
             <Text style={styles.snapEyebrow}>SEASON SUMMARY</Text>
             <Text style={styles.snapTitle}>Player Record</Text>
             <View style={styles.prRow}>
+              {/* RECORD — headline weight (the season's primary number) */}
               <View style={styles.prCol}>
                 <Text style={styles.prLabel}>RECORD</Text>
-                <Text style={styles.prValueSm}>
+                <Text style={styles.prValue}>
                   {season.personal_wins}-{season.personal_losses}
                 </Text>
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>Your W-L</Text>
               </View>
+              {/* NEXT — the matchup (e.g. "Navy vs White"); "—" only when no game */}
               <View style={[styles.prCol, styles.prColMid]}>
                 <Text style={styles.prLabel}>NEXT</Text>
-                <Text style={styles.prValueSm} numberOfLines={1}>
-                  {nextSide ? (nextSide.mySide ?? 'TBD') : '—'}
+                <Text style={styles.prNext} numberOfLines={1}>
+                  {nextSide ? nextSide.matchup : '—'}
                 </Text>
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption} numberOfLines={1}>
                   {nextGame ? formatGameDate(nextGame.event_date) : 'No games'}
                 </Text>
               </View>
+              {/* GP — secondary */}
               <View style={styles.prCol}>
                 <Text style={styles.prLabel}>GP</Text>
-                <Text style={styles.prValue}>{season.games_played}</Text>
+                <Text style={styles.prValueSm}>{season.games_played}</Text>
                 <View style={[styles.prAccent, { backgroundColor: ACDL_BLUE }]} />
                 <Text style={styles.prCaption}>Season</Text>
               </View>
@@ -300,60 +322,60 @@ export default function LeagueHubScreen({ navigation, route }: any) {
           </TouchableOpacity>
         </View>
 
-        {/* Season at a glance */}
-        <View style={styles.seasonStrip}>
-          {isPitcherView ? (
-            <>
-              <SeasonChip label="ERA / WHIP" value={`${fmt(num(pit?.era))} / ${fmt(num(pitAdv?.whip))}`} />
-              <SeasonChip label="K" value={fmt(num(pit?.k), 0)} />
-              <SeasonChip label="W-L" value={`${season.pitcher_wins}-${season.pitcher_losses}`} />
-            </>
-          ) : (
-            <>
-              <SeasonChip
-                label="AVG / OPS"
-                value={`${fmt3(num(bat?.avg))} / ${fmt3(num(batAdv?.ops))}`}
-              />
-              <SeasonChip label="HR / RBI" value={`${fmt(num(bat?.hr), 0)} / ${fmt(num(bat?.rbi), 0)}`} />
-              <SeasonChip label="wRC+" value={fmt(num(batAdv?.wrc_plus_simple), 0)} />
-            </>
-          )}
-        </View>
+        {/* Season at a glance — hidden (single note chip) until games are scored */}
+        {glanceEmpty ? (
+          <View style={styles.seasonStrip}>
+            <View style={styles.ssChipFull}>
+              <Text style={styles.ssNote}>Stats post once games are scored</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.seasonStrip}>
+            {glanceChips.map((c) => (
+              <SeasonChip key={c.label} label={c.label} value={c.value} />
+            ))}
+          </View>
+        )}
 
-        {/* Next game card */}
-        {nextGame && nextSide && (
-          <>
-            <Text style={styles.subEyebrow}>NEXT GAME</Text>
-            <View style={styles.gameCardWrap}>
-              <View style={styles.gameCard}>
-                <View style={styles.gcTitleRow}>
-                  {nextSide.mySide ? (
-                    <View style={styles.sideBadge}>
-                      <Text style={styles.sideBadgeText}>{nextSide.mySide}</Text>
-                    </View>
-                  ) : null}
-                  <Text style={styles.gcName} numberOfLines={1}>
-                    {nextSide.matchup}
-                  </Text>
-                </View>
-                <View style={styles.gcMeta}>
-                  <View style={styles.chipLeague}>
-                    <Text style={styles.chipLeagueText}>ACDL GAME</Text>
-                  </View>
-                  <Text style={styles.gcTime}>
-                    {formatGameDate(nextGame.event_date)}
-                    {nextGame.start_time ? ` · ${formatEventTime(nextGame.start_time)}` : ''}
-                  </Text>
-                </View>
-                {nextGame.location ? (
-                  <View style={[styles.gcMeta, { marginTop: 8 }]}>
-                    <Ionicons name="location-outline" size={12} color={ACDL_MUT} />
-                    <Text style={styles.gcTime}>{nextGame.location}</Text>
+        {/* Next game card — or a cream "no upcoming games" empty card */}
+        <Text style={styles.subEyebrow}>NEXT GAME</Text>
+        {nextGame ? (
+          <View style={styles.gameCardWrap}>
+            <View style={styles.gameCard}>
+              <View style={styles.gcTitleRow}>
+                {nextSide?.mySide ? (
+                  <View style={styles.sideBadge}>
+                    <Text style={styles.sideBadgeText}>{nextSide.mySide}</Text>
                   </View>
                 ) : null}
+                <Text style={styles.gcName} numberOfLines={1}>
+                  {nextSide?.matchup ?? 'Navy vs White'}
+                </Text>
               </View>
+              <View style={styles.gcMeta}>
+                <View style={styles.chipLeague}>
+                  <Text style={styles.chipLeagueText}>ACDL GAME</Text>
+                </View>
+                <Text style={styles.gcTime}>
+                  {formatGameDate(nextGame.event_date)}
+                  {nextGame.start_time ? ` · ${formatEventTime(nextGame.start_time)}` : ''}
+                </Text>
+              </View>
+              {nextGame.location ? (
+                <View style={[styles.gcMeta, { marginTop: 8 }]}>
+                  <Ionicons name="location-outline" size={12} color={ACDL_MUT} />
+                  <Text style={styles.gcTime}>{nextGame.location}</Text>
+                </View>
+              ) : null}
             </View>
-          </>
+          </View>
+        ) : (
+          <View style={styles.gameCardWrap}>
+            <View style={styles.noGameCard}>
+              <Ionicons name="calendar-outline" size={18} color={ACDL_MUT} />
+              <Text style={styles.noGameText}>No upcoming games</Text>
+            </View>
+          </View>
         )}
       </ScrollView>
     </View>
@@ -396,7 +418,6 @@ const styles = StyleSheet.create({
     borderBottomColor: ACDL_BLUE,
   },
   hubHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingTop: 6 },
-  crest: { width: 60, height: 60 },
   eyebrowBand: {
     fontSize: 9,
     fontWeight: '700',
@@ -451,6 +472,8 @@ const styles = StyleSheet.create({
   prLabel: { color: ACDL_MUT, fontSize: 9, fontWeight: '800', letterSpacing: 1.4, textAlign: 'center' },
   prValue: { fontSize: 32, fontWeight: '900', letterSpacing: -1, color: ACDL_INK, fontVariant: ['tabular-nums'] },
   prValueSm: { fontSize: 24, fontWeight: '900', letterSpacing: -0.5, color: ACDL_INK, fontVariant: ['tabular-nums'] },
+  // NEXT matchup is wider than a side label → right-sized so it fits one line.
+  prNext: { fontSize: 15, fontWeight: '900', letterSpacing: -0.2, color: ACDL_INK },
   prAccent: { height: 2, marginTop: 4, borderRadius: 1, width: 28 },
   prCaption: { color: ACDL_MUT, fontSize: 10, fontWeight: '600', textAlign: 'center' },
 
@@ -491,6 +514,18 @@ const styles = StyleSheet.create({
   },
   ssLab: { fontSize: 9, color: ACDL_MUT, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   ssVal: { fontSize: 16, color: ACDL_INK, fontWeight: '900', letterSpacing: -0.3, marginTop: 3, fontVariant: ['tabular-nums'] },
+  ssChipFull: {
+    flex: 1,
+    backgroundColor: ACDL_PAPER,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+    borderLeftWidth: 3,
+    borderLeftColor: ACDL_BLUE,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  ssNote: { fontSize: 12, color: ACDL_INK_2, fontWeight: '600' },
 
   gameCardWrap: { paddingHorizontal: 16 },
   gameCard: {
@@ -520,6 +555,19 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   chipLeagueText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4, color: ACDL_BRAND_TEXT },
+
+  noGameCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: ACDL_PAPER,
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: ACDL_LINE,
+  },
+  noGameText: { fontSize: 14, color: ACDL_INK_2, fontWeight: '700' },
 
   emptyState: {
     alignItems: 'center',

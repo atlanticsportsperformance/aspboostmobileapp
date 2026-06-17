@@ -17,7 +17,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -27,7 +26,14 @@ import {
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAthleteId } from '../hooks/useAthleteId';
 import { fetchAcdlEvents, LeagueEvent } from '../lib/acdlLeague';
-import { formatGameDate, formatEventTime, gameSide } from '../lib/leagueFormat';
+import {
+  formatGameDate,
+  formatEventTime,
+  gameSide,
+  formatLineScore,
+  lineScoreSide,
+  eventTypeMeta,
+} from '../lib/leagueFormat';
 import {
   ACDL_CREAM,
   ACDL_PAPER,
@@ -41,6 +47,9 @@ import {
   ACDL_LINE,
   ACDL_BAND_TEXT,
   ACDL_BAND_MUT,
+  ACDL_LIVE_BG,
+  ACDL_LIVE_TEXT,
+  ACDL_LIVE_DOT,
   acdlBlueAlpha,
 } from '../components/league/acdlTheme';
 import { AcdlCrest } from '../components/league/AcdlCrest';
@@ -52,7 +61,8 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'games', label: 'GAMES' },
   { key: 'practices', label: 'PRACTICES' },
   { key: 'training', label: 'TRAINING' },
-  { key: 'other', label: 'OTHER' },
+  // Real "other" rows are assessments → surface that, not a generic "OTHER".
+  { key: 'other', label: 'ASSESS' },
 ];
 
 function matchesFilter(type: string, filter: FilterKey): boolean {
@@ -69,25 +79,6 @@ function matchesFilter(type: string, filter: FilterKey): boolean {
       return type === 'assessment' || type === 'other';
     default:
       return true;
-  }
-}
-
-// Per-type chip color + label. game=ACDL brand-text blue, practice=green,
-// training=amber, assessment/other=muted ink.
-function typeMeta(type: string): { color: string; label: string } {
-  switch (type) {
-    case 'game':
-      return { color: ACDL_BRAND_TEXT, label: 'GAME' };
-    case 'practice':
-      return { color: '#2e7d52', label: 'PRACTICE' };
-    case 'training_day':
-      return { color: '#b07b16', label: 'TRAINING' };
-    case 'assessment':
-      return { color: ACDL_MUT, label: 'ASSESSMENT' };
-    case 'other':
-      return { color: ACDL_MUT, label: 'OTHER' };
-    default:
-      return { color: ACDL_MUT, label: (type || 'EVENT').toUpperCase() };
   }
 }
 
@@ -272,7 +263,8 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
                           navigation.navigate('LeagueGameDetail', {
                             gameId: ev.game_id,
                             athleteId,
-                            role: 'hitter',
+                            // Omit role → GameDetail defaults to whichever of
+                            // hitting/pitching has data.
                             matchupLabel: gameSide(ev).matchup,
                             dateLabel: formatGameDate(ev.event_date),
                           });
@@ -291,7 +283,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
 }
 
 function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
-  const meta = typeMeta(ev.type);
+  const meta = eventTypeMeta(ev.type);
   const accent = meta.color;
   const isGame = ev.type === 'game';
   const side = gameSide(ev);
@@ -301,12 +293,13 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
   const end = formatEventTime(ev.end_time);
   const timeStr = start ? `${start}${end ? ` – ${end}` : ''}` : 'Time TBD';
 
-  const isLive = isGame && ev.publish_status === 'live';
-  const isFinal = isGame && ev.publish_status === 'final';
-  const homeRuns = ev.line_score?.home?.runs;
-  const awayRuns = ev.line_score?.away?.runs;
-  const hasScore =
-    (isLive || isFinal) && typeof homeRuns === 'number' && typeof awayRuns === 'number';
+  // LIVE keys off the GAME status (not publish_status, which gates the website).
+  const isLive = isGame && ev.status === 'live';
+  // Show the score whenever a line score exists (side-aware order to match title).
+  const scoreStr = isGame
+    ? formatLineScore(ev.line_score, { side: lineScoreSide(ev) })
+    : null;
+  const hasScore = !isLive && !!scoreStr;
 
   const tappable = isGame && !!ev.game_id;
 
@@ -330,11 +323,12 @@ function EventCard({ ev, onPress }: { ev: LeagueEvent; onPress: () => void }) {
         </View>
         {isLive ? (
           <View style={styles.liveBadge}>
+            <View style={styles.liveDot} />
             <Text style={styles.liveText}>LIVE</Text>
           </View>
         ) : hasScore ? (
           <View style={styles.scoreBadge}>
-            <Text style={styles.scoreText}>{`${homeRuns}–${awayRuns}`}</Text>
+            <Text style={styles.scoreText}>{scoreStr}</Text>
           </View>
         ) : null}
       </View>
@@ -377,7 +371,6 @@ const styles = StyleSheet.create({
   backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
   backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  crest: { width: 52, height: 52 },
   eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
   title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
   subtitle: { fontSize: 12, color: ACDL_BAND_MUT },
@@ -450,13 +443,18 @@ const styles = StyleSheet.create({
   cardLocRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   cardLoc: { fontSize: 12, color: ACDL_MUT, flex: 1 },
 
+  // Website LIVE idiom: navy pill, cream text, small green pulse dot (not red).
   liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     paddingVertical: 4,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(180, 69, 58, 0.15)',
+    backgroundColor: ACDL_LIVE_BG,
     borderRadius: 6,
   },
-  liveText: { fontSize: 10, fontWeight: '900', color: '#b4453a', letterSpacing: 0.5 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: ACDL_LIVE_DOT },
+  liveText: { fontSize: 10, fontWeight: '900', color: ACDL_LIVE_TEXT, letterSpacing: 0.5 },
   scoreBadge: {
     paddingVertical: 4,
     paddingHorizontal: 8,

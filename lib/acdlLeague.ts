@@ -57,8 +57,12 @@ export interface LeagueEvent {
   end_time: string | null;
   location: string | null;
   game_id: string | null;
-  status: string | null; // league_games.status
-  publish_status: string | null; // 'draft' | 'live' | 'final'
+  /** league_games.status — 'scheduled' | 'live' | 'completed' | 'cancelled'. */
+  status: string | null;
+  /** league_games.publish_status — 'hidden' | 'live' | 'final' (gates the
+   * PUBLIC website only; the athlete-scoped RPC already restricts to the
+   * athlete's own data, so screens must NOT filter on this). */
+  publish_status: string | null;
   home_team_id: string | null;
   away_team_id: string | null;
   home_team_name: string | null;
@@ -67,17 +71,19 @@ export interface LeagueEvent {
    * when not yet assigned a side. */
   my_team_id: string | null;
   my_team_name: string | null;
-  /** Only populated when publish_status in ('live','final'). */
+  /** Populated whenever a score exists for the game (live or final). */
   line_score: LineScore | null;
 }
 
 /**
- * line_score cache shape maintained by the scorer. Loosely typed because the
- * scorer owns the canonical shape; we read the common fields defensively.
+ * line_score cache shape maintained by the scorer. The canonical totals are
+ * `home_total` / `away_total`; `innings` carries the per-inning breakdown.
+ * Loosely typed because the scorer owns the shape; we read defensively.
  */
 export interface LineScore {
-  home?: { runs?: number; hits?: number; errors?: number; by_inning?: number[] } | null;
-  away?: { runs?: number; hits?: number; errors?: number; by_inning?: number[] } | null;
+  home_total?: number;
+  away_total?: number;
+  innings?: any;
   [key: string]: unknown;
 }
 
@@ -123,8 +129,9 @@ export interface LeagueGameLogRow {
   batting: LeagueStatRow | null;
   /** league_pitching_lines row as JSON, or null if the athlete didn't pitch. */
   pitching: LeagueStatRow | null;
-  /** Present on live/final games for a score chip. */
-  line_score?: LineScore | null;
+  /** RPC now returns a line_score jsonb column whenever a score exists
+   * (live or final) — used for the result chip (e.g. "W 7–4"). */
+  line_score: LineScore | null;
 }
 
 /**

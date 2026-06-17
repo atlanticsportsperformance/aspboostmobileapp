@@ -77,6 +77,10 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   const initialRole: Role = route?.params?.role === 'pitcher' ? 'pitcher' : 'hitter';
   const matchupLabel: string = route?.params?.matchupLabel ?? 'Game Detail';
   const dateLabel: string = route?.params?.dateLabel ?? '';
+  // True outing length (ip_outs) threaded from the Game Log row; the pitch
+  // stream alone has no out count, so this drives the "X.X IP" footer.
+  const ipOutsParam: number | null =
+    typeof route?.params?.ipOuts === 'number' ? route.params.ipOuts : null;
 
   const { athleteId } = useAthleteId(overrideAthleteId);
   const [detail, setDetail] = useState<LeagueGameDetail | null>(null);
@@ -168,7 +172,7 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
             <Empty label="No plate appearances in this game" />
           )
         ) : hasPitching ? (
-          <PitcherDetail pitches={detail!.pitching} />
+          <PitcherDetail pitches={detail!.pitching} ipOuts={ipOutsParam} />
         ) : (
           <Empty label="No outing in this game" />
         )}
@@ -302,8 +306,8 @@ function PitchRow({ p, idx }: { p: Pitch; idx: number }) {
 // ─────────────────────────────────────────────────────────────────────────
 // PITCHER
 // ─────────────────────────────────────────────────────────────────────────
-function PitcherDetail({ pitches }: { pitches: Pitch[] }) {
-  const summary = useMemo(() => computeOuting(pitches), [pitches]);
+function PitcherDetail({ pitches, ipOuts }: { pitches: Pitch[]; ipOuts: number | null }) {
+  const summary = useMemo(() => computeOuting(pitches, ipOuts), [pitches, ipOuts]);
 
   const zonePitches: ZonePitch[] = pitches.map((p) => ({
     plateSide: p.tm_plate_side_ft,
@@ -446,12 +450,29 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function computeOuting(pitches: Pitch[]): {
+// PA results that record an out (each = 1 out; DP = 2). Used to derive the
+// outing length from the pitch stream when ip_outs isn't threaded in.
+const OUT_RESULTS = new Set([
+  'strikeout_swinging',
+  'strikeout_looking',
+  'ground_out',
+  'fly_out',
+  'line_out',
+  'pop_out',
+  'sac_fly',
+  'sac_bunt',
+  'fielders_choice',
+]);
+
+function computeOuting(
+  pitches: Pitch[],
+  ipOutsOverride: number | null
+): {
   pitchCount: number;
   strikes: number | null;
   topVelo: number | null;
   whiffPct: number | null;
-  ipOuts: number;
+  ipOuts: number | null;
 } {
   let strikes = 0;
   let topVelo: number | null = null;
@@ -466,6 +487,9 @@ function computeOuting(pitches: Pitch[]): {
     'in_play',
   ]);
   const SWING_CALLS = new Set(['swinging_strike', 'foul', 'foul_tip', 'in_play']);
+  // Derive outs from terminal PA results (one per pa_id) as a fallback.
+  const seenPa = new Set<string>();
+  let derivedOuts = 0;
   for (const p of pitches) {
     const v = num(p.tm_rel_speed_mph);
     if (v != null && (topVelo == null || v > topVelo)) topVelo = v;
@@ -475,15 +499,21 @@ function computeOuting(pitches: Pitch[]): {
       if (SWING_CALLS.has(p.official_call)) swings++;
       if (p.official_call === 'swinging_strike') whiffs++;
     }
+    if (p.pa_id && p.pa_result && !seenPa.has(p.pa_id)) {
+      seenPa.add(p.pa_id);
+      if (p.pa_result === 'double_play') derivedOuts += 2;
+      else if (OUT_RESULTS.has(p.pa_result)) derivedOuts += 1;
+    }
   }
+  // Prefer the threaded true ip_outs; else the derived count; else null (em-dash).
+  const ipOuts =
+    ipOutsOverride != null ? ipOutsOverride : derivedOuts > 0 ? derivedOuts : null;
   return {
     pitchCount: pitches.length,
     strikes: hasCall ? strikes : null,
     topVelo,
     whiffPct: swings > 0 ? whiffs / swings : null,
-    // We don't have outs here (pitch stream only); IP estimated from PA results
-    // isn't available, so leave 0 — the summary line falls back to em-dash.
-    ipOuts: 0,
+    ipOuts,
   };
 }
 
@@ -630,7 +660,9 @@ const styles = StyleSheet.create({
     marginTop: 18,
     marginBottom: 10,
   },
-  subEyebrowAccent: { color: ACDL_BRAND_TEXT },
+  // Distinct from the brand-blue eyebrow: heavier navy ink so "SHAPE" reads
+  // as the emphasized lead word, not the same color as the rest of the label.
+  subEyebrowAccent: { color: ACDL_INK, fontWeight: '900' },
 
   note: {
     fontSize: 10,

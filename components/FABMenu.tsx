@@ -73,7 +73,9 @@ export default function FABMenu({
       homeIdx >= 0 ? homeIdx + 1 : bookIdx >= 0 ? bookIdx : 0;
     next.splice(insertAt, 0, leagueItem);
     return next;
-  }, [items, inLeague]); // eslint-disable-line react-hooks/exhaustive-deps
+    // athleteId in deps so a parent child-switch rebuilds the league item's
+    // onPress with the new id (stale-id fix).
+  }, [items, inLeague, athleteId]); // eslint-disable-line react-hooks/exhaustive-deps
   const renderIcon = (item: FABMenuItem) => {
     // ACDL League item shows the real crest (white circle reads on dark).
     if (item.isLeague) {

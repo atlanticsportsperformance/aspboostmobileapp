@@ -16,7 +16,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -265,7 +264,6 @@ function HittingView({ stats, games }: { stats: LeagueSeasonStats | null; games:
           sub="launch"
         />
         <MetricCard value={fmtPct(num(met?.hard_hit_pct))} label="HARD-HIT" sub="95+ mph" />
-        <MetricCard value="—" label="BARREL%" sub="optimal" />
         <MetricCard value={fmtInt(num(met?.max_distance_ft))} label="MAX DIST" sub="ft" />
       </View>
 
@@ -303,8 +301,9 @@ function PitchingView({
   const pl = season?.pitcher_losses ?? 0;
   const sv = season?.saves ?? 0;
   const wl = `${pw}-${pl}`;
-  // Games pitched: prefer the stat-view G, else fall back to season games.
-  const gp = num(s.g) ?? season?.games_played ?? 0;
+  // Games PITCHED comes from the record view (games_pitched), not the wide
+  // pitching-stat row's `g` (which isn't the appearance count) nor season GP.
+  const gp = num(stats?.record?.games_pitched) ?? season?.games_played ?? 0;
   const k9 =
     num(s.ip_outs) && num(s.ip_outs)! > 0
       ? ((num(s.k) ?? 0) * 27) / (num(s.ip_outs) as number)
@@ -481,7 +480,6 @@ const styles = StyleSheet.create({
   backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
   backText: { color: ACDL_BAND_MUT, fontSize: 14, marginLeft: 8 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  crest: { width: 52, height: 52 },
   eyebrow: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: ACDL_BLUE, marginBottom: 2 },
   title: { fontSize: 28, fontWeight: '900', color: ACDL_BAND_TEXT, marginBottom: 2 },
   subtitle: { fontSize: 13, color: ACDL_BAND_MUT },

@@ -4,7 +4,13 @@
  * (LeagueStatRow = Record<string, number|string|boolean|null>), and PostgREST
  * renders numerics as strings, so every numeric read goes through `num()`.
  */
-import { LeagueStatRow } from './acdlLeague';
+import { LeagueStatRow, LineScore } from './acdlLeague';
+import {
+  ACDL_EVT_GAME,
+  ACDL_EVT_PRACTICE,
+  ACDL_EVT_TRAINING,
+  ACDL_EVT_OTHER,
+} from '../components/league/acdlTheme';
 
 /** Coerce a LeagueStatRow cell (number | numeric-string | null) to number|null. */
 export function num(v: number | string | boolean | null | undefined): number | null {
@@ -102,6 +108,80 @@ export function gameSide(g: {
   const a = home || 'Navy';
   const b = away || 'White';
   return { mySide: null, opponent: null, matchup: `${a} vs ${b}` };
+}
+
+/**
+ * Side-aware line-score string, e.g. "7–4". The canonical totals are
+ * `home_total` / `away_total`. When `side` ('home' | 'away') is known, the
+ * athlete's side is shown FIRST so the score order matches the matchup title
+ * everywhere (Dashboard, Schedule, Game Log). When the side is unknown we keep
+ * the home–away order. Returns null when no usable totals exist.
+ *
+ * Pass `side` from the event/game: 'home' when my_team_id === home_team_id,
+ * 'away' when my_team_id === away_team_id, else null/undefined.
+ */
+export function formatLineScore(
+  ls: LineScore | null | undefined,
+  opts?: { side?: 'home' | 'away' | null }
+): string | null {
+  if (!ls) return null;
+  const home = num(ls.home_total as number | null | undefined);
+  const away = num(ls.away_total as number | null | undefined);
+  if (home == null || away == null) return null;
+  const side = opts?.side ?? null;
+  // Athlete's side first to match the matchup title order; default home–away.
+  if (side === 'away') return `${away}–${home}`;
+  return `${home}–${away}`;
+}
+
+/**
+ * Resolve which line_score side ('home' | 'away') is the athlete's, by matching
+ * the athlete's per-game side (my_team_id, else my_team_name) against the game's
+ * home/away id/name. Null when unassigned / unknown — callers then show the
+ * default home–away order. Works for both LeagueEvent (has ids) and
+ * LeagueGameLogRow (names only).
+ */
+export function lineScoreSide(g: {
+  my_team_id?: string | null;
+  home_team_id?: string | null;
+  away_team_id?: string | null;
+  my_team_name?: string | null;
+  home_team_name?: string | null;
+  away_team_name?: string | null;
+}): 'home' | 'away' | null {
+  if (g.my_team_id) {
+    if (g.home_team_id && g.my_team_id === g.home_team_id) return 'home';
+    if (g.away_team_id && g.my_team_id === g.away_team_id) return 'away';
+  }
+  const mine = g.my_team_name?.trim().toLowerCase() || null;
+  if (mine) {
+    if (g.home_team_name?.trim().toLowerCase() === mine) return 'home';
+    if (g.away_team_name?.trim().toLowerCase() === mine) return 'away';
+  }
+  return null;
+}
+
+/**
+ * Shared per-event-type accent color + label, used by BOTH the Dashboard
+ * day-cards and the Schedule cards so the two surfaces stay identical. Colors
+ * are the on-theme Schedule values (named tokens in acdlTheme):
+ *   game=#0f6fa6, practice=#2e7d52, training=#b07b16, assessment/other=ACDL_MUT.
+ */
+export function eventTypeMeta(type: string): { color: string; label: string } {
+  switch (type) {
+    case 'game':
+      return { color: ACDL_EVT_GAME, label: 'GAME' };
+    case 'practice':
+      return { color: ACDL_EVT_PRACTICE, label: 'PRACTICE' };
+    case 'training_day':
+      return { color: ACDL_EVT_TRAINING, label: 'TRAINING' };
+    case 'assessment':
+      return { color: ACDL_EVT_OTHER, label: 'ASSESSMENT' };
+    case 'other':
+      return { color: ACDL_EVT_OTHER, label: 'OTHER' };
+    default:
+      return { color: ACDL_EVT_OTHER, label: (type || 'EVENT').toUpperCase() };
+  }
 }
 
 /** 'YYYY-MM-DD' → "Sat Jun 12" (date-only, no TZ shift). */
