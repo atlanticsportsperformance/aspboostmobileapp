@@ -1252,6 +1252,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                         const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
                         const hasScheduledPause = !!membership.pause_at;
                         const hasScheduledResume = !!membership.resume_at;
+                        const isLocked = !!membership.locked_until && new Date(membership.locked_until) > new Date();
 
                         // Determine card border color based on status (keep athlete color on left)
                         const cardBorderColor = isPaused
@@ -1307,6 +1308,14 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                     `Renews ${formatDate(membership.current_period_end)}`
                                   )}
                                 </Text>
+                                {isLocked && (
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                                    <Ionicons name="lock-closed" size={12} color="#9BDDFF" />
+                                    <Text style={{ color: '#9BDDFF', fontSize: 12, marginLeft: 4 }}>
+                                      Locked until {formatDate(membership.locked_until!)}
+                                    </Text>
+                                  </View>
+                                )}
                               </View>
                               <TouchableOpacity
                                 style={styles.manageButton}
@@ -1557,6 +1566,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                       const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
                       const hasScheduledPause = !!membership.pause_at;
                       const hasScheduledResume = !!membership.resume_at;
+                      const isLocked = !!membership.locked_until && new Date(membership.locked_until) > new Date();
 
                       // Determine card border color based on status
                       const cardBorderColor = isPaused
@@ -1612,6 +1622,14 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                   `Renews ${formatDate(membership.current_period_end)}`
                                 )}
                               </Text>
+                              {isLocked && (
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                                  <Ionicons name="lock-closed" size={12} color="#9BDDFF" />
+                                  <Text style={{ color: '#9BDDFF', fontSize: 12, marginLeft: 4 }}>
+                                    Locked until {formatDate(membership.locked_until!)}
+                                  </Text>
+                                </View>
+                              )}
                             </View>
                             <TouchableOpacity
                               style={styles.manageButton}
