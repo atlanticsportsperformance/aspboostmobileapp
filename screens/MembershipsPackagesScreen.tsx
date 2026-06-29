@@ -665,7 +665,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         return;
       }
 
-      const { client_secret, customer_id, ephemeral_key, stripe_account, mode, setup_intent_id, subscription_data, publishable_key } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account, mode, setup_intent_id, subscription_data, publishable_key, payment_intent_id } = data;
 
       if (!client_secret) {
         throw new Error('No payment details returned from server');
@@ -764,6 +764,35 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
         if (!subscriptionResponse.ok) {
           throw new Error(subData.error || 'Failed to create subscription');
+        }
+      }
+
+      // For one-time PACKAGE purchases, confirm server-side immediately instead
+      // of relying solely on the (unreliable) Connect webhook to create the
+      // package. confirm-package is idempotent and shares a DB unique constraint
+      // with the webhook, so whichever runs first wins and the other is a no-op.
+      // Best-effort: the payment already succeeded, so a confirm failure still
+      // shows success (the webhook remains the backstop).
+      if (mode !== 'setup' && selectedItemType === 'package' && payment_intent_id) {
+        try {
+          const confirmRes = await fetch(`${API_URL}/api/stripe/confirm-package`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              payment_intent_id,
+              athlete_id: targetAthleteId,
+              package_type_id: selectedItem.id,
+            }),
+          });
+          if (!confirmRes.ok) {
+            const confirmData = await confirmRes.json().catch(() => ({}));
+            console.warn('[Checkout] confirm-package failed (webhook will back-fill):', confirmData?.error);
+          }
+        } catch (confirmErr) {
+          console.warn('[Checkout] confirm-package error (webhook will back-fill):', confirmErr);
         }
       }
 
