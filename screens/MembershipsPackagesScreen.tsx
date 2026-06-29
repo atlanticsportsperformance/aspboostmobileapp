@@ -57,6 +57,10 @@ interface MembershipType {
   is_unlimited?: boolean;
   metadata?: any;
   entitlement_rules?: EntitlementRule[];
+  pricing_options?: Array<{
+    id: string; label: string; price_amount: number; price_currency: string;
+    commitment_months: number; billing_period: string; is_default: boolean; is_active: boolean; sort_order: number;
+  }>;
 }
 
 interface UsageCounter {
@@ -93,6 +97,9 @@ interface Membership {
   membership_usage_counters?: UsageCounter[];
   usage_counters?: UsageCounter[]; // API returns this format
   service_groupings_override?: ServiceGrouping[]; // Per-membership service overrides
+  locked_until?: string | null;
+  commitment_months?: number | null;
+  cancel_at_term_end?: boolean | null;
 }
 
 interface PackageType {
@@ -373,12 +380,16 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // Also fetch available types (same for all athletes)
       const { data: membershipTypesData } = await supabase
         .from('membership_types')
-        .select('*')
+        .select('*, pricing_options:membership_pricing_options(id, label, price_amount, price_currency, commitment_months, billing_period, is_default, is_active, sort_order)')
         .eq('is_active', true)
         .eq('is_purchasable', true)
         .order('price_amount', { ascending: true });
 
-      setAvailableMembershipTypes(membershipTypesData || []);
+      const cleaned = (membershipTypesData || []).map((t: any) => ({
+        ...t,
+        pricing_options: (t.pricing_options || []).filter((o: any) => o.is_active),
+      }));
+      setAvailableMembershipTypes(cleaned);
 
       const { data: packageTypesData } = await supabase
         .from('package_types')
@@ -464,12 +475,16 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // Fetch available membership types (uses metadata.service_groupings)
       const { data: membershipTypesData } = await supabase
         .from('membership_types')
-        .select('*')
+        .select('*, pricing_options:membership_pricing_options(id, label, price_amount, price_currency, commitment_months, billing_period, is_default, is_active, sort_order)')
         .eq('is_active', true)
         .eq('is_purchasable', true)
         .order('price_amount', { ascending: true });
 
-      setAvailableMembershipTypes(membershipTypesData || []);
+      const cleaned = (membershipTypesData || []).map((t: any) => ({
+        ...t,
+        pricing_options: (t.pricing_options || []).filter((o: any) => o.is_active),
+      }));
+      setAvailableMembershipTypes(cleaned);
 
       // Fetch available package types with entitlement rules (requires RLS policy on entitlement_rules)
       const { data: packageTypesData, error: packageTypesError } = await supabase
