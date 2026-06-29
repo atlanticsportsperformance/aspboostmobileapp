@@ -180,6 +180,10 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [purchaseForAthleteId, setPurchaseForAthleteId] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
 
+  // Commitment tier picker + consent state
+  const [selectedPricingOptionId, setSelectedPricingOptionId] = useState<string | null>(null);
+  const [commitmentConsent, setCommitmentConsent] = useState(false);
+
   // Promo code state. Re-validated server-side at checkout time so a stale
   // client preview can never bypass an expired / limit-hit code.
   const [couponInput, setCouponInput] = useState('');
@@ -612,6 +616,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             athlete_id: targetAthleteId,
             membership_type_id: selectedItem.id,
             ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
+            ...(selectedPricingOptionId != null && { pricing_option_id: selectedPricingOptionId }),
           }
         : {
             athlete_id: targetAthleteId,
@@ -1482,6 +1487,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                           onPress={() => {
                             setSelectedItem(type);
                             setSelectedItemType('membership');
+                            const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
+                            setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
+                            setCommitmentConsent(false);
                             setShowPurchaseModal(true);
                           }}
                         >
@@ -1779,6 +1787,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                         if (!hasActive) {
                           setSelectedItem(type);
                           setSelectedItemType('membership');
+                          const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
+                          setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
+                          setCommitmentConsent(false);
                           setShowPurchaseModal(true);
                         }
                       }}
@@ -2336,6 +2347,62 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     );
                   })()}
 
+                  {/* Commitment tier picker + consent */}
+                  {selectedItemType === 'membership' && (() => {
+                    const membershipItem = selectedItem as MembershipType | null;
+                    const committed = (membershipItem?.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2)
+                      .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+                    if (committed.length === 0) return null;
+                    const baseDollars = (membershipItem?.price_amount ?? 0) / 100;
+                    return (
+                      <View style={{ marginTop: 16 }}>
+                        <Text style={{ color: '#9CA3AF', fontSize: 12, fontWeight: '600', textTransform: 'uppercase', marginBottom: 8 }}>Choose your plan</Text>
+                        {/* Month-to-month */}
+                        <TouchableOpacity
+                          onPress={() => setSelectedPricingOptionId(null)}
+                          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: selectedPricingOptionId === null ? '#9BDDFF' : 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 12, marginBottom: 8 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Ionicons name={selectedPricingOptionId === null ? 'radio-button-on' : 'radio-button-off'} size={20} color="#9BDDFF" />
+                            <View style={{ marginLeft: 10 }}>
+                              <Text style={{ color: '#E5E7EB', fontWeight: '600' }}>Month-to-month</Text>
+                              <Text style={{ color: '#9CA3AF', fontSize: 12 }}>cancel anytime</Text>
+                            </View>
+                          </View>
+                          <Text style={{ color: '#E5E7EB', fontWeight: '700' }}>${baseDollars.toFixed(0)}/mo</Text>
+                        </TouchableOpacity>
+                        {/* Committed tiers */}
+                        {committed.map((o: any) => {
+                          const monthly = o.price_amount / 100;
+                          const save = baseDollars - monthly;
+                          const selected = selectedPricingOptionId === o.id;
+                          return (
+                            <TouchableOpacity key={o.id}
+                              onPress={() => setSelectedPricingOptionId(o.id)}
+                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: selected ? '#9BDDFF' : 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 12, marginBottom: 8 }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color="#9BDDFF" />
+                                <View style={{ marginLeft: 10 }}>
+                                  <Text style={{ color: '#E5E7EB', fontWeight: '600' }}>{o.label}</Text>
+                                  <Text style={{ color: '#9CA3AF', fontSize: 12 }}>{o.commitment_months}-mo lock{save > 0 ? ` · save $${save.toFixed(0)}/mo` : ''}</Text>
+                                </View>
+                              </View>
+                              <Text style={{ color: '#E5E7EB', fontWeight: '700' }}>${monthly.toFixed(0)}/mo</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {/* Consent (only when a committed tier is selected) */}
+                        {selectedPricingOptionId !== null && (
+                          <TouchableOpacity onPress={() => setCommitmentConsent(v => !v)} style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 4 }}>
+                            <Ionicons name={commitmentConsent ? 'checkbox' : 'square-outline'} size={20} color="#9BDDFF" />
+                            <Text style={{ color: '#9CA3AF', fontSize: 12, marginLeft: 8, flex: 1 }}>
+                              I agree to a {committed.find((o: any) => o.id === selectedPricingOptionId)?.commitment_months}-month commitment, billed monthly. I can't cancel before the term ends, and it renews for another term unless I cancel.
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    );
+                  })()}
+
                   {/* Value info for packages */}
                   {selectedItemType === 'package' && (() => {
                     const pkg = selectedItem as PackageType;
@@ -2502,16 +2569,20 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               {isParent && linkedAthletes.length > 0 && !purchaseForAthleteId && (
                 <Text style={styles.purchaseModalWarning}>Please select an athlete above</Text>
               )}
+              {(() => {
+                const needsConsent = selectedItemType === 'membership' && selectedPricingOptionId !== null;
+                const buyDisabled = paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId) || (needsConsent && !commitmentConsent);
+                return (
               <TouchableOpacity
                 style={[
                   styles.purchaseButton,
-                  (paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId)) && styles.purchaseButtonDisabled
+                  buyDisabled && styles.purchaseButtonDisabled
                 ]}
                 onPress={handlePurchase}
-                disabled={paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId)}
+                disabled={buyDisabled}
               >
                 <LinearGradient
-                  colors={paymentInProgress ? ['#6B7280', '#4B5563'] : ['#9BDDFF', '#B0E5FF', '#7BC5F0']}
+                  colors={buyDisabled ? ['#6B7280', '#4B5563'] : ['#9BDDFF', '#B0E5FF', '#7BC5F0']}
                   style={styles.purchaseButtonGradient}
                 >
                   {paymentInProgress ? (
@@ -2527,6 +2598,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   )}
                 </LinearGradient>
               </TouchableOpacity>
+                );
+              })()}
             </View>
           </View>
         </View>
