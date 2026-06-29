@@ -131,7 +131,21 @@ export default function ClassDetailsSheet({
       console.log('Client secret prefix:', data.client_secret?.substring(0, 10));
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to create payment session');
+        // Surface human-friendly copy: the server provides actionable text in
+        // `data.message` for cases like restriction tags; most 400-class errors
+        // (`Event is full`, `already booked`, facility-not-connected) are already
+        // readable. Only mask unexpected 5xx behind a generic message. Avoid
+        // leaking machine tokens like `restriction_tags_required`.
+        const friendly =
+          data.message ||
+          (data.error === 'restriction_tags_required'
+            ? 'This session requires coach approval. Please contact the facility.'
+            : null) ||
+          (response.status >= 500
+            ? 'Something went wrong on our end. Please try again in a moment.'
+            : data.error) ||
+          'Failed to create payment session';
+        throw new Error(friendly);
       }
 
       const { client_secret, customer_id, ephemeral_key, stripe_account, payment_intent_id } = data;
