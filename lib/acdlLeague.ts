@@ -50,7 +50,7 @@ export interface LeagueSeasonMembership {
 export interface LeagueEvent {
   event_id: string;
   season_id: string;
-  type: string; // 'game' | 'practice' | ... (free text in the schema)
+  type: string; // 'assessment' | 'training' | 'game' | 'other'
   title: string | null;
   event_date: string; // 'YYYY-MM-DD'
   start_time: string | null; // 'HH:MM:SS'

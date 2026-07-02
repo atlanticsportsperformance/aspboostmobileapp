@@ -56,14 +56,13 @@ import { AcdlCrest } from '../components/league/AcdlCrest';
 import TeamTag from '../components/league/TeamTag';
 
 // Segmented filter → which league_events.type values it admits.
-type FilterKey = 'all' | 'games' | 'practices' | 'training' | 'other';
+type FilterKey = 'all' | 'games' | 'training' | 'assessment' | 'other';
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'all', label: 'ALL' },
   { key: 'games', label: 'GAMES' },
-  { key: 'practices', label: 'PRACTICES' },
   { key: 'training', label: 'TRAINING' },
-  // Real "other" rows are assessments → surface that, not a generic "OTHER".
-  { key: 'other', label: 'ASSESS' },
+  { key: 'assessment', label: 'ASSESS' },
+  { key: 'other', label: 'OTHER' },
 ];
 
 function matchesFilter(type: string, filter: FilterKey): boolean {
@@ -72,12 +71,12 @@ function matchesFilter(type: string, filter: FilterKey): boolean {
       return true;
     case 'games':
       return type === 'game';
-    case 'practices':
-      return type === 'practice';
     case 'training':
-      return type === 'training_day';
+      return type === 'training';
+    case 'assessment':
+      return type === 'assessment';
     case 'other':
-      return type === 'assessment' || type === 'other';
+      return type === 'other';
     default:
       return true;
   }

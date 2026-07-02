@@ -7,7 +7,6 @@
 import { LeagueStatRow, LineScore } from './acdlLeague';
 import {
   ACDL_EVT_GAME,
-  ACDL_EVT_PRACTICE,
   ACDL_EVT_TRAINING,
   ACDL_EVT_OTHER,
   ACDL_NAVY,
@@ -199,15 +198,13 @@ export function lineScoreSide(g: {
  * Shared per-event-type accent color + label, used by BOTH the Dashboard
  * day-cards and the Schedule cards so the two surfaces stay identical. Colors
  * are the on-theme Schedule values (named tokens in acdlTheme):
- *   game=#0f6fa6, practice=#2e7d52, training=#b07b16, assessment/other=ACDL_MUT.
+ *   game=#0f6fa6, training=#b07b16, assessment/other=ACDL_MUT.
  */
 export function eventTypeMeta(type: string): { color: string; label: string } {
   switch (type) {
     case 'game':
       return { color: ACDL_EVT_GAME, label: 'GAME' };
-    case 'practice':
-      return { color: ACDL_EVT_PRACTICE, label: 'PRACTICE' };
-    case 'training_day':
+    case 'training':
       return { color: ACDL_EVT_TRAINING, label: 'TRAINING' };
     case 'assessment':
       return { color: ACDL_EVT_OTHER, label: 'ASSESSMENT' };
