@@ -545,32 +545,128 @@ export default function MessagesScreen({ navigation }: any) {
 
     setLoadingUsers(true);
     try {
-      // Get current user's profile to get org_id
+      const myId = currentUser?.id;
+      // Read the current user's role so we can scope who they may start a
+      // conversation with. (profiles is readable by any authed user.)
       const { data: currentProfile } = await supabase
         .from('profiles')
-        .select('org_id')
-        .eq('id', currentUser?.id)
+        .select('org_id, app_role')
+        .eq('id', myId)
         .single();
 
-      if (!currentProfile?.org_id) {
+      const myOrgId = currentProfile?.org_id;
+      if (!myOrgId) {
         setAvailableUsers([]);
         return;
       }
 
-      // Parents and athletes can only message admins
-      const { data: adminProfiles, error: adminError } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, email, avatar_url, app_role')
-        .eq('org_id', currentProfile.org_id)
-        .neq('id', currentUser?.id)
-        .in('app_role', ['admin', 'super_admin']);
+      const role = currentProfile?.app_role;
+      const isAdmin = role === 'admin' || role === 'super_admin' || role === 'god_mode';
+      const isCoach = role === 'coach';
+      const isAthlete = role === 'athlete';
 
-      const uniqueProfiles = adminProfiles || [];
+      const profileCols = 'id, first_name, last_name, email, avatar_url, app_role';
+      const STAFF_ROLES = ['admin', 'super_admin', 'coach', 'god_mode'];
+      let recipients: Profile[] = [];
 
-      // Sort by first name
-      uniqueProfiles.sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));
+      if (isAdmin) {
+        // Admins can message anyone in their org (all staff + all athletes).
+        const { data } = await supabase
+          .from('profiles')
+          .select(profileCols)
+          .eq('org_id', myOrgId)
+          .neq('id', myId);
+        recipients = (data as Profile[]) || [];
+      } else if (isCoach) {
+        // Coaches can message all staff plus the athletes linked to them
+        // via coach_athletes (mirrors the ArmCare athlete scoping).
+        const [{ data: staff }, { data: links }] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select(profileCols)
+            .eq('org_id', myOrgId)
+            .neq('id', myId)
+            .in('app_role', STAFF_ROLES),
+          supabase
+            .from('coach_athletes')
+            .select('athlete:athlete_id ( user_id )')
+            .eq('coach_id', myId),
+        ]);
 
-      setAvailableUsers(uniqueProfiles);
+        const athleteUserIds = (links || [])
+          .map((l: any) => l.athlete?.user_id)
+          .filter((id: string | null | undefined): id is string => !!id);
+
+        let athleteProfiles: Profile[] = [];
+        if (athleteUserIds.length > 0) {
+          const { data: ap } = await supabase
+            .from('profiles')
+            .select(profileCols)
+            .in('id', athleteUserIds)
+            .neq('id', myId);
+          athleteProfiles = (ap as Profile[]) || [];
+        }
+
+        // Merge + dedupe (a coach who is also linked shouldn't appear twice).
+        const byId = new Map<string, Profile>();
+        [...((staff as Profile[]) || []), ...athleteProfiles].forEach(p => byId.set(p.id, p));
+        recipients = Array.from(byId.values());
+      } else if (isAthlete) {
+        // Athletes can message their assigned coach(es) via coach_athletes,
+        // plus admins in their org (mirrors /api/messaging/available-users).
+        const { data: athleteRecord } = await supabase
+          .from('athletes')
+          .select('id')
+          .eq('user_id', myId)
+          .single();
+
+        let coachUserIds: string[] = [];
+        if (athleteRecord?.id) {
+          // coach_athletes.coach_id is already the coach's profile id.
+          const { data: assignedCoaches } = await supabase
+            .from('coach_athletes')
+            .select('coach_id')
+            .eq('athlete_id', athleteRecord.id);
+          coachUserIds = (assignedCoaches || [])
+            .map((c: any) => c.coach_id)
+            .filter((id: string | null | undefined): id is string => !!id);
+        }
+
+        const [{ data: admins }, coachRes] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select(profileCols)
+            .eq('org_id', myOrgId)
+            .neq('id', myId)
+            .in('app_role', ['admin', 'super_admin']),
+          coachUserIds.length > 0
+            ? supabase
+                .from('profiles')
+                .select(profileCols)
+                .eq('org_id', myOrgId)
+                .neq('id', myId)
+                .in('id', coachUserIds)
+            : Promise.resolve({ data: [] as Profile[] }),
+        ]);
+
+        // Merge + dedupe (a coach who is also an admin shouldn't appear twice).
+        const byId = new Map<string, Profile>();
+        [...((admins as Profile[]) || []), ...(((coachRes as any).data as Profile[]) || [])]
+          .forEach(p => byId.set(p.id, p));
+        recipients = Array.from(byId.values());
+      } else {
+        // Parents (and any other role) can only message admins.
+        const { data } = await supabase
+          .from('profiles')
+          .select(profileCols)
+          .eq('org_id', myOrgId)
+          .neq('id', myId)
+          .in('app_role', ['admin', 'super_admin']);
+        recipients = (data as Profile[]) || [];
+      }
+
+      recipients.sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));
+      setAvailableUsers(recipients);
     } catch (error) {
       console.error('Error fetching available users:', error);
       setAvailableUsers([]);
