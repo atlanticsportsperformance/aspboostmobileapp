@@ -353,11 +353,19 @@ export function formatPrice(cents: number | null): string {
  * Check if an email is already registered
  */
 export async function checkEmailExists(email: string): Promise<boolean> {
-  const { data } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('email', email.toLowerCase())
-    .maybeSingle();
-
-  return !!data;
+  // Server-side lookup: `profiles` is no longer readable with the anon key.
+  // On any failure we return false so signup still proceeds — the auth layer
+  // rejects a genuine duplicate at account creation.
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/public/check-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.toLowerCase() }),
+    });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return !!data?.exists;
+  } catch {
+    return false;
+  }
 }
