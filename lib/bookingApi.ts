@@ -121,6 +121,49 @@ export async function getAthleteId(userId: string): Promise<string | null> {
 }
 
 /**
+ * Fetch coach names/avatars for events in a date range via the server.
+ * Replaces the direct `staff` + nested `profiles` embed the device used to
+ * run with the anon key — that read goes blank once the blanket "any
+ * logged-in user can read every profile" RLS policies are dropped (see
+ * docs/superpowers/plans/2026-08-01-profiles-tighten-authenticated-reads.md,
+ * Task 3). Returns a map keyed by scheduling_events.id.
+ */
+async function getCoachesForEvents(
+  athleteId: string,
+  startIso: string,
+  endIso: string
+): Promise<Record<string, { coach_name: string | null; coach_avatar: string | null }>> {
+  const coachByEventId: Record<string, { coach_name: string | null; coach_avatar: string | null }> = {};
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      console.error('[getCoachesForEvents] No access token — skipping coach lookup');
+      return coachByEventId;
+    }
+
+    const url = `${API_URL}/api/mobile/events-with-coaches?athlete_id=${encodeURIComponent(athleteId)}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+
+    if (!response.ok) {
+      console.error('[getCoachesForEvents] API error:', response.status);
+      return coachByEventId;
+    }
+
+    const data = await response.json();
+    (data.events || []).forEach((e: any) => {
+      coachByEventId[e.id] = { coach_name: e.coach_name ?? null, coach_avatar: e.coach_avatar ?? null };
+    });
+  } catch (error) {
+    console.error('[getCoachesForEvents] Error fetching coach names:', error);
+  }
+
+  return coachByEventId;
+}
+
+/**
  * Get bookable events for a specific date
  */
 export async function getBookableEvents(
@@ -189,27 +232,10 @@ export async function getBookableEvents(
     return [];
   }
 
-  // Fetch staff profiles separately - staff_id references the staff table, not profiles directly
-  const staffIds = [...new Set((events || []).map((e: any) => e.staff_id).filter(Boolean))];
-  const staffMap: Record<string, any> = {};
-
-  if (staffIds.length > 0) {
-    // Query the staff table and join to profiles via user_id
-    const { data: staffRecords, error: staffError } = await supabase
-      .from('staff')
-      .select('id, user_id, profiles:profiles!user_id(first_name, last_name, avatar_url)')
-      .in('id', staffIds);
-
-    (staffRecords || []).forEach((s: any) => {
-      // The profile data is nested under the 'profiles' key from the join
-      const profile = s.profiles;
-      staffMap[s.id] = {
-        first_name: profile?.first_name || '',
-        last_name: profile?.last_name || '',
-        avatar_url: profile?.avatar_url || null,
-      };
-    });
-  }
+  // Fetch coach names/avatars via the server — staff_id references the staff
+  // table, and the profiles join now runs behind an authorizing endpoint
+  // rather than directly from the device.
+  const coachByEventId = await getCoachesForEvents(athleteId, startOfDay, endOfDay);
 
   // Fetch locations separately - try scheduling_locations table
   const locationIds = [...new Set((events || []).map((e: any) => e.location_id).filter(Boolean))];
@@ -279,7 +305,7 @@ export async function getBookableEvents(
     const endTime = new Date(event.end_time);
     const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
 
-    const staff = event.staff_id ? staffMap[event.staff_id] : null;
+    const coach = coachByEventId[event.id];
     // Handle template - could be object or array depending on Supabase response
     const rawTemplate = event.template;
     const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
@@ -320,8 +346,8 @@ export async function getBookableEvents(
       title: event.title || template?.name || 'Class',
       startTime,
       endTime,
-      coachName: staff ? `${staff.first_name || ''} ${staff.last_name || ''}`.trim() : 'Staff',
-      coachAvatar: staff?.avatar_url || null,
+      coachName: coach?.coach_name || 'Staff',
+      coachAvatar: coach?.coach_avatar || null,
       location: location?.name || 'Main Facility',
       resource: resource?.name || null,
       category: category?.name || null,
@@ -411,15 +437,14 @@ export async function getBookableEventsForWeek(
 
   // Collect unique IDs across ALL events
   const eventIds = allEvents.map((e: any) => e.id);
-  const staffIds = [...new Set(allEvents.map((e: any) => e.staff_id).filter(Boolean))];
   const locationIds = [...new Set(allEvents.map((e: any) => e.location_id).filter(Boolean))];
   const resourceIds = [...new Set(allEvents.map((e: any) => e.resource_id).filter(Boolean))];
 
-  // Queries 3-6: Staff, locations, resources, bookings — ALL in parallel
-  const [staffResult, locationResult, resourceResult, bookingsResult] = await Promise.all([
-    staffIds.length > 0
-      ? supabase.from('staff').select('id, user_id, profiles:profiles!user_id(first_name, last_name, avatar_url)').in('id', staffIds)
-      : Promise.resolve({ data: [] as any[] }),
+  // Queries 2-5: Coach names, locations, resources, bookings — ALL in
+  // parallel. Coach names come from the server (see getCoachesForEvents)
+  // rather than a direct staff/profiles read.
+  const [coachByEventId, locationResult, resourceResult, bookingsResult] = await Promise.all([
+    getCoachesForEvents(athleteId, startOfWeek, endOfWeek),
     locationIds.length > 0
       ? supabase.from('scheduling_locations').select('id, name').in('id', locationIds)
       : Promise.resolve({ data: [] as any[] }),
@@ -428,17 +453,6 @@ export async function getBookableEventsForWeek(
       : Promise.resolve({ data: [] as any[] }),
     supabase.from('scheduling_bookings').select('event_id, athlete_id').in('event_id', eventIds).in('status', ['booked', 'confirmed', 'waitlisted']),
   ]);
-
-  // Build lookup maps
-  const staffMap: Record<string, any> = {};
-  (staffResult.data || []).forEach((s: any) => {
-    const profile = s.profiles;
-    staffMap[s.id] = {
-      first_name: profile?.first_name || '',
-      last_name: profile?.last_name || '',
-      avatar_url: profile?.avatar_url || null,
-    };
-  });
 
   const locationMap: Record<string, any> = {};
   (locationResult.data || []).forEach((l: any) => { locationMap[l.id] = l; });
@@ -463,7 +477,7 @@ export async function getBookableEventsForWeek(
     const endTime = new Date(event.end_time);
     const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
 
-    const staff = event.staff_id ? staffMap[event.staff_id] : null;
+    const coach = coachByEventId[event.id];
     const rawTemplate = event.template;
     const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
     const location = event.location_id ? locationMap[event.location_id] : null;
@@ -499,8 +513,8 @@ export async function getBookableEventsForWeek(
       title: event.title || template?.name || 'Class',
       startTime,
       endTime,
-      coachName: staff ? `${staff.first_name || ''} ${staff.last_name || ''}`.trim() : 'Staff',
-      coachAvatar: staff?.avatar_url || null,
+      coachName: coach?.coach_name || 'Staff',
+      coachAvatar: coach?.coach_avatar || null,
       location: location?.name || 'Main Facility',
       resource: resource?.name || null,
       category: category?.name || null,
