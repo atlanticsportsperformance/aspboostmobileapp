@@ -870,7 +870,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       }
 
       Alert.alert(
-        'Membership Cancelled',
+        data.scheduled ? 'Cancellation Scheduled' : 'Membership Cancelled',
         data.message || 'Your membership has been cancelled.',
         [{ text: 'OK' }]
       );
@@ -1358,9 +1358,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             {isScheduledForCancel && (
                               <View style={styles.statusBannerRed}>
                                 <Text style={styles.statusBannerTextRed}>
-                                  {membership.cancel_at
-                                    ? `Cancels on ${formatDate(membership.cancel_at)}`
-                                    : 'Cancels at billing period end'}
+                                  {membership.cancel_at_term_end && membership.cancel_at
+                                    ? `Ends at commitment term · ${formatDate(membership.cancel_at)}`
+                                    : membership.cancel_at
+                                      ? `Cancels on ${formatDate(membership.cancel_at)}`
+                                      : 'Cancels at billing period end'}
                                 </Text>
                                 <TouchableOpacity
                                   style={styles.statusBannerButtonBlue}
@@ -1672,9 +1674,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                           {isScheduledForCancel && (
                             <View style={styles.statusBannerRed}>
                               <Text style={styles.statusBannerTextRed}>
-                                {membership.cancel_at
-                                  ? `Cancels on ${formatDate(membership.cancel_at)}`
-                                  : 'Cancels at billing period end'}
+                                {membership.cancel_at_term_end && membership.cancel_at
+                                  ? `Ends at commitment term · ${formatDate(membership.cancel_at)}`
+                                  : membership.cancel_at
+                                    ? `Cancels on ${formatDate(membership.cancel_at)}`
+                                    : 'Cancels at billing period end'}
                               </Text>
                               <TouchableOpacity
                                 style={styles.statusBannerButtonBlue}
@@ -2689,16 +2693,37 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 <Text style={styles.managementModalSubtext}>
                   Current period ends {formatDate(selectedMembership.current_period_end)}
                 </Text>
+                {!!selectedMembership.locked_until && new Date(selectedMembership.locked_until) > new Date() && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                    <Ionicons name="lock-closed" size={12} color="#9BDDFF" />
+                    <Text style={{ color: '#9BDDFF', fontSize: 12, marginLeft: 4 }}>
+                      {selectedMembership.commitment_months
+                        ? `${selectedMembership.commitment_months}-month commitment · `
+                        : ''}
+                      locked until {formatDate(selectedMembership.locked_until)}
+                    </Text>
+                  </View>
+                )}
               </View>
             )}
 
-            {/* Warning */}
-            <View style={[styles.managementModalWarning, styles.managementModalWarningRed]}>
-              <Ionicons name="warning" size={20} color="#EF4444" />
-              <Text style={[styles.managementModalWarningText, styles.managementModalWarningTextRed]}>
-                Cancelling your membership will end your access to member benefits. This action cannot be undone after the billing period ends.
-              </Text>
-            </View>
+            {/* Warning — commitment-aware: locked memberships can't stop billing
+                mid-term; cancelling schedules the end at the commitment date. */}
+            {selectedMembership && !!selectedMembership.locked_until && new Date(selectedMembership.locked_until) > new Date() ? (
+              <View style={[styles.managementModalWarning, styles.managementModalWarningRed]}>
+                <Ionicons name="warning" size={20} color="#EF4444" />
+                <Text style={[styles.managementModalWarningText, styles.managementModalWarningTextRed]}>
+                  This membership has a{selectedMembership.commitment_months ? ` ${selectedMembership.commitment_months}-month` : ''} commitment. Cancelling now stops it from renewing after the commitment ends on {formatDate(selectedMembership.locked_until)} — access and billing continue until then.
+                </Text>
+              </View>
+            ) : (
+              <View style={[styles.managementModalWarning, styles.managementModalWarningRed]}>
+                <Ionicons name="warning" size={20} color="#EF4444" />
+                <Text style={[styles.managementModalWarningText, styles.managementModalWarningTextRed]}>
+                  Cancelling your membership will end your access to member benefits. This action cannot be undone after the billing period ends.
+                </Text>
+              </View>
+            )}
 
             {/* Optional reason */}
             <View style={styles.managementModalInputContainer}>
@@ -2725,7 +2750,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <Text style={styles.managementModalButtonDangerText}>
-                    Cancel at Period End
+                    {selectedMembership && !!selectedMembership.locked_until && new Date(selectedMembership.locked_until) > new Date()
+                      ? 'Cancel at Commitment End'
+                      : 'Cancel at Period End'}
                   </Text>
                 )}
               </TouchableOpacity>
