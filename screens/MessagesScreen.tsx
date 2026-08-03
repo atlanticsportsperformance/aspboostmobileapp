@@ -199,50 +199,55 @@ export default function MessagesScreen({ navigation }: any) {
 
       if (convError) throw convError;
 
-      // Fetch last message for each conversation
-      const conversationsWithMessages = await Promise.all(
-        (convs || []).map(async (conv) => {
-          const { data: lastMsg } = await supabase
-            .from('messages')
-            .select('content, created_at, sender_id')
-            .eq('conversation_id', conv.id)
-            .eq('is_deleted', false)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
+      // Derive last-message + unread for ALL conversations in 2 batched queries
+      // instead of 2 per conversation (was an N+1: 20 conversations = 40 round-trips
+      // on every open). Query 1 pulls lightweight message metadata (no content) for
+      // every conversation; Query 2 pulls content only for each conversation's latest.
+      const { data: msgMeta } = await supabase
+        .from('messages')
+        .select('id, conversation_id, created_at, sender_id')
+        .in('conversation_id', conversationIds)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: false });
 
-          // Count unread messages
-          const lastRead = lastReadMap.get(conv.id);
-          let unreadCount = 0;
-
-          if (lastRead) {
-            const { count } = await supabase
-              .from('messages')
-              .select('*', { count: 'exact', head: true })
-              .eq('conversation_id', conv.id)
-              .eq('is_deleted', false)
-              .neq('sender_id', userId)
-              .gt('created_at', lastRead);
-
-            unreadCount = count || 0;
-          } else {
-            const { count } = await supabase
-              .from('messages')
-              .select('*', { count: 'exact', head: true })
-              .eq('conversation_id', conv.id)
-              .eq('is_deleted', false)
-              .neq('sender_id', userId);
-
-            unreadCount = count || 0;
+      const lastMsgByConv = new Map<string, { id: string; created_at: string; sender_id: string }>();
+      const unreadByConv = new Map<string, number>();
+      for (const m of msgMeta || []) {
+        // Rows are newest-first, so the first row seen per conversation is its latest.
+        if (!lastMsgByConv.has(m.conversation_id)) {
+          lastMsgByConv.set(m.conversation_id, { id: m.id, created_at: m.created_at, sender_id: m.sender_id });
+        }
+        // Unread = messages from others newer than this user's last_read_at
+        // (all of others' messages when never read) — same semantics as before.
+        if (m.sender_id !== userId) {
+          const lastRead = lastReadMap.get(m.conversation_id);
+          if (!lastRead || new Date(m.created_at) > new Date(lastRead)) {
+            unreadByConv.set(m.conversation_id, (unreadByConv.get(m.conversation_id) || 0) + 1);
           }
+        }
+      }
 
-          return {
-            ...conv,
-            last_message: lastMsg || undefined,
-            unread_count: unreadCount,
-          };
-        })
-      );
+      // Content for just the latest message of each conversation.
+      const lastMsgIds = Array.from(lastMsgByConv.values()).map(v => v.id);
+      const contentById = new Map<string, string>();
+      if (lastMsgIds.length > 0) {
+        const { data: lastMsgs } = await supabase
+          .from('messages')
+          .select('id, content')
+          .in('id', lastMsgIds);
+        for (const lm of lastMsgs || []) contentById.set(lm.id, lm.content);
+      }
+
+      const conversationsWithMessages = (convs || []).map((conv) => {
+        const last = lastMsgByConv.get(conv.id);
+        return {
+          ...conv,
+          last_message: last
+            ? { content: contentById.get(last.id) || '', created_at: last.created_at, sender_id: last.sender_id }
+            : undefined,
+          unread_count: unreadByConv.get(conv.id) || 0,
+        };
+      });
 
       setConversations(conversationsWithMessages);
     } catch (error) {
@@ -272,10 +277,13 @@ export default function MessagesScreen({ navigation }: any) {
         `)
         .eq('conversation_id', conversationId)
         .eq('is_deleted', false)
-        .order('created_at', { ascending: true });
+        // Bound to the most recent 100 (newest-first, then reversed for display)
+        // instead of loading an entire long thread. TODO: add load-older pagination.
+        .order('created_at', { ascending: false })
+        .limit(100);
 
       if (error) throw error;
-      setMessages(data || []);
+      setMessages((data || []).reverse());
 
       // Scroll to bottom after messages load
       setTimeout(() => {

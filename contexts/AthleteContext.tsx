@@ -146,48 +146,40 @@ export function AthleteProvider({ children }: { children: ReactNode }) {
         `)
         .eq('guardian_id', userId);
 
-      // Get athlete table IDs and assign colors
-      // The athlete_guardians.athlete_id might directly be the athletes.id
-      // OR it might be profiles.id - we need to check both
-      const athletesWithDetails = await Promise.all(
-        (guardianships || [])
-          .filter((g: any) => g.athlete)
-          .map(async (g: any, index: number) => {
-            // First try to find athlete by user_id (if athlete_guardians.athlete_id is profile id)
-            let athleteTableId = '';
+      // Get athlete table IDs and assign colors.
+      // athlete_guardians.athlete_id may be either a profiles.id (resolve via
+      // athletes.user_id) OR an athletes.id directly. Resolve BOTH in two batched
+      // queries instead of 1-2 per athlete (was an N+1 on the parent's first paint).
+      const linkedGuardianships = (guardianships || []).filter((g: any) => g.athlete);
+      const profileIds = linkedGuardianships.map((g: any) => g.athlete.id);
+      const directIdCandidates = linkedGuardianships.map((g: any) => g.athlete_id);
 
-            // Try lookup by user_id first
-            const { data: athleteByUserId } = await supabase
-              .from('athletes')
-              .select('id')
-              .eq('user_id', g.athlete.id)
-              .maybeSingle();
+      const [{ data: byUserRows }, { data: byIdRows }] = await Promise.all([
+        supabase.from('athletes').select('id, user_id').in('user_id', profileIds),
+        supabase.from('athletes').select('id').in('id', directIdCandidates),
+      ]);
 
-            if (athleteByUserId) {
-              athleteTableId = athleteByUserId.id;
-            } else {
-              // If not found by user_id, check if athlete_guardians.athlete_id IS the athletes.id directly
-              const { data: athleteDirectId } = await supabase
-                .from('athletes')
-                .select('id')
-                .eq('id', g.athlete_id)
-                .maybeSingle();
-
-              if (athleteDirectId) {
-                athleteTableId = athleteDirectId.id;
-              }
-            }
-
-            return {
-              id: g.athlete.id,
-              athlete_id: athleteTableId,
-              first_name: g.athlete.first_name,
-              last_name: g.athlete.last_name,
-              email: g.athlete.email,
-              color: ATHLETE_COLORS[index % ATHLETE_COLORS.length],
-            };
-          })
+      const athleteIdByUserId = new Map<string, string>(
+        (byUserRows || []).map((r: any) => [r.user_id, r.id])
       );
+      const validDirectIds = new Set<string>((byIdRows || []).map((r: any) => r.id));
+
+      const athletesWithDetails = linkedGuardianships.map((g: any, index: number) => {
+        // Prefer the user_id match (athlete_guardians.athlete_id = profile id),
+        // then fall back to a direct athletes.id match — same priority as before.
+        const athleteTableId =
+          athleteIdByUserId.get(g.athlete.id) ||
+          (validDirectIds.has(g.athlete_id) ? g.athlete_id : '');
+
+        return {
+          id: g.athlete.id,
+          athlete_id: athleteTableId,
+          first_name: g.athlete.first_name,
+          last_name: g.athlete.last_name,
+          email: g.athlete.email,
+          color: ATHLETE_COLORS[index % ATHLETE_COLORS.length],
+        };
+      });
 
       // Filter out any athletes without valid athlete_id (no athletes table record)
       let validAthletes = athletesWithDetails.filter(a => a.athlete_id !== '');

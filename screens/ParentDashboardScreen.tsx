@@ -898,34 +898,40 @@ export default function ParentDashboardScreen({ navigation }: any) {
   }
 
   async function fetchHittingData(athleteIdParam: string) {
-    const { data: blastSwings } = await supabase
-      .from('blast_swings')
-      .select('*')
-      .eq('athlete_id', athleteIdParam)
-      .order('recorded_date', { ascending: false })
-      .order('recorded_time', { ascending: false });
+    // Select only the columns actually used below (was select('*'), which pulled
+    // every column of every swing ever recorded over cellular just to compute maxes).
+    // Run the three independent queries in parallel, mirroring DashboardScreen.
+    const [blastResult, hittraxSessionsResult, fullSwingResult] = await Promise.all([
+      supabase
+        .from('blast_swings')
+        .select('recorded_date, recorded_time, metrics')
+        .eq('athlete_id', athleteIdParam)
+        .order('recorded_date', { ascending: false })
+        .order('recorded_time', { ascending: false }),
+      supabase
+        .from('hittrax_sessions')
+        .select('id, session_date')
+        .eq('athlete_id', athleteIdParam)
+        .order('session_date', { ascending: false }),
+      supabase
+        .from('fullswing_sessions')
+        .select('id, session_date, max_bat_speed, max_exit_velocity, max_distance')
+        .eq('athlete_id', athleteIdParam)
+        .order('session_date', { ascending: false }),
+    ]);
 
-    const { data: hittraxSessions } = await supabase
-      .from('hittrax_sessions')
-      .select('id, session_date')
-      .eq('athlete_id', athleteIdParam)
-      .order('session_date', { ascending: false });
+    const blastSwings = blastResult.data;
+    const hittraxSessions = hittraxSessionsResult.data;
+    const fullSwingSessions = fullSwingResult.data;
 
     const hittraxSessionIds = hittraxSessions?.map((s) => s.id) || [];
     const { data: hittraxSwings } = hittraxSessionIds.length > 0
       ? await supabase
           .from('hittrax_swings')
-          .select('*')
+          .select('session_id, exit_velocity, distance, swing_timestamp')
           .in('session_id', hittraxSessionIds)
           .order('swing_timestamp', { ascending: false })
       : { data: null };
-
-    // Query Full Swing sessions for combined bat speed + exit velocity + distance
-    const { data: fullSwingSessions } = await supabase
-      .from('fullswing_sessions')
-      .select('id, session_date, max_bat_speed, max_exit_velocity, max_distance')
-      .eq('athlete_id', athleteIdParam)
-      .order('session_date', { ascending: false });
 
     let maxBatSpeed = { value: 0, date: '' };
     let maxExitVelo = { value: 0, date: '' };

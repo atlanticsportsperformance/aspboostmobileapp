@@ -503,10 +503,12 @@ export default function ArmCareWizardScreen() {
 
       // 3) Persist the session and capture the new row's id.
       //    Always a direct Supabase insert under the current JWT. The row's
-      //    athlete_id comes from session.athleteId (the selected athlete). For
-      //    a coach acting as an athlete, an RLS policy authorizes inserting
-      //    armcare_sessions for athletes linked via coach_athletes, so the
-      //    same path works for both self-serve and coach act-as.
+      //    athlete_id comes from session.athleteId (the selected athlete) — never
+      //    the coach's id — so a coach-run test is attributed to the athlete and
+      //    shows up in their history. RLS "Admins and coaches can insert armcare
+      //    sessions" authorizes any app_role in (admin, coach) to insert for any
+      //    athlete_id, so the same direct-insert path works for both self-serve
+      //    and coach act-as.
       const row = toArmcareSessionRow(session, maxVelo);
       const { data: insertedSession, error } = await supabase
         .from('armcare_sessions')
