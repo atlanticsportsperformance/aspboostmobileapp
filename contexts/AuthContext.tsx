@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase, recreateSupabaseClient } from '../lib/supabase';
@@ -285,8 +285,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
   }, []);
 
+  // Memoize the context value so consumers (many screens call useAuth) only
+  // re-render when auth state actually changes, not on every provider re-render.
+  // signIn/signOut are already stable (useCallback).
+  const value = useMemo(
+    () => ({ session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }),
+    [session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut]
+  );
+
   return (
-    <AuthContext.Provider value={{ session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
@@ -298,12 +306,18 @@ export function useAuth() {
     throw new Error('useAuth must be used within an AuthProvider');
   }
 
-  return {
-    ...context,
-    loading: !context.isReady,
-    initializing: !context.isReady,
-    appReady: context.isReady,
-    setAppReady: (_ready: boolean) => {},
-    refreshSession: async () => {},
-  };
+  // Memoized on the (now-stable) context so the derived object — including the
+  // no-op setAppReady/refreshSession closures — keeps a stable identity across
+  // renders and doesn't retrigger consumers' effects/memoized children.
+  return useMemo(
+    () => ({
+      ...context,
+      loading: !context.isReady,
+      initializing: !context.isReady,
+      appReady: context.isReady,
+      setAppReady: (_ready: boolean) => {},
+      refreshSession: async () => {},
+    }),
+    [context]
+  );
 }

@@ -33,50 +33,17 @@ import {
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
+// Entry screens stay eagerly imported (shown immediately on launch / after auth).
 import LoginScreen from './screens/LoginScreen';
 import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import ParentDashboardScreen from './screens/ParentDashboardScreen';
-import WorkoutLoggerScreen from './screens/WorkoutLoggerScreen';
-import CompletedWorkoutScreen from './screens/CompletedWorkoutScreen';
-import WorkloadScreen from './screens/WorkloadScreen';
-import MessagesScreen from './screens/MessagesScreen';
-import LeaderboardScreen from './screens/LeaderboardScreen';
-import HittingPerformanceScreen from './screens/HittingPerformanceScreen';
-import HittingSessionScreen from './screens/HittingSessionScreen';
-import HittingTrendsScreen from './screens/HittingTrendsScreen';
-import BattedBallTrendsScreen from './screens/BattedBallTrendsScreen';
-import PairedDataTrendsScreen from './screens/PairedDataTrendsScreen';
-import PitchingScreen from './screens/PitchingScreen';
-import PitchingHubScreen from './screens/PitchingHubScreen';
-import PitchingSessionScreen from './screens/PitchingSessionScreen';
-import PitchingTrendsScreen from './screens/PitchingTrendsScreen';
-import MocapSessionsScreen from './screens/MocapSessionsScreen';
-import MocapPitchDetailScreen from './screens/MocapPitchDetailScreen';
-import ArmCareScreen from './screens/ArmCareScreen';
-import ArmCareHubScreen from './screens/ArmCareHubScreen';
-import ArmCareWizardScreen from './screens/ArmCareWizardScreen';
-import ForceProfileScreen from './screens/ForceProfileScreen';
-import TestDetailScreen from './screens/TestDetailScreen';
-import ResourcesScreen from './screens/ResourcesScreen';
-import PerformanceScreen from './screens/PerformanceScreen';
-import ProfileScreen from './screens/ProfileScreen';
-import NotificationSettingsScreen from './screens/NotificationSettingsScreen';
-import BookingScreen from './screens/BookingScreen';
-import MembershipsPackagesScreen from './screens/MembershipsPackagesScreen';
-import BillingScreen from './screens/BillingScreen';
-import PublicBookingScreen from './screens/PublicBookingScreen';
-import WaiversScreen from './screens/WaiversScreen';
-import LoadingScreen from './screens/LoadingScreen';
 import CoachDashboardScreen from './screens/CoachDashboardScreen';
-import CoachToolsScreen from './screens/CoachToolsScreen';
-import CoachArmCareSearchScreen from './screens/CoachArmCareSearchScreen';
-import LeagueHubScreen from './screens/LeagueHubScreen';
-import LeagueScheduleScreen from './screens/LeagueScheduleScreen';
-import LeagueStatsScreen from './screens/LeagueStatsScreen';
-import LeagueGameLogScreen from './screens/LeagueGameLogScreen';
-import LeagueGameDetailScreen from './screens/LeagueGameDetailScreen';
+import LoadingScreen from './screens/LoadingScreen';
+// All other (deep) screens are lazy-loaded via `getComponent` on their
+// Stack.Screen below — react-navigation requires the module on first navigation,
+// so ~37 large screen modules no longer evaluate during app startup.
 import { StatusBar } from 'expo-status-bar';
 
 const Stack = createNativeStackNavigator();
@@ -182,50 +149,52 @@ function AppContent() {
             }}
             initialRouteName="Loading"
           >
+            {/* Eager entry screens */}
             <Stack.Screen name="Loading" component={LoadingScreen} />
             <Stack.Screen name="Login" component={LoginScreen} />
             <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
             <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="ParentDashboard" component={ParentDashboardScreen} />
-            <Stack.Screen name="WorkoutLogger" component={WorkoutLoggerScreen} />
-            <Stack.Screen name="CompletedWorkout" component={CompletedWorkoutScreen} />
-            <Stack.Screen name="Workload" component={WorkloadScreen} />
-            <Stack.Screen name="Messages" component={MessagesScreen} />
-            <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
-            <Stack.Screen name="HittingPerformance" component={HittingPerformanceScreen} />
-            <Stack.Screen name="HittingSession" component={HittingSessionScreen} />
-            <Stack.Screen name="HittingTrends" component={HittingTrendsScreen} />
-            <Stack.Screen name="BattedBallTrends" component={BattedBallTrendsScreen} />
-            <Stack.Screen name="PairedDataTrends" component={PairedDataTrendsScreen} />
-            <Stack.Screen name="PitchingHub" component={PitchingHubScreen} />
-            <Stack.Screen name="PitchingPerformance" component={PitchingScreen} />
-            <Stack.Screen name="PitchingSession" component={PitchingSessionScreen} />
-            <Stack.Screen name="PitchingTrends" component={PitchingTrendsScreen} />
-            <Stack.Screen name="MocapSessions" component={MocapSessionsScreen} />
-            <Stack.Screen name="MocapPitchDetail" component={MocapPitchDetailScreen} />
-            <Stack.Screen name="ArmCare" component={ArmCareScreen} />
-            <Stack.Screen name="ArmCareHub" component={ArmCareHubScreen} />
-            <Stack.Screen name="ArmCareWizard" component={ArmCareWizardScreen} />
-            <Stack.Screen name="ForceProfile" component={ForceProfileScreen} />
-            <Stack.Screen name="TestDetail" component={TestDetailScreen} />
-            <Stack.Screen name="Resources" component={ResourcesScreen} />
-            <Stack.Screen name="Performance" component={PerformanceScreen} />
-            <Stack.Screen name="Profile" component={ProfileScreen} />
-            <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
-            <Stack.Screen name="Booking" component={BookingScreen} />
-            <Stack.Screen name="MembershipsPackages" component={MembershipsPackagesScreen} />
-            <Stack.Screen name="Billing" component={BillingScreen} />
-            <Stack.Screen name="PublicBooking" component={PublicBookingScreen} />
-            <Stack.Screen name="Waivers" component={WaiversScreen} />
             <Stack.Screen name="CoachDashboard" component={CoachDashboardScreen} />
-            <Stack.Screen name="CoachTools" component={CoachToolsScreen} />
-            <Stack.Screen name="CoachArmCareSearch" component={CoachArmCareSearchScreen} />
-            <Stack.Screen name="LeagueHub" component={LeagueHubScreen} />
-            <Stack.Screen name="LeagueSchedule" component={LeagueScheduleScreen} />
-            <Stack.Screen name="LeagueStats" component={LeagueStatsScreen} />
-            <Stack.Screen name="LeagueGameLog" component={LeagueGameLogScreen} />
-            <Stack.Screen name="LeagueGameDetail" component={LeagueGameDetailScreen} />
+            {/* Lazy screens — module is required on first navigation, not at startup */}
+            <Stack.Screen name="WorkoutLogger" getComponent={() => require('./screens/WorkoutLoggerScreen').default} />
+            <Stack.Screen name="CompletedWorkout" getComponent={() => require('./screens/CompletedWorkoutScreen').default} />
+            <Stack.Screen name="Workload" getComponent={() => require('./screens/WorkloadScreen').default} />
+            <Stack.Screen name="Messages" getComponent={() => require('./screens/MessagesScreen').default} />
+            <Stack.Screen name="Leaderboard" getComponent={() => require('./screens/LeaderboardScreen').default} />
+            <Stack.Screen name="HittingPerformance" getComponent={() => require('./screens/HittingPerformanceScreen').default} />
+            <Stack.Screen name="HittingSession" getComponent={() => require('./screens/HittingSessionScreen').default} />
+            <Stack.Screen name="HittingTrends" getComponent={() => require('./screens/HittingTrendsScreen').default} />
+            <Stack.Screen name="BattedBallTrends" getComponent={() => require('./screens/BattedBallTrendsScreen').default} />
+            <Stack.Screen name="PairedDataTrends" getComponent={() => require('./screens/PairedDataTrendsScreen').default} />
+            <Stack.Screen name="PitchingHub" getComponent={() => require('./screens/PitchingHubScreen').default} />
+            <Stack.Screen name="PitchingPerformance" getComponent={() => require('./screens/PitchingScreen').default} />
+            <Stack.Screen name="PitchingSession" getComponent={() => require('./screens/PitchingSessionScreen').default} />
+            <Stack.Screen name="PitchingTrends" getComponent={() => require('./screens/PitchingTrendsScreen').default} />
+            <Stack.Screen name="MocapSessions" getComponent={() => require('./screens/MocapSessionsScreen').default} />
+            <Stack.Screen name="MocapPitchDetail" getComponent={() => require('./screens/MocapPitchDetailScreen').default} />
+            <Stack.Screen name="ArmCare" getComponent={() => require('./screens/ArmCareScreen').default} />
+            <Stack.Screen name="ArmCareHub" getComponent={() => require('./screens/ArmCareHubScreen').default} />
+            <Stack.Screen name="ArmCareWizard" getComponent={() => require('./screens/ArmCareWizardScreen').default} />
+            <Stack.Screen name="ForceProfile" getComponent={() => require('./screens/ForceProfileScreen').default} />
+            <Stack.Screen name="TestDetail" getComponent={() => require('./screens/TestDetailScreen').default} />
+            <Stack.Screen name="Resources" getComponent={() => require('./screens/ResourcesScreen').default} />
+            <Stack.Screen name="Performance" getComponent={() => require('./screens/PerformanceScreen').default} />
+            <Stack.Screen name="Profile" getComponent={() => require('./screens/ProfileScreen').default} />
+            <Stack.Screen name="NotificationSettings" getComponent={() => require('./screens/NotificationSettingsScreen').default} />
+            <Stack.Screen name="Booking" getComponent={() => require('./screens/BookingScreen').default} />
+            <Stack.Screen name="MembershipsPackages" getComponent={() => require('./screens/MembershipsPackagesScreen').default} />
+            <Stack.Screen name="Billing" getComponent={() => require('./screens/BillingScreen').default} />
+            <Stack.Screen name="PublicBooking" getComponent={() => require('./screens/PublicBookingScreen').default} />
+            <Stack.Screen name="Waivers" getComponent={() => require('./screens/WaiversScreen').default} />
+            <Stack.Screen name="CoachTools" getComponent={() => require('./screens/CoachToolsScreen').default} />
+            <Stack.Screen name="CoachArmCareSearch" getComponent={() => require('./screens/CoachArmCareSearchScreen').default} />
+            <Stack.Screen name="LeagueHub" getComponent={() => require('./screens/LeagueHubScreen').default} />
+            <Stack.Screen name="LeagueSchedule" getComponent={() => require('./screens/LeagueScheduleScreen').default} />
+            <Stack.Screen name="LeagueStats" getComponent={() => require('./screens/LeagueStatsScreen').default} />
+            <Stack.Screen name="LeagueGameLog" getComponent={() => require('./screens/LeagueGameLogScreen').default} />
+            <Stack.Screen name="LeagueGameDetail" getComponent={() => require('./screens/LeagueGameDetailScreen').default} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>
