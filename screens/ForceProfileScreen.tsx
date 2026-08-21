@@ -261,7 +261,9 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       }
 
       const metrics = compositeConfig.metrics || [];
-      const percentiles: Array<{
+      const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
+
+      type PercRow = {
         name: string;
         percentile: number;
         value: number;
@@ -269,61 +271,77 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         metric: string;
         date: string;
         previous?: { percentile: number; value: number; date: string };
-      }> = [];
+      };
+      const percentiles: PercRow[] = [];
+
+      // BATCHED: one query for every test type's snapshots (was one query per
+      // metric), grouped by type in memory — latest = [0], previous = [1], same
+      // as the old per-metric .limit(2). Mirrors DashboardScreen.fetchForceProfile.
+      const { data: allPercentiles } = await supabase
+        .from('force_plate_percentiles')
+        .select('test_id, test_date, test_type, percentiles')
+        .eq('athlete_id', athleteId)
+        .in('test_type', uniqueTestTypes)
+        .order('test_date', { ascending: false });
+
+      const byType: Record<string, any[]> = {};
+      for (const p of allPercentiles || []) {
+        (byType[p.test_type] ||= []).push(p);
+      }
+
+      // Plan the current + previous raw-value lookups, then fetch them all in
+      // parallel (was ~2-3 serial round-trips per metric = up to ~18 serial).
+      const plan: Array<{ metricSpec: any; current: any; metricPercentile: number; prev?: any; prevPercentile?: number }> = [];
+      const rawJobs = new Map<string, { test_type: string; test_id: string; metric: string }>();
+      const jobKey = (test_id: string, metric: string) => `${test_id}:${metric}`;
 
       for (const metricSpec of metrics) {
-        const { data: currentData } = await supabase
-          .from('force_plate_percentiles')
-          .select('test_id, test_date, percentiles')
-          .eq('athlete_id', athleteId)
-          .eq('test_type', metricSpec.test_type)
-          .order('test_date', { ascending: false })
-          .limit(2);
-
-        if (!currentData || currentData.length === 0) continue;
-
-        const currentSnapshot = currentData[0];
-        const metricPercentile = currentSnapshot.percentiles?.[metricSpec.metric];
-
+        const snaps = byType[metricSpec.test_type];
+        if (!snaps || snaps.length === 0) continue;
+        const current = snaps[0];
+        const metricPercentile = current.percentiles?.[metricSpec.metric];
         if (typeof metricPercentile !== 'number' || isNaN(metricPercentile)) continue;
 
-        let rawValue = 0;
-        const { data: testData } = await supabase
-          .from(`${metricSpec.test_type}_tests`)
-          .select(metricSpec.metric)
-          .eq('test_id', currentSnapshot.test_id)
-          .single();
+        rawJobs.set(jobKey(current.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: current.test_id, metric: metricSpec.metric });
 
-        if (testData && testData[metricSpec.metric] !== undefined) {
-          rawValue = Number(testData[metricSpec.metric]) || 0;
+        const prev = snaps[1];
+        const prevPercentile = prev?.percentiles?.[metricSpec.metric];
+        if (prev && typeof prevPercentile === 'number') {
+          rawJobs.set(jobKey(prev.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: prev.test_id, metric: metricSpec.metric });
+          plan.push({ metricSpec, current, metricPercentile, prev, prevPercentile });
+        } else {
+          plan.push({ metricSpec, current, metricPercentile });
         }
+      }
 
-        let previous = undefined;
-        if (currentData.length > 1) {
-          const prevSnapshot = currentData[1];
-          const prevPercentile = prevSnapshot.percentiles?.[metricSpec.metric];
-          if (typeof prevPercentile === 'number') {
-            const { data: prevTestData } = await supabase
-              .from(`${metricSpec.test_type}_tests`)
-              .select(metricSpec.metric)
-              .eq('test_id', prevSnapshot.test_id)
-              .single();
+      const jobs = Array.from(rawJobs.entries());
+      const rawResults = await Promise.all(
+        jobs.map(([, j]) =>
+          supabase.from(`${j.test_type}_tests`).select(j.metric).eq('test_id', j.test_id).single()
+        )
+      );
+      const rawByKey = new Map<string, number>();
+      jobs.forEach(([key, j], i) => {
+        const d = rawResults[i].data as any;
+        rawByKey.set(key, d && d[j.metric] !== undefined ? Number(d[j.metric]) || 0 : 0);
+      });
 
-            previous = {
-              percentile: prevPercentile,
-              value: Number(prevTestData?.[metricSpec.metric]) || 0,
-              date: prevSnapshot.test_date,
-            };
-          }
+      for (const { metricSpec, current, metricPercentile, prev, prevPercentile } of plan) {
+        let previous: PercRow['previous'] = undefined;
+        if (prev && typeof prevPercentile === 'number') {
+          previous = {
+            percentile: prevPercentile,
+            value: rawByKey.get(jobKey(prev.test_id, metricSpec.metric)) ?? 0,
+            date: prev.test_date,
+          };
         }
-
         percentiles.push({
           name: getMetricDisplayName(metricSpec.test_type, metricSpec.metric),
           percentile: Math.round(metricPercentile),
-          value: rawValue,
+          value: rawByKey.get(jobKey(current.test_id, metricSpec.metric)) ?? 0,
           test_type: metricSpec.test_type,
           metric: metricSpec.metric,
-          date: currentSnapshot.test_date,
+          date: current.test_date,
           previous,
         });
       }

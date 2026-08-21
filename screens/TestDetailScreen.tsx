@@ -149,10 +149,11 @@ export default function TestDetailScreen({ route, navigation }: any) {
 
       setCompositeMetrics(primaryMetrics);
 
-      // Get all percentile snapshots for this test type
+      // Get all percentile snapshots for this test type (only the columns used
+      // below — was select('*') on a wide snapshot row).
       const { data: snapshots, error: snapshotsError } = await supabase
         .from('force_plate_percentiles')
-        .select('*')
+        .select('test_id, test_date, percentiles, sample_sizes')
         .eq('athlete_id', athleteId)
         .eq('test_type', testTypeLower)
         .order('test_date', { ascending: true });
