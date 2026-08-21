@@ -19,6 +19,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase, recreateSupabaseClient } from '../lib/supabase';
+import { loadForceProfileMetrics } from '../lib/force-profile';
 import { performLogout } from '../lib/logout';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1021,119 +1022,24 @@ export default function DashboardScreen({ navigation }: any) {
       return;
     }
 
-    // Get the org's default composite config (matches web app logic)
-    // First try default, then fall back to any config for the org
-    let { data: compositeConfig } = await supabase
-      .from('composite_score_configs')
-      .select('*')
-      .eq('org_id', orgId)
-      .eq('is_default', true)
-      .limit(1)
-      .maybeSingle();
+    // Shared force-profile loader (config + batched percentiles + raw values).
+    const { metrics: fmetrics } = await loadForceProfileMetrics(supabase, athleteIdParam, orgId, {});
 
-    // If no default, try any config for this org
-    if (!compositeConfig) {
-      const { data: anyConfig } = await supabase
-        .from('composite_score_configs')
-        .select('*')
-        .eq('org_id', orgId)
-        .limit(1)
-        .maybeSingle();
-      compositeConfig = anyConfig;
-    }
-
-    // If still no config, use hardcoded default (same as seed script)
-    if (!compositeConfig) {
-      compositeConfig = {
-        name: 'Overall Athleticism',
-        metrics: [
-          { test_type: 'imtp', metric: 'net_peak_vertical_force_trial_value' },
-          { test_type: 'imtp', metric: 'relative_strength_trial_value' },
-          { test_type: 'sj', metric: 'peak_takeoff_power_trial_value' },
-          { test_type: 'cmj', metric: 'bodymass_relative_takeoff_power_trial_value' },
-          { test_type: 'ppu', metric: 'peak_takeoff_force_trial_value' },
-          { test_type: 'hj', metric: 'hop_mean_rsi_trial_value' },
-        ],
-      };
-    }
-
-    // Calculate composite score from force_plate_percentiles (matches web app calculateCompositeScore)
-    const metrics = compositeConfig.metrics || [];
-    const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
-
-    // BATCHED: Fetch ALL percentiles in one query instead of 6 sequential queries
-    const { data: allPercentiles } = await supabase
-      .from('force_plate_percentiles')
-      .select('test_id, test_date, test_type, percentiles')
-      .eq('athlete_id', athleteIdParam)
-      .in('test_type', uniqueTestTypes)
-      .order('test_date', { ascending: false });
-
-    if (!allPercentiles || allPercentiles.length === 0) {
+    if (fmetrics.length === 0) {
       setValdProfileId(null);
       setForceProfile(null);
       return;
     }
 
-    // Pick latest entry per test_type in-memory (already sorted by test_date DESC)
-    const latestByType: Record<string, any> = {};
-    for (const p of allPercentiles) {
-      if (!latestByType[p.test_type]) {
-        latestByType[p.test_type] = p;
-      }
-    }
-
-    // Find metrics that have valid percentiles
-    const validMetrics: Array<{ metricSpec: any; percentileData: any; metricPercentile: number }> = [];
-    for (const metricSpec of metrics) {
-      const percentileData = latestByType[metricSpec.test_type];
-      if (percentileData?.percentiles) {
-        const metricPercentile = percentileData.percentiles[metricSpec.metric];
-        if (typeof metricPercentile === 'number' && !isNaN(metricPercentile)) {
-          validMetrics.push({ metricSpec, percentileData, metricPercentile });
-        }
-      }
-    }
-
-    if (validMetrics.length === 0) {
-      setValdProfileId(null);
-      setForceProfile(null);
-      return;
-    }
-
-    // BATCHED: Fetch ALL raw values in parallel instead of 6 sequential queries
-    const rawValues = await Promise.all(
-      validMetrics.map(({ metricSpec, percentileData }) =>
-        supabase
-          .from(`${metricSpec.test_type}_tests`)
-          .select(metricSpec.metric)
-          .eq('test_id', percentileData.test_id)
-          .single()
-      )
-    );
-
-    // Build percentiles array
-    const percentiles: Array<{ name: string; percentile: number; value: number; test_type: string; metric: string }> = [];
-    for (let i = 0; i < validMetrics.length; i++) {
-      const { metricSpec, metricPercentile } = validMetrics[i];
-      const testData = rawValues[i].data;
-      const rawValue = (testData && testData[metricSpec.metric] !== undefined)
-        ? Number(testData[metricSpec.metric]) || 0
-        : 0;
-      percentiles.push({
-        name: getMetricDisplayName(metricSpec.test_type, metricSpec.metric),
-        percentile: Math.round(metricPercentile),
-        value: rawValue,
-        test_type: metricSpec.test_type,
-        metric: metricSpec.metric,
-      });
-    }
-
-    if (percentiles.length === 0) {
-      setValdProfileId(null);
-      setForceProfile(null);
-      return;
-    }
+    // Stored shape is name/percentile/value/test_type/metric (unchanged). Display
+    // name uses this screen's own label map (kept local — see force-profile.ts).
+    const percentiles = fmetrics.map((m) => ({
+      name: getMetricDisplayName(m.test_type, m.metric),
+      percentile: m.percentile,
+      value: m.value,
+      test_type: m.test_type,
+      metric: m.metric,
+    }));
 
     // Calculate composite as average of percentiles (matches web app)
     const compositeScore = Math.round(

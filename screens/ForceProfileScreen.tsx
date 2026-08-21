@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Circle, Line, Path, Text as SvgText, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { loadForceProfileMetrics } from '../lib/force-profile';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
@@ -51,18 +52,6 @@ const METRIC_DISPLAY_MAP: Record<string, { displayName: string; unit: string }> 
   'cmj|bodymass_relative_takeoff_power_trial_value': { displayName: 'CMJ Power/BW', unit: 'W/kg' },
   'ppu|peak_takeoff_force_trial_value': { displayName: 'PPU Force', unit: 'N' },
   'hj|hop_mean_rsi_trial_value': { displayName: 'HJ RSI', unit: '' },
-};
-
-// Hardcoded default config
-const DEFAULT_COMPOSITE_CONFIG = {
-  metrics: [
-    { test_type: 'imtp', metric: 'net_peak_vertical_force_trial_value', weight: 1 },
-    { test_type: 'imtp', metric: 'relative_strength_trial_value', weight: 1 },
-    { test_type: 'sj', metric: 'peak_takeoff_power_trial_value', weight: 1 },
-    { test_type: 'cmj', metric: 'bodymass_relative_takeoff_power_trial_value', weight: 1 },
-    { test_type: 'ppu', metric: 'peak_takeoff_force_trial_value', weight: 1 },
-    { test_type: 'hj', metric: 'hop_mean_rsi_trial_value', weight: 1 },
-  ],
 };
 
 // Zone helpers
@@ -237,114 +226,14 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         return;
       }
 
-      // Get composite config
-      let { data: compositeConfig } = await supabase
-        .from('composite_score_configs')
-        .select('*')
-        .eq('org_id', athlete.org_id)
-        .eq('is_default', true)
-        .limit(1)
-        .maybeSingle();
-
-      if (!compositeConfig) {
-        const { data: anyConfig } = await supabase
-          .from('composite_score_configs')
-          .select('*')
-          .eq('org_id', athlete.org_id)
-          .limit(1)
-          .maybeSingle();
-        compositeConfig = anyConfig;
-      }
-
-      if (!compositeConfig) {
-        compositeConfig = DEFAULT_COMPOSITE_CONFIG;
-      }
-
-      const metrics = compositeConfig.metrics || [];
-      const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
-
-      type PercRow = {
-        name: string;
-        percentile: number;
-        value: number;
-        test_type: string;
-        metric: string;
-        date: string;
-        previous?: { percentile: number; value: number; date: string };
-      };
-      const percentiles: PercRow[] = [];
-
-      // BATCHED: one query for every test type's snapshots (was one query per
-      // metric), grouped by type in memory — latest = [0], previous = [1], same
-      // as the old per-metric .limit(2). Mirrors DashboardScreen.fetchForceProfile.
-      const { data: allPercentiles } = await supabase
-        .from('force_plate_percentiles')
-        .select('test_id, test_date, test_type, percentiles')
-        .eq('athlete_id', athleteId)
-        .in('test_type', uniqueTestTypes)
-        .order('test_date', { ascending: false });
-
-      const byType: Record<string, any[]> = {};
-      for (const p of allPercentiles || []) {
-        (byType[p.test_type] ||= []).push(p);
-      }
-
-      // Plan the current + previous raw-value lookups, then fetch them all in
-      // parallel (was ~2-3 serial round-trips per metric = up to ~18 serial).
-      const plan: Array<{ metricSpec: any; current: any; metricPercentile: number; prev?: any; prevPercentile?: number }> = [];
-      const rawJobs = new Map<string, { test_type: string; test_id: string; metric: string }>();
-      const jobKey = (test_id: string, metric: string) => `${test_id}:${metric}`;
-
-      for (const metricSpec of metrics) {
-        const snaps = byType[metricSpec.test_type];
-        if (!snaps || snaps.length === 0) continue;
-        const current = snaps[0];
-        const metricPercentile = current.percentiles?.[metricSpec.metric];
-        if (typeof metricPercentile !== 'number' || isNaN(metricPercentile)) continue;
-
-        rawJobs.set(jobKey(current.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: current.test_id, metric: metricSpec.metric });
-
-        const prev = snaps[1];
-        const prevPercentile = prev?.percentiles?.[metricSpec.metric];
-        if (prev && typeof prevPercentile === 'number') {
-          rawJobs.set(jobKey(prev.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: prev.test_id, metric: metricSpec.metric });
-          plan.push({ metricSpec, current, metricPercentile, prev, prevPercentile });
-        } else {
-          plan.push({ metricSpec, current, metricPercentile });
-        }
-      }
-
-      const jobs = Array.from(rawJobs.entries());
-      const rawResults = await Promise.all(
-        jobs.map(([, j]) =>
-          supabase.from(`${j.test_type}_tests`).select(j.metric).eq('test_id', j.test_id).single()
-        )
+      // Shared force-profile loader (config + batched percentiles + raw values).
+      // includePrevious: this screen renders the previous snapshot on the radar.
+      const { metrics: percentiles, requestedCount } = await loadForceProfileMetrics(
+        supabase,
+        athleteId,
+        athlete.org_id,
+        { includePrevious: true },
       );
-      const rawByKey = new Map<string, number>();
-      jobs.forEach(([key, j], i) => {
-        const d = rawResults[i].data as any;
-        rawByKey.set(key, d && d[j.metric] !== undefined ? Number(d[j.metric]) || 0 : 0);
-      });
-
-      for (const { metricSpec, current, metricPercentile, prev, prevPercentile } of plan) {
-        let previous: PercRow['previous'] = undefined;
-        if (prev && typeof prevPercentile === 'number') {
-          previous = {
-            percentile: prevPercentile,
-            value: rawByKey.get(jobKey(prev.test_id, metricSpec.metric)) ?? 0,
-            date: prev.test_date,
-          };
-        }
-        percentiles.push({
-          name: getMetricDisplayName(metricSpec.test_type, metricSpec.metric),
-          percentile: Math.round(metricPercentile),
-          value: rawByKey.get(jobKey(current.test_id, metricSpec.metric)) ?? 0,
-          test_type: metricSpec.test_type,
-          metric: metricSpec.metric,
-          date: current.test_date,
-          previous,
-        });
-      }
 
       if (percentiles.length === 0) {
         setRadarData([]);
@@ -355,7 +244,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
 
       const data: RadarDataPoint[] = percentiles.map((p) => ({
         name: p.metric,
-        displayName: p.name,
+        displayName: getMetricDisplayName(p.test_type, p.metric),
         unit: METRIC_DISPLAY_MAP[`${p.test_type}|${p.metric}`]?.unit || '',
         testType: p.test_type,
         current: { percentile: p.percentile, value: p.value, date: p.date },
@@ -363,7 +252,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       }));
 
       setRadarData(data);
-      setMetricsInfo({ included: percentiles.length, requested: metrics.length });
+      setMetricsInfo({ included: percentiles.length, requested: requestedCount });
 
       const avgPercentile = Math.round(
         (percentiles.reduce((sum, p) => sum + p.percentile, 0) / percentiles.length) * 10
