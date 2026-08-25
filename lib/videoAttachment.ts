@@ -51,8 +51,12 @@ async function fileSize(uri: string): Promise<number> {
  * Deliberately swallows its own errors: a cleanup failure must never surface
  * as a send failure, on a send that otherwise succeeded or one that already
  * failed for its own reason.
+ *
+ * Exported so screens/MessagesScreen.tsx's `prepareForUpload` can apply the
+ * same cleanup to the throwaway JPEG it creates when converting a HEIC/HEIF
+ * pick — that path leaked one such file per HEIC send before it reused this.
  */
-async function safeDeleteFile(uri: string): Promise<void> {
+export async function safeDeleteFile(uri: string): Promise<void> {
   try {
     await FileSystem.deleteAsync(uri, { idempotent: true });
   } catch (error) {

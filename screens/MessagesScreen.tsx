@@ -39,6 +39,7 @@ import {
   MAX_VIDEO_DURATION_SECONDS,
   VideoTooLongError,
   VideoTooLargeError,
+  safeDeleteFile,
 } from '../lib/videoAttachment';
 import { VideoAttachmentPreview } from '../components/VideoAttachmentPreview';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
@@ -105,13 +106,9 @@ interface Message {
 export default function MessagesScreen({ navigation, route }: any) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  // conversationId from a tapped message-notification's route params. Read
-  // once here; the effect below waits for `conversations` to be populated
-  // (cold start races this screen's mount against the conversation fetch)
-  // and only auto-selects a given id once, so it can't yank the user back
-  // to that thread after they've since picked a different one.
+  // conversationId from a tapped message-notification's route params. See
+  // the auto-open effect below for how this is consumed and cleared.
   const routeConversationId = (route?.params as { conversationId?: string } | undefined)?.conversationId;
-  const autoOpenedConversationIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -160,6 +157,11 @@ export default function MessagesScreen({ navigation, route }: any) {
   // `openVideoAttachment` below and the Task 14 carry-forward ruling.
   const [playingVideoUri, setPlayingVideoUri] = useState<string | null>(null);
   const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
+  // True once `authHeaders` has been populated at least once. getAuthHeaders()
+  // is async, so the very first render always has `authHeaders = {}` — this
+  // flag lets the render below hold off issuing an attachment request with
+  // an empty header object instead of firing one unauthenticated on mount.
+  const [authHeadersReady, setAuthHeadersReady] = useState(false);
 
   // Load current user and conversations
   useEffect(() => {
@@ -170,25 +172,57 @@ export default function MessagesScreen({ navigation, route }: any) {
   // start this screen mounts before `fetchConversations` resolves, so
   // `conversations` starts empty — this effect re-runs as that list updates
   // and only proceeds once the target conversation is actually in it,
-  // instead of silently dropping the navigation intent. Guarded by a ref so
-  // a later re-fetch (new message, realtime update) can't re-select the
-  // notification's conversation out from under a user who has since picked
-  // a different one.
+  // instead of silently dropping the navigation intent. Once the target is
+  // opened, the route param is cleared (`conversationId: undefined`) so a
+  // REPEAT notification for the same conversation — tap it, back out,
+  // receive another message there, tap again — arrives as a genuine params
+  // change (undefined -> id) instead of matching an "already opened this id"
+  // ref and silently doing nothing. That makes the id-matching ref this
+  // effect used to carry unnecessary: it's removed, since clearing the param
+  // is what now prevents an unrelated conversations-list refresh (a new
+  // message, a realtime update) from re-selecting this conversation out from
+  // under a user who has since picked a different one — the param is simply
+  // gone by then.
   useEffect(() => {
     if (!routeConversationId) return;
-    if (autoOpenedConversationIdRef.current === routeConversationId) return;
     const target = conversations.find(c => c.id === routeConversationId);
     if (!target) return;
-    autoOpenedConversationIdRef.current = routeConversationId;
-    selectConversation(target);
+    selectConversation(target).then(() => {
+      navigation.setParams({ conversationId: undefined });
+    });
   }, [routeConversationId, conversations]);
 
-  // Needed so <Image> can authenticate its request to the attachment
-  // endpoint (it carries no cookie session on this app).
+  // Needed so <Image> (and, via VideoAttachmentPreview, video posters) can
+  // authenticate requests to the attachment endpoint — this app carries no
+  // cookie session. Supabase access tokens last ~1 hour and refresh in the
+  // background; without also listening for that refresh, every attachment
+  // request 401s an hour into a session with no recovery short of
+  // remounting this screen.
   useEffect(() => {
-    getAuthHeaders()
-      .then(setAuthHeaders)
-      .catch((error) => console.error('Could not load auth headers:', error));
+    let cancelled = false;
+
+    function refreshAuthHeaders() {
+      getAuthHeaders()
+        .then((headers) => {
+          if (cancelled) return;
+          setAuthHeaders(headers);
+          setAuthHeadersReady(true);
+        })
+        .catch((error) => console.error('Could not load auth headers:', error));
+    }
+
+    refreshAuthHeaders();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
+        refreshAuthHeaders();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   async function loadUserAndConversations() {
@@ -499,7 +533,15 @@ export default function MessagesScreen({ navigation, route }: any) {
     const messageContent = newMessage.trim();
     const currentAttachments = [...attachments];
     setNewMessage('');
-    setAttachments([]);
+    // Attachments deliberately stay mounted (with their thumbnails and, as
+    // the upload loop below progresses, a real per-attachment progress bar)
+    // for the whole send. This used to clear here, which unmounted the
+    // entire preview strip — the array gating it was empty for the whole
+    // upload — so the progress bar this feature exists to show never drew;
+    // the user just saw a spinner in the send button for a minute-long
+    // video upload. They're removed from view only once the send fully
+    // succeeds, below. On failure they were never cleared in the first
+    // place, so there is nothing to restore.
     setUploadErrors({});
 
     try {
@@ -539,7 +581,17 @@ export default function MessagesScreen({ navigation, route }: any) {
             }
           } else {
             const prepared = await prepareForUpload(attachment);
-            uploaded = await uploadAttachment(selectedConversation.id, prepared, onProgress);
+            try {
+              uploaded = await uploadAttachment(selectedConversation.id, prepared, onProgress);
+            } finally {
+              // Delete the throwaway HEIC->JPEG conversion whether the
+              // upload above succeeded or threw, exactly as the video path
+              // (uploadVideoAttachment) cleans up its own compressed copy.
+              // Never touches attachment.uri, the user's original asset.
+              if (prepared.tempUri) {
+                await safeDeleteFile(prepared.tempUri);
+              }
+            }
           }
           uploadedAttachmentsCacheRef.current[attachment.uri] = uploaded;
           uploadedAttachments.push(uploaded);
@@ -596,13 +648,21 @@ export default function MessagesScreen({ navigation, route }: any) {
         messagesEndRef.current?.scrollToEnd({ animated: true });
       }, 100);
 
+      // The message is durably sent — now, and only now, drop this batch's
+      // attachments from the composer strip. Filtered by uri rather than a
+      // blanket setAttachments([]) so an attachment the user started picking
+      // while this send was still in flight isn't wiped out too.
+      const sentUris = new Set(currentAttachments.map(a => a.uri));
+      setAttachments(prev => prev.filter(a => !sentUris.has(a.uri)));
       setUploadProgress({});
     } catch (error) {
       console.error('Error sending message:', error);
       setNewMessage(messageContent);
-      // Put the attachments back so the user can retry without re-picking,
-      // whether the failure was an upload or the send call itself.
-      setAttachments(currentAttachments);
+      // Attachments were never cleared above (see the comment where this
+      // function captures `currentAttachments`), so they're already sitting
+      // in the composer ready for a retry — nothing to restore here. Calling
+      // setAttachments(currentAttachments) again would be a redundant
+      // double-restore that could also clobber an attachment added mid-send.
       // Surface the real error (expired session, rejected mime, locked
       // conversation, network drop, ...) instead of one indistinguishable
       // generic message — this is the only diagnostic a device tester gets.
@@ -962,9 +1022,16 @@ export default function MessagesScreen({ navigation, route }: any) {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images', 'videos'],
         quality: 0.8,
-        // Gives the native iOS trim UI, so an over-length clip can be
-        // trimmed in place rather than rejected outright.
-        allowsEditing: true,
+        // `allowsEditing` is a single option for this whole call, not scoped
+        // to the media type the user ends up picking — with mediaTypes
+        // covering both images and videos, turning it on forced every picked
+        // PHOTO through iOS's square-crop screen too (a regression from
+        // before this branch) and disabled multi-select. Dropped it in favor
+        // of `videoMaxDuration` below plus `prepareVideo`'s VideoTooLongError
+        // guard (lib/videoAttachment.ts): an over-length library video is
+        // rejected with a clear error instead of silently accepted, it just
+        // can't be trimmed in-picker anymore — the user has to pick a
+        // shorter clip or trim it in Photos first.
         videoMaxDuration: MAX_VIDEO_DURATION_SECONDS,
       });
 
@@ -1129,6 +1196,34 @@ export default function MessagesScreen({ navigation, route }: any) {
       }
     } else if (attachment.file_url) {
       setPlayingVideoUri(attachment.file_url);
+    } else {
+      // Neither field present — silently doing nothing here just looks like
+      // a broken tap to the user.
+      Alert.alert('Error', 'This video is not available.');
+    }
+  }
+
+  // Opens a document/file attachment (PDF, doc, csv, ...). Mirrors
+  // openVideoAttachment above: the server deliberately drops `file_url` for
+  // stored attachments (see lib/messaging/message-body.ts on the API side),
+  // so a stored document must be resolved to its signed URL first via
+  // `resolveAttachmentDirectUrl`; a legacy pre-migration attachment's public
+  // `file_url` needs no resolution and is used as-is.
+  async function openDocumentAttachment(attachment: { storage_path?: string; file_url?: string }) {
+    try {
+      const url = attachment.storage_path
+        ? await resolveAttachmentDirectUrl(attachment.storage_path)
+        : attachment.file_url;
+
+      if (!url) {
+        Alert.alert('Error', 'This file is not available.');
+        return;
+      }
+
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error('Could not open document attachment:', error);
+      Alert.alert('Error', 'Could not open this file. Please try again.');
     }
   }
 
@@ -1141,7 +1236,7 @@ export default function MessagesScreen({ navigation, route }: any) {
     name: string;
     type: string;
     size?: number;
-  }): Promise<LocalFile> {
+  }): Promise<LocalFile & { tempUri?: string }> {
     let mimeType = attachment.type;
     let fileName = attachment.name;
     let fileUri = attachment.uri;
@@ -1177,7 +1272,20 @@ export default function MessagesScreen({ navigation, route }: any) {
       throw new Error(`Could not determine file size for ${fileName}`);
     }
 
-    return { uri: fileUri, name: fileName, mimeType, size };
+    // `tempUri` is set only when this function created a NEW file on disk
+    // (the HEIC/HEIF -> JPEG conversion above) — never the user's original
+    // library asset at `attachment.uri`. The caller deletes it once the
+    // upload settles, the same way uploadVideoAttachment cleans up its own
+    // compressed copy. iOS shoots HEIC by default, so this is the common
+    // case for photo sends, not an edge one — leaving it unhandled leaked a
+    // full JPEG copy on disk for every HEIC picked.
+    return {
+      uri: fileUri,
+      name: fileName,
+      mimeType,
+      size,
+      tempUri: fileUri !== attachment.uri ? fileUri : undefined,
+    };
   }
 
   // Format file size
@@ -1608,26 +1716,43 @@ export default function MessagesScreen({ navigation, route }: any) {
                                       : attachment.file_url ?? null
                                   );
                                 } else if (attachment.file_type !== 'video') {
-                                  Linking.openURL(attachment.file_url ?? '');
+                                  openDocumentAttachment(attachment);
                                 }
                                 // video: no-op — VideoAttachmentPreview handles its own press.
                               }}
                             >
                               {attachment.file_type === 'image' ? (
-                                <Image
-                                  source={{
-                                    uri: attachment.storage_path
-                                      ? attachmentUrl(attachment.storage_path)
-                                      : attachment.file_url ?? '',
-                                    headers: authHeaders,
-                                  }}
-                                  style={styles.attachmentImage}
-                                  resizeMode="cover"
-                                />
+                                attachment.storage_path && !authHeadersReady ? (
+                                  // Auth headers haven't loaded yet — this
+                                  // request needs them (attachmentUrl() hits
+                                  // the authorizing endpoint), so hold off
+                                  // rather than firing it unauthenticated.
+                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
+                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+                                  </View>
+                                ) : (
+                                  <Image
+                                    source={{
+                                      uri: attachment.storage_path
+                                        ? attachmentUrl(attachment.storage_path)
+                                        : attachment.file_url ?? '',
+                                      headers: authHeaders,
+                                    }}
+                                    style={styles.attachmentImage}
+                                    resizeMode="cover"
+                                  />
+                                )
                               ) : attachment.file_type === 'video' ? (
                                 (attachment.mime_type || '').includes('youtube') ||
                                 (attachment.mime_type || '').includes('vimeo') ? (
                                   <LinkEmbed url={attachment.file_url ?? ''} />
+                                ) : attachment.thumbnail_path && !authHeadersReady ? (
+                                  // Same reasoning as the image case above —
+                                  // the poster is fetched through the same
+                                  // authorizing endpoint.
+                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
+                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+                                  </View>
                                 ) : (
                                   <VideoAttachmentPreview
                                     attachment={attachment}
@@ -1692,26 +1817,43 @@ export default function MessagesScreen({ navigation, route }: any) {
                                       : attachment.file_url ?? null
                                   );
                                 } else if (attachment.file_type !== 'video') {
-                                  Linking.openURL(attachment.file_url ?? '');
+                                  openDocumentAttachment(attachment);
                                 }
                                 // video: no-op — VideoAttachmentPreview handles its own press.
                               }}
                             >
                               {attachment.file_type === 'image' ? (
-                                <Image
-                                  source={{
-                                    uri: attachment.storage_path
-                                      ? attachmentUrl(attachment.storage_path)
-                                      : attachment.file_url ?? '',
-                                    headers: authHeaders,
-                                  }}
-                                  style={styles.attachmentImage}
-                                  resizeMode="cover"
-                                />
+                                attachment.storage_path && !authHeadersReady ? (
+                                  // Auth headers haven't loaded yet — this
+                                  // request needs them (attachmentUrl() hits
+                                  // the authorizing endpoint), so hold off
+                                  // rather than firing it unauthenticated.
+                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
+                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+                                  </View>
+                                ) : (
+                                  <Image
+                                    source={{
+                                      uri: attachment.storage_path
+                                        ? attachmentUrl(attachment.storage_path)
+                                        : attachment.file_url ?? '',
+                                      headers: authHeaders,
+                                    }}
+                                    style={styles.attachmentImage}
+                                    resizeMode="cover"
+                                  />
+                                )
                               ) : attachment.file_type === 'video' ? (
                                 (attachment.mime_type || '').includes('youtube') ||
                                 (attachment.mime_type || '').includes('vimeo') ? (
                                   <LinkEmbed url={attachment.file_url ?? ''} />
+                                ) : attachment.thumbnail_path && !authHeadersReady ? (
+                                  // Same reasoning as the image case above —
+                                  // the poster is fetched through the same
+                                  // authorizing endpoint.
+                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
+                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+                                  </View>
                                 ) : (
                                   <VideoAttachmentPreview
                                     attachment={attachment}
@@ -1778,44 +1920,61 @@ export default function MessagesScreen({ navigation, route }: any) {
         {!isNotificationsChat && attachments.length > 0 && (
           <View style={styles.attachmentPreviewContainer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {attachments.map((attachment, index) => (
-                <View key={index} style={styles.attachmentPreviewItem}>
-                  {attachment.type.startsWith('image/') ? (
-                    <Image
-                      source={{ uri: attachment.uri }}
-                      style={styles.attachmentPreviewImage}
-                      resizeMode="cover"
-                    />
-                  ) : attachment.type.startsWith('video/') ? (
-                    <View style={styles.attachmentPreviewFile}>
-                      <Text style={styles.attachmentPreviewIcon}>🎬</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.attachmentPreviewFile}>
-                      <Text style={styles.attachmentPreviewIcon}>📎</Text>
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    style={styles.removeAttachmentButton}
-                    onPress={() => removeAttachment(index)}
+              {attachments.map((attachment, index) => {
+                const isUploadingThis = sending && uploadProgress[attachment.uri] !== undefined;
+                return (
+                  <View
+                    key={index}
+                    style={[styles.attachmentPreviewItem, sending && styles.attachmentPreviewItemSending]}
                   >
-                    <Text style={styles.removeAttachmentText}>×</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.attachmentPreviewName} numberOfLines={1}>
-                    {attachment.name}
-                  </Text>
-                  {uploadProgress[attachment.uri] !== undefined && uploadProgress[attachment.uri] < 100 && (
-                    <View style={styles.progressTrack}>
-                      <View style={[styles.progressFill, { width: `${uploadProgress[attachment.uri]}%` }]} />
-                    </View>
-                  )}
-                  {uploadErrors[attachment.uri] && (
-                    <Text style={styles.uploadError} numberOfLines={2}>
-                      {uploadErrors[attachment.uri]}
+                    {attachment.type.startsWith('image/') ? (
+                      <Image
+                        source={{ uri: attachment.uri }}
+                        style={styles.attachmentPreviewImage}
+                        resizeMode="cover"
+                      />
+                    ) : attachment.type.startsWith('video/') ? (
+                      <View style={styles.attachmentPreviewFile}>
+                        <Text style={styles.attachmentPreviewIcon}>🎬</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.attachmentPreviewFile}>
+                        <Text style={styles.attachmentPreviewIcon}>📎</Text>
+                      </View>
+                    )}
+                    {isUploadingThis && (
+                      <View style={styles.attachmentPreviewSendingOverlay}>
+                        <ActivityIndicator size="small" color="#fff" />
+                      </View>
+                    )}
+                    {/* Disabled while sending: this attachment is already
+                        captured in the send's own closure, so removing it
+                        from view here couldn't stop or change its upload —
+                        only confuse the user about what's actually in
+                        flight. */}
+                    <TouchableOpacity
+                      style={[styles.removeAttachmentButton, sending && styles.removeAttachmentButtonDisabled]}
+                      onPress={() => removeAttachment(index)}
+                      disabled={sending}
+                    >
+                      <Text style={styles.removeAttachmentText}>×</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.attachmentPreviewName} numberOfLines={1}>
+                      {attachment.name}
                     </Text>
-                  )}
-                </View>
-              ))}
+                    {uploadProgress[attachment.uri] !== undefined && uploadProgress[attachment.uri] < 100 && (
+                      <View style={styles.progressTrack}>
+                        <View style={[styles.progressFill, { width: `${uploadProgress[attachment.uri]}%` }]} />
+                      </View>
+                    )}
+                    {uploadErrors[attachment.uri] && (
+                      <Text style={styles.uploadError} numberOfLines={2}>
+                        {uploadErrors[attachment.uri]}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })}
             </ScrollView>
           </View>
         )}
@@ -2509,6 +2668,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 4,
   },
+  attachmentImagePending: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   videoAttachment: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2604,6 +2768,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: 80,
   },
+  // Applied while `sending` is true so the strip visibly reads as "in
+  // flight" for the whole upload, not just via the send-button spinner.
+  attachmentPreviewItemSending: {
+    opacity: 0.6,
+  },
   attachmentPreviewImage: {
     width: 60,
     height: 60,
@@ -2614,6 +2783,17 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 8,
     backgroundColor: 'rgba(255,255,255,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachmentPreviewSendingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.35)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2630,6 +2810,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF4444',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  removeAttachmentButtonDisabled: {
+    backgroundColor: 'rgba(255,68,68,0.4)',
   },
   removeAttachmentText: {
     color: '#FFFFFF',
