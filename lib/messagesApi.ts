@@ -12,6 +12,15 @@ import { supabase } from './supabase';
 // with a new File/Directory API; the old functions still type-check from the
 // root package (re-exported for back-compat) but throw at runtime. The classic
 // API we need here only works from the `/legacy` subpath.
+//
+// Do NOT "modernize" this import later without checking both of these first:
+//   - The new File/Directory API has no upload-with-progress equivalent at
+//     all. createUploadTask (via /legacy) is the only way to get progress
+//     callbacks, which is the entire point of this module.
+//   - The obvious replacement for reading bytes, `File.arrayBuffer()`, IS the
+//     whole-file-in-JS-heap pattern this module exists to remove — the one
+//     that crashed the app on video-sized attachments. Swapping to it would
+//     silently reintroduce that crash.
 import * as FileSystem from 'expo-file-system/legacy';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';

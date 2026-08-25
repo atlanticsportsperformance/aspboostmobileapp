@@ -115,6 +115,12 @@ export default function MessagesScreen({ navigation }: any) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+  // Successful uploads, keyed by the attachment's local `uri`. A partial
+  // failure (e.g. attachment 2 of 3 throws) must not re-upload attachment 1
+  // on retry — signUpload mints a fresh storage path every call, so a
+  // re-upload would orphan the first object. Cleared on send success, on
+  // attachment removal, and whenever the selected conversation changes.
+  const uploadedAttachmentsCacheRef = useRef<Record<string, OutgoingAttachment>>({});
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
 
   // Image viewer state
@@ -330,6 +336,13 @@ export default function MessagesScreen({ navigation }: any) {
   }
 
   // Setup realtime subscription for messages
+  // A cached upload belongs to one conversation's storage path; switching
+  // conversations invalidates it regardless of whether the attachment picker
+  // state also gets cleared.
+  useEffect(() => {
+    uploadedAttachmentsCacheRef.current = {};
+  }, [selectedConversation?.id]);
+
   useEffect(() => {
     if (!currentUser || !selectedConversation) return;
 
@@ -437,6 +450,15 @@ export default function MessagesScreen({ navigation }: any) {
       // video-sized file doesn't get materialized in the JS heap.
       const uploadedAttachments: OutgoingAttachment[] = [];
       for (const attachment of currentAttachments) {
+        // Reuse a prior successful upload on retry rather than re-uploading:
+        // signUpload mints a fresh storage path every call, so redoing an
+        // already-succeeded upload would leave the first object orphaned.
+        const cached = uploadedAttachmentsCacheRef.current[attachment.uri];
+        if (cached) {
+          uploadedAttachments.push(cached);
+          continue;
+        }
+
         try {
           const prepared = await prepareForUpload(attachment);
           const uploaded = await uploadAttachment(
@@ -444,6 +466,7 @@ export default function MessagesScreen({ navigation }: any) {
             prepared,
             (pct) => setUploadProgress((p) => ({ ...p, [attachment.uri]: pct }))
           );
+          uploadedAttachmentsCacheRef.current[attachment.uri] = uploaded;
           uploadedAttachments.push(uploaded);
         } catch (uploadError) {
           console.error('Error uploading attachment:', uploadError);
@@ -451,6 +474,13 @@ export default function MessagesScreen({ navigation }: any) {
             ...e,
             [attachment.uri]: uploadError instanceof Error ? uploadError.message : 'Upload failed',
           }));
+          // Don't leave a stale progress bar from this failed attempt sitting
+          // at whatever percentage it reached.
+          setUploadProgress((p) => {
+            const next = { ...p };
+            delete next[attachment.uri];
+            return next;
+          });
           throw uploadError;
         }
       }
@@ -459,6 +489,12 @@ export default function MessagesScreen({ navigation }: any) {
       // which the server now accepts — so email/push/in-app notifications
       // fire. The API route owns the conversation's updated_at bump.
       const data = await sendMessageApi(selectedConversation.id, messageContent, uploadedAttachments);
+
+      // The send succeeded, so every attachment in this batch is now
+      // durably referenced by the message — nothing left to reuse on retry.
+      for (const attachment of currentAttachments) {
+        delete uploadedAttachmentsCacheRef.current[attachment.uri];
+      }
 
       // Add message to local state
       if (data) {
@@ -484,7 +520,14 @@ export default function MessagesScreen({ navigation }: any) {
       // Put the attachments back so the user can retry without re-picking,
       // whether the failure was an upload or the send call itself.
       setAttachments(currentAttachments);
-      Alert.alert('Error', 'Failed to send message. Please try again.');
+      // Surface the real error (expired session, rejected mime, locked
+      // conversation, network drop, ...) instead of one indistinguishable
+      // generic message — this is the only diagnostic a device tester gets.
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to send message. Please try again.';
+      Alert.alert('Error', message);
     } finally {
       setSending(false);
       setUploading(false);
@@ -935,7 +978,13 @@ export default function MessagesScreen({ navigation }: any) {
 
   // Remove attachment
   function removeAttachment(index: number) {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
+    setAttachments(prev => {
+      const removed = prev[index];
+      if (removed) {
+        delete uploadedAttachmentsCacheRef.current[removed.uri];
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }
 
   // Prepares a picked file for upload: converts HEIC/HEIF to JPEG (Supabase
