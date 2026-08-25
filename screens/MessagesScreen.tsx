@@ -28,6 +28,9 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import {
   sendMessage as sendMessageApi,
   uploadAttachment,
+  getAuthHeaders,
+  attachmentUrl,
+  resolveAttachmentDirectUrl,
   type LocalFile,
   type OutgoingAttachment,
 } from '../lib/messagesApi';
@@ -37,6 +40,9 @@ import {
   VideoTooLongError,
   VideoTooLargeError,
 } from '../lib/videoAttachment';
+import { VideoAttachmentPreview } from '../components/VideoAttachmentPreview';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
+import { LinkEmbed } from '../components/LinkEmbed';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -82,11 +88,17 @@ interface Message {
   is_system_message?: boolean;
   system_message_type?: string;
   attachments?: Array<{
-    file_url: string;
+    // A stored file has storage_path and no file_url; an external link
+    // (pasted YouTube/Vimeo) has file_url and no storage_path. Exactly one is
+    // present — see lib/messaging/message-body.ts on the API side.
+    file_url?: string;
+    storage_path?: string;
     file_name: string;
     file_type: string;
     file_size: number;
     mime_type?: string;
+    thumbnail_path?: string;
+    duration_seconds?: number;
   }>;
 }
 
@@ -135,10 +147,24 @@ export default function MessagesScreen({ navigation }: any) {
 
   // Image viewer state
   const [viewingImage, setViewingImage] = useState<string | null>(null);
+  // Fullscreen video player state. `playingVideoUri` is always an
+  // already-playable URL (a resolved signed URL, or a legacy public
+  // file_url) — never the `/api/messages/attachments/...` endpoint URL. See
+  // `openVideoAttachment` below and the Task 14 carry-forward ruling.
+  const [playingVideoUri, setPlayingVideoUri] = useState<string | null>(null);
+  const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
 
   // Load current user and conversations
   useEffect(() => {
     loadUserAndConversations();
+  }, []);
+
+  // Needed so <Image> can authenticate its request to the attachment
+  // endpoint (it carries no cookie session on this app).
+  useEffect(() => {
+    getAuthHeaders()
+      .then(setAuthHeaders)
+      .catch((error) => console.error('Could not load auth headers:', error));
   }, []);
 
   async function loadUserAndConversations() {
@@ -1060,6 +1086,28 @@ export default function MessagesScreen({ navigation }: any) {
     });
   }
 
+  // Opens a video attachment in the fullscreen player. Per the Task 14
+  // carry-forward ruling, expo-video's player is not handed the
+  // `/api/messages/attachments/...` endpoint URL directly — it has no cookie
+  // session and isn't trusted to carry an Authorization header through that
+  // endpoint's 302 redirect to Supabase Storage. A stored attachment is
+  // resolved to its signed URL first, here, with the header attached to
+  // THIS request; a legacy pre-migration attachment's public file_url needs
+  // no resolution and is used as-is.
+  async function openVideoAttachment(attachment: { storage_path?: string; file_url?: string }) {
+    if (attachment.storage_path) {
+      try {
+        const resolved = await resolveAttachmentDirectUrl(attachment.storage_path);
+        setPlayingVideoUri(resolved);
+      } catch (error) {
+        console.error('Could not resolve video URL:', error);
+        Alert.alert('Error', 'Could not load this video. Please try again.');
+      }
+    } else if (attachment.file_url) {
+      setPlayingVideoUri(attachment.file_url);
+    }
+  }
+
   // Prepares a picked file for upload: converts HEIC/HEIF to JPEG (Supabase
   // Storage and most viewers don't render HEIC) and guarantees `size` is
   // populated, since signUpload rejects a zero/missing size_bytes. The actual
@@ -1530,25 +1578,39 @@ export default function MessagesScreen({ navigation }: any) {
                               key={idx}
                               onPress={() => {
                                 if (attachment.file_type === 'image') {
-                                  setViewingImage(attachment.file_url);
-                                } else {
-                                  Linking.openURL(attachment.file_url);
+                                  setViewingImage(
+                                    attachment.storage_path
+                                      ? attachmentUrl(attachment.storage_path)
+                                      : attachment.file_url ?? null
+                                  );
+                                } else if (attachment.file_type !== 'video') {
+                                  Linking.openURL(attachment.file_url ?? '');
                                 }
+                                // video: no-op — VideoAttachmentPreview handles its own press.
                               }}
                             >
                               {attachment.file_type === 'image' ? (
                                 <Image
-                                  source={{ uri: attachment.file_url }}
+                                  source={{
+                                    uri: attachment.storage_path
+                                      ? attachmentUrl(attachment.storage_path)
+                                      : attachment.file_url ?? '',
+                                    headers: authHeaders,
+                                  }}
                                   style={styles.attachmentImage}
                                   resizeMode="cover"
                                 />
                               ) : attachment.file_type === 'video' ? (
-                                <View style={styles.videoAttachment}>
-                                  <Text style={styles.videoIcon}>🎬</Text>
-                                  <Text style={styles.attachmentFileName} numberOfLines={1}>
-                                    {attachment.file_name}
-                                  </Text>
-                                </View>
+                                (attachment.mime_type || '').includes('youtube') ||
+                                (attachment.mime_type || '').includes('vimeo') ? (
+                                  <LinkEmbed url={attachment.file_url ?? ''} />
+                                ) : (
+                                  <VideoAttachmentPreview
+                                    attachment={attachment}
+                                    authHeaders={authHeaders}
+                                    onPress={() => openVideoAttachment(attachment)}
+                                  />
+                                )
                               ) : (
                                 <View style={styles.fileAttachment}>
                                   <Text style={styles.fileIcon}>📎</Text>
@@ -1600,25 +1662,39 @@ export default function MessagesScreen({ navigation }: any) {
                               key={idx}
                               onPress={() => {
                                 if (attachment.file_type === 'image') {
-                                  setViewingImage(attachment.file_url);
-                                } else {
-                                  Linking.openURL(attachment.file_url);
+                                  setViewingImage(
+                                    attachment.storage_path
+                                      ? attachmentUrl(attachment.storage_path)
+                                      : attachment.file_url ?? null
+                                  );
+                                } else if (attachment.file_type !== 'video') {
+                                  Linking.openURL(attachment.file_url ?? '');
                                 }
+                                // video: no-op — VideoAttachmentPreview handles its own press.
                               }}
                             >
                               {attachment.file_type === 'image' ? (
                                 <Image
-                                  source={{ uri: attachment.file_url }}
+                                  source={{
+                                    uri: attachment.storage_path
+                                      ? attachmentUrl(attachment.storage_path)
+                                      : attachment.file_url ?? '',
+                                    headers: authHeaders,
+                                  }}
                                   style={styles.attachmentImage}
                                   resizeMode="cover"
                                 />
                               ) : attachment.file_type === 'video' ? (
-                                <View style={styles.videoAttachmentOther}>
-                                  <Text style={styles.videoIcon}>🎬</Text>
-                                  <Text style={styles.attachmentFileNameOther} numberOfLines={1}>
-                                    {attachment.file_name}
-                                  </Text>
-                                </View>
+                                (attachment.mime_type || '').includes('youtube') ||
+                                (attachment.mime_type || '').includes('vimeo') ? (
+                                  <LinkEmbed url={attachment.file_url ?? ''} />
+                                ) : (
+                                  <VideoAttachmentPreview
+                                    attachment={attachment}
+                                    authHeaders={authHeaders}
+                                    onPress={() => openVideoAttachment(attachment)}
+                                  />
+                                )
                               ) : (
                                 <View style={styles.fileAttachmentOther}>
                                   <Text style={styles.fileIcon}>📎</Text>
@@ -1826,7 +1902,7 @@ export default function MessagesScreen({ navigation }: any) {
             <View style={styles.imageViewerContainer}>
               {viewingImage && (
                 <Image
-                  source={{ uri: viewingImage }}
+                  source={{ uri: viewingImage, headers: authHeaders }}
                   style={styles.imageViewerImage}
                   resizeMode="contain"
                 />
@@ -1840,6 +1916,12 @@ export default function MessagesScreen({ navigation }: any) {
             </TouchableOpacity>
           </TouchableOpacity>
         </Modal>
+
+        <VideoPlayerModal
+          uri={playingVideoUri}
+          visible={!!playingVideoUri}
+          onClose={() => setPlayingVideoUri(null)}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

@@ -164,6 +164,38 @@ export async function uploadFileToSignedUrl(
   }
 }
 
+/**
+ * Absolute URL for a stored attachment. The endpoint authorizes the caller and
+ * 302s to a short-lived signed URL, so this is safe to hand to <Image> and
+ * <VideoView> directly (as long as the caller supplies the `Authorization`
+ * header themselves — see `resolveAttachmentDirectUrl` for the case where it
+ * can't).
+ */
+export function attachmentUrl(storagePath: string): string {
+  const encoded = storagePath.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+  return `${API_URL}/api/messages/attachments/${encoded}`;
+}
+
+/**
+ * Resolves a stored attachment straight to its short-lived signed URL rather
+ * than the authorizing endpoint.
+ *
+ * `expo-video`'s player has no cookie session and, per the carry-forward
+ * ruling for Task 14, is not trusted to carry an `Authorization` header
+ * through the endpoint's 302 to Supabase Storage — so a direct
+ * `attachmentUrl()` request there would 401. Fetch it once here instead,
+ * with the header attached to THIS request, and read the `Location` the
+ * server redirects to. That signed URL carries its own token in the query
+ * string and needs no auth header, so the player can use it as-is.
+ */
+export async function resolveAttachmentDirectUrl(storagePath: string): Promise<string> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(attachmentUrl(storagePath), { headers, redirect: 'manual' });
+  const location = res.headers.get('location');
+  if (!location) throw new Error('Could not resolve attachment');
+  return location;
+}
+
 export async function uploadAttachment(
   conversationId: string,
   file: LocalFile,

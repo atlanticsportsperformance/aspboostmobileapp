@@ -90,7 +90,8 @@
           "cameraPermission": "ASP Boost uses your camera so you can record and send form-check videos to your coach.",
           "microphonePermission": "ASP Boost uses your microphone to record audio with your form-check videos."
         }
-      ]
+      ],
+      "expo-video"
     ],
     "runtimeVersion": {
       "policy": "appVersion"
