@@ -8,6 +8,11 @@
  */
 
 import { supabase } from './supabase';
+// SDK 54's `expo-file-system` root export replaced createUploadTask/getInfoAsync
+// with a new File/Directory API; the old functions still type-check from the
+// root package (re-exported for back-compat) but throw at runtime. The classic
+// API we need here only works from the `/legacy` subpath.
+import * as FileSystem from 'expo-file-system/legacy';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
@@ -64,4 +69,110 @@ export async function sendMessage(
   }
 
   return response.json();
+}
+
+export interface LocalFile {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
+/**
+ * Asks the server for a signed upload URL. Nothing about the destination
+ * comes from the client: the org, conversation folder, and file extension
+ * are all derived server-side from the validated mime type. This replaces
+ * the old client-built `{org}/{athleteId}/{file}` path, which produced
+ * `{org}//{file}` for staff senders (athleteId was never set for them).
+ */
+export async function signUpload(
+  conversationId: string,
+  mimeType: string,
+  sizeBytes: number,
+  fileName: string,
+  kind: 'attachment' | 'thumbnail' = 'attachment'
+): Promise<{ signed_url: string; storage_path: string }> {
+  const headers = await getAuthHeaders();
+
+  const response = await fetch(`${API_URL}/api/messages/attachments/sign-upload`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      mime_type: mimeType,
+      size_bytes: sizeBytes,
+      file_name: fileName,
+      kind,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Could not prepare upload (${response.status})`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Streams the file from disk straight to the signed URL. The previous
+ * implementation read the whole file into the JS heap twice (fetch(uri) then
+ * blob() then arrayBuffer()), which crashed on anything video-sized.
+ *
+ * The signed URL is an absolute URL that already carries `?token=` — no
+ * Authorization header is involved in the upload itself, only PUT + a
+ * content-type header.
+ */
+export async function uploadFileToSignedUrl(
+  signedUrl: string,
+  fileUri: string,
+  mimeType: string,
+  onProgress?: (pct: number) => void
+): Promise<void> {
+  const task = FileSystem.createUploadTask(
+    signedUrl,
+    fileUri,
+    {
+      httpMethod: 'PUT',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'content-type': mimeType,
+        'x-upsert': 'false',
+      },
+    },
+    (progress) => {
+      if (!onProgress || !progress.totalBytesExpectedToSend) return;
+      onProgress(
+        Math.round((progress.totalBytesSent / progress.totalBytesExpectedToSend) * 100)
+      );
+    }
+  );
+
+  const result = await task.uploadAsync();
+  if (!result) throw new Error('Upload was cancelled');
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`Upload failed (${result.status})`);
+  }
+}
+
+export async function uploadAttachment(
+  conversationId: string,
+  file: LocalFile,
+  onProgress?: (pct: number) => void
+): Promise<OutgoingAttachment> {
+  const { signed_url, storage_path } = await signUpload(
+    conversationId,
+    file.mimeType,
+    file.size,
+    file.name
+  );
+
+  await uploadFileToSignedUrl(signed_url, file.uri, file.mimeType, onProgress);
+
+  return {
+    storage_path,
+    file_name: file.name,
+    mime_type: file.mimeType,
+    file_size: file.size,
+  };
 }

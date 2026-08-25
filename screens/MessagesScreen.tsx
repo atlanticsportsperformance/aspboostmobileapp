@@ -23,8 +23,14 @@ import { supabase } from '../lib/supabase';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { sendMessage as sendMessageApi } from '../lib/messagesApi';
+import {
+  sendMessage as sendMessageApi,
+  uploadAttachment,
+  type LocalFile,
+  type OutgoingAttachment,
+} from '../lib/messagesApi';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -107,6 +113,8 @@ export default function MessagesScreen({ navigation }: any) {
     size?: number;
   }>>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
 
   // Image viewer state
@@ -419,67 +427,45 @@ export default function MessagesScreen({ navigation }: any) {
     const currentAttachments = [...attachments];
     setNewMessage('');
     setAttachments([]);
+    setUploadErrors({});
 
     try {
-      let data: any;
-
-      if (currentAttachments.length === 0) {
-        // Text-only sends go through the API so email/push/in-app
-        // notifications fire. The API route owns the conversation's
-        // updated_at bump, so we don't touch it here.
-        data = await sendMessageApi(selectedConversation.id, messageContent);
-      } else {
-        // TODO(Task 12): attachment sends still use the legacy direct-insert
-        // path. uploadAttachment() returns file_url (which the API strips)
-        // and no storage_path (which the API requires), so these can't go
-        // through sendMessageApi yet without a guaranteed compile error.
-        // Task 12 replaces uploadAttachment with a storage_path-producing
-        // upload and deletes this whole branch.
-        const uploadedAttachments = await Promise.all(
-          currentAttachments.map(attachment => uploadAttachment(attachment))
-        );
-
-        const { data: inserted, error } = await supabase
-          .from('messages')
-          .insert({
-            conversation_id: selectedConversation.id,
-            sender_id: currentUser.id,
-            content: messageContent,
-            attachments: uploadedAttachments.length > 0 ? uploadedAttachments : null,
-          })
-          .select(`
-            id,
-            content,
-            sender_id,
-            created_at,
-            attachments,
-            sender:sender_id (
-              id,
-              first_name,
-              last_name,
-              email,
-              avatar_url
-            )
-          `)
-          .single();
-
-        if (error) throw error;
-        data = inserted;
-
-        // Legacy path: the API route isn't in the loop for this send, so we
-        // still own the updated_at bump ourselves.
-        await supabase
-          .from('conversations')
-          .update({ updated_at: new Date().toISOString() })
-          .eq('id', selectedConversation.id);
+      // Upload attachments sequentially (not Promise.all): two concurrent
+      // video uploads on gym LTE starve each other and make the progress bar
+      // meaningless. Each file streams from disk straight to its signed URL
+      // via lib/messagesApi.ts — no fetch(uri).blob()/arrayBuffer() — so a
+      // video-sized file doesn't get materialized in the JS heap.
+      const uploadedAttachments: OutgoingAttachment[] = [];
+      for (const attachment of currentAttachments) {
+        try {
+          const prepared = await prepareForUpload(attachment);
+          const uploaded = await uploadAttachment(
+            selectedConversation.id,
+            prepared,
+            (pct) => setUploadProgress((p) => ({ ...p, [attachment.uri]: pct }))
+          );
+          uploadedAttachments.push(uploaded);
+        } catch (uploadError) {
+          console.error('Error uploading attachment:', uploadError);
+          setUploadErrors((e) => ({
+            ...e,
+            [attachment.uri]: uploadError instanceof Error ? uploadError.message : 'Upload failed',
+          }));
+          throw uploadError;
+        }
       }
+
+      // All sends go through the API — including attachment-only sends,
+      // which the server now accepts — so email/push/in-app notifications
+      // fire. The API route owns the conversation's updated_at bump.
+      const data = await sendMessageApi(selectedConversation.id, messageContent, uploadedAttachments);
 
       // Add message to local state
       if (data) {
         setMessages(prev => {
           const exists = prev.some(m => m.id === data.id);
           if (exists) return prev;
-          return [...prev, data as Message];
+          return [...prev, data as unknown as Message];
         });
       }
 
@@ -490,9 +476,13 @@ export default function MessagesScreen({ navigation }: any) {
       setTimeout(() => {
         messagesEndRef.current?.scrollToEnd({ animated: true });
       }, 100);
+
+      setUploadProgress({});
     } catch (error) {
       console.error('Error sending message:', error);
       setNewMessage(messageContent);
+      // Put the attachments back so the user can retry without re-picking,
+      // whether the failure was an upload or the send call itself.
       setAttachments(currentAttachments);
       Alert.alert('Error', 'Failed to send message. Please try again.');
     } finally {
@@ -948,70 +938,52 @@ export default function MessagesScreen({ navigation }: any) {
     setAttachments(prev => prev.filter((_, i) => i !== index));
   }
 
-  // Upload attachment to Supabase storage
-  async function uploadAttachment(attachment: { uri: string; name: string; type: string; size?: number }) {
-    try {
-      let mimeType = attachment.type;
-      let fileName = attachment.name;
-      let fileUri = attachment.uri;
+  // Prepares a picked file for upload: converts HEIC/HEIF to JPEG (Supabase
+  // Storage and most viewers don't render HEIC) and guarantees `size` is
+  // populated, since signUpload rejects a zero/missing size_bytes. The actual
+  // upload (signing + streaming from disk) lives in lib/messagesApi.ts.
+  async function prepareForUpload(attachment: {
+    uri: string;
+    name: string;
+    type: string;
+    size?: number;
+  }): Promise<LocalFile> {
+    let mimeType = attachment.type;
+    let fileName = attachment.name;
+    let fileUri = attachment.uri;
 
-      // Convert HEIC/HEIF images to JPEG using ImageManipulator
-      if (mimeType === 'image/heic' || mimeType === 'image/heif' || fileName.toLowerCase().endsWith('.heic') || fileName.toLowerCase().endsWith('.heif')) {
-        try {
-          const manipulated = await ImageManipulator.manipulateAsync(
-            attachment.uri,
-            [], // No transformations, just convert format
-            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
-          );
-          fileUri = manipulated.uri;
-          mimeType = 'image/jpeg';
-          fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg');
-        } catch (manipError) {
-          console.warn('Failed to convert HEIC, trying original:', manipError);
-          // Fall back to JPEG mime type anyway
-          mimeType = 'image/jpeg';
-          fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg');
-        }
+    // Convert HEIC/HEIF images to JPEG using ImageManipulator
+    if (mimeType === 'image/heic' || mimeType === 'image/heif' || fileName.toLowerCase().endsWith('.heic') || fileName.toLowerCase().endsWith('.heif')) {
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          attachment.uri,
+          [], // No transformations, just convert format
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        fileUri = manipulated.uri;
+        mimeType = 'image/jpeg';
+        fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg');
+      } catch (manipError) {
+        console.warn('Failed to convert HEIC, trying original:', manipError);
+        // Fall back to JPEG mime type anyway
+        mimeType = 'image/jpeg';
+        fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg');
       }
-
-      const fileExt = fileName.split('.').pop() || 'file';
-      const uniqueFileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const storagePath = `${orgId}/${athleteId}/${uniqueFileName}`;
-
-      // Fetch the file as blob
-      const response = await fetch(fileUri);
-      const blob = await response.blob();
-
-      // Convert blob to array buffer for upload
-      const arrayBuffer = await new Response(blob).arrayBuffer();
-
-      const { data, error } = await supabase.storage
-        .from('message-attachments')
-        .upload(storagePath, arrayBuffer, {
-          contentType: mimeType,
-          cacheControl: '3600',
-          upsert: false,
-        });
-
-      if (error) throw error;
-
-      // Get public URL
-      const { data: urlData } = supabase.storage
-        .from('message-attachments')
-        .getPublicUrl(storagePath);
-
-      return {
-        file_url: urlData.publicUrl,
-        file_name: fileName,
-        file_type: mimeType.split('/')[0], // 'image', 'video', 'application', etc.
-        file_size: attachment.size || 0,
-        mime_type: mimeType,
-        storage_path: storagePath,
-      };
-    } catch (error) {
-      console.error('Error uploading attachment:', error);
-      throw error;
     }
+
+    let size = attachment.size || 0;
+    if (!size) {
+      // This SDK's InfoOptions has no `size` flag to opt into — size comes
+      // back whenever the file exists, with no extra option needed.
+      const info = await FileSystem.getInfoAsync(fileUri);
+      size = info.exists ? info.size ?? 0 : 0;
+    }
+
+    if (!size || !Number.isFinite(size)) {
+      throw new Error(`Could not determine file size for ${fileName}`);
+    }
+
+    return { uri: fileUri, name: fileName, mimeType, size };
   }
 
   // Format file size
@@ -1601,6 +1573,16 @@ export default function MessagesScreen({ navigation }: any) {
                   <Text style={styles.attachmentPreviewName} numberOfLines={1}>
                     {attachment.name}
                   </Text>
+                  {uploadProgress[attachment.uri] !== undefined && uploadProgress[attachment.uri] < 100 && (
+                    <View style={styles.progressTrack}>
+                      <View style={[styles.progressFill, { width: `${uploadProgress[attachment.uri]}%` }]} />
+                    </View>
+                  )}
+                  {uploadErrors[attachment.uri] && (
+                    <Text style={styles.uploadError} numberOfLines={2}>
+                      {uploadErrors[attachment.uri]}
+                    </Text>
+                  )}
                 </View>
               ))}
             </ScrollView>
@@ -2400,6 +2382,25 @@ const styles = StyleSheet.create({
   attachmentPreviewName: {
     fontSize: 10,
     color: 'rgba(255,255,255,0.6)',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  progressTrack: {
+    width: '100%',
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    marginTop: 4,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 1.5,
+    backgroundColor: '#9BDDFF',
+  },
+  uploadError: {
+    fontSize: 9,
+    color: '#FF6B6B',
     marginTop: 4,
     textAlign: 'center',
   },
