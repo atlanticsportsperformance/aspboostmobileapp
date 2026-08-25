@@ -24,6 +24,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import { sendMessage as sendMessageApi } from '../lib/messagesApi';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -420,39 +421,58 @@ export default function MessagesScreen({ navigation }: any) {
     setAttachments([]);
 
     try {
-      // Upload attachments if any
-      let uploadedAttachments: any[] = [];
-      if (currentAttachments.length > 0) {
-        uploadedAttachments = await Promise.all(
+      let data: any;
+
+      if (currentAttachments.length === 0) {
+        // Text-only sends go through the API so email/push/in-app
+        // notifications fire. The API route owns the conversation's
+        // updated_at bump, so we don't touch it here.
+        data = await sendMessageApi(selectedConversation.id, messageContent);
+      } else {
+        // TODO(Task 12): attachment sends still use the legacy direct-insert
+        // path. uploadAttachment() returns file_url (which the API strips)
+        // and no storage_path (which the API requires), so these can't go
+        // through sendMessageApi yet without a guaranteed compile error.
+        // Task 12 replaces uploadAttachment with a storage_path-producing
+        // upload and deletes this whole branch.
+        const uploadedAttachments = await Promise.all(
           currentAttachments.map(attachment => uploadAttachment(attachment))
         );
-      }
 
-      const { data, error } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: selectedConversation.id,
-          sender_id: currentUser.id,
-          content: messageContent,
-          attachments: uploadedAttachments.length > 0 ? uploadedAttachments : null,
-        })
-        .select(`
-          id,
-          content,
-          sender_id,
-          created_at,
-          attachments,
-          sender:sender_id (
+        const { data: inserted, error } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: selectedConversation.id,
+            sender_id: currentUser.id,
+            content: messageContent,
+            attachments: uploadedAttachments.length > 0 ? uploadedAttachments : null,
+          })
+          .select(`
             id,
-            first_name,
-            last_name,
-            email,
-            avatar_url
-          )
-        `)
-        .single();
+            content,
+            sender_id,
+            created_at,
+            attachments,
+            sender:sender_id (
+              id,
+              first_name,
+              last_name,
+              email,
+              avatar_url
+            )
+          `)
+          .single();
 
-      if (error) throw error;
+        if (error) throw error;
+        data = inserted;
+
+        // Legacy path: the API route isn't in the loop for this send, so we
+        // still own the updated_at bump ourselves.
+        await supabase
+          .from('conversations')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', selectedConversation.id);
+      }
 
       // Add message to local state
       if (data) {
@@ -462,12 +482,6 @@ export default function MessagesScreen({ navigation }: any) {
           return [...prev, data as Message];
         });
       }
-
-      // Update conversation's updated_at
-      await supabase
-        .from('conversations')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', selectedConversation.id);
 
       // Refresh conversations to update last message
       await fetchConversations(currentUser.id);
