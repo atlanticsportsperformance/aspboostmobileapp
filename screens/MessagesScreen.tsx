@@ -31,6 +31,12 @@ import {
   type LocalFile,
   type OutgoingAttachment,
 } from '../lib/messagesApi';
+import {
+  uploadVideoAttachment,
+  MAX_VIDEO_DURATION_SECONDS,
+  VideoTooLongError,
+  VideoTooLargeError,
+} from '../lib/videoAttachment';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -111,10 +117,14 @@ export default function MessagesScreen({ navigation }: any) {
     name: string;
     type: string;
     size?: number;
+    duration?: number;
   }>>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+  // Compression takes real time (seconds); this drives a "Preparing video…"
+  // label so the composer doesn't look frozen/crashed while it runs.
+  const [preparingVideo, setPreparingVideo] = useState(false);
   // Successful uploads, keyed by the attachment's local `uri`. A partial
   // failure (e.g. attachment 2 of 3 throws) must not re-upload attachment 1
   // on retry — signUpload mints a fresh storage path every call, so a
@@ -459,20 +469,43 @@ export default function MessagesScreen({ navigation }: any) {
           continue;
         }
 
+        const isVideo = (attachment.type || '').startsWith('video/');
+        const onProgress = (pct: number) =>
+          setUploadProgress((p) => ({ ...p, [attachment.uri]: pct }));
+
         try {
-          const prepared = await prepareForUpload(attachment);
-          const uploaded = await uploadAttachment(
-            selectedConversation.id,
-            prepared,
-            (pct) => setUploadProgress((p) => ({ ...p, [attachment.uri]: pct }))
-          );
+          let uploaded: OutgoingAttachment;
+          if (isVideo) {
+            setPreparingVideo(true);
+            try {
+              uploaded = await uploadVideoAttachment(
+                selectedConversation.id,
+                { uri: attachment.uri, name: attachment.name, mimeType: 'video/mp4', size: attachment.size ?? 0 },
+                attachment.duration,
+                onProgress
+              );
+            } finally {
+              setPreparingVideo(false);
+            }
+          } else {
+            const prepared = await prepareForUpload(attachment);
+            uploaded = await uploadAttachment(selectedConversation.id, prepared, onProgress);
+          }
           uploadedAttachmentsCacheRef.current[attachment.uri] = uploaded;
           uploadedAttachments.push(uploaded);
         } catch (uploadError) {
           console.error('Error uploading attachment:', uploadError);
+          // VideoTooLongError/VideoTooLargeError carry a message written for
+          // a user to read directly — surface it as-is rather than a generic
+          // "Upload failed".
+          const isVideoLimitError =
+            uploadError instanceof VideoTooLongError || uploadError instanceof VideoTooLargeError;
           setUploadErrors((e) => ({
             ...e,
-            [attachment.uri]: uploadError instanceof Error ? uploadError.message : 'Upload failed',
+            [attachment.uri]:
+              isVideoLimitError || (uploadError instanceof Error && uploadError.message)
+                ? (uploadError as Error).message
+                : 'Upload failed',
           }));
           // Don't leave a stale progress bar from this failed attempt sitting
           // at whatever percentage it reached.
@@ -877,7 +910,12 @@ export default function MessagesScreen({ navigation }: any) {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images', 'videos'],
         quality: 0.8,
+        // Gives the native iOS trim UI, so an over-length clip can be
+        // trimmed in place rather than rejected outright.
+        allowsEditing: true,
+        videoMaxDuration: MAX_VIDEO_DURATION_SECONDS,
       });
 
       if (!result.canceled && result.assets) {
@@ -895,6 +933,7 @@ export default function MessagesScreen({ navigation }: any) {
             name: fileName,
             type: mimeType,
             size: asset.fileSize,
+            duration: asset.duration ?? undefined,
           };
         });
         setAttachments(prev => [...prev, ...newAttachments]);
@@ -915,6 +954,7 @@ export default function MessagesScreen({ navigation }: any) {
       }
 
       const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
         quality: 0.8,
       });
 
@@ -933,13 +973,44 @@ export default function MessagesScreen({ navigation }: any) {
     }
   }
 
+  // Record video with camera
+  async function recordVideo() {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow camera access to record video.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['videos'],
+        videoMaxDuration: MAX_VIDEO_DURATION_SECONDS,
+        videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        setAttachments(prev => [...prev, {
+          uri: asset.uri,
+          name: asset.fileName || `video_${Date.now()}.mp4`,
+          type: 'video/mp4',
+          size: asset.fileSize,
+          duration: asset.duration ?? undefined,
+        }]);
+      }
+    } catch (error) {
+      console.error('Error recording video:', error);
+      Alert.alert('Error', 'Failed to open the camera. Please try again.');
+    }
+  }
+
   // Show attachment menu - toggle the popup
   function showAttachmentOptions() {
     setShowAttachmentMenu(!showAttachmentMenu);
   }
 
   // Handle attachment option selection
-  function handleAttachmentOption(option: 'photo' | 'camera' | 'document') {
+  function handleAttachmentOption(option: 'photo' | 'camera' | 'video' | 'document') {
     setShowAttachmentMenu(false);
     // Small delay to ensure menu closes before picker opens
     setTimeout(() => {
@@ -947,6 +1018,8 @@ export default function MessagesScreen({ navigation }: any) {
         pickImage();
       } else if (option === 'camera') {
         takePhoto();
+      } else if (option === 'video') {
+        recordVideo();
       } else if (option === 'document') {
         pickDocument();
       }
@@ -1592,6 +1665,15 @@ export default function MessagesScreen({ navigation }: any) {
           })}
         </ScrollView>
 
+        {/* Compression runs for real seconds; without this the composer looks
+            frozen/crashed while it's happening. */}
+        {!isNotificationsChat && preparingVideo && (
+          <View style={styles.preparingVideoContainer}>
+            <ActivityIndicator size="small" color="rgba(255,255,255,0.7)" />
+            <Text style={styles.preparingVideoText}>Preparing video…</Text>
+          </View>
+        )}
+
         {/* Attachment Preview - only show if not notifications channel */}
         {!isNotificationsChat && attachments.length > 0 && (
           <View style={styles.attachmentPreviewContainer}>
@@ -1710,6 +1792,13 @@ export default function MessagesScreen({ navigation }: any) {
               >
                 <Text style={styles.attachmentMenuIcon}>📷</Text>
                 <Text style={styles.attachmentMenuText}>Camera</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.attachmentMenuPopupItem}
+                onPress={() => handleAttachmentOption('video')}
+              >
+                <Text style={styles.attachmentMenuIcon}>🎥</Text>
+                <Text style={styles.attachmentMenuText}>Record Video</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.attachmentMenuPopupItem}
@@ -2381,6 +2470,20 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
     marginBottom: 8,
+  },
+  preparingVideoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  preparingVideoText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
   },
   // Attachment preview styles
   attachmentPreviewContainer: {

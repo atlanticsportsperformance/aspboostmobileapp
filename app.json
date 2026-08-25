@@ -2,7 +2,7 @@
   "expo": {
     "name": "ASP Boost",
     "slug": "aspboost-mobile",
-    "version": "1.5.29",
+    "version": "1.5.30",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,10 +15,13 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.aspboost.app",
-      "buildNumber": "19",
+      "buildNumber": "20",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSFaceIDUsageDescription": "ASP Boost uses Face ID to securely sign you in to your account."
+        "NSFaceIDUsageDescription": "ASP Boost uses Face ID to securely sign you in to your account.",
+        "NSCameraUsageDescription": "ASP Boost uses your camera so you can record and send form-check videos to your coach.",
+        "NSPhotoLibraryUsageDescription": "ASP Boost needs access to your photos so you can send images and videos to your coach.",
+        "NSMicrophoneUsageDescription": "ASP Boost uses your microphone to record audio with your form-check videos."
       }
     },
     "notification": {
@@ -78,6 +81,14 @@
             "central"
           ],
           "bluetoothAlwaysPermission": "ASP Boost uses Bluetooth to sync your Motus Pulse sensor and track throws in real time."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ASP Boost needs access to your photos so you can send images and videos to your coach.",
+          "cameraPermission": "ASP Boost uses your camera so you can record and send form-check videos to your coach.",
+          "microphonePermission": "ASP Boost uses your microphone to record audio with your form-check videos."
         }
       ]
     ],
