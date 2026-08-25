@@ -242,3 +242,71 @@ export async function uploadAttachment(
     file_size: file.size,
   };
 }
+
+/**
+ * Who this user is allowed to message.
+ *
+ * The rules live on the server in lib/messaging/who-can-message.ts and are
+ * enforced when a conversation is created. This app used to reimplement them
+ * against Postgres directly, which meant the picker and the create endpoint
+ * could disagree -- and did: the local copy offered every staff member to a
+ * coach and included an 'admin' role this database does not have.
+ */
+export async function fetchAvailableRecipients(): Promise<Array<{
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  avatar_url: string | null;
+  app_role?: string | null;
+}>> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API_URL}/api/messaging/available-users`, { headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Could not load recipients (${response.status})`);
+  }
+  return response.json();
+}
+
+/**
+ * Open (or reuse) a direct conversation with one other user.
+ *
+ * Goes through the API rather than calling get_or_create_direct_conversation
+ * directly, so the server's permission check actually runs. Calling the RPC
+ * from here bypassed it entirely: any user could open a conversation with any
+ * id, and the restriction existed only in this app's own picker.
+ */
+export async function createDirectConversation(otherUserId: string): Promise<{ id: string }> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API_URL}/api/conversations`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ type: 'direct', participant_ids: [otherUserId] }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Could not start that conversation (${response.status})`);
+  }
+  return response.json();
+}
+
+/**
+ * Delete a message.
+ *
+ * Staff deletes remove it for everyone; a participant deleting their own
+ * message only hides it for themselves. That split lives in the API. This app
+ * used to write is_deleted = true directly, which applied the staff behaviour
+ * to everyone -- an athlete could destroy a message out of a coach's inbox.
+ */
+export async function deleteMessage(messageId: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API_URL}/api/messages/${messageId}`, {
+    method: 'DELETE',
+    headers,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Could not delete that message (${response.status})`);
+  }
+}

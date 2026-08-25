@@ -31,6 +31,9 @@ import {
   getAuthHeaders,
   attachmentUrl,
   resolveAttachmentDirectUrl,
+  fetchAvailableRecipients,
+  createDirectConversation,
+  deleteMessage as deleteMessageApi,
   type LocalFile,
   type OutgoingAttachment,
 } from '../lib/messagesApi';
@@ -60,6 +63,7 @@ interface Conversation {
   id: string;
   type: string;
   title?: string;
+  is_locked?: boolean;
   updated_at: string;
   participants: Array<{
     user_id: string;
@@ -74,10 +78,16 @@ interface Conversation {
   unread_count: number;
 }
 
-// Check if conversation is the Notifications or Automation channel
+// Read-only automation/notification channel.
+//
+// This used to match the title against 'Notifications' and the literal
+// '🤖 Automation' emoji string, so renaming a thread unlocked its composer
+// and a genuinely locked thread was only locked by coincidence of its name.
+// `is_locked` is the actual flag, and the server rejects sends to a locked
+// conversation regardless of what this returns.
 function isNotificationsConversation(conversation: Conversation): boolean {
-  return (conversation.title === 'Notifications' || conversation.title === '🤖 Automation') &&
-    (conversation.type === 'announcement' || conversation.type === 'notifications');
+  if (conversation.is_locked) return true;
+  return conversation.type === 'announcement' || conversation.type === 'notifications';
 }
 
 interface Message {
@@ -320,6 +330,7 @@ export default function MessagesScreen({ navigation, route }: any) {
           id,
           type,
           title,
+          is_locked,
           updated_at,
           participants:conversation_participants (
             user_id,
@@ -717,16 +728,18 @@ export default function MessagesScreen({ navigation, route }: any) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await supabase
-                .from('messages')
-                .update({ is_deleted: true })
-                .eq('id', messageId);
+              // Through the API: a staff delete removes the message for
+              // everyone, a participant deleting their own message only hides
+              // it for them. Writing is_deleted here applied the staff
+              // behaviour to everyone, so an athlete could destroy a message
+              // out of a coach's inbox.
+              await deleteMessageApi(messageId);
 
               setMessages(prev => prev.filter(m => m.id !== messageId));
               await fetchConversations(currentUser.id);
             } catch (error) {
               console.error('Error deleting message:', error);
-              Alert.alert('Error', 'Failed to delete message.');
+              Alert.alert('Error', error instanceof Error ? error.message : 'Failed to delete message.');
             }
           },
         },
@@ -768,134 +781,18 @@ export default function MessagesScreen({ navigation, route }: any) {
   }
 
   async function fetchAvailableUsers() {
-    if (!orgId) return;
-
     setLoadingUsers(true);
     try {
-      const myId = currentUser?.id;
-      // Read the current user's role so we can scope who they may start a
-      // conversation with. (profiles is readable by any authed user.)
-      const { data: currentProfile } = await supabase
-        .from('profiles')
-        .select('org_id, app_role')
-        .eq('id', myId)
-        .single();
-
-      const myOrgId = currentProfile?.org_id;
-      if (!myOrgId) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      const role = currentProfile?.app_role;
-      const isAdmin = role === 'admin' || role === 'super_admin' || role === 'god_mode';
-      const isCoach = role === 'coach';
-      const isAthlete = role === 'athlete';
-
-      const profileCols = 'id, first_name, last_name, email, avatar_url, app_role';
-      const STAFF_ROLES = ['admin', 'super_admin', 'coach', 'god_mode'];
-      let recipients: Profile[] = [];
-
-      if (isAdmin) {
-        // Admins can message anyone in their org (all staff + all athletes).
-        const { data } = await supabase
-          .from('profiles')
-          .select(profileCols)
-          .eq('org_id', myOrgId)
-          .neq('id', myId);
-        recipients = (data as Profile[]) || [];
-      } else if (isCoach) {
-        // Coaches can message all staff plus the athletes linked to them
-        // via coach_athletes (mirrors the ArmCare athlete scoping).
-        const [{ data: staff }, { data: links }] = await Promise.all([
-          supabase
-            .from('profiles')
-            .select(profileCols)
-            .eq('org_id', myOrgId)
-            .neq('id', myId)
-            .in('app_role', STAFF_ROLES),
-          supabase
-            .from('coach_athletes')
-            .select('athlete:athlete_id ( user_id )')
-            .eq('coach_id', myId),
-        ]);
-
-        const athleteUserIds = (links || [])
-          .map((l: any) => l.athlete?.user_id)
-          .filter((id: string | null | undefined): id is string => !!id);
-
-        let athleteProfiles: Profile[] = [];
-        if (athleteUserIds.length > 0) {
-          const { data: ap } = await supabase
-            .from('profiles')
-            .select(profileCols)
-            .in('id', athleteUserIds)
-            .neq('id', myId);
-          athleteProfiles = (ap as Profile[]) || [];
-        }
-
-        // Merge + dedupe (a coach who is also linked shouldn't appear twice).
-        const byId = new Map<string, Profile>();
-        [...((staff as Profile[]) || []), ...athleteProfiles].forEach(p => byId.set(p.id, p));
-        recipients = Array.from(byId.values());
-      } else if (isAthlete) {
-        // Athletes can message their assigned coach(es) via coach_athletes,
-        // plus admins in their org (mirrors /api/messaging/available-users).
-        const { data: athleteRecord } = await supabase
-          .from('athletes')
-          .select('id')
-          .eq('user_id', myId)
-          .single();
-
-        let coachUserIds: string[] = [];
-        if (athleteRecord?.id) {
-          // coach_athletes.coach_id is already the coach's profile id.
-          const { data: assignedCoaches } = await supabase
-            .from('coach_athletes')
-            .select('coach_id')
-            .eq('athlete_id', athleteRecord.id);
-          coachUserIds = (assignedCoaches || [])
-            .map((c: any) => c.coach_id)
-            .filter((id: string | null | undefined): id is string => !!id);
-        }
-
-        const [{ data: admins }, coachRes] = await Promise.all([
-          supabase
-            .from('profiles')
-            .select(profileCols)
-            .eq('org_id', myOrgId)
-            .neq('id', myId)
-            .in('app_role', ['admin', 'super_admin']),
-          coachUserIds.length > 0
-            ? supabase
-                .from('profiles')
-                .select(profileCols)
-                .eq('org_id', myOrgId)
-                .neq('id', myId)
-                .in('id', coachUserIds)
-            : Promise.resolve({ data: [] as Profile[] }),
-        ]);
-
-        // Merge + dedupe (a coach who is also an admin shouldn't appear twice).
-        const byId = new Map<string, Profile>();
-        [...((admins as Profile[]) || []), ...(((coachRes as any).data as Profile[]) || [])]
-          .forEach(p => byId.set(p.id, p));
-        recipients = Array.from(byId.values());
-      } else {
-        // Parents (and any other role) can only message admins.
-        const { data } = await supabase
-          .from('profiles')
-          .select(profileCols)
-          .eq('org_id', myOrgId)
-          .neq('id', myId)
-          .in('app_role', ['admin', 'super_admin']);
-        recipients = (data as Profile[]) || [];
-      }
-
-      recipients.sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));
-      setAvailableUsers(recipients);
+      // The rules for who may message whom live on the server and are enforced
+      // when the conversation is created. This screen used to reimplement them
+      // against Postgres directly, so the picker and the create endpoint could
+      // disagree -- and did: the local copy offered every staff member to a
+      // coach, and checked for an 'admin' role this database does not have.
+      const recipients = await fetchAvailableRecipients();
+      setAvailableUsers(recipients as Profile[]);
     } catch (error) {
       console.error('Error fetching available users:', error);
+      Alert.alert('Error', error instanceof Error ? error.message : 'Could not load recipients.');
       setAvailableUsers([]);
     } finally {
       setLoadingUsers(false);
@@ -907,15 +804,12 @@ export default function MessagesScreen({ navigation, route }: any) {
 
     setCreatingConversation(true);
     try {
-      // Get or create direct conversation
-      const { data: conversationId, error: rpcError } = await supabase
-        .rpc('get_or_create_direct_conversation', {
-          p_user1_id: currentUser.id,
-          p_user2_id: selectedUserId,
-          p_org_id: orgId,
-        });
-
-      if (rpcError) throw rpcError;
+      // Through the API, not the RPC directly. Calling the RPC from here
+      // skipped the server's permission check entirely: any user could open a
+      // conversation with any id, and the restriction lived only in this
+      // screen's own picker.
+      const created = await createDirectConversation(selectedUserId);
+      const conversationId = created?.id;
 
       if (conversationId) {
         // Close dialog first
@@ -933,6 +827,7 @@ export default function MessagesScreen({ navigation, route }: any) {
             id,
             type,
             title,
+            is_locked,
             updated_at,
             participants:conversation_participants (
               user_id,
@@ -959,7 +854,7 @@ export default function MessagesScreen({ navigation, route }: any) {
       }
     } catch (error) {
       console.error('Error creating conversation:', error);
-      Alert.alert('Error', 'Failed to start conversation. Please try again.');
+      Alert.alert('Error', error instanceof Error ? error.message : 'Failed to start conversation.');
     } finally {
       setCreatingConversation(false);
     }
