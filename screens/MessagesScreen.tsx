@@ -109,6 +109,10 @@ export default function MessagesScreen({ navigation, route }: any) {
   // conversationId from a tapped message-notification's route params. See
   // the auto-open effect below for how this is consumed and cleared.
   const routeConversationId = (route?.params as { conversationId?: string } | undefined)?.conversationId;
+  // Synchronous re-entrancy guard for that effect — see its comment for why
+  // the param clear alone can't do this job. Holds the conversation id
+  // currently mid-auto-open, or null once that chain has settled.
+  const autoOpeningIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -176,20 +180,45 @@ export default function MessagesScreen({ navigation, route }: any) {
   // opened, the route param is cleared (`conversationId: undefined`) so a
   // REPEAT notification for the same conversation — tap it, back out,
   // receive another message there, tap again — arrives as a genuine params
-  // change (undefined -> id) instead of matching an "already opened this id"
-  // ref and silently doing nothing. That makes the id-matching ref this
-  // effect used to carry unnecessary: it's removed, since clearing the param
-  // is what now prevents an unrelated conversations-list refresh (a new
-  // message, a realtime update) from re-selecting this conversation out from
-  // under a user who has since picked a different one — the param is simply
-  // gone by then.
+  // change (undefined -> id) rather than being a no-op.
+  //
+  // That param-clearing alone is NOT enough to stop this effect calling
+  // selectConversation twice for a single notification, because
+  // `conversations` is also a dependency: selectConversation ->
+  // markConversationAsRead awaits a Supabase update and then always calls
+  // setConversations (a fresh array from .map(), even when unread_count was
+  // already 0) — a state change that is a proper subset of the work this
+  // effect's own `.then()` is waiting on. React re-runs this effect for that
+  // conversations change while routeConversationId is still set (the
+  // `.then()` hasn't fired yet), finds the same target again, and would call
+  // selectConversation a second time — clearing the thread the user is
+  // already looking at via its `setMessages([])`, then refetching it, plus a
+  // duplicate markConversationAsRead round trip.
+  //
+  // `autoOpeningIdRef` guards exactly that window: set synchronously, in the
+  // same tick the target is found, before `selectConversation` is called —
+  // unlike the param clear, which can only take effect once the whole async
+  // chain settles. A re-entrant run within that window sees the ref already
+  // matches and bails. It's cleared in `.finally()`, once the chain settles
+  // either way, so: (a) the NEXT genuine notification (different tap, param
+  // went through its undefined step in between) isn't blocked, and (b) a
+  // failed open can't wedge the guard for the rest of the session.
   useEffect(() => {
     if (!routeConversationId) return;
+    if (autoOpeningIdRef.current === routeConversationId) return;
     const target = conversations.find(c => c.id === routeConversationId);
     if (!target) return;
-    selectConversation(target).then(() => {
-      navigation.setParams({ conversationId: undefined });
-    });
+    autoOpeningIdRef.current = routeConversationId;
+    selectConversation(target)
+      .then(() => {
+        navigation.setParams({ conversationId: undefined });
+      })
+      .catch((error) => {
+        console.error('Could not auto-open conversation from notification:', error);
+      })
+      .finally(() => {
+        autoOpeningIdRef.current = null;
+      });
   }, [routeConversationId, conversations]);
 
   // Needed so <Image> (and, via VideoAttachmentPreview, video posters) can
