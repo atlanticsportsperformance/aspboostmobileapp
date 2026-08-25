@@ -41,6 +41,25 @@ async function fileSize(uri: string): Promise<number> {
   return info.exists ? info.size ?? 0 : 0;
 }
 
+/**
+ * Best-effort delete of a temp file this module created (a compressed video
+ * or a generated thumbnail). Every successful send otherwise leaves a full
+ * second copy of the video (~10-25MB per the module doc comment above) and
+ * the thumbnail JPEG permanently on the device — this is a routine-use bug,
+ * not an edge case, since athletes send form-check videos repeatedly.
+ *
+ * Deliberately swallows its own errors: a cleanup failure must never surface
+ * as a send failure, on a send that otherwise succeeded or one that already
+ * failed for its own reason.
+ */
+async function safeDeleteFile(uri: string): Promise<void> {
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch (error) {
+    console.warn('Could not delete temp file:', uri, error);
+  }
+}
+
 export class VideoTooLongError extends Error {
   constructor() {
     super(`Videos must be ${MAX_VIDEO_DURATION_SECONDS} seconds or shorter.`);
@@ -52,6 +71,20 @@ export class VideoTooLargeError extends Error {
   constructor() {
     super('That video is too large to send even after compressing.');
     this.name = 'VideoTooLargeError';
+  }
+}
+
+/**
+ * Compression produced a file whose size could not be determined (zero or
+ * non-finite). `signUpload` requires a positive finite `size_bytes` and
+ * rejects anything else; without this check that rejection surfaces as a
+ * generic "Could not prepare upload" network error instead of a message
+ * that tells the user what actually happened.
+ */
+export class VideoUnreadableError extends Error {
+  constructor() {
+    super('Could not prepare that video for sending. Please try again.');
+    this.name = 'VideoUnreadableError';
   }
 }
 
@@ -79,7 +112,19 @@ export async function prepareVideo(
   });
 
   const size = await fileSize(compressedUri);
-  if (size > MAX_ATTACHMENT_BYTES) throw new VideoTooLargeError();
+
+  // signUpload requires a positive finite size_bytes and rejects anything
+  // else; catch a zero/unreadable compressed file here instead of letting
+  // it surface downstream as an opaque "Could not prepare upload".
+  if (!size || !Number.isFinite(size)) {
+    await safeDeleteFile(compressedUri);
+    throw new VideoUnreadableError();
+  }
+
+  if (size > MAX_ATTACHMENT_BYTES) {
+    await safeDeleteFile(compressedUri);
+    throw new VideoTooLargeError();
+  }
 
   return { uri: compressedUri, size, durationSeconds };
 }
@@ -106,34 +151,47 @@ export async function uploadVideoAttachment(
 ): Promise<OutgoingAttachment> {
   const prepared = await prepareVideo(file.uri, durationMs);
 
-  // Compression always emits MP4 regardless of the source .mov.
-  const mimeType = 'video/mp4';
-  const fileName = file.name.replace(/\.(mov|m4v|mp4)$/i, '') + '.mp4';
+  try {
+    // Compression always emits MP4 regardless of the source .mov.
+    const mimeType = 'video/mp4';
+    const fileName = file.name.replace(/\.(mov|m4v|mp4)$/i, '') + '.mp4';
 
-  const thumb = await generateThumbnail(prepared.uri);
-  let thumbnailPath: string | undefined;
+    const thumb = await generateThumbnail(prepared.uri);
+    let thumbnailPath: string | undefined;
 
-  if (thumb && thumb.size > 0) {
-    try {
-      const signedThumb = await signUpload(
-        conversationId, 'image/jpeg', thumb.size, `${fileName}.jpg`, 'thumbnail'
-      );
-      await uploadFileToSignedUrl(signedThumb.signed_url, thumb.uri, 'image/jpeg');
-      thumbnailPath = signedThumb.storage_path;
-    } catch (error) {
-      console.warn('Could not upload video thumbnail:', error);
+    if (thumb) {
+      try {
+        if (thumb.size > 0) {
+          const signedThumb = await signUpload(
+            conversationId, 'image/jpeg', thumb.size, `${fileName}.jpg`, 'thumbnail'
+          );
+          await uploadFileToSignedUrl(signedThumb.signed_url, thumb.uri, 'image/jpeg');
+          thumbnailPath = signedThumb.storage_path;
+        }
+      } catch (error) {
+        console.warn('Could not upload video thumbnail:', error);
+      } finally {
+        // Disposable the moment its own upload attempt (or non-attempt, for
+        // a zero-size thumb) is settled — whether or not that succeeded.
+        await safeDeleteFile(thumb.uri);
+      }
     }
+
+    const signed = await signUpload(conversationId, mimeType, prepared.size, fileName);
+    await uploadFileToSignedUrl(signed.signed_url, prepared.uri, mimeType, onProgress);
+
+    return {
+      storage_path: signed.storage_path,
+      file_name: fileName,
+      mime_type: mimeType,
+      file_size: prepared.size,
+      thumbnail_path: thumbnailPath,
+      duration_seconds: prepared.durationSeconds,
+    };
+  } finally {
+    // The compressed video is a full second copy of the file (~10-25MB per
+    // the module doc comment). Delete it whether the upload above succeeded
+    // or threw, so a failed or retried send never strands it on the device.
+    await safeDeleteFile(prepared.uri);
   }
-
-  const signed = await signUpload(conversationId, mimeType, prepared.size, fileName);
-  await uploadFileToSignedUrl(signed.signed_url, prepared.uri, mimeType, onProgress);
-
-  return {
-    storage_path: signed.storage_path,
-    file_name: fileName,
-    mime_type: mimeType,
-    file_size: prepared.size,
-    thumbnail_path: thumbnailPath,
-    duration_seconds: prepared.durationSeconds,
-  };
 }

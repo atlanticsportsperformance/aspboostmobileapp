@@ -183,17 +183,42 @@ export function attachmentUrl(storagePath: string): string {
  * `expo-video`'s player has no cookie session and, per the carry-forward
  * ruling for Task 14, is not trusted to carry an `Authorization` header
  * through the endpoint's 302 to Supabase Storage — so a direct
- * `attachmentUrl()` request there would 401. Fetch it once here instead,
- * with the header attached to THIS request, and read the `Location` the
- * server redirects to. That signed URL carries its own token in the query
- * string and needs no auth header, so the player can use it as-is.
+ * `attachmentUrl()` request there would 401.
+ *
+ * This calls the endpoint's explicit JSON mode (`?format=json`) instead of
+ * following its default 302: the server does the same auth + participant
+ * check and returns `{ url, expires_in }` as plain JSON. An earlier version
+ * of this function sent `redirect: 'manual'` and read the `Location` header
+ * off the redirect response, but React Native's `fetch` is not guaranteed to
+ * honor `redirect: 'manual'` on every version — silently auto-following the
+ * 302 would leave no `Location` header to read, breaking all stored-video
+ * playback in a way only visible on-device. The JSON mode removes that
+ * gamble entirely.
+ *
+ * Two things worth knowing about the URL this returns:
+ * - Playback is not a single request — scrubbing issues repeated HTTP Range
+ *   requests against the same source URL — which is the real reason a
+ *   query-string token (this signed URL) beats an Authorization header for
+ *   the player: every one of those follow-up requests carries its own auth
+ *   with no header support needed.
+ * - The signed URL's TTL is `expires_in` (currently 3600s). A viewer who
+ *   backgrounds the app for over an hour and resumes could hit a stale URL;
+ *   this function does not handle that case.
  */
 export async function resolveAttachmentDirectUrl(storagePath: string): Promise<string> {
   const headers = await getAuthHeaders();
-  const res = await fetch(attachmentUrl(storagePath), { headers, redirect: 'manual' });
-  const location = res.headers.get('location');
-  if (!location) throw new Error('Could not resolve attachment');
-  return location;
+  const res = await fetch(`${attachmentUrl(storagePath)}?format=json`, { headers });
+
+  if (!res.ok) {
+    throw new Error(`Could not resolve attachment (${res.status})`);
+  }
+
+  const body = await res.json().catch(() => ({}));
+  if (!body.url) {
+    throw new Error(`Could not resolve attachment (${res.status}): response had no url`);
+  }
+
+  return body.url;
 }
 
 export async function uploadAttachment(
