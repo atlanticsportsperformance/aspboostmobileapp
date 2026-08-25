@@ -10,7 +10,9 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Path, Line, Circle, Polygon, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
+// aliased: react-native-svg also exports a LinearGradient
+import { LinearGradient as Gradient } from 'expo-linear-gradient';
+import Svg, { Path, Line, Circle, Polygon, Defs, LinearGradient, RadialGradient, Stop } from 'react-native-svg';
 import {
   type PercentileTable,
   type RowData,
@@ -18,23 +20,43 @@ import {
   computeScore,
   INDUSTRY_MEDIAN,
   computeGroupData,
+  computePercentile,
   getMetricData,
   buildDistributionPath,
 } from '../../lib/mocap/percentiles';
 
-const ACCENT = '#00E5FF';
-const GREEN = '#00FF94';
-const AMBER = '#FFD600';
-const RED = '#FF3D71';
+// ─── Tier ladder ─────────────────────────────────────────────────────────────
+// Color only ever means tier. Athlete data is white. The ladder runs
+// alarming -> neutral -> alive -> precious so the top of the scale is the
+// one that reads as a reward.
+const NEEDS_WORK = '#FF5C7A';
+const EMERGING = '#8B93A7';
+const GOOD = '#4ADE80';
+const ADVANCED = '#E3B341';
+
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const PAGE_PAD = 20;
+const CARD_W = SCREEN_WIDTH - PAGE_PAD * 2 - 34;
 const CHART_W = SCREEN_WIDTH - 48;
 const CHART_H = 60;
 
 function zoneColor(pct: number): string {
-  if (pct >= 75) return GREEN;
-  if (pct >= 50) return ACCENT;
-  if (pct >= 25) return AMBER;
-  return RED;
+  if (pct >= 75) return ADVANCED;
+  if (pct >= 50) return GOOD;
+  if (pct >= 25) return EMERGING;
+  return NEEDS_WORK;
+}
+
+/** 1 -> 1st, 22 -> 22nd, 13 -> 13th. */
+function ordinal(n: number): string {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
 }
 
 function zoneLabel(pct: number): string {
@@ -63,13 +85,20 @@ function CountUp({ value, decimals = 0, delay = 0, prefix = '', style }: {
   return <Text style={style}>{prefix}{display.toFixed(decimals)}</Text>;
 }
 
-// ─── Radar Chart ─────────────────────────────────────────────────────────────
+// ─── Octagon Radar ───────────────────────────────────────────────────────────
+// Flat octagonal grid — eight spokes so it reads as a proper radar — with the
+// four measured groups on the cardinal axes. The white contour is smoothed
+// through those four points; dots mark only what was actually measured, so
+// the diagonals stay unclaimed.
 
-const RADAR_W = SCREEN_WIDTH - 16;
-const RADAR_H = SCREEN_WIDTH - 16;
+const RADAR_W = SCREEN_WIDTH - PAGE_PAD * 2;
+const R = Math.min(RADAR_W / 2 - 62, 118);
+const PILL_ROOM = 46;
+const RADAR_H = 2 * (R + PILL_ROOM);
 const CX = RADAR_W / 2;
 const CY = RADAR_H / 2;
-const R = (SCREEN_WIDTH - 16) / 2 - 62;
+const PILL_W = 56;
+
 const AXES = [
   { label: 'Drive', angle: -90 },    // top
   { label: 'Posture', angle: 0 },    // right
@@ -77,109 +106,127 @@ const AXES = [
   { label: 'Arm', angle: 180 },      // left
 ];
 
+/** Eight cage spokes: the four measured axes plus four empty guides. */
+const CAGE_ANGLES = [-90, -45, 0, 45, 90, 135, 180, 225];
+
 function rp(angleDeg: number, pct: number) {
   const rad = (angleDeg * Math.PI) / 180;
-  return { x: CX + (pct / 100) * R * Math.cos(rad), y: CY + (pct / 100) * R * Math.sin(rad) };
+  return {
+    x: CX + (pct / 100) * R * Math.cos(rad),
+    y: CY + (pct / 100) * R * Math.sin(rad),
+  };
 }
 
-// Grid rings are true circles — athlete polygon stays straight
-function ringRadius(pct: number) {
-  return (pct / 100) * R;
+function octagon(pct: number) {
+  return CAGE_ANGLES
+    .map(a => {
+      const p = rp(a, pct);
+      return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+    })
+    .join(' ');
+}
+
+/** Closed Catmull-Rom through the four vertices, as a cubic bezier path. */
+function smoothClosedPath(pts: { x: number; y: number }[]) {
+  const n = pts.length;
+  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n];
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % n];
+    const p3 = pts[(i + 2) % n];
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }
+  return `${d} Z`;
+}
+
+/** Where a vertex pill sits, in absolute coords inside the radar box. */
+function pillBox(angle: number) {
+  if (angle === -90) return { left: CX - PILL_W / 2, top: CY - R - 42 };
+  if (angle === 90) return { left: CX - PILL_W / 2, top: CY + R + 8 };
+  if (angle === 0) return { left: CX + R + 4, top: CY - 18 };
+  return { left: CX - R - PILL_W - 4, top: CY - 18 };
+}
+
+function VertexPill({ score, label, angle }: { score: number; label: string; angle: number }) {
+  const color = zoneColor(score);
+  const isSlate = color === EMERGING;
+  return (
+    <View style={[styles.vertexPill, pillBox(angle)]}>
+      <View style={[
+        styles.vertexChip,
+        { backgroundColor: isSlate ? 'rgba(139,147,167,0.28)' : color },
+      ]}>
+        <Text style={[styles.vertexChipText, { color: isSlate ? '#FFFFFF' : '#0A0A0B' }]}>
+          {Math.round(score)}
+        </Text>
+      </View>
+      <Text style={styles.vertexLabel}>{label.toUpperCase()}</Text>
+    </View>
+  );
 }
 
 function RadarChart({ groupScores }: { groupScores: number[] }) {
-  const gridScale = useRef(new Animated.Value(0)).current;
-  const axisOpacity = useRef(new Animated.Value(0)).current;
-  const athleteScale = useRef(new Animated.Value(0)).current;
-  const dotsOpacity = useRef(new Animated.Value(0)).current;
-  const scoreOpacity = useRef(new Animated.Value(0)).current;
+  const cageOpacity = useRef(new Animated.Value(0)).current;
+  const athleteScale = useRef(new Animated.Value(0.6)).current;
+  const athleteOpacity = useRef(new Animated.Value(0)).current;
+  const pillOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Staggered reveal from center outward — no bouncing, clean fades
-    Animated.timing(gridScale, { toValue: 1, duration: 600, delay: 100, useNativeDriver: true }).start();
-    Animated.timing(axisOpacity, { toValue: 1, duration: 400, delay: 300, useNativeDriver: true }).start();
-    Animated.timing(athleteScale, { toValue: 1, duration: 500, delay: 500, useNativeDriver: true }).start();
-    Animated.timing(dotsOpacity, { toValue: 1, duration: 400, delay: 700, useNativeDriver: true }).start();
-    Animated.timing(scoreOpacity, { toValue: 1, duration: 500, delay: 800, useNativeDriver: true }).start();
+    Animated.timing(cageOpacity, { toValue: 1, duration: 500, delay: 100, useNativeDriver: true }).start();
+    Animated.parallel([
+      Animated.timing(athleteOpacity, { toValue: 1, duration: 420, delay: 380, useNativeDriver: true }),
+      Animated.spring(athleteScale, { toValue: 1, damping: 18, stiffness: 110, delay: 380, useNativeDriver: true }),
+    ]).start();
+    Animated.timing(pillOpacity, { toValue: 1, duration: 420, delay: 700, useNativeDriver: true }).start();
   }, []);
 
-  const pts = groupScores.map((pct, i) => rp(AXES[i].angle, pct));
-  const athletePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') + ' Z';
-
-  // Label positions pushed further out with alignment adjustments
-  const labelPositions = AXES.map((a, i) => {
-    const lp = rp(a.angle, 130);
-    const align = a.angle === 0 ? 'flex-start' : a.angle === 180 ? 'flex-end' : 'center';
-    return { ...lp, align };
-  });
+  const athletePts = groupScores.map((pct, i) => rp(AXES[i].angle, Math.max(pct, 3)));
+  const athletePath = smoothClosedPath(athletePts);
 
   return (
     <View style={styles.radarContainer}>
-      {/* Grid rings — scale from center */}
-      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: gridScale }] }]}>
+      {/* Grid — octagon rings and eight spokes */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: cageOpacity }]}>
         <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          {[25, 50, 75, 100].map(p => (
-            <Circle key={p} cx={CX} cy={CY} r={ringRadius(p)} fill="none"
-              stroke={p === 50 ? 'rgba(255,255,255,0.40)' : p === 75 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.20)'}
-              strokeWidth={p === 50 ? 2 : 1}
-              strokeDasharray={p === 100 ? '4 4' : undefined} />
-          ))}
-        </Svg>
-      </Animated.View>
+          <Polygon points={octagon(100)} fill="none" stroke="#35353E" strokeWidth="1" />
+          <Polygon points={octagon(75)} fill="none" stroke="#2A2A31" strokeWidth="1" opacity={0.85} />
+          <Polygon points={octagon(50)} fill="none" stroke="#2A2A31" strokeWidth="1" opacity={0.7} />
+          <Polygon points={octagon(25)} fill="none" stroke="#2A2A31" strokeWidth="1" opacity={0.5} />
 
-      {/* Axis lines — fade in */}
-      <Animated.View style={[styles.radarSvgLayer, { opacity: axisOpacity }]}>
-        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          {AXES.map((a, i) => {
-            const tip = rp(a.angle, 105);
-            return <Line key={i} x1={CX} y1={CY} x2={tip.x} y2={tip.y}
-              stroke="rgba(255,255,255,0.25)" strokeWidth="1" />;
-          })}
-        </Svg>
-      </Animated.View>
-
-      {/* Athlete polygon — spring from center */}
-      <Animated.View style={[styles.radarSvgLayer, { transform: [{ scale: athleteScale }] }]}>
-        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          <Defs>
-            <LinearGradient id="radarGrad" x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor={ACCENT} stopOpacity="0.45" />
-              <Stop offset="1" stopColor={ACCENT} stopOpacity="0.12" />
-            </LinearGradient>
-          </Defs>
-          <Path d={athletePath} fill="url(#radarGrad)" stroke={ACCENT} strokeWidth="2.5" strokeLinejoin="round" />
-        </Svg>
-      </Animated.View>
-
-      {/* Dots + scores — fade in last */}
-      <Animated.View style={[styles.radarSvgLayer, { opacity: dotsOpacity }]}>
-        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          {pts.map((p, i) => (
-            <Circle key={i} cx={p.x} cy={p.y} r={5} fill={ACCENT}
-              stroke="#0A0A0A" strokeWidth="2" />
-          ))}
-        </Svg>
-      </Animated.View>
-
-      {/* Vertex labels — fade in. Center composite is shown in the
-          stats row above the radar, so we don't repeat it here. */}
-      <Animated.View style={[styles.radarSvgLayer, { opacity: scoreOpacity }]}>
-        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
-          {/* Vertex labels + scores — all centered on their axis */}
-          {AXES.map((a, i) => {
-            const lp = rp(a.angle, 118);
-            const dy = a.angle === -90 ? -6 : a.angle === 90 ? 16 : 4;
+          {CAGE_ANGLES.map((a, i) => {
+            const f = rp(a, 100);
+            const measured = i % 2 === 0;
             return (
-              <React.Fragment key={i}>
-                <SvgText x={lp.x} y={lp.y + dy} textAnchor="middle"
-                  fontSize="20" fontWeight="900" fill="#FFFFFF">{Math.round(groupScores[i])}</SvgText>
-                <SvgText x={lp.x} y={lp.y + dy + 14} textAnchor="middle"
-                  fontSize="8" fontWeight="700" fill="rgba(255,255,255,0.30)"
-                  letterSpacing={1.5}>{a.label.toUpperCase()}</SvgText>
-              </React.Fragment>
+              <Line key={`spoke-${a}`} x1={CX} y1={CY} x2={f.x} y2={f.y}
+                stroke={measured ? '#33333B' : '#232329'} strokeWidth="1" />
             );
           })}
         </Svg>
+      </Animated.View>
+
+      {/* This pitch — white contour, no tier color */}
+      <Animated.View style={[
+        styles.radarSvgLayer,
+        { opacity: athleteOpacity, transform: [{ scale: athleteScale }] },
+      ]}>
+        <Svg width={RADAR_W} height={RADAR_H} viewBox={`0 0 ${RADAR_W} ${RADAR_H}`}>
+          <Path d={athletePath} fill="rgba(255,255,255,0.05)" stroke="#FFFFFF" strokeWidth="2" />
+          {athletePts.map((p, i) => (
+            <Circle key={i} cx={p.x} cy={p.y} r={3.5} fill="#FFFFFF" />
+          ))}
+        </Svg>
+      </Animated.View>
+
+      {/* Vertex pills */}
+      <Animated.View style={[styles.radarSvgLayer, { opacity: pillOpacity, height: RADAR_H }]}>
+        {AXES.map((a, i) => (
+          <VertexPill key={a.label} score={groupScores[i]} label={a.label} angle={a.angle} />
+        ))}
       </Animated.View>
     </View>
   );
@@ -245,6 +292,56 @@ function DistributionSvg({ percKey, athleteValue, athletePct, delay, percentileD
   );
 }
 
+// ─── Group Tile ──────────────────────────────────────────────────────────────
+// Four tier-tinted buttons in a 2x2 grid. Tapping one drives the metric list
+// below, so they need to read as pressable, not as decoration.
+
+const TILE_GAP = 8;
+const TILE_W = (SCREEN_WIDTH - PAGE_PAD * 2 - TILE_GAP) / 2;
+const TILE_H = 116;
+
+function GroupTile({ title, score, metrics, active, onPress }: {
+  title: string; score: number; metrics: RowData[];
+  active: boolean; onPress: () => void;
+}) {
+  const color = zoneColor(score);
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.8}
+      style={[
+        styles.groupTile,
+        { borderColor: active ? `${color}9E` : 'rgba(255,255,255,0.08)' },
+      ]}
+    >
+      <Gradient
+        colors={[`${color}${active ? '57' : '38'}`, `${color}0D`, 'rgba(255,255,255,0.02)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0.65, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      {/* top sheen — the thing that makes a flat tile read as a raised button */}
+      <View
+        style={[styles.tileSheen, { backgroundColor: active ? `${color}80` : 'rgba(255,255,255,0.12)' }]}
+        pointerEvents="none"
+      />
+
+      <Text style={[styles.tileScore, { color }]}>{Math.round(score)}</Text>
+
+      <View>
+        <Text
+          style={[styles.tileName, active && { color: `${color}F2` }]}
+          numberOfLines={2}
+        >
+          {title.toUpperCase()}
+        </Text>
+        <Text style={styles.tileSub}>{metrics.length} metrics</Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 // ─── Metric Detail Modal ─────────────────────────────────────────────────────
 
 function MetricDetailModal({ metric, visible, onClose, percentileData }: {
@@ -288,6 +385,24 @@ function MetricDetailModal({ metric, visible, onClose, percentileData }: {
               <View style={[modalStyles.tag, { borderColor: 'rgba(255,255,255,0.1)' }]}>
                 <Ionicons name={metric.scoring === 'higher' ? 'arrow-up' : 'swap-horizontal'} size={12} color="rgba(255,255,255,0.4)" />
                 <Text style={modalStyles.tagTextSubtle}>{scoringType}</Text>
+              </View>
+            </View>
+
+            {/* Cohort distribution — the hero of the sheet */}
+            <View style={{ paddingHorizontal: 24, marginBottom: 6 }}>
+              <DistributionSvg
+                percKey={metric.percKey}
+                athleteValue={metric.raw}
+                athletePct={metric.pct}
+                delay={120}
+                percentileData={percentileData}
+              />
+              <View style={modalStyles.distAxis}>
+                <Text style={modalStyles.distAxisText}>weakest</Text>
+                <Text style={modalStyles.distAxisText}>
+                  {eliteP50 != null ? `elite median ${eliteP50.toFixed(1)}` : 'median'}
+                </Text>
+                <Text style={modalStyles.distAxisText}>strongest</Text>
               </View>
             </View>
 
@@ -377,60 +492,43 @@ function MetricRow({ d, delay, percentileData }: {
   const barWidth = barAnim.interpolate({ inputRange: [0, 100], outputRange: ['0%', '100%'] });
 
   return (
-    <Animated.View style={[styles.metricRow, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-      {/* Hero percentile + raw value */}
-      <View style={styles.metricTopLine}>
-        {d.raw != null ? (
-          <CountUp value={Math.round(d.pct)} delay={delay + 200}
-            style={[styles.heroPercentile, { color }]} />
-        ) : (
-          <Text style={[styles.heroPercentile, { color: '#4B5563' }]}>--</Text>
-        )}
-        <Text style={styles.rawValue}>
-          {d.raw != null ? d.raw.toFixed(1) : '--'}
-          <Text style={styles.rawUnit}> {d.unit}</Text>
-        </Text>
-      </View>
+    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
+      <TouchableOpacity
+        style={styles.metricCard}
+        activeOpacity={0.8}
+        onPress={() => setShowDetail(true)}
+      >
+        {/* Name and the actual measurement lead — percentile is the caption */}
+        <View style={styles.metricCardTop}>
+          <Text style={styles.metricCardName} numberOfLines={1}>{d.axisLabel}</Text>
+          <Text style={styles.metricCardRaw}>
+            {d.raw != null ? d.raw.toFixed(1) : '--'}
+            <Text style={styles.metricCardUnit}> {d.unit}</Text>
+          </Text>
+        </View>
 
-      {/* Metric name with animated colored left accent + info button */}
-      <View style={styles.metricNameRow}>
-        <Animated.View style={[styles.metricAccentBar, { height: accentHeight, backgroundColor: color }]} />
-        <Text style={styles.metricName}>{d.axisLabel}</Text>
-        <TouchableOpacity onPress={() => setShowDetail(true)} style={styles.infoButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="information-circle-outline" size={18} color="rgba(255,255,255,0.3)" />
-        </TouchableOpacity>
-      </View>
+        <View style={styles.barTrack}>
+          <Animated.View style={[styles.barFill, { width: barWidth, backgroundColor: color }]} />
+          <View style={styles.barP50} />
+        </View>
 
-      {/* Detail modal */}
-      <MetricDetailModal metric={d} visible={showDetail} onClose={() => setShowDetail(false)} percentileData={percentileData} />
+        <View style={styles.metricCardFoot}>
+          <Text style={[styles.metricCardPct, { color }]}>
+            {d.raw != null ? `${ordinal(Math.round(d.pct))} percentile` : 'no reading'}
+            {d.scoring === 'goldilocks' ? ' · target band' : ''}
+          </Text>
+          <Text style={styles.metricCardCmp}>
+            {eliteP50 != null ? `elite median ${eliteP50.toFixed(1)}` : ''}
+          </Text>
+        </View>
+      </TouchableOpacity>
 
-      {/* Bar */}
-      <View style={styles.barTrack}>
-        <View style={styles.barP50} />
-        <Animated.View style={[styles.barFill, { width: barWidth, backgroundColor: color }]} />
-      </View>
-
-      {/* Comparison values */}
-      <View style={styles.compRow}>
-        {eliteP50 != null && (
-          <Text style={styles.compElite}>elite {eliteP50.toFixed(1)}</Text>
-        )}
-        {industry && (
-          <Text style={styles.compIndustry}> · industry {industry.value}</Text>
-        )}
-      </View>
-
-      {/* Distribution */}
-      <DistributionSvg
-        percKey={d.percKey}
-        athleteValue={d.raw}
-        athletePct={d.pct}
-        delay={delay + 500}
+      <MetricDetailModal
+        metric={d}
+        visible={showDetail}
+        onClose={() => setShowDetail(false)}
         percentileData={percentileData}
       />
-
-      {/* Explanation */}
-      <Text style={styles.explanation}>{d.explanation}</Text>
     </Animated.View>
   );
 }
@@ -483,32 +581,24 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
   const activeData = allGroupData[activeGroup];
   const activeAvg = groupScores[activeGroup];
   const activeColor = zoneColor(activeAvg);
+  const overallColor = zoneColor(overallScore);
 
-  // Short tab labels
-  const TAB_LABELS = ['Drive', 'Posture', 'Block', 'Arm'];
-
-  // Staggered slide-in from left for tabs
-  const tabAnims = useRef(TAB_LABELS.map(() => ({
-    opacity: new Animated.Value(0),
-    translateX: new Animated.Value(-40),
-  }))).current;
-
-  useEffect(() => {
-    tabAnims.forEach((anim, i) => {
-      Animated.parallel([
-        Animated.timing(anim.opacity, { toValue: 1, duration: 400, delay: 900 + i * 120, useNativeDriver: true }),
-        Animated.timing(anim.translateX, { toValue: 0, duration: 400, delay: 900 + i * 120, useNativeDriver: true }),
-      ]).start();
-    });
-  }, []);
+  // Strongest group first — the weakest lands last, where it reads as the ask.
+  const order = GROUPS.map((_, i) => i).sort((a, b) => groupScores[b] - groupScores[a]);
 
   return (
     <View style={styles.container}>
+      {/* Ambient wash, tinted by the composite's tier */}
+      <Gradient
+        colors={[`${overallColor}1C`, 'transparent']}
+        style={styles.ambient}
+        pointerEvents="none"
+      />
 
-      {/* ── Zone Badge + Description (mirrors Force Profile) ── */}
+      {/* ── Tier badge + cohort line ── */}
       <View style={styles.zoneHeader}>
-        <View style={[styles.zoneBadge, { backgroundColor: `${zoneColor(overallScore)}15` }]}>
-          <Text style={[styles.zoneBadgeText, { color: zoneColor(overallScore) }]}>
+        <View style={[styles.zoneBadge, { backgroundColor: `${overallColor}1F` }]}>
+          <Text style={[styles.zoneBadgeText, { color: overallColor }]}>
             {zoneLabel(overallScore)}
           </Text>
         </View>
@@ -517,7 +607,7 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
         </Text>
       </View>
 
-      {/* ── Stats Row: Pitch info left + Composite right ── */}
+      {/* ── Velocity left, composite right ── */}
       <View style={styles.statsRow}>
         <View>
           {velocity != null && (
@@ -531,75 +621,56 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
           </Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={[styles.compositeValue, { color: zoneColor(overallScore) }]}>
-            {Math.round(overallScore)}
-          </Text>
-          <Text style={styles.compositeLabel}>Composite</Text>
+          <Text style={styles.compositeValue}>{Math.round(overallScore)}</Text>
+          <Text style={styles.compositeLabel}>COMPOSITE</Text>
         </View>
       </View>
 
-      {/* ── Hero Radar ── */}
+      {/* ── Cage radar ── */}
       <RadarChart groupScores={groupScores} />
 
-      {/* ── Zone Legend ── */}
-      <View style={styles.zoneLegend}>
+      {/* ── Tier legend, one capsule ── */}
+      <View style={styles.legendCapsule}>
         {[
-          { label: 'NEEDS WORK', color: RED },
-          { label: 'EMERGING', color: AMBER },
-          { label: 'GOOD', color: ACCENT },
-          { label: 'ADVANCED', color: GREEN },
+          { label: 'Needs Work', color: NEEDS_WORK },
+          { label: 'Emerging', color: EMERGING },
+          { label: 'Good', color: GOOD },
+          { label: 'Advanced', color: ADVANCED },
         ].map(z => (
-          <View key={z.label} style={styles.zoneItem}>
-            <View style={[styles.zoneDot, { backgroundColor: z.color }]} />
-            <Text style={[styles.zoneText, { color: `${z.color}80` }]}>{z.label}</Text>
+          <View key={z.label} style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: z.color }]} />
+            <Text style={styles.legendText}>{z.label}</Text>
           </View>
         ))}
       </View>
 
-      {/* ── Spacer to push tabs below fold ── */}
-      <View style={{ height: 32 }} />
-
-      {/* ── Group Tabs — staggered slide from left ── */}
-      <View style={styles.tabRow}>
-        {GROUPS.map((g, i) => {
-          const isActive = i === activeGroup;
-          return (
-            <Animated.View key={g.title} style={{ flex: 1, opacity: tabAnims[i].opacity, transform: [{ translateX: tabAnims[i].translateX }] }}>
-              <TouchableOpacity
-                style={[styles.tab, isActive && styles.tabActive]}
-                onPress={() => switchGroup(i)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.tabScore, { color: isActive ? '#FFFFFF' : 'rgba(255,255,255,0.2)' }]}>
-                  {Math.round(groupScores[i])}
-                </Text>
-                <Text style={[styles.tabLabel, isActive && { color: 'rgba(255,255,255,0.6)' }]}>
-                  {TAB_LABELS[i]}
-                </Text>
-              </TouchableOpacity>
-            </Animated.View>
-          );
-        })}
+      {/* ── Groups ── */}
+      <Text style={styles.sectionLabel}>GROUPS</Text>
+      <View style={styles.tileGrid}>
+        {order.map(i => (
+          <GroupTile
+            key={GROUPS[i].title}
+            title={GROUPS[i].title}
+            score={groupScores[i]}
+            metrics={allGroupData[i]}
+            active={i === activeGroup}
+            onPress={() => switchGroup(i)}
+          />
+        ))}
       </View>
 
-      {/* ── Active Group Content ── */}
+      {/* ── Metrics for the selected group ── */}
       <Animated.View style={{ opacity: fadeAnim, transform: [{ translateX: slideX }] }}>
-        {/* Group header */}
         <View style={styles.groupHeader}>
           <Text style={styles.groupTitle}>{GROUPS[activeGroup].title}</Text>
-          <View style={[styles.groupPercentileBadge, { borderColor: activeColor + '30' }]}>
+          <View style={[styles.groupPercentileBadge, { borderColor: `${activeColor}30` }]}>
             <Text style={[styles.groupPercentileLabel, { color: activeColor }]}>P</Text>
             <Text style={[styles.groupPercentileValue, { color: activeColor }]}>{Math.round(activeAvg)}</Text>
           </View>
         </View>
-        <View style={styles.hairline} />
 
-        {/* Metrics */}
         {activeData.map((d, i) => (
-          <React.Fragment key={d.key}>
-            <MetricRow d={d} delay={100 + i * 80} percentileData={percentileData} />
-            {i < activeData.length - 1 && <View style={styles.metricSeparator} />}
-          </React.Fragment>
+          <MetricRow key={d.key} d={d} delay={80 + i * 60} percentileData={percentileData} />
         ))}
       </Animated.View>
     </View>
@@ -609,60 +680,69 @@ export default function PercentileBreakdown({ scalarMetrics, percentileData, vel
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { paddingHorizontal: 20, paddingTop: 24 },
+  container: { paddingHorizontal: PAGE_PAD, paddingTop: 24 },
+
+  // Ambient wash, tinted by the composite's tier
+  ambient: { position: 'absolute', top: -24, left: -PAGE_PAD, right: -PAGE_PAD, height: 340 },
 
   zoneHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 10 },
   zoneBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   zoneBadgeText: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   zoneDescription: { fontSize: 13, color: '#9CA3AF', flex: 1 },
 
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
   velocityValue: { fontSize: 36, fontWeight: '800', color: '#FFFFFF' },
   velocityUnit: { fontSize: 16, fontWeight: '500', color: 'rgba(255,255,255,0.5)' },
   velocityLabel: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
-  compositeValue: { fontSize: 48, fontWeight: '800' },
-  compositeLabel: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
+  // The pitch is white. Tier color is reserved for the judgment about it.
+  compositeValue: { fontSize: 46, fontWeight: '800', color: '#FFFFFF', letterSpacing: -1.6 },
+  compositeLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, color: 'rgba(255,255,255,0.34)', marginTop: 5 },
 
   loadingContainer: { alignItems: 'center', paddingVertical: 48 },
   loadingText: { fontSize: 12, color: 'rgba(255,255,255,0.2)' },
 
-  // Radar
-  radarSvgLayer: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
+  // ── Cage radar ──
+  radarSvgLayer: { position: 'absolute', top: 0, left: 0, right: 0 },
+  radarContainer: { alignSelf: 'center', width: RADAR_W, height: RADAR_H, marginBottom: 10 },
+  vertexPill: { position: 'absolute', width: PILL_W, alignItems: 'center', gap: 2 },
+  vertexChip: { paddingHorizontal: 8, paddingVertical: 2.5, borderRadius: 10 },
+  vertexChipText: { fontSize: 12.5, fontWeight: '800', letterSpacing: -0.2 },
+  vertexLabel: { fontSize: 8.5, fontWeight: '700', letterSpacing: 1.1, color: 'rgba(255,255,255,0.34)' },
+
+  // ── Tier legend, one capsule ──
+  legendCapsule: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8,
   },
-  radarContainer: { alignSelf: 'center', width: RADAR_W, height: RADAR_H, marginBottom: 8 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDot: { width: 6, height: 6, borderRadius: 3 },
+  legendText: { fontSize: 10.5, fontWeight: '600', color: 'rgba(255,255,255,0.5)' },
 
-  // Zone legend
-  zoneLegend: { flexDirection: 'row', justifyContent: 'center', gap: 16, marginBottom: 6 },
-  zoneItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  zoneDot: { width: 6, height: 6, borderRadius: 3 },
-  zoneText: { fontSize: 8, fontWeight: '700', letterSpacing: 1.5 },
-
-  subtitle: { textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.2)', marginBottom: 20 },
-
-  // Tabs
-  tabRow: {
-    flexDirection: 'row', gap: 6, marginBottom: 24, paddingHorizontal: 2,
+  sectionLabel: {
+    fontSize: 11, fontWeight: '700', letterSpacing: 1.6,
+    color: 'rgba(255,255,255,0.36)', marginTop: 24, marginBottom: 10,
   },
-  tab: {
-    flex: 1, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 6,
-    borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.02)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
-  },
-  tabActive: {
-    backgroundColor: 'rgba(155,221,255,0.06)',
-    borderColor: 'rgba(155,221,255,0.20)',
-  },
-  tabScore: { fontSize: 22, fontWeight: '900', marginBottom: 3, letterSpacing: -0.5 },
-  tabLabel: { fontSize: 8, fontWeight: '700', color: 'rgba(255,255,255,0.20)', textTransform: 'uppercase', letterSpacing: 1.5 },
 
-  hairline: { height: 1, backgroundColor: 'rgba(155,221,255,0.08)', marginBottom: 22 },
+  // ── Group tiles (2x2 button grid) ──
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: TILE_GAP },
+  groupTile: {
+    width: TILE_W, height: TILE_H,
+    borderRadius: 16, borderWidth: 1,
+    padding: 14, overflow: 'hidden', position: 'relative',
+    justifyContent: 'space-between',
+  },
+  tileSheen: { position: 'absolute', left: 0, right: 0, top: 0, height: 1 },
+  tileScore: { fontSize: 38, fontWeight: '800', letterSpacing: -1.6, lineHeight: 40 },
+  tileName: {
+    fontSize: 11, fontWeight: '700', letterSpacing: 1.2,
+    color: 'rgba(255,255,255,0.5)',
+  },
+  tileSub: { fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 3 },
 
-  // Group content
-  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  // ── Selected group header ──
+  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 22, marginBottom: 12 },
   groupTitle: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: 2 },
   groupPercentileBadge: {
     flexDirection: 'row', alignItems: 'baseline',
@@ -672,29 +752,29 @@ const styles = StyleSheet.create({
   groupPercentileLabel: { fontSize: 12, fontWeight: '600', marginRight: 1 },
   groupPercentileValue: { fontSize: 20, fontWeight: '900' },
 
-  metricSeparator: { height: 1, backgroundColor: 'rgba(255,255,255,0.04)', marginVertical: 22 },
+  // ── Metric card — name and measurement lead, percentile is the caption ──
+  metricCard: {
+    backgroundColor: 'rgba(255,255,255,0.032)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 16, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8,
+  },
+  metricCardTop: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 },
+  metricCardName: { fontSize: 14.5, fontWeight: '600', color: 'rgba(255,255,255,0.9)', flex: 1 },
+  metricCardRaw: { fontSize: 12.5, fontWeight: '600', color: 'rgba(255,255,255,0.5)' },
+  metricCardUnit: { fontSize: 10.5, color: 'rgba(255,255,255,0.3)' },
+  metricCardFoot: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  metricCardPct: { fontSize: 11, fontWeight: '700' },
+  metricCardCmp: { fontSize: 10.5, color: 'rgba(255,255,255,0.33)' },
 
-  // Metric row
-  metricRow: {},
-  metricTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 },
-  heroPercentile: { fontSize: 34, fontWeight: '900', letterSpacing: -1 },
-  rawValue: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.55)', letterSpacing: 0.5 },
-  rawUnit: { fontSize: 10, color: 'rgba(255,255,255,0.3)' },
-
-  metricNameRow: { paddingLeft: 12, marginBottom: 12, flexDirection: 'row', alignItems: 'center' },
-  metricAccentBar: { width: 2.5, borderRadius: 1.5, position: 'absolute' as const, left: 0, top: 0 },
-  metricName: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.75)', flex: 1 },
-  infoButton: { padding: 4 },
-
-  barTrack: { height: 5, borderRadius: 2.5, backgroundColor: 'rgba(255,255,255,0.10)', overflow: 'hidden', position: 'relative' as const, marginBottom: 8 },
-  barP50: { position: 'absolute' as const, left: '50%', top: -1, width: 1.5, height: 7, backgroundColor: 'rgba(74,222,128,0.45)', zIndex: 10, borderRadius: 1 },
-  barFill: { position: 'absolute' as const, top: 0, left: 0, height: '100%', borderRadius: 2.5 },
-
-  compRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
-  compElite: { fontSize: 10, fontWeight: '500', color: 'rgba(74,222,128,0.55)', letterSpacing: 0.3 },
-  compIndustry: { fontSize: 10, fontWeight: '500', color: 'rgba(251,191,36,0.50)', letterSpacing: 0.3 },
-
-  explanation: { fontSize: 11, color: 'rgba(255,255,255,0.30)', lineHeight: 17, marginTop: 8 },
+  barTrack: {
+    height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.09)',
+    position: 'relative', marginTop: 11, marginBottom: 8,
+  },
+  barFill: { position: 'absolute', top: 0, left: 0, height: '100%', borderRadius: 3 },
+  barP50: {
+    position: 'absolute', left: '50%', top: -2, width: 1.5, height: 9,
+    backgroundColor: 'rgba(255,255,255,0.34)', borderRadius: 1,
+  },
 });
 
 const modalStyles = StyleSheet.create({
@@ -741,6 +821,9 @@ const modalStyles = StyleSheet.create({
   valueCellUnit: { fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 },
 
   divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.06)', marginHorizontal: 24, marginVertical: 16 },
+
+  distAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
+  distAxisText: { fontSize: 9.5, color: 'rgba(255,255,255,0.3)' },
 
   detailTitle: { fontSize: 13, fontWeight: '800', color: 'rgba(255,255,255,0.6)', paddingHorizontal: 24, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
   detailText: { fontSize: 14, color: 'rgba(255,255,255,0.55)', lineHeight: 22, paddingHorizontal: 24 },

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { cohortConfidence, hasSufficientCohort, type CohortConfidence } from './percentile-display';
 
 /**
  * Shared force-plate (VALD "force profile") loader.
@@ -20,7 +21,19 @@ export interface ForceMetric {
   test_type: string;
   metric: string;
   date: string;
+  /** How many athletes this percentile was computed against. */
+  sampleSize: number;
+  confidence: CohortConfidence;
   previous?: { percentile: number; value: number; date: string };
+}
+
+/** A metric the athlete has tested, held back because its cohort is too small to rank. */
+export interface SuppressedMetric {
+  test_type: string;
+  metric: string;
+  value: number;
+  date: string;
+  sampleSize: number;
 }
 
 export interface ForceProfileResult {
@@ -28,6 +41,11 @@ export interface ForceProfileResult {
   metrics: ForceMetric[];
   /** Number of metrics the config asked for (for "X of N metrics" copy). */
   requestedCount: number;
+  /**
+   * Metrics with data but too small a cohort to express as a percentile. They still
+   * have a real value worth showing — they just aren't a rank.
+   */
+  suppressed: SuppressedMetric[];
 }
 
 // Hardcoded fallback, matching the web seed script, used when an org has no
@@ -90,16 +108,16 @@ export async function loadForceProfileMetrics(
   const requestedCount = metrics.length;
   const uniqueTestTypes = [...new Set(metrics.map((m: any) => m.test_type))];
 
-  if (uniqueTestTypes.length === 0) return { metrics: [], requestedCount };
+  if (uniqueTestTypes.length === 0) return { metrics: [], requestedCount, suppressed: [] };
 
   const { data: allPercentiles } = await supabase
     .from('force_plate_percentiles')
-    .select('test_id, test_date, test_type, percentiles')
+    .select('test_id, test_date, test_type, percentiles, sample_sizes')
     .eq('athlete_id', athleteId)
     .in('test_type', uniqueTestTypes)
     .order('test_date', { ascending: false });
 
-  if (!allPercentiles || allPercentiles.length === 0) return { metrics: [], requestedCount };
+  if (!allPercentiles || allPercentiles.length === 0) return { metrics: [], requestedCount, suppressed: [] };
 
   // Group by type, preserving the test_date DESC order → [0] latest, [1] previous.
   const byType: Record<string, any[]> = {};
@@ -108,7 +126,8 @@ export async function loadForceProfileMetrics(
   }
 
   // Plan the current (+ previous) raw-value lookups, then fetch them in parallel.
-  const plan: Array<{ metricSpec: any; current: any; metricPercentile: number; prev?: any; prevPercentile?: number }> = [];
+  const plan: Array<{ metricSpec: any; current: any; metricPercentile: number; sampleSize: number; prev?: any; prevPercentile?: number }> = [];
+  const suppressedPlan: Array<{ metricSpec: any; current: any; sampleSize: number }> = [];
   const rawJobs = new Map<string, { test_type: string; test_id: string; metric: string }>();
   const jobKey = (testId: string, metric: string) => `${testId}:${metric}`;
 
@@ -119,15 +138,26 @@ export async function loadForceProfileMetrics(
     const metricPercentile = current.percentiles?.[metricSpec.metric];
     if (typeof metricPercentile !== 'number' || isNaN(metricPercentile)) continue;
 
+    const sampleSize = Number(current.sample_sizes?.[metricSpec.metric] ?? 0);
+
+    // Too few comparisons to be a rank. Keep the raw value — the athlete still
+    // tested — but route it away from the radar so it can be labelled honestly.
+    if (!hasSufficientCohort(sampleSize)) {
+      rawJobs.set(jobKey(current.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: current.test_id, metric: metricSpec.metric });
+      suppressedPlan.push({ metricSpec, current, sampleSize });
+      continue;
+    }
+
     rawJobs.set(jobKey(current.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: current.test_id, metric: metricSpec.metric });
 
     const prev = opts.includePrevious ? snaps[1] : undefined;
     const prevPercentile = prev?.percentiles?.[metricSpec.metric];
-    if (prev && typeof prevPercentile === 'number') {
+    const prevSampleSize = Number(prev?.sample_sizes?.[metricSpec.metric] ?? 0);
+    if (prev && typeof prevPercentile === 'number' && hasSufficientCohort(prevSampleSize)) {
       rawJobs.set(jobKey(prev.test_id, metricSpec.metric), { test_type: metricSpec.test_type, test_id: prev.test_id, metric: metricSpec.metric });
-      plan.push({ metricSpec, current, metricPercentile, prev, prevPercentile });
+      plan.push({ metricSpec, current, metricPercentile, sampleSize, prev, prevPercentile });
     } else {
-      plan.push({ metricSpec, current, metricPercentile });
+      plan.push({ metricSpec, current, metricPercentile, sampleSize });
     }
   }
 
@@ -144,7 +174,7 @@ export async function loadForceProfileMetrics(
   });
 
   const result: ForceMetric[] = [];
-  for (const { metricSpec, current, metricPercentile, prev, prevPercentile } of plan) {
+  for (const { metricSpec, current, metricPercentile, sampleSize, prev, prevPercentile } of plan) {
     let previous: ForceMetric['previous'] = undefined;
     if (prev && typeof prevPercentile === 'number') {
       previous = {
@@ -159,9 +189,19 @@ export async function loadForceProfileMetrics(
       test_type: metricSpec.test_type,
       metric: metricSpec.metric,
       date: current.test_date,
+      sampleSize,
+      confidence: cohortConfidence(sampleSize),
       previous,
     });
   }
 
-  return { metrics: result, requestedCount };
+  const suppressed: SuppressedMetric[] = suppressedPlan.map(({ metricSpec, current, sampleSize }) => ({
+    test_type: metricSpec.test_type,
+    metric: metricSpec.metric,
+    value: rawByKey.get(jobKey(current.test_id, metricSpec.metric)) ?? 0,
+    date: current.test_date,
+    sampleSize,
+  }));
+
+  return { metrics: result, requestedCount, suppressed };
 }

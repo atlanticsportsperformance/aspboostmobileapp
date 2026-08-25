@@ -160,20 +160,20 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
       {/* Tab bar */}
       <View style={styles.tabBar}>
         <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'report' && styles.tabItemActive]}
+          style={styles.tabItem}
           onPress={() => setActiveTab('report')}
           activeOpacity={0.7}
         >
-          <Ionicons name="analytics" size={16} color={activeTab === 'report' ? ACCENT : 'rgba(255,255,255,0.3)'} />
           <Text style={[styles.tabText, activeTab === 'report' && styles.tabTextActive]}>Report</Text>
+          {activeTab === 'report' && <View style={styles.tabUnderline} />}
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'motion' && styles.tabItemActive]}
+          style={styles.tabItem}
           onPress={() => setActiveTab('motion')}
           activeOpacity={0.7}
         >
-          <Ionicons name="videocam" size={16} color={activeTab === 'motion' ? ACCENT : 'rgba(255,255,255,0.3)'} />
           <Text style={[styles.tabText, activeTab === 'motion' && styles.tabTextActive]}>Motion</Text>
+          {activeTab === 'motion' && <View style={styles.tabUnderline} />}
         </TouchableOpacity>
       </View>
 
@@ -311,38 +311,37 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' },
   velocityBadge: {
     paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6,
-    backgroundColor: `${ACCENT}15`, borderWidth: 1, borderColor: `${ACCENT}30`,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
   },
-  velocityText: { fontSize: 14, fontWeight: '700', color: ACCENT },
+  velocityText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.78)' },
 
   tabBar: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingBottom: 8,
+    paddingHorizontal: 20,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-    gap: 4,
+    borderBottomColor: 'rgba(255,255,255,0.07)',
+    gap: 22,
   },
   tabItem: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: 'transparent',
-  },
-  tabItemActive: {
-    backgroundColor: 'rgba(155,221,255,0.08)',
+    position: 'relative',
+    paddingBottom: 10,
   },
   tabText: {
     fontSize: 14,
     fontWeight: '600',
-    color: 'rgba(255,255,255,0.3)',
+    letterSpacing: -0.1,
+    color: 'rgba(255,255,255,0.34)',
   },
   tabTextActive: {
-    color: ACCENT,
+    color: '#FFFFFF',
+  },
+  tabUnderline: {
+    position: 'absolute',
+    left: 0, right: 0, bottom: -1,
+    height: 2,
+    borderRadius: 2,
+    backgroundColor: '#FFFFFF',
   },
 
   controls: {
