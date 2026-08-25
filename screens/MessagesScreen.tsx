@@ -102,9 +102,16 @@ interface Message {
   }>;
 }
 
-export default function MessagesScreen({ navigation }: any) {
+export default function MessagesScreen({ navigation, route }: any) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  // conversationId from a tapped message-notification's route params. Read
+  // once here; the effect below waits for `conversations` to be populated
+  // (cold start races this screen's mount against the conversation fetch)
+  // and only auto-selects a given id once, so it can't yank the user back
+  // to that thread after they've since picked a different one.
+  const routeConversationId = (route?.params as { conversationId?: string } | undefined)?.conversationId;
+  const autoOpenedConversationIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -158,6 +165,23 @@ export default function MessagesScreen({ navigation }: any) {
   useEffect(() => {
     loadUserAndConversations();
   }, []);
+
+  // Auto-open the conversation a message notification pointed at. On a cold
+  // start this screen mounts before `fetchConversations` resolves, so
+  // `conversations` starts empty — this effect re-runs as that list updates
+  // and only proceeds once the target conversation is actually in it,
+  // instead of silently dropping the navigation intent. Guarded by a ref so
+  // a later re-fetch (new message, realtime update) can't re-select the
+  // notification's conversation out from under a user who has since picked
+  // a different one.
+  useEffect(() => {
+    if (!routeConversationId) return;
+    if (autoOpenedConversationIdRef.current === routeConversationId) return;
+    const target = conversations.find(c => c.id === routeConversationId);
+    if (!target) return;
+    autoOpenedConversationIdRef.current = routeConversationId;
+    selectConversation(target);
+  }, [routeConversationId, conversations]);
 
   // Needed so <Image> can authenticate its request to the attachment
   // endpoint (it carries no cookie session on this app).

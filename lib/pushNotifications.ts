@@ -217,6 +217,7 @@ export function parseNotificationData(notification: Notifications.Notification):
   type?: string;
   id?: string;
   screen?: string;
+  conversationId?: string;
   data?: Record<string, any>;
 } {
   const data = notification.request.content.data || {};
@@ -224,6 +225,9 @@ export function parseNotificationData(notification: Notifications.Notification):
     type: data.type as string | undefined,
     id: data.id as string | undefined,
     screen: data.screen as string | undefined,
+    // Prefer the current field, then the legacy one older installs sent,
+    // then the generic `id` (always present on the current message payload).
+    conversationId: (data.conversationId ?? data.conversation_id ?? data.id) as string | undefined,
     data: data as Record<string, any>,
   };
 }

@@ -61,7 +61,7 @@ function AppContent() {
   }, []);
 
   // Handle notification tap navigation
-  const handleNotificationNavigation = useCallback((data: { type?: string; id?: string; screen?: string }) => {
+  const handleNotificationNavigation = useCallback((data: { type?: string; id?: string; screen?: string; conversationId?: string }) => {
     if (!navigationRef.current || !session) return;
 
     const nav = navigationRef.current as any;
@@ -77,8 +77,16 @@ function AppContent() {
           nav.navigate('Dashboard');
           break;
         case 'message':
-          nav.navigate('Messages');
+        case 'new_message': {
+          // The server sends type 'new_message'; only 'message' was matched
+          // before, so every message notification fell through to the
+          // dashboard. Both are accepted so older queued pushes still route.
+          // conversationId already carries the id/conversation_id fallback
+          // chain from parseNotificationData.
+          const conversationId = data.conversationId;
+          nav.navigate('Messages', conversationId ? { conversationId } : undefined);
           break;
+        }
         case 'booking':
           nav.navigate('Booking');
           break;
