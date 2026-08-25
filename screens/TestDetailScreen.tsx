@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Rect, Line, Circle, Text as SvgText, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { cohortConfidence, cohortNote, type CohortConfidence } from '../lib/percentile-display';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -61,21 +62,26 @@ interface TestMetric {
   display_name: string;
   test_date: string;
   value: number;
-  percentile: number;
+  /** Null when the cohort behind it is too small to rank against. */
+  percentile: number | null;
   sample_size?: number;
+  confidence: CohortConfidence;
 }
 
 type TimeRange = '1m' | '3m' | '6m' | '1y' | 'all';
 
 // Zone helpers
-const getZoneColor = (percentile: number) => {
+// Neutral grey when there is no rank — a suppressed metric must not read as "red / bad".
+const getZoneColor = (percentile: number | null | undefined) => {
+  if (percentile == null) return '#6B7280';
   if (percentile >= 75) return '#4ADE80';
   if (percentile >= 50) return '#9BDDFF';
   if (percentile >= 25) return '#FCD34D';
   return '#EF4444';
 };
 
-const getZoneLabel = (percentile: number) => {
+const getZoneLabel = (percentile: number | null | undefined) => {
+  if (percentile == null) return 'NO BASELINE';
   if (percentile >= 75) return 'ELITE';
   if (percentile >= 50) return 'OPTIMIZE';
   if (percentile >= 25) return 'SHARPEN';
@@ -196,13 +202,16 @@ export default function TestDetailScreen({ route, navigation }: any) {
           const rawValue = test?.[metricKey];
 
           if (typeof percentile === 'number') {
+            const confidence = cohortConfidence(sampleSize);
             transformedMetrics.push({
               metric_name: metricKey,
               display_name: formatMetricName(metricKey),
               test_date: snapshot.test_date,
               value: rawValue || 0,
-              percentile,
+              // Keep the value and the trend; withhold only the rank.
+              percentile: confidence === 'insufficient' ? null : percentile,
               sample_size: sampleSize,
+              confidence,
             });
           }
         }
@@ -308,7 +317,12 @@ export default function TestDetailScreen({ route, navigation }: any) {
   // Calculate stats
   const latestTest = selectedMetricData[selectedMetricData.length - 1];
   const previousTest = selectedMetricData.length > 1 ? selectedMetricData[selectedMetricData.length - 2] : null;
-  const percentileChange = previousTest ? latestTest?.percentile - previousTest.percentile : 0;
+  // Only a change between two shown percentiles is meaningful — a suppressed one
+  // would otherwise read as a drop to zero.
+  const percentileChange =
+    latestTest?.percentile != null && previousTest?.percentile != null
+      ? latestTest.percentile - previousTest.percentile
+      : null;
   const valueChange = (previousTest && latestTest?.value != null && previousTest.value != null && previousTest.value !== 0)
     ? ((latestTest.value - previousTest.value) / previousTest.value) * 100
     : 0;
@@ -363,8 +377,14 @@ export default function TestDetailScreen({ route, navigation }: any) {
                   </View>
                   <View style={styles.metricDropdownRight}>
                     {latestMetricSample?.sample_size !== undefined && (
-                      <View style={styles.sampleSizeBadge}>
-                        <Text style={styles.sampleSizeBadgeText}>
+                      <View style={[
+                        styles.sampleSizeBadge,
+                        latestMetricSample.confidence === 'insufficient' && styles.sampleSizeBadgeWeak,
+                      ]}>
+                        <Text style={[
+                          styles.sampleSizeBadgeText,
+                          latestMetricSample.confidence === 'insufficient' && styles.sampleSizeBadgeTextWeak,
+                        ]}>
                           n={latestMetricSample.sample_size.toLocaleString()}
                         </Text>
                       </View>
@@ -506,8 +526,13 @@ export default function TestDetailScreen({ route, navigation }: any) {
                                   {metricData?.display_name || metricName}
                                 </Text>
                                 {sampleSize !== undefined && (
-                                  <Text style={styles.sampleSizeText}>
-                                    n={sampleSize.toLocaleString()} athletes
+                                  <Text style={[
+                                    styles.sampleSizeText,
+                                    latestMetricData?.confidence === 'insufficient' && styles.sampleSizeTextWeak,
+                                  ]}>
+                                    {latestMetricData?.confidence === 'insufficient'
+                                      ? `n=${sampleSize.toLocaleString()} · no rank yet`
+                                      : `n=${sampleSize.toLocaleString()} athletes`}
                                   </Text>
                                 )}
                               </View>
@@ -580,14 +605,18 @@ export default function TestDetailScreen({ route, navigation }: any) {
                     style={styles.statCard}
                   >
                     <Text style={styles.statLabel}>Percentile Rank</Text>
-                    <Text style={[styles.statValue, { color: latestTest ? getZoneColor(latestTest.percentile) : '#fff' }]}>
-                      {latestTest ? `${Math.round(latestTest.percentile)}th` : 'N/A'}
+                    <Text style={[styles.statValue, { color: latestTest?.percentile != null ? getZoneColor(latestTest.percentile) : '#6B7280' }]}>
+                      {latestTest?.percentile != null ? `${Math.round(latestTest.percentile)}th` : '—'}
                     </Text>
-                    <Text style={styles.statSubtext}>vs {playLevel} athletes</Text>
+                    <Text style={styles.statSubtext}>
+                      {latestTest?.percentile != null
+                        ? `vs ${playLevel} athletes`
+                        : cohortNote(latestTest?.sample_size) || 'Not enough comparisons yet'}
+                    </Text>
                   </LinearGradient>
 
                   {/* Change */}
-                  {previousTest && (
+                  {previousTest && percentileChange !== null && (
                     <LinearGradient
                       colors={['#000', 'rgba(20,20,20,0.9)']}
                       style={styles.statCard}
@@ -975,6 +1004,12 @@ const styles = StyleSheet.create({
     color: '#9BDDFF',
     fontWeight: '600',
   },
+  sampleSizeBadgeWeak: {
+    backgroundColor: 'rgba(252, 211, 77, 0.15)',
+  },
+  sampleSizeBadgeTextWeak: {
+    color: '#FCD34D',
+  },
   metricCountBadge: {
     backgroundColor: 'rgba(255,255,255,0.1)',
     paddingHorizontal: 8,
@@ -1105,6 +1140,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#6B7280',
     marginTop: 2,
+  },
+  sampleSizeTextWeak: {
+    color: '#FCD34D',
   },
   noResultsContainer: {
     padding: 40,

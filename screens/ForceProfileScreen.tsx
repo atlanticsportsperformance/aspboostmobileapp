@@ -90,6 +90,8 @@ export default function ForceProfileScreen({ route, navigation }: any) {
   const [radarData, setRadarData] = useState<RadarDataPoint[]>([]);
   const [compositeScore, setCompositeScore] = useState<number | null>(null);
   const [metricsInfo, setMetricsInfo] = useState<{ included: number; requested: number }>({ included: 0, requested: 6 });
+  // Metrics the athlete has tested but that have too small a cohort to rank against.
+  const [suppressedCount, setSuppressedCount] = useState(0);
   const [latestPrediction, setLatestPrediction] = useState<PredictedVelocity | null>(null);
   const [athleteName, setAthleteName] = useState('');
   const [playLevel, setPlayLevel] = useState('');
@@ -228,12 +230,14 @@ export default function ForceProfileScreen({ route, navigation }: any) {
 
       // Shared force-profile loader (config + batched percentiles + raw values).
       // includePrevious: this screen renders the previous snapshot on the radar.
-      const { metrics: percentiles, requestedCount } = await loadForceProfileMetrics(
+      const { metrics: percentiles, requestedCount, suppressed } = await loadForceProfileMetrics(
         supabase,
         athleteId,
         athlete.org_id,
         { includePrevious: true },
       );
+
+      setSuppressedCount(suppressed.length);
 
       if (percentiles.length === 0) {
         setRadarData([]);
@@ -325,7 +329,9 @@ export default function ForceProfileScreen({ route, navigation }: any) {
                     Partial Composite ({metricsInfo.included} of {metricsInfo.requested} metrics)
                   </Text>
                   <Text style={styles.partialSubtitle}>
-                    Complete more tests to get your full score
+                    {suppressedCount > 0
+                      ? `${suppressedCount} ${suppressedCount === 1 ? 'metric is' : 'metrics are'} still building a baseline — we need more athletes tested before ranking ${suppressedCount === 1 ? 'it' : 'them'}`
+                      : 'Complete more tests to get your full score'}
                   </Text>
                 </View>
               </View>
