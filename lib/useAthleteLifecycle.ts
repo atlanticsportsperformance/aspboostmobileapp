@@ -12,11 +12,23 @@
  * `false` while loading so membership-gated UI doesn't flash in during the
  * first render. The cache is keyed on the supabase user id so a sign-out →
  * sign-in-as-different-user invalidates cleanly.
+ *
+ * The cache now carries a 5-minute TTL (see ./lifecycleCache). Project 1's
+ * server-side guard stops the app demoting a paying member, which leaves the
+ * promotion case: an athlete buys a membership in-app and the Workload card
+ * should appear without an app restart. Call `invalidateAthleteLifecycle(userId)`
+ * after a successful in-app membership purchase to make that immediate.
  */
 
 import { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  getCachedLifecycle,
+  setCachedLifecycle,
+  invalidateCachedLifecycle,
+  clearLifecycleCache,
+} from './lifecycleCache';
 
 export type ClientLifecycle =
   | 'assessment_scheduled'
@@ -25,9 +37,8 @@ export type ClientLifecycle =
   | 'cancelled_membership'
   | null;
 
-// Module-level cache keyed by auth user id. A single in-flight promise per
-// user prevents concurrent FAB mounts from firing N parallel fetches.
-const cache = new Map<string, ClientLifecycle>();
+// A single in-flight promise per user prevents concurrent FAB mounts from
+// firing N parallel fetches. Values land in the TTL cache in ./lifecycleCache.
 const inflight = new Map<string, Promise<ClientLifecycle>>();
 
 function fetchLifecycle(userId: string): Promise<ClientLifecycle> {
@@ -43,7 +54,7 @@ function fetchLifecycle(userId: string): Promise<ClientLifecycle> {
         .maybeSingle();
       if (error || !data) return null;
       const lc = (data.client_lifecycle ?? null) as ClientLifecycle;
-      cache.set(userId, lc);
+      setCachedLifecycle<ClientLifecycle>(userId, lc);
       return lc;
     } catch {
       return null;
@@ -65,10 +76,10 @@ export function useAthleteLifecycle(): {
   const userId = user?.id ?? null;
 
   const [lifecycle, setLifecycle] = useState<ClientLifecycle>(() =>
-    userId ? cache.get(userId) ?? null : null,
+    userId ? getCachedLifecycle<ClientLifecycle>(userId).value ?? null : null,
   );
   const [loading, setLoading] = useState<boolean>(() =>
-    userId ? !cache.has(userId) : false,
+    userId ? !getCachedLifecycle<ClientLifecycle>(userId).hit : false,
   );
 
   useEffect(() => {
@@ -77,8 +88,9 @@ export function useAthleteLifecycle(): {
       setLoading(false);
       return;
     }
-    if (cache.has(userId)) {
-      setLifecycle(cache.get(userId) ?? null);
+    const cached = getCachedLifecycle<ClientLifecycle>(userId);
+    if (cached.hit) {
+      setLifecycle(cached.value ?? null);
       setLoading(false);
       return;
     }
@@ -106,8 +118,23 @@ export function useAthleteLifecycle(): {
   };
 }
 
+/**
+ * Drops the cached lifecycle so the next mount refetches immediately.
+ * Call with the signed-in user's id after a successful in-app membership
+ * purchase; call with no argument to drop every entry.
+ */
+export function invalidateAthleteLifecycle(userId?: string) {
+  if (userId) {
+    invalidateCachedLifecycle(userId);
+    inflight.delete(userId);
+    return;
+  }
+  clearLifecycleCache();
+  inflight.clear();
+}
+
 /** Clears the cache — call from sign-out flow so the next user starts fresh. */
 export function clearAthleteLifecycleCache() {
-  cache.clear();
+  clearLifecycleCache();
   inflight.clear();
 }
