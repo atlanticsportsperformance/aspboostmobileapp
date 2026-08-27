@@ -198,6 +198,9 @@ function AppContent() {
             <Stack.Screen name="Waivers" getComponent={() => require('./screens/WaiversScreen').default} />
             <Stack.Screen name="CoachTools" getComponent={() => require('./screens/CoachToolsScreen').default} />
             <Stack.Screen name="CoachArmCareSearch" getComponent={() => require('./screens/CoachArmCareSearchScreen').default} />
+            <Stack.Screen name="CoachRoster" getComponent={() => require('./screens/CoachRosterScreen').default} />
+            <Stack.Screen name="AthleteProgram" getComponent={() => require('./screens/AthleteProgramScreen').default} />
+            <Stack.Screen name="CoachCoverage" getComponent={() => require('./screens/CoachCoverageScreen').default} />
             <Stack.Screen name="LeagueHub" getComponent={() => require('./screens/LeagueHubScreen').default} />
             <Stack.Screen name="LeagueSchedule" getComponent={() => require('./screens/LeagueScheduleScreen').default} />
             <Stack.Screen name="LeagueStats" getComponent={() => require('./screens/LeagueStatsScreen').default} />

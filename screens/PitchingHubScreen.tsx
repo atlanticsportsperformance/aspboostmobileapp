@@ -35,9 +35,8 @@ export default function PitchingHubScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute();
   const params = (route.params ?? {}) as RouteParams;
-  const { isMember } = useAthleteLifecycle();
-
   const [athleteId, setAthleteId] = useState<string | null>(params.athleteId ?? null);
+  const { isMember } = useAthleteLifecycle(athleteId);
   const [prVelo, setPrVelo] = useState<number | null>(null);
   const [todayW, setTodayW] = useState<number | null>(null);
   const [todayThrows, setTodayThrows] = useState<number>(0);
