@@ -101,6 +101,8 @@ export async function registerPushToken(token: string): Promise<boolean> {
       body: JSON.stringify({
         deviceToken: token,
         platform: Platform.OS,
+        appVersion: Constants.expoConfig?.version ?? undefined,
+        osVersion: Device.osVersion ?? undefined,
       }),
     });
 
