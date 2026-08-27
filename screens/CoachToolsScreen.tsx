@@ -27,6 +27,15 @@ export default function CoachToolsScreen() {
           <Ionicons name="chevron-forward" size={18} color="rgba(248,113,113,0.7)" />
         </TouchableOpacity>
 
+        <TouchableOpacity style={[styles.tool, styles.toolPrimary]} onPress={() => navigation.navigate('CoachCoverage')}>
+          <View style={styles.toolIcon}><Ionicons name="pulse" size={22} color="#9BDDFF" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.toolTitle}>Coverage</Text>
+            <Text style={styles.toolDesc}>Who is running out · who is not logging</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="rgba(155,221,255,0.7)" />
+        </TouchableOpacity>
+
         <View style={[styles.tool, { opacity: 0.4 }]}>
           <View style={styles.toolIcon}><Ionicons name="baseball" size={22} color="rgba(255,255,255,0.5)" /></View>
           <View style={{ flex: 1 }}>

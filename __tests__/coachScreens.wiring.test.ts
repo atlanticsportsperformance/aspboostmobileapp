@@ -127,3 +127,34 @@ describe('AthleteProgramScreen', () => {
     expect(S).not.toMatch(/\.(update|insert|delete|upsert)\(/);
   });
 });
+
+describe('CoachCoverageScreen', () => {
+  const S = read('screens/CoachCoverageScreen.tsx');
+  it('has the two tabs and uses the shared metric', () => {
+    expect(S).toContain('Running out');
+    expect(S).toContain('Not logging');
+    expect(S).toContain('isNotLogging(');
+    expect(S).toContain('sortNeedsAttention(');
+  });
+  it('surfaces never-programmed categories distinctly and first', () => {
+    expect(S).toContain('workout_count === 0');
+    expect(S).toContain('Never programmed');
+  });
+  it('opens the program calendar and never writes', () => {
+    expect(S).toContain("navigation.navigate('AthleteProgram', { athleteId: item.athlete_id, athleteName: item.athlete_name })");
+    expect(S).not.toMatch(/\.(update|insert|delete|upsert)\(/);
+  });
+  it('shows a placeholder in Not logging when logs are unavailable, but Running out is unaffected', () => {
+    expect(S).toContain('logsUnavailable');
+    expect(S).toContain('Activity unavailable right now');
+  });
+});
+
+describe('CoachTools gains a Coverage tile', () => {
+  const S = read('screens/CoachToolsScreen.tsx');
+  it('navigates to CoachCoverage', () => {
+    expect(S).toContain("navigation.navigate('CoachCoverage')");
+    expect(S).toContain('Coverage');
+    expect(S).toContain('Who is running out · who is not logging');
+  });
+});
