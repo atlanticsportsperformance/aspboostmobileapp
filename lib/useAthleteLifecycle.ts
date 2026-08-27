@@ -27,6 +27,7 @@ import {
   getCachedLifecycle,
   setCachedLifecycle,
   invalidateCachedLifecycle,
+  invalidateCachedLifecycleByPrefix,
   clearLifecycleCache,
 } from './lifecycleCache';
 
@@ -124,8 +125,16 @@ export function useAthleteLifecycle(athleteId?: string | null): {
  * Drops the cached lifecycle so the next mount refetches immediately.
  * Call with the signed-in user's id after a successful in-app membership
  * purchase; call with no argument to drop every entry.
+ *
+ * Also clears every `athlete:*` entry: a promotion must reach screens that
+ * look the athlete up by athlete id (e.g. the pitching screens), not just
+ * the one keyed by the signed-in user's own id.
  */
 export function invalidateAthleteLifecycle(userId?: string) {
+  invalidateCachedLifecycleByPrefix('athlete:');
+  for (const key of inflight.keys()) {
+    if (key.startsWith('athlete:')) inflight.delete(key);
+  }
   if (userId) {
     invalidateCachedLifecycle(userId);
     inflight.delete(userId);

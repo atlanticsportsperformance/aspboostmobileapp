@@ -37,37 +37,61 @@ export default function AthleteProgramScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const week = useMemo(() => weekStartingMonday(anchor), [anchor]);
 
+  // Banner status is keyed on the athlete only, not the visible week: it must
+  // not refetch (or flicker) every time the coach pages the week strip, and a
+  // failure here is best-effort — it must never block the agenda below.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { athletes } = await getCoachRosterStatus();
+        if (cancelled) return;
+        setStatus(athletes.find((a) => a.athlete_id === athleteId) || null);
+      } catch { /* banner is best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, [athleteId]);
+
   const load = useCallback(async () => {
-    const from = toLocalDateKey(addDays(week[0], -7));
-    const to = toLocalDateKey(addDays(week[6], 7));
-    const { data } = await supabase
-      .from('workout_instances')
-      .select(`
-        id, scheduled_date, status, completed_at,
-        workouts (
-          name, category, estimated_duration_minutes, notes,
-          routines (
-            id, name, order_index,
-            routine_exercises (
-              id, order_index, sets, placeholder_name,
-              exercises ( id, name )
+    try {
+      setError(null);
+      const from = toLocalDateKey(addDays(week[0], -7));
+      const to = toLocalDateKey(addDays(week[6], 7));
+      const { data, error } = await supabase
+        .from('workout_instances')
+        .select(`
+          id, scheduled_date, status, completed_at,
+          workouts (
+            name, category, estimated_duration_minutes, notes,
+            routines (
+              id, name, order_index,
+              routine_exercises (
+                id, order_index, sets, placeholder_name,
+                exercises ( id, name )
+              )
             )
           )
-        )
-      `)
-      .eq('athlete_id', athleteId)
-      .gte('scheduled_date', from)
-      .lte('scheduled_date', to)
-      .order('scheduled_date');
-    setInstances((data || []) as unknown as Instance[]);
-    try {
-      const { athletes } = await getCoachRosterStatus();
-      setStatus(athletes.find((a) => a.athlete_id === athleteId) || null);
-    } catch { /* banner is best-effort */ }
-    setLoading(false); setRefreshing(false);
+        `)
+        .eq('athlete_id', athleteId)
+        .gte('scheduled_date', from)
+        .lte('scheduled_date', to)
+        .order('scheduled_date');
+      if (error) {
+        setError("Could not load this athlete's program");
+        setInstances([]);
+        return;
+      }
+      setInstances((data || []) as unknown as Instance[]);
+    } catch {
+      setError("Could not load this athlete's program");
+      setInstances([]);
+    } finally {
+      setLoading(false); setRefreshing(false);
+    }
   }, [athleteId, week]);
   useEffect(() => { load(); }, [load]);
 
@@ -112,7 +136,9 @@ export default function AthleteProgramScreen({ navigation, route }: any) {
       )}
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 48 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor="#fff" />}>
-        {loading ? <ActivityIndicator color="#9BDDFF" /> : groups.length === 0 ? (
+        {loading ? <ActivityIndicator color="#9BDDFF" /> : error ? (
+          <Text style={styles.error}>{error}</Text>
+        ) : groups.length === 0 ? (
           <Text style={styles.empty}>Nothing scheduled</Text>
         ) : groups.map((g) => (
           <View key={g.category} style={{ marginBottom: 16 }}>
@@ -189,6 +215,7 @@ const styles = StyleSheet.create({
   todayBtn: { alignSelf: 'center', marginTop: 8, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.08)' },
   todayText: { color: '#9BDDFF', fontSize: 12, fontWeight: '600' },
   empty: { color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 24 },
+  error: { color: '#F87171', textAlign: 'center', marginTop: 24, paddingHorizontal: 24 },
   groupHeader: { color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginBottom: 6 },
   card: { backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, padding: 12, marginBottom: 8 },
   cardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },

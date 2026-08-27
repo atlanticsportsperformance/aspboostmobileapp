@@ -126,6 +126,10 @@ describe('AthleteProgramScreen', () => {
   it('never writes', () => {
     expect(S).not.toMatch(/\.(update|insert|delete|upsert)\(/);
   });
+  it('surfaces a read error instead of a false-empty agenda, and always clears loading state', () => {
+    expect(S).toContain("Could not load this athlete's program");
+    expect(S).toContain('finally {');
+  });
 });
 
 describe('CoachCoverageScreen', () => {

@@ -60,6 +60,18 @@ export function invalidateCachedLifecycle(key: string): void {
   entries.delete(key);
 }
 
+/**
+ * Drop every entry whose key starts with `prefix`. Used to clear the
+ * `athlete:<id>` key space alongside a user-id key on the same invalidation,
+ * so a promotion reaches screens that look the athlete up by athlete id
+ * (e.g. the pitching screens) as well as ones keyed by user id.
+ */
+export function invalidateCachedLifecycleByPrefix(prefix: string): void {
+  for (const key of entries.keys()) {
+    if (key.startsWith(prefix)) entries.delete(key);
+  }
+}
+
 /** Drop everything — call on sign-out so the next user starts fresh. */
 export function clearLifecycleCache(): void {
   entries.clear();

@@ -67,7 +67,7 @@ export default function CoachRosterScreen({ navigation }: any) {
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={8}><Ionicons name="chevron-back" size={24} color="#fff" /></TouchableOpacity>
         <Text style={styles.title}>Roster</Text>
-        <Text style={styles.count}>{all.length}</Text>
+        <Text style={styles.count}>{rows.length}</Text>
       </View>
       <TextInput style={styles.search} placeholder="Search athletes" placeholderTextColor="rgba(255,255,255,0.4)" value={query} onChangeText={setQuery} autoCorrect={false} />
       {logsUnavailable && <Text style={styles.unavailable}>Activity unavailable right now</Text>}

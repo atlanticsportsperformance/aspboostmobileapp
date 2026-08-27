@@ -3,6 +3,7 @@ import {
   getCachedLifecycle,
   setCachedLifecycle,
   invalidateCachedLifecycle,
+  invalidateCachedLifecycleByPrefix,
   clearLifecycleCache,
 } from '../lib/lifecycleCache';
 
@@ -72,6 +73,21 @@ describe('lifecycleCache', () => {
     expect(getCachedLifecycle<string>('user-1', T0 + 1).hit).toBe(false);
     expect(getCachedLifecycle<string>('user-2', T0 + 1).hit).toBe(false);
   });
+
+  it('invalidates every key under a prefix, leaving other keys untouched', () => {
+    // Mirrors invalidateAthleteLifecycle: a user-id key and an athlete:*
+    // key must both be dropped by one promotion event, so a promotion
+    // reaches screens that look the athlete up by athlete id (e.g. the
+    // pitching screens) as well as ones keyed by the signed-in user's id.
+    setCachedLifecycle('user-1', 'member', T0);
+    setCachedLifecycle('athlete:a1', 'member', T0);
+    setCachedLifecycle('athlete:a2', 'assessment_scheduled', T0);
+    invalidateCachedLifecycleByPrefix('athlete:');
+    invalidateCachedLifecycle('user-1');
+    expect(getCachedLifecycle<string>('user-1', T0 + 1).hit).toBe(false);
+    expect(getCachedLifecycle<string>('athlete:a1', T0 + 1).hit).toBe(false);
+    expect(getCachedLifecycle<string>('athlete:a2', T0 + 1).hit).toBe(false);
+  });
 });
 
 describe('useAthleteLifecycle wiring', () => {
@@ -98,5 +114,10 @@ describe('useAthleteLifecycle wiring', () => {
 
   it('keeps clearAthleteLifecycleCache for the sign-out flow', () => {
     expect(source).toContain('export function clearAthleteLifecycleCache');
+  });
+
+  it('invalidateAthleteLifecycle also clears the athlete: key space', () => {
+    expect(source).toContain('invalidateCachedLifecycleByPrefix');
+    expect(source).toContain("invalidateCachedLifecycleByPrefix('athlete:')");
   });
 });

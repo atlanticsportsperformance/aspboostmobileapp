@@ -90,7 +90,7 @@ export function runwayChip(a: RosterAthlete): { text: string; tone: 'red' | 'amb
 export function activityChip(a: RosterAthlete, now: Date): { text: string; tone: 'amber' | 'grey' } | null {
   const d = daysSinceLog(a, now);
   if (d === null) return { text: 'No logs', tone: 'grey' };
-  if (d > 14) return { text: `No logs ${d}d`, tone: 'grey' };
+  if (d > NOT_LOGGING_WINDOW_DAYS) return { text: `No logs ${d}d`, tone: 'grey' };
   if (d > NOT_LOGGING_STALE_DAYS) return { text: `No logs ${d}d`, tone: 'amber' };
   return null;
 }

@@ -29,7 +29,10 @@ export default function CoachCoverageScreen({ navigation }: any) {
   useEffect(() => { load(); }, [load]);
 
   const now = new Date();
-  const neverProgrammedCats = (a: RosterAthlete) => CATEGORY_ORDER.filter((t) => a.workouts[t].workout_count === 0);
+  const neverProgrammedCats = (a: RosterAthlete) => CATEGORY_ORDER.filter((t) => {
+    const workout_count = a.workouts?.[t]?.workout_count ?? 0;
+    return workout_count === 0;
+  });
 
   const runningOut = useMemo(() => {
     const list = all.filter((a) => { const r = runwayDays(a); return r === null || r <= RUNWAY_WARN_DAYS || neverProgrammedCats(a).length > 0; });
