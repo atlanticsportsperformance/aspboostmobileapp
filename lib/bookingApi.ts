@@ -10,69 +10,6 @@ import {
   getAthleteColor,
 } from '../types/booking';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
-
-/**
- * The ONE source of truth for what an athlete can book on a given day.
- *
- * This replaces two hand-rolled `scheduling_events` queries that between them
- * hardcoded eligibility to always-true, never filtered `is_public`, duplicated
- * the booking-window math the server already does, and labelled every session
- * "Main Facility" — including P3's remote video calls.
- */
-async function fetchBookableEventsForDate(athleteId: string, date: Date): Promise<BookableEvent[]> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) return [];
-
-  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
-  const response = await fetch(
-    `${API_URL}/api/athletes/${athleteId}/bookable-events?date=${dateStr}`,
-    { headers: { Authorization: `Bearer ${session.access_token}` } }
-  );
-
-  if (!response.ok) {
-    console.error('[bookingApi] bookable-events failed:', response.status);
-    return [];
-  }
-
-  const data = await response.json();
-
-  return (data.events || []).map((e: any) => {
-    const startTime = new Date(e.start_time);
-    const endTime = new Date(e.end_time);
-    return {
-      id: e.id,
-      title: e.title,
-      startTime,
-      endTime,
-      coachName: e.coach_name || 'Staff',
-      coachAvatar: e.coach_avatar || null,
-      // No building-name fallback: the server already decides, and it returns
-      // null for a remote session rather than naming a building it never uses.
-      location: e.location,
-      resource: null,
-      category: e.category || null,
-      durationMinutes: e.duration_minutes,
-      capacity: e.capacity,
-      bookedCount: e.booked_count || 0,
-      isBooked: e.is_booked === true,
-      isEligible: e.eligible !== false,
-      ineligibleReason: e.ineligible_reason || null,
-      ineligibleMessage: e.ineligible_message || null,
-      paymentRequiredCents: e.payment_required_cents ?? null,
-      paymentSource: e.payment_source || null,
-      requiredMembershipTypeNames: e.required_membership_type_names || [],
-      isRemote: e.is_remote === true,
-      meetingUrl: e.meeting_url || null,
-      eventTemplateId: e.event_template_id,
-      categoryId: e.category_id || null,
-      bookingWindowBlocked: e.booking_window_blocked === true,
-      bookingWindowReason: e.booking_window_reason || null,
-    };
-  });
-}
-
 /**
  * Get linked athletes for a parent account
  * Note: athlete_guardians.athlete_id can reference either:
@@ -184,38 +121,414 @@ export async function getAthleteId(userId: string): Promise<string | null> {
 }
 
 /**
- * Get bookable events for a specific date
+ * Fetch coach names/avatars for events in a date range via the server.
+ * Replaces the direct `staff` + nested `profiles` embed the device used to
+ * run with the anon key — that read goes blank once the blanket "any
+ * logged-in user can read every profile" RLS policies are dropped (see
+ * docs/superpowers/plans/2026-08-01-profiles-tighten-authenticated-reads.md,
+ * Task 3). Returns a map keyed by scheduling_events.id.
  */
-export async function getBookableEvents(athleteId: string, date: Date): Promise<BookableEvent[]> {
+async function getCoachesForEvents(
+  athleteId: string,
+  startIso: string,
+  endIso: string
+): Promise<Record<string, { coach_name: string | null; coach_avatar: string | null }>> {
+  const coachByEventId: Record<string, { coach_name: string | null; coach_avatar: string | null }> = {};
+
   try {
-    return await fetchBookableEventsForDate(athleteId, date);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      console.error('[getCoachesForEvents] No access token — skipping coach lookup');
+      return coachByEventId;
+    }
+
+    const url = `${API_URL}/api/mobile/events-with-coaches?athlete_id=${encodeURIComponent(athleteId)}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+
+    if (!response.ok) {
+      console.error('[getCoachesForEvents] API error:', response.status);
+      return coachByEventId;
+    }
+
+    const data = await response.json();
+    (data.events || []).forEach((e: any) => {
+      coachByEventId[e.id] = { coach_name: e.coach_name ?? null, coach_avatar: e.coach_avatar ?? null };
+    });
   } catch (error) {
-    console.error('[bookingApi] getBookableEvents failed:', error);
-    return [];
+    console.error('[getCoachesForEvents] Error fetching coach names:', error);
   }
+
+  return coachByEventId;
 }
 
 /**
- * Get bookable events for an entire week
+ * Get bookable events for a specific date
+ */
+export async function getBookableEvents(
+  athleteId: string,
+  date: Date
+): Promise<BookableEvent[]> {
+  // Create date strings for the selected date (YYYY-MM-DD format)
+  // This avoids timezone conversion issues
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  // Query using date cast to compare just the date portion
+  const startOfDay = `${dateStr}T00:00:00`;
+  const endOfDay = `${dateStr}T23:59:59`;
+
+  // Get athlete's org_id and restriction tags
+  const { data: athlete } = await supabase
+    .from('athletes')
+    .select('org_id, restriction_tag_ids')
+    .eq('id', athleteId)
+    .single();
+
+  if (!athlete?.org_id) {
+    console.error('Could not find athlete org');
+    return [];
+  }
+
+  const athleteRestrictionTags = athlete.restriction_tag_ids || [];
+
+  // Fetch events for the date
+  const { data: events, error } = await supabase
+    .from('scheduling_events')
+    .select(`
+      id,
+      title,
+      start_time,
+      end_time,
+      capacity,
+      location_id,
+      resource_id,
+      event_template_id,
+      staff_id,
+      template:scheduling_templates(
+        id,
+        name,
+        category_id,
+        required_restriction_tag_ids,
+        booking_window_hours,
+        max_booking_days_ahead,
+        category:scheduling_categories(
+          id,
+          name
+        )
+      )
+    `)
+    .eq('org_id', athlete.org_id)
+    .eq('status', 'scheduled')
+    .gte('start_time', startOfDay)
+    .lte('start_time', endOfDay)
+    .order('start_time', { ascending: true });
+
+  if (error) {
+    console.error('Error fetching events:', error);
+    return [];
+  }
+
+  // Fetch coach names/avatars via the server — staff_id references the staff
+  // table, and the profiles join now runs behind an authorizing endpoint
+  // rather than directly from the device.
+  const coachByEventId = await getCoachesForEvents(athleteId, startOfDay, endOfDay);
+
+  // Fetch locations separately - try scheduling_locations table
+  const locationIds = [...new Set((events || []).map((e: any) => e.location_id).filter(Boolean))];
+  const locationMap: Record<string, any> = {};
+
+  if (locationIds.length > 0) {
+    const { data: locations, error: locError } = await supabase
+      .from('scheduling_locations')
+      .select('id, name')
+      .in('id', locationIds);
+
+    if (locError) {
+      console.log('Locations query error:', locError);
+    }
+
+    (locations || []).forEach((l: any) => {
+      locationMap[l.id] = l;
+    });
+  }
+
+  // Fetch resources separately
+  const resourceIds = [...new Set((events || []).map((e: any) => e.resource_id).filter(Boolean))];
+  const resourceMap: Record<string, any> = {};
+
+  if (resourceIds.length > 0) {
+    const { data: resources, error: resError } = await supabase
+      .from('scheduling_resources')
+      .select('id, name')
+      .in('id', resourceIds);
+
+    if (resError) {
+      console.log('Resources query error:', resError);
+    }
+
+    (resources || []).forEach((r: any) => {
+      resourceMap[r.id] = r;
+    });
+  }
+
+  // Get bookings count and check if athlete is booked
+  const eventIds = (events || []).map((e: any) => e.id);
+
+  // Query for 'booked' status (the web app uses 'booked', not 'confirmed')
+  // Also include 'waitlisted' to show accurate availability
+  const { data: bookings } = await supabase
+    .from('scheduling_bookings')
+    .select('event_id, athlete_id')
+    .in('event_id', eventIds)
+    .in('status', ['booked', 'confirmed', 'waitlisted']);
+
+  const bookingCounts: Record<string, number> = {};
+  const athleteBookings: Set<string> = new Set();
+
+  (bookings || []).forEach((b: any) => {
+    bookingCounts[b.event_id] = (bookingCounts[b.event_id] || 0) + 1;
+    if (b.athlete_id === athleteId) {
+      athleteBookings.add(b.event_id);
+    }
+  });
+
+  // Map all events - restriction tags are checked when the user tries to book
+  // (via checkEligibility function) rather than filtering events from view
+  const now = new Date();
+
+  return (events || []).map((event: any) => {
+    const startTime = new Date(event.start_time);
+    const endTime = new Date(event.end_time);
+    const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
+
+    const coach = coachByEventId[event.id];
+    // Handle template - could be object or array depending on Supabase response
+    const rawTemplate = event.template;
+    const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+    const location = event.location_id ? locationMap[event.location_id] : null;
+    const resource = event.resource_id ? resourceMap[event.resource_id] : null;
+
+    // Handle nested category - could be object or array
+    const rawCategory = template?.category;
+    const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+
+    // Calculate booking window status
+    let bookingWindowBlocked = false;
+    let bookingWindowReason: string | null = null;
+
+    const bookingWindowHours = template?.booking_window_hours;
+    const maxBookingDaysAhead = template?.max_booking_days_ahead;
+
+    // Check if booking closes X hours before event
+    if (bookingWindowHours !== null && bookingWindowHours !== undefined && bookingWindowHours > 0) {
+      const cutoffTime = new Date(startTime.getTime() - bookingWindowHours * 60 * 60 * 1000);
+      if (now >= cutoffTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings close ${bookingWindowHours}h before`;
+      }
+    }
+
+    // Check if booking opens X days before event (only if not already blocked)
+    if (!bookingWindowBlocked && maxBookingDaysAhead !== null && maxBookingDaysAhead !== undefined && maxBookingDaysAhead > 0) {
+      const openTime = new Date(startTime.getTime() - maxBookingDaysAhead * 24 * 60 * 60 * 1000);
+      if (now < openTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings open ${maxBookingDaysAhead} days before`;
+      }
+    }
+
+    return {
+      id: event.id,
+      title: event.title || template?.name || 'Class',
+      startTime,
+      endTime,
+      coachName: coach?.coach_name || 'Staff',
+      coachAvatar: coach?.coach_avatar || null,
+      location: location?.name || 'Main Facility',
+      resource: resource?.name || null,
+      category: category?.name || null,
+      durationMinutes,
+      capacity: event.capacity || 10,
+      bookedCount: bookingCounts[event.id] || 0,
+      isBooked: athleteBookings.has(event.id),
+      isEligible: true, // Restriction tags already checked in filter
+      eventTemplateId: event.event_template_id,
+      categoryId: template?.category_id || null,
+      bookingWindowBlocked,
+      bookingWindowReason,
+    };
+  });
+}
+
+/**
+ * Get bookable events for an entire week in a single batched call
+ * Replaces calling getBookableEvents() 7 times sequentially
  */
 export async function getBookableEventsForWeek(
   athleteId: string,
   weekDates: Date[]
 ): Promise<BookableEvent[]> {
-  try {
-    // One request per day. The server route is per-date, and seven requests is
-    // the price of an honest answer — it is the same fan-out shape this file
-    // already uses for coach lookups.
-    const perDay = await Promise.all(
-      weekDates.map((d) => fetchBookableEventsForDate(athleteId, d))
-    );
-    return perDay
-      .flat()
-      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
-  } catch (error) {
-    console.error('[bookingApi] getBookableEventsForWeek failed:', error);
+  if (weekDates.length === 0) return [];
+
+  // Compute week date range
+  const sortedDates = [...weekDates].sort((a, b) => a.getTime() - b.getTime());
+  const firstDate = sortedDates[0];
+  const lastDate = sortedDates[sortedDates.length - 1];
+
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const startOfWeek = `${fmt(firstDate)}T00:00:00`;
+  const endOfWeek = `${fmt(lastDate)}T23:59:59`;
+
+  // Query 1: Athlete data (ONCE, not 7 times)
+  const { data: athlete } = await supabase
+    .from('athletes')
+    .select('org_id, restriction_tag_ids')
+    .eq('id', athleteId)
+    .single();
+
+  if (!athlete?.org_id) {
+    console.error('Could not find athlete org');
     return [];
   }
+
+  // Query 2: ALL events for the entire week in one shot
+  const { data: events, error } = await supabase
+    .from('scheduling_events')
+    .select(`
+      id,
+      title,
+      start_time,
+      end_time,
+      capacity,
+      location_id,
+      resource_id,
+      event_template_id,
+      staff_id,
+      template:scheduling_templates(
+        id,
+        name,
+        category_id,
+        required_restriction_tag_ids,
+        booking_window_hours,
+        max_booking_days_ahead,
+        category:scheduling_categories(
+          id,
+          name
+        )
+      )
+    `)
+    .eq('org_id', athlete.org_id)
+    .eq('status', 'scheduled')
+    .gte('start_time', startOfWeek)
+    .lte('start_time', endOfWeek)
+    .order('start_time', { ascending: true });
+
+  if (error) {
+    console.error('Error fetching week events:', error);
+    return [];
+  }
+
+  const allEvents = events || [];
+  if (allEvents.length === 0) return [];
+
+  // Collect unique IDs across ALL events
+  const eventIds = allEvents.map((e: any) => e.id);
+  const locationIds = [...new Set(allEvents.map((e: any) => e.location_id).filter(Boolean))];
+  const resourceIds = [...new Set(allEvents.map((e: any) => e.resource_id).filter(Boolean))];
+
+  // Queries 2-5: Coach names, locations, resources, bookings — ALL in
+  // parallel. Coach names come from the server (see getCoachesForEvents)
+  // rather than a direct staff/profiles read.
+  const [coachByEventId, locationResult, resourceResult, bookingsResult] = await Promise.all([
+    getCoachesForEvents(athleteId, startOfWeek, endOfWeek),
+    locationIds.length > 0
+      ? supabase.from('scheduling_locations').select('id, name').in('id', locationIds)
+      : Promise.resolve({ data: [] as any[] }),
+    resourceIds.length > 0
+      ? supabase.from('scheduling_resources').select('id, name').in('id', resourceIds)
+      : Promise.resolve({ data: [] as any[] }),
+    supabase.from('scheduling_bookings').select('event_id, athlete_id').in('event_id', eventIds).in('status', ['booked', 'confirmed', 'waitlisted']),
+  ]);
+
+  const locationMap: Record<string, any> = {};
+  (locationResult.data || []).forEach((l: any) => { locationMap[l.id] = l; });
+
+  const resourceMap: Record<string, any> = {};
+  (resourceResult.data || []).forEach((r: any) => { resourceMap[r.id] = r; });
+
+  const bookingCounts: Record<string, number> = {};
+  const athleteBookings: Set<string> = new Set();
+  (bookingsResult.data || []).forEach((b: any) => {
+    bookingCounts[b.event_id] = (bookingCounts[b.event_id] || 0) + 1;
+    if (b.athlete_id === athleteId) {
+      athleteBookings.add(b.event_id);
+    }
+  });
+
+  // Map to BookableEvent[] (same logic as getBookableEvents)
+  const now = new Date();
+
+  return allEvents.map((event: any) => {
+    const startTime = new Date(event.start_time);
+    const endTime = new Date(event.end_time);
+    const durationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
+
+    const coach = coachByEventId[event.id];
+    const rawTemplate = event.template;
+    const template = Array.isArray(rawTemplate) ? rawTemplate[0] : rawTemplate;
+    const location = event.location_id ? locationMap[event.location_id] : null;
+    const resource = event.resource_id ? resourceMap[event.resource_id] : null;
+
+    const rawCategory = template?.category;
+    const category = Array.isArray(rawCategory) ? rawCategory[0] : rawCategory;
+
+    let bookingWindowBlocked = false;
+    let bookingWindowReason: string | null = null;
+
+    const bookingWindowHours = template?.booking_window_hours;
+    const maxBookingDaysAhead = template?.max_booking_days_ahead;
+
+    if (bookingWindowHours !== null && bookingWindowHours !== undefined && bookingWindowHours > 0) {
+      const cutoffTime = new Date(startTime.getTime() - bookingWindowHours * 60 * 60 * 1000);
+      if (now >= cutoffTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings close ${bookingWindowHours}h before`;
+      }
+    }
+
+    if (!bookingWindowBlocked && maxBookingDaysAhead !== null && maxBookingDaysAhead !== undefined && maxBookingDaysAhead > 0) {
+      const openTime = new Date(startTime.getTime() - maxBookingDaysAhead * 24 * 60 * 60 * 1000);
+      if (now < openTime) {
+        bookingWindowBlocked = true;
+        bookingWindowReason = `Bookings open ${maxBookingDaysAhead} days before`;
+      }
+    }
+
+    return {
+      id: event.id,
+      title: event.title || template?.name || 'Class',
+      startTime,
+      endTime,
+      coachName: coach?.coach_name || 'Staff',
+      coachAvatar: coach?.coach_avatar || null,
+      location: location?.name || 'Main Facility',
+      resource: resource?.name || null,
+      category: category?.name || null,
+      durationMinutes,
+      capacity: event.capacity || 10,
+      bookedCount: bookingCounts[event.id] || 0,
+      isBooked: athleteBookings.has(event.id),
+      isEligible: true,
+      eventTemplateId: event.event_template_id,
+      categoryId: template?.category_id || null,
+      bookingWindowBlocked,
+      bookingWindowReason,
+    };
+  });
 }
 
 /**
@@ -395,6 +708,7 @@ export async function getPaymentMethods(
   }
 }
 
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
 /**
  * Create a booking via server API
