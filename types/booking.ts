@@ -16,7 +16,7 @@ export interface BookableEvent {
   endTime: Date;
   coachName: string;
   coachAvatar: string | null;
-  location: string;
+  location: string | null;
   resource: string | null;  // Sub-location like "Hitting Cage" or "Pitching Lane"
   category: string | null;
   durationMinutes: number;
@@ -24,6 +24,13 @@ export interface BookableEvent {
   bookedCount: number;
   isBooked: boolean;
   isEligible: boolean;
+  ineligibleReason?: 'restriction_tags_required' | 'membership_required' | null;
+  ineligibleMessage?: string | null;
+  paymentRequiredCents?: number | null;
+  paymentSource?: 'membership' | 'package' | 'drop_in' | null;
+  requiredMembershipTypeNames?: string[];
+  isRemote?: boolean;
+  meetingUrl?: string | null;
   eventTemplateId: string | null;
   categoryId: string | null;
   // Booking window constraints
