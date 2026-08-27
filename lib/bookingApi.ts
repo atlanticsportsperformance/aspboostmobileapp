@@ -20,14 +20,22 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.a
  * the booking-window math the server already does, and labelled every session
  * "Main Facility" — including P3's remote video calls.
  */
-async function fetchBookableEventsForDate(athleteId: string, date: Date): Promise<BookableEvent[]> {
+const toDateStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+async function fetchBookableEventsForDate(
+  athleteId: string,
+  date: Date,
+  endDate?: Date
+): Promise<BookableEvent[]> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) return [];
 
-  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const dateStr = toDateStr(date);
+  const endParam = endDate ? `&end=${toDateStr(endDate)}` : '';
 
   const response = await fetch(
-    `${API_URL}/api/athletes/${athleteId}/bookable-events?date=${dateStr}`,
+    `${API_URL}/api/athletes/${athleteId}/bookable-events?date=${dateStr}${endParam}`,
     { headers: { Authorization: `Bearer ${session.access_token}` } }
   );
 
@@ -203,15 +211,15 @@ export async function getBookableEventsForWeek(
   weekDates: Date[]
 ): Promise<BookableEvent[]> {
   try {
-    // One request per day. The server route is per-date, and seven requests is
-    // the price of an honest answer — it is the same fan-out shape this file
-    // already uses for coach lookups.
-    const perDay = await Promise.all(
-      weekDates.map((d) => fetchBookableEventsForDate(athleteId, d))
+    if (weekDates.length === 0) return [];
+    // One request for the whole range — the route accepts an inclusive `end`.
+    const sorted = [...weekDates].sort((a, b) => a.getTime() - b.getTime());
+    const events = await fetchBookableEventsForDate(
+      athleteId,
+      sorted[0],
+      sorted[sorted.length - 1]
     );
-    return perDay
-      .flat()
-      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+    return events.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
   } catch (error) {
     console.error('[bookingApi] getBookableEventsForWeek failed:', error);
     return [];
