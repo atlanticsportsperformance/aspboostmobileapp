@@ -261,7 +261,7 @@ export default function BlockOverview({
   const totalSets = workout.routines.reduce(
     (sum, routine) =>
       sum + routine.routine_exercises
-        .filter(ex => !ex.is_placeholder)
+        .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder))
         .reduce((s, ex) => s + ex.sets, 0),
     0
   );
@@ -418,7 +418,7 @@ export default function BlockOverview({
                   // whose joined exercise is null) so the block renders their
                   // placeholder_name + parsed bulleted notes. Drop only "true"
                   // placeholders. Matches CompletedWorkoutScreen.tsx:439.
-                  .filter(ex => !ex.is_placeholder || (ex as any).notes_only)
+                  .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder) || (ex as any).notes_only)
                   .map((exercise, exerciseIndex) => {
                   const isNotesOnlyRow = !exercise.exercises || !!(exercise as any).notes_only;
                   // Bail only when we have neither an exercise join NOR notes-only

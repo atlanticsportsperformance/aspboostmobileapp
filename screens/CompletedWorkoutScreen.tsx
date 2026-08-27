@@ -131,7 +131,8 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
                 tracked_max_metrics,
                 exercises (
                   id,
-                  name
+                  name,
+                  is_placeholder
                 )
               )
             )
@@ -467,7 +468,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
               )}
 
               {routine.routine_exercises
-                .filter((ex: any) => !ex.is_placeholder || ex.notes_only)
+                .filter((ex: any) => !(ex.is_placeholder || ex.exercises?.is_placeholder) || ex.notes_only)
                 .sort((a: any, b: any) => a.order_index - b.order_index)
                 .map((exercise: any, exerciseIndex: number) => {
                   const logs = getLogsForExercise(exercise.id);

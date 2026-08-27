@@ -296,7 +296,7 @@ export default function WorkoutLoggerScreen() {
         // only "true" placeholders (placeholder without notes_only).
         // Matches CompletedWorkoutScreen.tsx:439.
         routine.routine_exercises = routine.routine_exercises.filter(
-          (re: RoutineExercise) => !re.is_placeholder || re.notes_only
+          (re: RoutineExercise) => !(re.is_placeholder || re.exercises?.is_placeholder) || re.notes_only
         );
         routine.routine_exercises.sort((a, b) => a.order_index - b.order_index);
 
@@ -1079,7 +1079,7 @@ export default function WorkoutLoggerScreen() {
     if (!workout || !currentRoutine || !activeExerciseId) return undefined;
     const routineIndex = workout.routines.findIndex(r => r.id === currentRoutine.id);
     const exerciseIndex = currentRoutine.routine_exercises
-      .filter(ex => !ex.is_placeholder)
+      .filter(ex => !(ex.is_placeholder || ex.exercises?.is_placeholder))
       .findIndex(ex => ex.id === activeExerciseId);
     if (exerciseIndex === -1) return undefined;
     const letter = String.fromCharCode(65 + routineIndex); // A, B, C...
