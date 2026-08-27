@@ -128,7 +128,7 @@ export default function PitchingHubScreen() {
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
       >
         {/* Header */}
         <View style={styles.headerRow}>

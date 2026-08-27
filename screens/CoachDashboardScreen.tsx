@@ -138,7 +138,7 @@ export default function CoachDashboardScreen() {
 
       <ScrollView
         contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
       >
         {loading && <ActivityIndicator color="#9BDDFF" style={{ marginTop: 40 }} />}
         {!loading && visibleSessions.length === 0 && (

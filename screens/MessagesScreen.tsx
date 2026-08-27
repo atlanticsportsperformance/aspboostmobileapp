@@ -1322,7 +1322,7 @@ export default function MessagesScreen({ navigation, route }: any) {
               <RefreshControl
                 refreshing={refreshingConversations}
                 onRefresh={onRefreshConversations}
-                tintColor="#9BDDFF"
+                tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A"
               />
             }
             renderItem={({ item: conversation }) => {
@@ -1608,7 +1608,7 @@ export default function MessagesScreen({ navigation, route }: any) {
             <RefreshControl
               refreshing={refreshingMessages}
               onRefresh={onRefreshMessages}
-              tintColor="#9BDDFF"
+              tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A"
             />
           }
         >

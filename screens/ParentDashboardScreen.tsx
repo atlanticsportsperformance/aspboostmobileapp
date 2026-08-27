@@ -1628,7 +1628,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         <ScrollView
           style={styles.scrollView}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />
           }
         >
           {/* Calendar */}

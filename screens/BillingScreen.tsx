@@ -515,7 +515,7 @@ export default function BillingScreen({ navigation }: any) {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor="#9BDDFF"
+            tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A"
           />
         }
       >

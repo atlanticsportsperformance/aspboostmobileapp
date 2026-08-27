@@ -1429,7 +1429,7 @@ function PersonalRecordsView({
     <ScrollView
       style={styles.content}
       showsVerticalScrollIndicator={false}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
     >
       {/* Search + Add */}
       <View style={styles.searchAddRow}>
@@ -1784,7 +1784,7 @@ function ExerciseHistoryView({
     <ScrollView
       style={styles.content}
       showsVerticalScrollIndicator={false}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
     >
       {/* Timeframe Selector */}
       <View style={styles.timeRangeContainer}>

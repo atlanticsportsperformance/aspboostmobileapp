@@ -297,7 +297,7 @@ export default function WaiversScreen({ navigation, route }: any) {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={COLORS.primary}
+            tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A"
           />
         }
       >

@@ -126,7 +126,7 @@ export default function LeagueGameLogScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} colors={[ACDL_BRAND_TEXT]} progressBackgroundColor="#1A1A1A" />
         }
       >
         <View style={styles.band}>

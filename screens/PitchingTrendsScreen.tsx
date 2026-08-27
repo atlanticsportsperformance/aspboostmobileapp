@@ -407,7 +407,7 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A" />}
       >
         {/* Header */}
         <View style={styles.header}>

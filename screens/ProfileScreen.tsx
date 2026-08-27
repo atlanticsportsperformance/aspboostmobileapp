@@ -541,7 +541,7 @@ export default function ProfileScreen({ navigation, route }: any) {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              tintColor={COLORS.primary}
+              tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A"
             />
           }
         >

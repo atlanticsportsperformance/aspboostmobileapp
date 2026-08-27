@@ -497,7 +497,7 @@ export default function PublicBookingScreen({ navigation }: any) {
         style={styles.eventsList}
         contentContainerStyle={styles.eventsContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />
         }
       >
         {loadingEvents ? (

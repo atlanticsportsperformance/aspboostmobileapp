@@ -192,7 +192,7 @@ export default function LeagueScheduleScreen({ navigation, route }: any) {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} colors={[ACDL_BRAND_TEXT]} progressBackgroundColor="#1A1A1A" />
         }
       >
         {/* Navy band header — back + crest + title */}

@@ -885,7 +885,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     <View style={styles.container}>
       <ScrollView
         style={styles.scrollView}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
         contentContainerStyle={styles.scrollContent}
       >
         {/* Header */}
