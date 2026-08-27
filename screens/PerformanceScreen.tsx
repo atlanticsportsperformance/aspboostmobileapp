@@ -207,16 +207,11 @@ export default function PerformanceScreen({ route, navigation }: any) {
   // every set the athlete has ever logged.
   const [logStats, setLogStats] = useState<Record<string, ExerciseLogStats>>({});
 
-  // Summary chips: latest ArmCare arm_score, latest Force Profile
-  // composite percentile, days since last Mocap session. Surfaces data
-  // that otherwise stays buried behind the FAB navigation.
+  // Summary chip: latest ArmCare arm_score.
   const [cohort, setCohort] = useState<{
     armScore: number | null;
     armScoreDate: string | null;
-    forcePercentile: number | null;
-    forceTestType: string | null;
-    mocapDaysAgo: number | null;
-  }>({ armScore: null, armScoreDate: null, forcePercentile: null, forceTestType: null, mocapDaysAgo: null });
+  }>({ armScore: null, armScoreDate: null });
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [customMeasurements, setCustomMeasurements] = useState<CustomMeasurement[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -261,55 +256,17 @@ export default function PerformanceScreen({ route, navigation }: any) {
   // adds minimal latency to the screen-open path.
   async function fetchCohortSummary() {
     try {
-      const [arm, force, mocap] = await Promise.all([
-        supabase
-          .from('armcare_sessions')
-          .select('arm_score, test_date, created_at')
-          .eq('athlete_id', athleteId)
-          .order('test_date', { ascending: false, nullsFirst: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from('force_plate_percentiles')
-          .select('test_type, test_date, percentiles')
-          .eq('athlete_id', athleteId)
-          .order('test_date', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from('mocap_pitches')
-          .select('created_at')
-          .eq('athlete_id', athleteId)
-          .not('r2_uploaded_at', 'is', null)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      ]);
-
-      // Force composite = mean of the per-metric percentile values in the
-      // JSONB blob. Mirrors how ForceProfileScreen computes its composite
-      // (audit §4, force plate section).
-      let forcePct: number | null = null;
-      const forcePctData = (force.data as any)?.percentiles;
-      if (forcePctData && typeof forcePctData === 'object') {
-        const vals = Object.values(forcePctData)
-          .filter((v): v is number => typeof v === 'number' && isFinite(v));
-        if (vals.length > 0) {
-          forcePct = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-        }
-      }
-
-      const mocapDate = (mocap.data as any)?.created_at;
-      const mocapDays = mocapDate
-        ? Math.floor((Date.now() - new Date(mocapDate).getTime()) / 86_400_000)
-        : null;
+      const arm = await supabase
+        .from('armcare_sessions')
+        .select('arm_score, test_date, created_at')
+        .eq('athlete_id', athleteId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
       setCohort({
         armScore: (arm.data as any)?.arm_score ?? null,
         armScoreDate: (arm.data as any)?.test_date ?? (arm.data as any)?.created_at ?? null,
-        forcePercentile: forcePct,
-        forceTestType: (force.data as any)?.test_type ?? null,
-        mocapDaysAgo: mocapDays,
       });
     } catch (err) {
       console.error('Error fetching cohort summary:', err);
@@ -1510,46 +1467,20 @@ function PersonalRecordsView({
   );
 }
 
-// Cohort summary chips. Three tappable cards that surface ArmCare,
-// Force Profile, and Mocap data on the main Performance screen so
-// those domains aren't gated behind FAB navigation. Each chip is
-// hidden when its source has no data, so a strength-only athlete
-// just sees nothing here instead of empty placeholders.
+// Cohort summary chip. Surfaces the latest ArmScore on the main
+// Performance screen; hidden when the athlete has no ArmCare data.
 function CohortChips({ cohort, navigation, athleteId }: {
   cohort: {
     armScore: number | null;
     armScoreDate: string | null;
-    forcePercentile: number | null;
-    forceTestType: string | null;
-    mocapDaysAgo: number | null;
   };
   navigation: any;
   athleteId: string;
 }) {
   const hasArm = cohort.armScore != null && cohort.armScore > 0;
-  const hasForce = cohort.forcePercentile != null;
-  const hasMocap = cohort.mocapDaysAgo != null;
-  if (!hasArm && !hasForce && !hasMocap) return null;
+  if (!hasArm) return null;
 
-  const armColor = hasArm ? colorFor(armScoreZone(cohort.armScore!)) : '#9ca3af';
-  // Force composite zone: ELITE 75+, OPTIMIZE 50-74, SHARPEN 25-49, BUILD <25
-  const forceColor = !hasForce
-    ? '#9ca3af'
-    : cohort.forcePercentile! >= 75
-    ? '#4ADE80'
-    : cohort.forcePercentile! >= 50
-    ? '#9BDDFF'
-    : cohort.forcePercentile! >= 25
-    ? '#FCD34D'
-    : '#F87171';
-  // Mocap recency: <14 days fresh, 14-30 watch, >30 stale
-  const mocapColor = !hasMocap
-    ? '#9ca3af'
-    : cohort.mocapDaysAgo! < 14
-    ? '#4ADE80'
-    : cohort.mocapDaysAgo! < 30
-    ? '#FCD34D'
-    : '#F87171';
+  const armColor = colorFor(armScoreZone(cohort.armScore!));
 
   return (
     <View style={styles.cohortStrip}>
@@ -1566,33 +1497,6 @@ function CohortChips({ cohort, navigation, athleteId }: {
           {cohort.armScoreDate && (
             <Text style={styles.cohortChipCtx}>{timeAgo(cohort.armScoreDate)}</Text>
           )}
-        </TouchableOpacity>
-      )}
-      {hasForce && (
-        <TouchableOpacity
-          style={[styles.cohortChip, { borderLeftColor: forceColor }]}
-          onPress={() => navigation.navigate('ForceProfile', { athleteId })}
-        >
-          <Text style={styles.cohortChipLabel}>Force Comp</Text>
-          <Text style={styles.cohortChipValue}>
-            {cohort.forcePercentile}
-            <Text style={styles.cohortChipUnit}> %ile</Text>
-          </Text>
-          <Text style={styles.cohortChipCtx}>
-            {(cohort.forceTestType || 'latest').toString().toUpperCase()}
-          </Text>
-        </TouchableOpacity>
-      )}
-      {hasMocap && (
-        <TouchableOpacity
-          style={[styles.cohortChip, { borderLeftColor: mocapColor }]}
-          onPress={() => navigation.navigate('MocapSessions', { athleteId })}
-        >
-          <Text style={styles.cohortChipLabel}>Mocap</Text>
-          <Text style={styles.cohortChipValue}>
-            {cohort.mocapDaysAgo === 0 ? 'today' : `${cohort.mocapDaysAgo}d`}
-          </Text>
-          <Text style={styles.cohortChipCtx}>since last session</Text>
         </TouchableOpacity>
       )}
     </View>
