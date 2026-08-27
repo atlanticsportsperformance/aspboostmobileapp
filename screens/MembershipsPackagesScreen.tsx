@@ -404,7 +404,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         ...t,
         pricing_options: (t.pricing_options || []).filter((o: any) => o.is_active),
       }));
-      setAvailableMembershipTypes(cleaned);
 
       const { data: packageTypesData } = await supabase
         .from('package_types')
@@ -425,7 +424,59 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         .eq('is_purchasable', true)
         .order('price_amount', { ascending: true });
 
-      setAvailablePackageTypes(packageTypesData || []);
+      // Merge server-side eligibility (restriction tags, active-membership
+      // requirements, etc.) onto the display rows by id, so pricing/allocation
+      // data still comes from the direct queries above but gating comes from
+      // the server. `eligible: true` on a miss so a transient failure never
+      // hides an otherwise-purchasable plan. The parent view shows one shared
+      // "available" list across all linked athletes, so eligibility is
+      // evaluated against the first linked athlete.
+      const targetAthleteId = linkedAthletes[0]?.athlete_id;
+      let eligibilityByMembershipTypeId = new Map<string, any>();
+      let eligibilityByPackageTypeId = new Map<string, any>();
+      if (targetAthleteId) {
+        try {
+          const purchasableRes = await fetch(
+            `${API_URL}/api/athletes/${targetAthleteId}/purchasable`,
+            { headers: { Authorization: `Bearer ${session?.access_token ?? ''}` } }
+          );
+          if (purchasableRes.ok) {
+            const purchasable = await purchasableRes.json();
+            eligibilityByMembershipTypeId = new Map(
+              (purchasable.membership_types || []).map((m: any) => [m.id, m])
+            );
+            eligibilityByPackageTypeId = new Map(
+              (purchasable.package_types || []).map((p: any) => [p.id, p])
+            );
+          }
+        } catch (e) {
+          console.error('Error fetching purchasable eligibility:', e);
+        }
+      }
+
+      setAvailableMembershipTypes(
+        cleaned.map((t: any) => {
+          const gate = eligibilityByMembershipTypeId.get(t.id);
+          return {
+            ...t,
+            eligible: gate ? gate.eligible : true,
+            ineligible_reason: gate?.ineligible_reason ?? null,
+            ineligible_message: gate?.ineligible_message ?? null,
+          };
+        })
+      );
+
+      setAvailablePackageTypes(
+        (packageTypesData || []).map((t: any) => {
+          const gate = eligibilityByPackageTypeId.get(t.id);
+          return {
+            ...t,
+            eligible: gate ? gate.eligible : true,
+            ineligible_reason: gate?.ineligible_reason ?? null,
+            ineligible_message: gate?.ineligible_message ?? null,
+          };
+        })
+      );
     } catch (error) {
       console.error('Error fetching data for all athletes:', error);
     } finally {
@@ -499,7 +550,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         ...t,
         pricing_options: (t.pricing_options || []).filter((o: any) => o.is_active),
       }));
-      setAvailableMembershipTypes(cleaned);
 
       // Fetch available package types with entitlement rules (requires RLS policy on entitlement_rules)
       const { data: packageTypesData, error: packageTypesError } = await supabase
@@ -525,7 +575,53 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         console.error('Error fetching package types:', packageTypesError);
       }
 
-      setAvailablePackageTypes(packageTypesData || []);
+      // Merge server-side eligibility onto the display rows by id (see the
+      // parent-branch fetch above for the rationale — pricing/allocation
+      // data stays from the direct queries, gating comes from the server).
+      const targetAthleteId = id;
+      let eligibilityByMembershipTypeId = new Map<string, any>();
+      let eligibilityByPackageTypeId = new Map<string, any>();
+      try {
+        const purchasableRes = await fetch(
+          `${API_URL}/api/athletes/${targetAthleteId}/purchasable`,
+          { headers: { Authorization: `Bearer ${session?.access_token ?? ''}` } }
+        );
+        if (purchasableRes.ok) {
+          const purchasable = await purchasableRes.json();
+          eligibilityByMembershipTypeId = new Map(
+            (purchasable.membership_types || []).map((m: any) => [m.id, m])
+          );
+          eligibilityByPackageTypeId = new Map(
+            (purchasable.package_types || []).map((p: any) => [p.id, p])
+          );
+        }
+      } catch (e) {
+        console.error('Error fetching purchasable eligibility:', e);
+      }
+
+      setAvailableMembershipTypes(
+        cleaned.map((t: any) => {
+          const gate = eligibilityByMembershipTypeId.get(t.id);
+          return {
+            ...t,
+            eligible: gate ? gate.eligible : true,
+            ineligible_reason: gate?.ineligible_reason ?? null,
+            ineligible_message: gate?.ineligible_message ?? null,
+          };
+        })
+      );
+
+      setAvailablePackageTypes(
+        (packageTypesData || []).map((t: any) => {
+          const gate = eligibilityByPackageTypeId.get(t.id);
+          return {
+            ...t,
+            eligible: gate ? gate.eligible : true,
+            ineligible_reason: gate?.ineligible_reason ?? null,
+            ineligible_message: gate?.ineligible_message ?? null,
+          };
+        })
+      );
     } catch (error) {
       console.error('Error fetching commerce data:', error);
     }
@@ -634,14 +730,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             package_type_id: selectedItem.id,
             ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
           };
-
-      console.log('[Checkout] Calling endpoint:', endpoint);
-      console.log('[Checkout] Body params:', JSON.stringify(bodyParams));
-      console.log('[Checkout] Auth user ID:', session.user?.id);
-      console.log('[Checkout] Auth user email:', session.user?.email);
-      console.log('[Checkout] Token preview:', session.access_token?.substring(0, 20) + '...');
-      console.log('[Checkout] Selected item type:', selectedItemType);
-      console.log('[Checkout] Selected item:', JSON.stringify({ id: selectedItem.id, name: selectedItem.name }));
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -1539,11 +1627,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                         ad.memberships.some(m => m.membership_type_id === type.id)
                       );
                       const allocations = getMembershipServiceAllocations(type);
+                      const isGated = type.eligible === false;
                       return (
                         <TouchableOpacity
                           key={type.id}
                           style={styles.membershipTypeCard}
                           onPress={() => {
+                            if (isGated) return;
                             setSelectedItem(type);
                             setSelectedItemType('membership');
                             const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
@@ -1551,6 +1641,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             setCommitmentConsent(false);
                             setShowPurchaseModal(true);
                           }}
+                          disabled={isGated}
                         >
                           <View style={styles.membershipCardContent}>
                             {/* Price at top */}
@@ -1589,6 +1680,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
+                            {isGated && (
+                              <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
+                                {type.ineligible_message}
+                              </Text>
+                            )}
                           </View>
                           {athleteWithActive && (
                             <View style={styles.activeBadgeOverlay}>
@@ -1849,12 +1945,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     availableMembershipTypes.map((type) => {
                       const hasActive = memberships.some(m => m.membership_type_id === type.id);
                   const allocations = getMembershipServiceAllocations(type);
+                  const isGated = type.eligible === false;
                   return (
                     <TouchableOpacity
                       key={type.id}
                       style={[styles.membershipTypeCard, hasActive && styles.cardDisabled]}
                       onPress={() => {
-                        if (!hasActive) {
+                        if (!hasActive && !isGated) {
                           setSelectedItem(type);
                           setSelectedItemType('membership');
                           const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
@@ -1863,7 +1960,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                           setShowPurchaseModal(true);
                         }
                       }}
-                      disabled={hasActive}
+                      disabled={hasActive || isGated}
                     >
                       <View style={styles.membershipCardContent}>
                         {/* Price at top */}
@@ -1902,6 +1999,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             </View>
                           ))}
                         </View>
+                        {isGated && (
+                          <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
+                            {type.ineligible_message}
+                          </Text>
+                        )}
                       </View>
                       {hasActive && (
                         <View style={styles.activeBadgeOverlay}>
@@ -2041,15 +2143,18 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                         ? (type.price_amount / 100) / classCount
                         : null;
                       const allocations = getPackageServiceAllocations(type);
+                      const isGated = type.eligible === false;
                       return (
                         <TouchableOpacity
                           key={type.id}
                           style={styles.packageTypeCard}
                           onPress={() => {
+                            if (isGated) return;
                             setSelectedItem(type);
                             setSelectedItemType('package');
                             setShowPurchaseModal(true);
                           }}
+                          disabled={isGated}
                         >
                           <View style={styles.packageCardContent}>
                             {/* Top row: Price and class count */}
@@ -2101,6 +2206,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
+                            {isGated && (
+                              <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
+                                {type.ineligible_message}
+                              </Text>
+                            )}
                           </View>
                         </TouchableOpacity>
                       );
@@ -2222,15 +2332,18 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                         ? (type.price_amount / 100) / classCount
                         : null;
                       const allocations = getPackageServiceAllocations(type);
+                      const isGated = type.eligible === false;
                       return (
                         <TouchableOpacity
                           key={type.id}
                           style={styles.packageTypeCard}
                           onPress={() => {
+                            if (isGated) return;
                             setSelectedItem(type);
                             setSelectedItemType('package');
                             setShowPurchaseModal(true);
                           }}
+                          disabled={isGated}
                         >
                           <View style={styles.packageCardContent}>
                             {/* Top row: Price and class count */}
@@ -2282,6 +2395,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
+                            {isGated && (
+                              <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
+                                {type.ineligible_message}
+                              </Text>
+                            )}
                           </View>
                         </TouchableOpacity>
                       );
