@@ -6,9 +6,10 @@ import {
 const now = new Date(2026, 7, 27, 12);
 const cat = (days: number | null, count = days === null ? 0 : 5, last: string | null = days === null ? null : '2026-08-20') =>
   ({ last_workout_date: last, days_until_next: days, next_workout_date: null, workout_count: count });
-const ath = (name: string, sc: any, th: any, hi: any, logged: string | null) => ({
+const ath = (name: string, sc: any, th: any, hi: any, logged: string | null, hasRecent?: boolean) => ({
   athlete_id: name, athlete_name: name, last_completed_at: null, last_logged_at: logged,
   workouts: { strength_conditioning: sc, throwing: th, hitting: hi },
+  ...(hasRecent === undefined ? {} : { has_recent_scheduled_work: hasRecent }),
 });
 
 describe('runway', () => {
@@ -32,7 +33,7 @@ describe('activity', () => {
     expect(activityChip(ath('a', cat(1), cat(null), cat(null), null), now)).toEqual({ text: 'No logs', tone: 'grey' });
     expect(activityChip(ath('a', cat(1), cat(null), cat(null), '2026-08-25T10:00:00.000Z'), now)).toBeNull();
   });
-  it('not logging = had work in the window AND stale/never', () => {
+  it('not logging = had work in the window AND stale/never (fallback heuristic, field absent)', () => {
     expect(NOT_LOGGING_STALE_DAYS).toBe(7);
     expect(NOT_LOGGING_WINDOW_DAYS).toBe(14);
     const recentWork = cat(3, 5, '2026-08-30');
@@ -41,6 +42,15 @@ describe('activity', () => {
     expect(isNotLogging(ath('a', recentWork, cat(null), cat(null), '2026-08-24T00:00:00.000Z'), now)).toBe(false);
     // no scheduled work in the last 14 days → belongs on the runway list, not here
     expect(isNotLogging(ath('a', cat(-40, 5, '2026-07-18'), cat(null), cat(null), null), now)).toBe(false);
+  });
+  it('not logging = server-provided has_recent_scheduled_work is authoritative when present', () => {
+    // R4: days_until_next 20 (far future programming) but the server says nothing was
+    // actually scheduled in the last 14 days → NOT "not logging", even though the old
+    // heuristic (days_until_next >= -14) would have said yes.
+    expect(isNotLogging(ath('a', cat(20), cat(null), cat(null), null, false), now)).toBe(false);
+    // Server says recent work WAS scheduled, and logs are stale/never → not logging.
+    expect(isNotLogging(ath('a', cat(20), cat(null), cat(null), null, true), now)).toBe(true);
+    expect(isNotLogging(ath('a', cat(20), cat(null), cat(null), '2026-08-24T00:00:00.000Z', true), now)).toBe(false);
   });
 });
 

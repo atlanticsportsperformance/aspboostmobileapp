@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { toLocalDateKey } from './coachDates';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
@@ -27,6 +28,8 @@ export interface RosterAthlete {
   last_completed_at: string | null;
   groups?: any[];
   memberships?: any[];
+  /** True iff an instance was scheduled in [today-14d, today]. Absent on older servers. */
+  has_recent_scheduled_work?: boolean;
 }
 
 /**
@@ -36,7 +39,7 @@ export interface RosterAthlete {
  * membership while sitting at cancelled_membership, and a coach must still
  * see them.
  */
-export async function getCoachRosterStatus(): Promise<RosterAthlete[]> {
+export async function getCoachRosterStatus(): Promise<{ athletes: RosterAthlete[]; logsUnavailable: boolean }> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('Not authenticated');
   const res = await fetch(`${API_URL}/api/dashboard/plan-expirations?lifecycle=all`, {
@@ -44,7 +47,10 @@ export async function getCoachRosterStatus(): Promise<RosterAthlete[]> {
   });
   if (!res.ok) throw new Error(`Failed to fetch roster (${res.status})`);
   const data = await res.json();
-  return (data.athletes || []) as RosterAthlete[];
+  return {
+    athletes: (data.athletes || []) as RosterAthlete[],
+    logsUnavailable: data.logs_unavailable === true,
+  };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -61,9 +67,16 @@ export function runwayDays(a: RosterAthlete): number | null {
 
 export function daysSinceLog(a: RosterAthlete, now: Date): number | null {
   if (!a.last_logged_at) return null;
-  const t = new Date(a.last_logged_at).getTime();
-  if (Number.isNaN(t)) return null;
-  return Math.floor((now.getTime() - t) / DAY_MS);
+  const logged = new Date(a.last_logged_at);
+  if (Number.isNaN(logged.getTime())) return null;
+  // Count LOCAL calendar days, not raw elapsed ms — flooring ms is timezone-fragile
+  // (a log made "10 local days ago" can be < 10*24h away in UTC terms near a DST
+  // boundary or simply due to time-of-day, so it must diff calendar date keys).
+  const nowKey = toLocalDateKey(now);
+  const loggedKey = toLocalDateKey(logged);
+  const [ny, nm, nd] = nowKey.split('-').map(Number);
+  const [ly, lm, ld] = loggedKey.split('-').map(Number);
+  return Math.round((Date.UTC(ny, nm - 1, nd) - Date.UTC(ly, lm - 1, ld)) / DAY_MS);
 }
 
 export function runwayChip(a: RosterAthlete): { text: string; tone: 'red' | 'amber' | 'grey' } | null {
@@ -82,8 +95,18 @@ export function activityChip(a: RosterAthlete, now: Date): { text: string; tone:
   return null;
 }
 
-/** Any category whose scheduled programming touched the last NOT_LOGGING_WINDOW_DAYS days. */
+/**
+ * Any category whose scheduled programming touched the last NOT_LOGGING_WINDOW_DAYS days.
+ *
+ * The server now sends `has_recent_scheduled_work` (true iff an instance was
+ * scheduled in [today-14d, today]) and it is authoritative whenever present —
+ * the days_until_next heuristic below over-includes athletes with ongoing
+ * future programming and no work actually scheduled inside the window. Fall
+ * back to the heuristic only when talking to an older server that omits the
+ * field.
+ */
 export function hadScheduledWorkInWindow(a: RosterAthlete, now: Date): boolean {
+  if (typeof a.has_recent_scheduled_work === 'boolean') return a.has_recent_scheduled_work;
   for (const t of CATEGORY_ORDER) {
     const c = a.workouts?.[t];
     if (!c || c.workout_count === 0) continue;
