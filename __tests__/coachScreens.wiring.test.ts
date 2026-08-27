@@ -91,3 +91,39 @@ describe('App registers the three coach screens lazily', () => {
     expect(S).toContain("nav.navigate(isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard');");
   });
 });
+
+describe('AthleteProgramScreen', () => {
+  const S = read('screens/AthleteProgramScreen.tsx');
+  it('reads instances directly (RLS is the boundary) with the dashboard tree, by bare-date strings', () => {
+    expect(S).toContain(".from('workout_instances')");
+    expect(S).toContain(".eq('athlete_id', athleteId)");
+    expect(S).toContain(".gte('scheduled_date', ");
+    expect(S).toContain(".lte('scheduled_date', ");
+    expect(S).toContain('routine_exercises (');
+    expect(S).not.toContain('toISOString().split');
+    expect(S).not.toContain('new Date(w.scheduled_date)');
+    expect(S).toContain('w.scheduled_date === dayKey');
+  });
+  it('groups a day by category with the shared helper and the fixed order', () => {
+    expect(S).toContain('groupDayWorkouts(');
+    expect(S).toContain('CATEGORY_LABEL[');
+  });
+  it('shows the runway banner from the same payload as the roster', () => {
+    expect(S).toContain('getCoachRosterStatus(');
+    expect(S).toContain('never programmed');
+    expect(S).toContain('ran out');
+    expect(S).toContain('Programming through');
+  });
+  it('opens completed workouts read-only and links only read-only screens', () => {
+    expect(S).toContain("navigation.navigate('CompletedWorkout', { workoutInstanceId: w.id, readOnly: true })");
+    for (const s of ['Performance', 'ForceProfile', 'HittingPerformance', 'PitchingHub', 'Resources']) {
+      expect(S).toContain(`navigation.navigate('${s}', { athleteId })`);
+    }
+    expect(S).not.toContain("'WorkoutLogger'");
+    expect(S).not.toContain("'Booking'");
+    expect(S).not.toContain("'ArmCareWizard'");
+  });
+  it('never writes', () => {
+    expect(S).not.toMatch(/\.(update|insert|delete|upsert)\(/);
+  });
+});
