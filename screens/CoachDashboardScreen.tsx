@@ -9,20 +9,9 @@ import { SettingsMenu, type SettingsMenuItem } from '../components/SettingsMenu'
 import { getCoachTodaysSessions, type CoachSession, type CoachBooking } from '../lib/coachScheduleApi';
 import { useAuth } from '../contexts/AuthContext';
 import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
+import { isSameDay, addDays, dayLabel } from '../lib/coachDates';
 
 const DEFAULT_COLOR = 'rgba(255,255,255,0.15)';
-
-function startOfDay(d: Date): Date { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function isSameDay(a: Date, b: Date): boolean { return startOfDay(a).getTime() === startOfDay(b).getTime(); }
-function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-
-function dayLabel(d: Date): string {
-  const today = new Date();
-  if (isSameDay(d, today)) return 'Today';
-  if (isSameDay(d, addDays(today, 1))) return 'Tomorrow';
-  if (isSameDay(d, addDays(today, -1))) return 'Yesterday';
-  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-}
 
 interface Category { id: string; name: string; color: string }
 
@@ -89,6 +78,7 @@ export default function CoachDashboardScreen() {
 
   const fabItems: FABMenuItem[] = [
     { id: 'schedule', label: 'Schedule', icon: 'home', isActive: true, onPress: () => {} },
+    { id: 'roster', label: 'Roster', icon: 'people', onPress: () => navigation.navigate('CoachRoster') },
     { id: 'tools', label: 'Tools', icon: 'construct', onPress: () => navigation.navigate('CoachTools') },
     { id: 'messages', label: 'Messages', icon: 'chatbubble', onPress: () => navigation.navigate('Messages') },
   ];
