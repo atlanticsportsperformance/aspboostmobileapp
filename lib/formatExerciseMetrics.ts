@@ -144,44 +144,45 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
     return bits.join(separator);
   }
 
-  // Group metrics by measurement — prioritize enabled_measurements
+  // Group metrics by measurement. enabled_measurements seeds the groups
+  // (paired measurements with no values yet still get a column), and every
+  // key that actually carries a target is UNIONED in — the old
+  // enabled-only branch dropped a weight target whenever the row listed
+  // only a ball measurement.
   const measurementGroups: Record<string, { primary?: string; secondary?: string; measurement: CustomMeasurement | null }> = {};
 
-  if (exercise.enabled_measurements && exercise.enabled_measurements.length > 0) {
-    exercise.enabled_measurements.forEach((measurementId: string) => {
-      const measurement = customMeasurements.find((m) => m.id === measurementId);
-      if (measurement) {
-        measurementGroups[measurement.id] = {
-          measurement,
-          primary: measurement.primary_metric_id || undefined,
-          secondary: measurement.secondary_metric_id || undefined,
-        };
-      } else {
-        // Built-in id (reps/weight/time/distance) used directly
-        measurementGroups[measurementId] = { measurement: null, primary: measurementId };
-      }
-    });
-  } else {
-    const allMetricKeys = new Set<string>();
-    if (hasSetConfigurations) {
-      setConfigs.forEach((setConfig) => {
-        if (setConfig.metric_values) Object.keys(setConfig.metric_values).forEach((key) => allMetricKeys.add(key));
-      });
-    } else {
-      Object.keys(metricTargets).forEach((key) => allMetricKeys.add(key));
+  (exercise.enabled_measurements || []).forEach((measurementId: string) => {
+    const measurement = customMeasurements.find((m) => m.id === measurementId);
+    if (measurement) {
+      measurementGroups[measurement.id] = {
+        measurement,
+        primary: measurement.primary_metric_id || undefined,
+        secondary: measurement.secondary_metric_id || undefined,
+      };
+    } else if (!measurementGroups[measurementId]) {
+      // Built-in id (reps/weight/time/distance) used directly
+      measurementGroups[measurementId] = { measurement: null, primary: measurementId };
     }
-    Array.from(allMetricKeys).forEach((key) => {
-      const measurement = findMeasurement(key, customMeasurements);
-      if (measurement) {
-        if (!measurementGroups[measurement.id]) measurementGroups[measurement.id] = { measurement };
-        if (measurement.primary_metric_id === key) measurementGroups[measurement.id].primary = key;
-        else if (measurement.secondary_metric_id === key) measurementGroups[measurement.id].secondary = key;
-        else measurementGroups[measurement.id].primary = key;
-      } else {
-        measurementGroups[key] = { measurement: null, primary: key };
-      }
+  });
+
+  const allMetricKeys = new Set<string>();
+  if (hasSetConfigurations) {
+    setConfigs.forEach((setConfig) => {
+      if (setConfig.metric_values) Object.keys(setConfig.metric_values).forEach((key) => allMetricKeys.add(key));
     });
   }
+  Object.keys(metricTargets).forEach((key) => allMetricKeys.add(key));
+  Array.from(allMetricKeys).forEach((key) => {
+    const measurement = findMeasurement(key, customMeasurements);
+    if (measurement) {
+      if (!measurementGroups[measurement.id]) measurementGroups[measurement.id] = { measurement };
+      if (measurement.primary_metric_id === key) measurementGroups[measurement.id].primary = key;
+      else if (measurement.secondary_metric_id === key) measurementGroups[measurement.id].secondary = key;
+      else if (!measurementGroups[measurement.id].primary) measurementGroups[measurement.id].primary = key;
+    } else if (!measurementGroups[key]) {
+      measurementGroups[key] = { measurement: null, primary: key };
+    }
+  });
 
   Object.entries(measurementGroups).forEach(([, group]) => {
     const { primary, secondary, measurement } = group;
@@ -265,10 +266,11 @@ export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): st
     summaries.push(`Time (${formatSeconds(exercise.time_seconds)})`);
   }
 
-  // Prepend the set count to each measurement line ("3 × Reps (5)").
+  // Prepend the set count once ("3 × Reps (5) • Weight (135 lbs)") — it was
+  // being stamped on every measurement line.
   const setCount = (hasSetConfigurations && setConfigs.length) || exercise.sets || 0;
   if (setCount > 0 && summaries.length > 0) {
-    return summaries.map((s) => `${setCount} × ${s}`).join(separator);
+    return `${setCount} × ${summaries.join(separator)}`;
   }
 
   return summaries.join(separator);
