@@ -9,6 +9,9 @@ describe('AuthContext exposes app_role', () => {
     expect(S).toContain('appRole');
     expect(S).toMatch(/appRole: string \| null/);
   });
+  it('resets appRole on both sign-out and a failed token refresh', () => {
+    expect((S.match(/setAppRole\(null\)/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('useAthleteLifecycle can look at someone else', () => {

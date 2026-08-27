@@ -119,6 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setSession(null);
             setUser(null);
             setIsParentAccount(false);
+            setAppRole(null);
             setIsStaff(false);
             setStaffRole(null);
             setStaffOrgId(null);
