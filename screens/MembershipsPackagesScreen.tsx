@@ -62,6 +62,11 @@ interface MembershipType {
     id: string; label: string; price_amount: number; price_currency: string;
     commitment_months: number; billing_period: string; is_default: boolean; is_active: boolean; sort_order: number;
   }>;
+  // Merged in client-side from GET /api/athletes/{id}/purchasable — server-side
+  // eligibility gating, not part of the raw membership_types row.
+  eligible?: boolean;
+  ineligible_reason?: string | null;
+  ineligible_message?: string | null;
 }
 
 interface UsageCounter {
@@ -117,6 +122,11 @@ interface PackageType {
   expiry_days?: number;
   metadata?: any;
   entitlement_rules?: EntitlementRule[];
+  // Merged in client-side from GET /api/athletes/{id}/purchasable — server-side
+  // eligibility gating, not part of the raw package_types row.
+  eligible?: boolean;
+  ineligible_reason?: string | null;
+  ineligible_message?: string | null;
 }
 
 interface PackageUsageCounter {
@@ -171,6 +181,14 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   // Available for purchase
   const [availableMembershipTypes, setAvailableMembershipTypes] = useState<MembershipType[]>([]);
   const [availablePackageTypes, setAvailablePackageTypes] = useState<PackageType[]>([]);
+
+  // Parent view only: per-athlete eligibility, keyed by athlete_id. The shared
+  // "available" list above is gated as eligible-for-ANY-linked-athlete, but the
+  // purchase modal lets the parent pick a SPECIFIC child — so once an athlete is
+  // chosen we re-check eligibility against that exact athlete here.
+  const [eligibilityByAthleteId, setEligibilityByAthleteId] = useState<
+    Record<string, { membership: Map<string, any>; package: Map<string, any> }>
+  >({});
 
   // Manage menu state
   const [showManageMenu, setShowManageMenu] = useState<string | null>(null);
@@ -428,54 +446,87 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // requirements, etc.) onto the display rows by id, so pricing/allocation
       // data still comes from the direct queries above but gating comes from
       // the server. `eligible: true` on a miss so a transient failure never
-      // hides an otherwise-purchasable plan. The parent view shows one shared
-      // "available" list across all linked athletes, so eligibility is
-      // evaluated against the first linked athlete.
-      const targetAthleteId = linkedAthletes[0]?.athlete_id;
-      let eligibilityByMembershipTypeId = new Map<string, any>();
-      let eligibilityByPackageTypeId = new Map<string, any>();
-      if (targetAthleteId) {
-        try {
-          const purchasableRes = await fetch(
-            `${API_URL}/api/athletes/${targetAthleteId}/purchasable`,
-            { headers: { Authorization: `Bearer ${session?.access_token ?? ''}` } }
-          );
-          if (purchasableRes.ok) {
-            const purchasable = await purchasableRes.json();
-            eligibilityByMembershipTypeId = new Map(
-              (purchasable.membership_types || []).map((m: any) => [m.id, m])
+      // hides an otherwise-purchasable plan.
+      //
+      // The parent view shows one shared "available" list across ALL linked
+      // athletes, but the purchase modal lets the parent buy for any ONE of
+      // them — so gating the shared list by a single athlete would either
+      // hide a plan an eligible sibling could still buy, or show a plan as
+      // available that every linked athlete is actually locked out of. Fetch
+      // eligibility for every linked athlete and treat a shared-list item as
+      // eligible if ANY linked athlete is eligible; the "locked" message on
+      // the shared card (shown only when no athlete at all can buy it) is the
+      // first ineligible athlete's message. The exact-athlete check happens
+      // again in the purchase modal once a specific child is selected.
+      const purchasablePerAthlete = await Promise.all(
+        linkedAthletes.map(async (athlete) => {
+          const athleteTargetId = athlete.athlete_id;
+          let eligibilityByMembershipTypeId = new Map<string, any>();
+          let eligibilityByPackageTypeId = new Map<string, any>();
+          try {
+            const purchasableRes = await fetch(
+              `${API_URL}/api/athletes/${athleteTargetId}/purchasable`,
+              { headers: { Authorization: `Bearer ${session?.access_token ?? ''}` } }
             );
-            eligibilityByPackageTypeId = new Map(
-              (purchasable.package_types || []).map((p: any) => [p.id, p])
-            );
+            if (purchasableRes.ok) {
+              const purchasable = await purchasableRes.json();
+              eligibilityByMembershipTypeId = new Map(
+                (purchasable.membership_types || []).map((m: any) => [m.id, m])
+              );
+              eligibilityByPackageTypeId = new Map(
+                (purchasable.package_types || []).map((p: any) => [p.id, p])
+              );
+            }
+          } catch (e) {
+            console.error('Error fetching purchasable eligibility for athlete:', athleteTargetId, e);
           }
-        } catch (e) {
-          console.error('Error fetching purchasable eligibility:', e);
-        }
-      }
-
-      setAvailableMembershipTypes(
-        cleaned.map((t: any) => {
-          const gate = eligibilityByMembershipTypeId.get(t.id);
-          return {
-            ...t,
-            eligible: gate ? gate.eligible : true,
-            ineligible_reason: gate?.ineligible_reason ?? null,
-            ineligible_message: gate?.ineligible_message ?? null,
-          };
+          return { athleteId: athleteTargetId, eligibilityByMembershipTypeId, eligibilityByPackageTypeId };
         })
       );
 
+      const nextEligibilityByAthleteId: Record<string, { membership: Map<string, any>; package: Map<string, any> }> = {};
+      for (const entry of purchasablePerAthlete) {
+        nextEligibilityByAthleteId[entry.athleteId] = {
+          membership: entry.eligibilityByMembershipTypeId,
+          package: entry.eligibilityByPackageTypeId,
+        };
+      }
+      setEligibilityByAthleteId(nextEligibilityByAthleteId);
+
+      function mergeAnyEligible(typeId: string, key: 'eligibilityByMembershipTypeId' | 'eligibilityByPackageTypeId') {
+        if (purchasablePerAthlete.length === 0) {
+          return { eligible: true, ineligible_reason: null, ineligible_message: null };
+        }
+        let anyEligible = false;
+        let firstIneligible: any = null;
+        for (const entry of purchasablePerAthlete) {
+          const gate = entry[key].get(typeId);
+          const eligible = gate ? gate.eligible : true;
+          if (eligible) {
+            anyEligible = true;
+          } else if (!firstIneligible) {
+            firstIneligible = gate;
+          }
+        }
+        return {
+          eligible: anyEligible,
+          ineligible_reason: anyEligible ? null : (firstIneligible?.ineligible_reason ?? null),
+          ineligible_message: anyEligible ? null : (firstIneligible?.ineligible_message ?? null),
+        };
+      }
+
+      setAvailableMembershipTypes(
+        cleaned.map((t: any) => ({
+          ...t,
+          ...mergeAnyEligible(t.id, 'eligibilityByMembershipTypeId'),
+        }))
+      );
+
       setAvailablePackageTypes(
-        (packageTypesData || []).map((t: any) => {
-          const gate = eligibilityByPackageTypeId.get(t.id);
-          return {
-            ...t,
-            eligible: gate ? gate.eligible : true,
-            ineligible_reason: gate?.ineligible_reason ?? null,
-            ineligible_message: gate?.ineligible_message ?? null,
-          };
-        })
+        (packageTypesData || []).map((t: any) => ({
+          ...t,
+          ...mergeAnyEligible(t.id, 'eligibilityByPackageTypeId'),
+        }))
       );
     } catch (error) {
       console.error('Error fetching data for all athletes:', error);
@@ -686,6 +737,17 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
     if (!targetAthleteId || !selectedItem) {
       Alert.alert('Error', 'Unable to process purchase. Please try again.');
+      return;
+    }
+
+    // Belt-and-braces: the server (assertPurchasable) still enforces this,
+    // but the UI already knows this item is gated for the athlete selected
+    // in the modal — don't let a stale button state slip a card through.
+    if (isSelectedItemGatedForAthlete) {
+      Alert.alert(
+        'Not available',
+        gatedMessageForSelectedAthlete || 'This item is not available for the selected athlete.'
+      );
       return;
     }
 
@@ -1313,6 +1375,24 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     return acc;
   }, {} as Record<string, PackageType[]>);
 
+  // The purchase modal lets a parent buy for any linked athlete via
+  // purchaseForAthleteId, which can differ from whichever athlete(s) made the
+  // shared list "eligible" above. Re-check eligibility against the exact
+  // athlete currently selected for purchase before allowing checkout.
+  const eligibilityAthleteForPurchase = purchaseForAthleteId || athleteId;
+  const eligibilityForSelectedAthlete = (() => {
+    if (!selectedItem || !eligibilityAthleteForPurchase) return null;
+    const perAthlete = eligibilityByAthleteId[eligibilityAthleteForPurchase];
+    if (!perAthlete) return null;
+    const map = selectedItemType === 'membership' ? perAthlete.membership : perAthlete.package;
+    return map.get(selectedItem.id) ?? null;
+  })();
+  const isSelectedItemGatedForAthlete = eligibilityForSelectedAthlete
+    ? eligibilityForSelectedAthlete.eligible === false
+    : (selectedItem as any)?.eligible === false;
+  const gatedMessageForSelectedAthlete =
+    eligibilityForSelectedAthlete?.ineligible_message ?? (selectedItem as any)?.ineligible_message ?? null;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
@@ -1680,7 +1760,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
-                            {isGated && (
+                            {isGated && type.ineligible_message && (
                               <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
                                 {type.ineligible_message}
                               </Text>
@@ -1999,7 +2079,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             </View>
                           ))}
                         </View>
-                        {isGated && (
+                        {isGated && type.ineligible_message && (
                           <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
                             {type.ineligible_message}
                           </Text>
@@ -2206,7 +2286,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
-                            {isGated && (
+                            {isGated && type.ineligible_message && (
                               <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
                                 {type.ineligible_message}
                               </Text>
@@ -2395,7 +2475,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </View>
                               ))}
                             </View>
-                            {isGated && (
+                            {isGated && type.ineligible_message && (
                               <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
                                 {type.ineligible_message}
                               </Text>
@@ -2757,9 +2837,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               {isParent && linkedAthletes.length > 0 && !purchaseForAthleteId && (
                 <Text style={styles.purchaseModalWarning}>Please select an athlete above</Text>
               )}
+              {/* Show why this plan can't be bought for the athlete currently selected */}
+              {purchaseForAthleteId && isSelectedItemGatedForAthlete && gatedMessageForSelectedAthlete && (
+                <Text style={styles.purchaseModalWarning}>{gatedMessageForSelectedAthlete}</Text>
+              )}
               {(() => {
                 const needsConsent = selectedItemType === 'membership' && selectedPricingOptionId !== null;
-                const buyDisabled = paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId) || (needsConsent && !commitmentConsent);
+                const buyDisabled = paymentInProgress || (isParent && linkedAthletes.length > 0 && !purchaseForAthleteId) || (needsConsent && !commitmentConsent) || isSelectedItemGatedForAthlete;
                 return (
               <TouchableOpacity
                 style={[

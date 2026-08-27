@@ -34,6 +34,17 @@ describe('the CTA tells setup-intent what is being bought', () => {
   });
 });
 
+describe('a parent can buy for any linked athlete, not just the first', () => {
+  it('checks eligibility for every linked athlete, not only the first', () => {
+    expect(SOURCE).toContain('purchasablePerAthlete');
+  });
+
+  it('re-checks eligibility against whichever athlete is selected in the purchase modal', () => {
+    expect(SOURCE).toContain('eligibilityForSelectedAthlete');
+    expect(SOURCE).toContain('purchaseForAthleteId');
+  });
+});
+
 describe('no credentials in device logs', () => {
   it('does not log a token preview', () => {
     expect(SOURCE).not.toContain('tokenPreview');
