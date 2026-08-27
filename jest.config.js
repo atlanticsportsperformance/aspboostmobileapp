@@ -24,5 +24,11 @@ module.exports = {
     // Map it to a lightweight stub so tests can import modules that depend on
     // it (e.g. lib/coachScheduleApi) and exercise their pure helpers.
     '(^|/)supabase$': '<rootDir>/__mocks__/supabase.ts',
+    // lib/messagesApi.ts and lib/videoAttachment.ts import these native
+    // modules for upload/compression/thumbnailing; none parse under
+    // ts-jest/node, so map them to minimal jest.fn()-based stubs.
+    '^expo-file-system/legacy$': '<rootDir>/__mocks__/expo-file-system-legacy.ts',
+    '^react-native-compressor$': '<rootDir>/__mocks__/react-native-compressor.ts',
+    '^expo-video-thumbnails$': '<rootDir>/__mocks__/expo-video-thumbnails.ts',
   },
 };
