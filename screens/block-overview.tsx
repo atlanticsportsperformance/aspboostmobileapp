@@ -257,12 +257,14 @@ export default function BlockOverview({
     }));
   };
 
-  // Calculate progress (excluding placeholder exercises)
+  // Calculate progress (excluding placeholder exercises AND instruction
+  // blocks — nothing to log). `sets` can be null on a row; `s + null` → NaN
+  // took the whole progress bar down.
   const totalSets = workout.routines.reduce(
     (sum, routine) =>
       sum + routine.routine_exercises
-        .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder))
-        .reduce((s, ex) => s + ex.sets, 0),
+        .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder) && !(ex as any).notes_only)
+        .reduce((s, ex) => s + (ex.sets ?? 0), 0),
     0
   );
 

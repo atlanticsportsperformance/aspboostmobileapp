@@ -158,7 +158,10 @@ export default function WorkoutLoggerScreen() {
   // useState batches and a second call within the same render tick would
   // see the stale `null` and fail to cancel the prior timeout, firing both
   // writes (one of them with the wrong exerciseId after navigation).
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One debounce timer PER (exercise, set, field). A single shared timer
+  // meant typing reps then weight inside 500 ms cancelled the reps write —
+  // the value survived in local state and vanished on reload.
+  const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
@@ -731,6 +734,11 @@ export default function WorkoutLoggerScreen() {
         exercise_id: exercise.exercise_id,
         athlete_id: athleteId,
         set_number: setIndex + 1,
+        // org_id was never written from mobile (6,208 of 6,275 logs in prod
+        // have it null) — web writes it; any org-scoped RLS/report misses
+        // mobile logs without it.
+        ...(orgId ? { org_id: orgId } : {}),
+        is_complete: true,
       };
 
       // Built-in fields go to dedicated actual_<x> columns; custom
@@ -773,11 +781,25 @@ export default function WorkoutLoggerScreen() {
     return athleteMaxes[exerciseId]?.[metricId] ?? null;
   };
 
-  // Check and save PR
+  // Check and save PR.
+  //
+  // athlete_maxes is ONE row per (athlete, exercise, metric), enforced by
+  // the partial unique index idx_athlete_maxes_exercise_unique
+  // (... WHERE exercise_id IS NOT NULL). The previous upsert named that
+  // key in onConflict, but Postgres only infers a PARTIAL unique index when
+  // the predicate is supplied — which PostgREST can't send — so every call
+  // errored ("no unique constraint matching") and no mobile PR ever saved.
+  // Select-then-update-or-insert sidesteps inference entirely. Same shape
+  // as the web execute pages now use.
+  //
+  // reps_at_max is recorded from the same set so a coach can see a 250×5
+  // vs a 245×1; a higher weight replaces the row regardless of rep count
+  // (250×5 implies a higher 1RM than 245×1).
   const checkAndSavePR = async (
     routineExerciseId: string,
     metric: string,
-    value: number
+    value: number,
+    repsAtMax?: number | null
   ) => {
     try {
       const exercise = allExercises.find(ex => ex.id === routineExerciseId);
@@ -786,43 +808,59 @@ export default function WorkoutLoggerScreen() {
       }
 
       const currentMax = getMaxValue(exercise.exercise_id, metric) || 0;
+      if (value <= currentMax) return;
 
-      if (value > currentMax) {
-        // NEW PR! Upsert against the partial unique index
-        // idx_athlete_maxes_exercise_unique = (athlete_id, exercise_id,
-        // metric_id) WHERE exercise_id IS NOT NULL — so the same metric
-        // for the same exercise updates in place instead of stacking
-        // duplicate rows on every successive beat in a session.
-        // source: 'logged' makes the "Auto" badge render in PerformanceScreen's
-        // MaxCard (line 1318) since the row originated from a live workout
-        // rather than a manual entry.
-        await supabase
-          .from('athlete_maxes')
-          .upsert(
-            {
-              athlete_id: athleteId,
-              exercise_id: exercise.exercise_id,
-              metric_id: metric,
-              max_value: value,
-              achieved_on: new Date().toISOString(),
-              source: 'logged',
-            },
-            { onConflict: 'athlete_id,exercise_id,metric_id' },
-          );
+      const { data: existing } = await supabase
+        .from('athlete_maxes')
+        .select('id, max_value')
+        .eq('athlete_id', athleteId)
+        .eq('exercise_id', exercise.exercise_id)
+        .eq('metric_id', metric)
+        .maybeSingle();
 
-        // Update local state
+      if (existing && value <= Number(existing.max_value)) {
+        // Local cache was stale (e.g. a web PR landed since load) — sync it.
         setAthleteMaxes(prev => ({
           ...prev,
-          [exercise.exercise_id]: {
-            ...(prev[exercise.exercise_id] || {}),
-            [metric]: value,
-          },
+          [exercise.exercise_id]: { ...(prev[exercise.exercise_id] || {}), [metric]: Number(existing.max_value) },
         }));
-
-        // Show PR alert
-        setPRAlert({ metric, value });
-        setTimeout(() => setPRAlert(null), 4000);
+        return;
       }
+
+      const reps = repsAtMax != null && Number.isFinite(repsAtMax) && repsAtMax > 0 ? Math.round(repsAtMax) : 1;
+      const row = {
+        max_value: value,
+        reps_at_max: reps,
+        achieved_on: new Date().toISOString().split('T')[0], // date column
+        source: 'logged', // "Auto" badge in PerformanceScreen MaxCard
+        ...(orgId ? { org_id: orgId } : {}),
+      };
+
+      const { error } = existing
+        ? await supabase.from('athlete_maxes').update(row).eq('id', existing.id)
+        : await supabase.from('athlete_maxes').insert({
+            athlete_id: athleteId,
+            exercise_id: exercise.exercise_id,
+            metric_id: metric,
+            ...row,
+          });
+      if (error) {
+        console.error('PR save failed:', error);
+        return;
+      }
+
+      // Update local state
+      setAthleteMaxes(prev => ({
+        ...prev,
+        [exercise.exercise_id]: {
+          ...(prev[exercise.exercise_id] || {}),
+          [metric]: value,
+        },
+      }));
+
+      // Show PR alert
+      setPRAlert({ metric, value });
+      setTimeout(() => setPRAlert(null), 4000);
     } catch (error) {
       console.error('Error checking PR:', error);
     }
@@ -868,8 +906,11 @@ export default function WorkoutLoggerScreen() {
     // before the 500ms elapses, the pending write still lands on the
     // correct row. The ref avoids the React-state-batching race that would
     // otherwise let a rapid second call skip cancelling the prior timeout.
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(() => {
+    const timerKey = `${targetExerciseId}:${setIndex}:${field}`;
+    const pending = saveTimersRef.current[timerKey];
+    if (pending) clearTimeout(pending);
+    saveTimersRef.current[timerKey] = setTimeout(() => {
+      delete saveTimersRef.current[timerKey];
       saveSetData(targetExerciseId, setIndex, field, value);
     }, 500);
 
@@ -889,11 +930,14 @@ export default function WorkoutLoggerScreen() {
       });
     }
 
-    // 5. Check for PR (if tracked metric)
+    // 5. Check for PR (if tracked metric). Carry the reps from the same set
+    // so reps_at_max is recorded (a reps-metric PR uses its own value).
     if (targetExercise.tracked_max_metrics?.includes(field)) {
       const numValue = parseFloat(value);
       if (!isNaN(numValue) && numValue > 0) {
-        checkAndSavePR(targetExerciseId, field, numValue);
+        const repsRaw = field === 'reps' ? value : setData.reps;
+        const repsNum = repsRaw == null || repsRaw === '' ? null : parseFloat(repsRaw);
+        checkAndSavePR(targetExerciseId, field, numValue, repsNum);
       }
     }
   }, [activeExerciseId, allExercises, exerciseInputs]);
@@ -1078,8 +1122,10 @@ export default function WorkoutLoggerScreen() {
   const blockLabel = useMemo(() => {
     if (!workout || !currentRoutine || !activeExerciseId) return undefined;
     const routineIndex = workout.routines.findIndex(r => r.id === currentRoutine.id);
+    // Same visibility rule as the overview list (keeps notes_only instruction
+    // cards) so A1/A2 numbering matches what the athlete sees.
     const exerciseIndex = currentRoutine.routine_exercises
-      .filter(ex => !(ex.is_placeholder || ex.exercises?.is_placeholder))
+      .filter(ex => !(ex.is_placeholder || ex.exercises?.is_placeholder) || ex.notes_only)
       .findIndex(ex => ex.id === activeExerciseId);
     if (exerciseIndex === -1) return undefined;
     const letter = String.fromCharCode(65 + routineIndex); // A, B, C...

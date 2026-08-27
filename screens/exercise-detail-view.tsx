@@ -837,10 +837,13 @@ export default function ExerciseDetailView({
   // Get target value for a metric in a specific set
   const getTargetValue = (setIndex: number, metricId: string): number | undefined => {
     const setConfig = getSetConfig(setIndex);
-    if (setConfig?.metric_values?.[metricId]) {
+    // `!= null`, not truthiness: a prescribed 0 for a set (e.g. bodyweight
+    // "0 lb" or a deliberate 0-rep marker) used to fall through to the
+    // exercise-level target.
+    if (setConfig?.metric_values?.[metricId] != null) {
       return setConfig.metric_values[metricId];
     }
-    if (exercise.metric_targets?.[metricId]) {
+    if (exercise.metric_targets?.[metricId] != null) {
       return exercise.metric_targets[metricId];
     }
     return undefined;
@@ -849,6 +852,19 @@ export default function ExerciseDetailView({
   // Helper to get max value from athleteMaxes
   const getMaxValue = (exerciseId: string, metricId: string): number | null => {
     return athleteMaxes[exerciseId]?.[metricId] ?? null;
+  };
+
+  // Round a computed load to something that goes on a bar: weight → nearest
+  // 5 lb (80% of 227 is 180, not 182); everything else → whole number.
+  const roundLoad = (value: number, metricId: string): number =>
+    metricId === 'weight' ? Math.round(value / 5) * 5 : Math.round(value);
+
+  // Reps-type metric flagged AMRAP for this set (per-set flag OR the
+  // exercise-level flag). Per-set is_amrap was typed but never rendered.
+  const isAmrapFor = (setIndex: number, metricId: string): boolean => {
+    const repsLike = metricId === 'reps' || metricId.toLowerCase().endsWith('_reps');
+    if (!repsLike) return false;
+    return !!(getSetConfig(setIndex)?.is_amrap || exercise.is_amrap);
   };
 
   // Get intensity target for a metric in a specific set
@@ -875,7 +891,7 @@ export default function ExerciseDetailView({
             const refValue = refSetInputs[metricId];
             const refNum = typeof refValue === 'string' ? Number(refValue) : refValue;
             if (refNum != null && Number.isFinite(refNum) && refNum > 0) {
-              const calculatedValue = Math.round((refNum as number) * (target.percent / 100));
+              const calculatedValue = roundLoad((refNum as number) * (target.percent / 100), metricId);
               return {
                 percent: target.percent,
                 calculatedValue,
@@ -926,7 +942,7 @@ export default function ExerciseDetailView({
 
         // Non-throwing metrics: simple percentage calculation
         if (maxValue) {
-          const calculatedValue = Math.round(maxValue * (target.percent / 100));
+          const calculatedValue = roundLoad(maxValue * (target.percent / 100), metricId);
           return {
             percent: target.percent,
             calculatedValue,
@@ -1276,7 +1292,12 @@ export default function ExerciseDetailView({
                               ]}>
                                 {currentValue != null && currentValue !== ''
                                   ? String(currentValue)
-                                  : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
+                                  : isAmrapFor(i, metricId)
+                                    ? 'AMRAP'
+                                    : intensityTarget?.percent && !intensityTarget.calculatedValue && !targetValue
+                                      // A % was prescribed but there's no max on file — say so.
+                                      ? `${intensityTarget.percent}% · no max set`
+                                      : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
                               </Text>
                             </TouchableOpacity>
                           </View>
