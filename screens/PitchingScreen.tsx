@@ -133,7 +133,7 @@ export default function PitchingScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
-  const { isMember } = useAthleteLifecycle();
+  const { isMember } = useAthleteLifecycle(athleteId);
 
   // Dynamic FAB menu data availability flags (matching DashboardScreen)
   const [hittingData, setHittingData] = useState<boolean>(false);

@@ -67,7 +67,7 @@ interface WorkoutInstance {
 }
 
 export default function CompletedWorkoutScreen({ route, navigation }: any) {
-  const { workoutInstanceId } = route.params;
+  const { workoutInstanceId, readOnly = false } = route.params;
 
   const [loading, setLoading] = useState(true);
   const [workout, setWorkout] = useState<WorkoutInstance | null>(null);
@@ -525,83 +525,89 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           })}
 
 
-        {/* Reopen Button — non-destructive: keeps all logged data and
-            drops you back into the logger as in_progress. */}
-        <TouchableOpacity
-          style={styles.reopenButton}
-          onPress={handleReopenWorkout}
-          disabled={reopening}
-          activeOpacity={0.7}
-        >
-          {reopening ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <>
-              <Text style={styles.reopenButtonIcon}>▸</Text>
-              <Text style={styles.reopenButtonText}>Reopen Workout</Text>
-            </>
-          )}
-        </TouchableOpacity>
+        {!readOnly && (
+          <>
+            {/* Reopen Button — non-destructive: keeps all logged data and
+                drops you back into the logger as in_progress. */}
+            <TouchableOpacity
+              style={styles.reopenButton}
+              onPress={handleReopenWorkout}
+              disabled={reopening}
+              activeOpacity={0.7}
+            >
+              {reopening ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Text style={styles.reopenButtonIcon}>▸</Text>
+                  <Text style={styles.reopenButtonText}>Reopen Workout</Text>
+                </>
+              )}
+            </TouchableOpacity>
 
-        {/* Reset Button — destructive: deletes all logged data */}
-        <TouchableOpacity
-          style={styles.resetButton}
-          onPress={() => setShowResetModal(true)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.resetButtonIcon}>↺</Text>
-          <Text style={styles.resetButtonText}>Reset & Redo Workout</Text>
-        </TouchableOpacity>
+            {/* Reset Button — destructive: deletes all logged data */}
+            <TouchableOpacity
+              style={styles.resetButton}
+              onPress={() => setShowResetModal(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.resetButtonIcon}>↺</Text>
+              <Text style={styles.resetButtonText}>Reset & Redo Workout</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
 
-      {/* Reset Confirmation Modal */}
-      <Modal
-        visible={showResetModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowResetModal(false)}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setShowResetModal(false)}
+      {!readOnly && (
+        /* Reset Confirmation Modal */
+        <Modal
+          visible={showResetModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowResetModal(false)}
         >
-          <Pressable style={styles.modalContainer} onPress={() => {}}>
-            <View style={styles.modalIconContainer}>
-              <Text style={styles.modalIcon}>↺</Text>
-            </View>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setShowResetModal(false)}
+          >
+            <Pressable style={styles.modalContainer} onPress={() => {}}>
+              <View style={styles.modalIconContainer}>
+                <Text style={styles.modalIcon}>↺</Text>
+              </View>
 
-            <Text style={styles.modalTitle}>Reset Workout?</Text>
-            <Text style={styles.modalDescription}>
-              This will delete all logged data for this workout and reset it to "not started". This action cannot be undone.
-            </Text>
+              <Text style={styles.modalTitle}>Reset Workout?</Text>
+              <Text style={styles.modalDescription}>
+                This will delete all logged data for this workout and reset it to "not started". This action cannot be undone.
+              </Text>
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.modalDangerButton}
-                onPress={handleResetWorkout}
-                disabled={resetting}
-                activeOpacity={0.8}
-              >
-                {resetting ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalDangerButtonText}>Reset Workout</Text>
-                )}
-              </TouchableOpacity>
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.modalDangerButton}
+                  onPress={handleResetWorkout}
+                  disabled={resetting}
+                  activeOpacity={0.8}
+                >
+                  {resetting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.modalDangerButtonText}>Reset Workout</Text>
+                  )}
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => setShowResetModal(false)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.modalCancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
+                <TouchableOpacity
+                  style={styles.modalCancelButton}
+                  onPress={() => setShowResetModal(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }

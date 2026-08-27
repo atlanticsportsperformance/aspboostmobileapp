@@ -37,58 +37,60 @@ export type ClientLifecycle =
   | 'cancelled_membership'
   | null;
 
-// A single in-flight promise per user prevents concurrent FAB mounts from
-// firing N parallel fetches. Values land in the TTL cache in ./lifecycleCache.
+// A single in-flight promise per cache key prevents concurrent FAB mounts
+// from firing N parallel fetches. Values land in the TTL cache in
+// ./lifecycleCache.
 const inflight = new Map<string, Promise<ClientLifecycle>>();
 
-function fetchLifecycle(userId: string): Promise<ClientLifecycle> {
-  const existing = inflight.get(userId);
+function fetchLifecycle(cacheKey: string, userId: string, athleteId: string | null): Promise<ClientLifecycle> {
+  const existing = inflight.get(cacheKey);
   if (existing) return existing;
 
   const p = (async (): Promise<ClientLifecycle> => {
     try {
-      const { data, error } = await supabase
-        .from('athletes')
-        .select('client_lifecycle')
-        .eq('user_id', userId)
-        .maybeSingle();
+      const query = athleteId
+        ? supabase.from('athletes').select('client_lifecycle').eq('id', athleteId).maybeSingle()
+        : supabase.from('athletes').select('client_lifecycle').eq('user_id', userId).maybeSingle();
+      const { data, error } = await query;
       if (error || !data) return null;
       const lc = (data.client_lifecycle ?? null) as ClientLifecycle;
-      setCachedLifecycle<ClientLifecycle>(userId, lc);
+      setCachedLifecycle<ClientLifecycle>(cacheKey, lc);
       return lc;
     } catch {
       return null;
     } finally {
-      inflight.delete(userId);
+      inflight.delete(cacheKey);
     }
   })();
 
-  inflight.set(userId, p);
+  inflight.set(cacheKey, p);
   return p;
 }
 
-export function useAthleteLifecycle(): {
+export function useAthleteLifecycle(athleteId?: string | null): {
   lifecycle: ClientLifecycle;
   isMember: boolean;
   loading: boolean;
 } {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  const resolvedAthleteId = athleteId ?? null;
+  const cacheKey = athleteId ? `athlete:${athleteId}` : userId;
 
   const [lifecycle, setLifecycle] = useState<ClientLifecycle>(() =>
-    userId ? getCachedLifecycle<ClientLifecycle>(userId).value ?? null : null,
+    cacheKey ? getCachedLifecycle<ClientLifecycle>(cacheKey).value ?? null : null,
   );
   const [loading, setLoading] = useState<boolean>(() =>
-    userId ? !getCachedLifecycle<ClientLifecycle>(userId).hit : false,
+    cacheKey ? !getCachedLifecycle<ClientLifecycle>(cacheKey).hit : false,
   );
 
   useEffect(() => {
-    if (!userId) {
+    if (!cacheKey || (!resolvedAthleteId && !userId)) {
       setLifecycle(null);
       setLoading(false);
       return;
     }
-    const cached = getCachedLifecycle<ClientLifecycle>(userId);
+    const cached = getCachedLifecycle<ClientLifecycle>(cacheKey);
     if (cached.hit) {
       setLifecycle(cached.value ?? null);
       setLoading(false);
@@ -96,7 +98,7 @@ export function useAthleteLifecycle(): {
     }
     let cancelled = false;
     setLoading(true);
-    fetchLifecycle(userId)
+    fetchLifecycle(cacheKey, userId as string, resolvedAthleteId)
       .then((lc) => {
         if (cancelled) return;
         setLifecycle(lc);
@@ -109,7 +111,7 @@ export function useAthleteLifecycle(): {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [cacheKey, userId, resolvedAthleteId]);
 
   return {
     lifecycle,

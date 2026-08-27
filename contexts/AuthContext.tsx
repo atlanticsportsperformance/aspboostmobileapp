@@ -7,6 +7,7 @@ interface AuthContextType {
   session: Session | null;
   user: User | null;
   isParentAccount: boolean;
+  appRole: string | null;
   isStaff: boolean;
   staffRole: string | null;
   staffOrgId: string | null;
@@ -26,6 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isParentAccount, setIsParentAccount] = useState(false);
+  const [appRole, setAppRole] = useState<string | null>(null);
   const [isStaff, setIsStaff] = useState(false);
   const [staffRole, setStaffRole] = useState<string | null>(null);
   const [staffOrgId, setStaffOrgId] = useState<string | null>(null);
@@ -57,11 +59,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const { data } = await supabase
           .from('profiles')
-          .select('account_type')
+          .select('account_type, app_role')
           .eq('id', userId)
           .single();
         if (data && mountedRef.current) {
           setIsParentAccount(data.account_type === 'parent');
+          setAppRole((data as any).app_role ?? null);
         }
       } catch (e) {
         console.log('[Auth] checkAccountType error:', e);
@@ -191,6 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(null);
         setUser(null);
         setIsParentAccount(false);
+        setAppRole(null);
         setIsStaff(false);
         setStaffRole(null);
         setStaffOrgId(null);
@@ -289,8 +293,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // re-render when auth state actually changes, not on every provider re-render.
   // signIn/signOut are already stable (useCallback).
   const value = useMemo(
-    () => ({ session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }),
-    [session, user, isParentAccount, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut]
+    () => ({ session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }),
+    [session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut]
   );
 
   return (
