@@ -33,8 +33,8 @@ export default function CoachCoverageScreen({ navigation }: any) {
 
   const runningOut = useMemo(() => {
     const list = all.filter((a) => { const r = runwayDays(a); return r === null || r <= RUNWAY_WARN_DAYS || neverProgrammedCats(a).length > 0; });
-    // never-programmed-anywhere first, then the shared needs-attention order
-    return sortNeedsAttention(list, now).sort((a, b) => Number(runwayDays(b) === null) - Number(runwayDays(a) === null));
+    // never-programmed athletes sort first because sortNeedsAttention treats null runway as -Infinity
+    return sortNeedsAttention(list, now);
   }, [all]);
   const notLogging = useMemo(() => sortNeedsAttention(all.filter((a) => isNotLogging(a, now)), now), [all]);
 
@@ -48,7 +48,7 @@ export default function CoachCoverageScreen({ navigation }: any) {
         <Text style={styles.title}>Coverage</Text>
       </View>
       <View style={styles.segment}>
-        {([['runway', 'Running out', runningOut.length], ['logging', 'Not logging', notLogging.length]] as const).map(([k, label, n]) => (
+        {([['runway', 'Running out', String(runningOut.length)], ['logging', 'Not logging', logsUnavailable ? '—' : String(notLogging.length)]] as const).map(([k, label, n]) => (
           <TouchableOpacity key={k} style={[styles.segBtn, tab === k && styles.segBtnActive]} onPress={() => setTab(k)}>
             <Text style={[styles.segText, tab === k && styles.segTextActive]}>{label} · {n}</Text>
           </TouchableOpacity>

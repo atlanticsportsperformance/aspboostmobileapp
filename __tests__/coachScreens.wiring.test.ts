@@ -148,6 +148,9 @@ describe('CoachCoverageScreen', () => {
     expect(S).toContain('logsUnavailable');
     expect(S).toContain('Activity unavailable right now');
   });
+  it('shows an em dash instead of a count on the Not logging tab when logs are unavailable', () => {
+    expect(S).toContain("logsUnavailable ? '—' : String(notLogging.length)");
+  });
 });
 
 describe('CoachTools gains a Coverage tile', () => {

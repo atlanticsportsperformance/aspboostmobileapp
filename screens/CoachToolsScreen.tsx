@@ -27,8 +27,8 @@ export default function CoachToolsScreen() {
           <Ionicons name="chevron-forward" size={18} color="rgba(248,113,113,0.7)" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.tool, styles.toolPrimary]} onPress={() => navigation.navigate('CoachCoverage')}>
-          <View style={styles.toolIcon}><Ionicons name="pulse" size={22} color="#9BDDFF" /></View>
+        <TouchableOpacity style={[styles.tool, styles.toolCoverage]} onPress={() => navigation.navigate('CoachCoverage')}>
+          <View style={[styles.toolIcon, styles.toolIconCoverage]}><Ionicons name="pulse" size={22} color="#9BDDFF" /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.toolTitle}>Coverage</Text>
             <Text style={styles.toolDesc}>Who is running out · who is not logging</Text>
@@ -55,8 +55,10 @@ const styles = StyleSheet.create({
   tool: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#131317',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', borderRadius: 16, padding: 16 },
   toolPrimary: { borderColor: 'rgba(248,113,113,0.3)', backgroundColor: 'rgba(248,113,113,0.06)' },
+  toolCoverage: { borderColor: 'rgba(155,221,255,0.3)', backgroundColor: 'rgba(155,221,255,0.06)' },
   toolIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(248,113,113,0.15)',
     alignItems: 'center', justifyContent: 'center' },
+  toolIconCoverage: { backgroundColor: 'rgba(155,221,255,0.15)' },
   toolTitle: { fontSize: 15, fontWeight: '700', color: 'rgba(255,255,255,0.9)' },
   toolDesc: { fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 },
 });
