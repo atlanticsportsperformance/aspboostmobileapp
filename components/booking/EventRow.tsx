@@ -140,7 +140,7 @@ export default function EventRow({
           {event.title}
         </Text>
         <Text style={styles.coachName}>{event.coachName}</Text>
-        <Text style={styles.location}>{event.location}</Text>
+        <Text style={styles.location}>{event.isRemote ? 'Video call' : event.location}</Text>
         <Text style={styles.duration}>{event.durationMinutes} min.</Text>
       </View>
 

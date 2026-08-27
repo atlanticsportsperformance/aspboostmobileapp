@@ -12,6 +12,8 @@ export interface CoachSession {
   capacity: number; currentBookings: number; notes: string | null;
   template: { id: string; name: string; scheduling_categories: { id: string; name: string; color: string } | null } | null;
   location: { id: string; name: string } | null;
+  is_remote?: boolean;
+  meeting_url?: string | null;
   bookings: CoachBooking[];
   allBookings: CoachBooking[];
 }

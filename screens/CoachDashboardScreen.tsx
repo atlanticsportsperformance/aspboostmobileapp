@@ -198,7 +198,9 @@ function SessionCard({ session, expanded, onToggle }: { session: CoachSession; e
           <Text style={styles.cardName}>{session.template?.name ?? 'Session'}</Text>
           <View style={styles.cardSubRow}>
             {catName ? <Text style={[styles.catBadge, { color, backgroundColor: `${color}1f` }]}>{catName}</Text> : null}
-            {session.location?.name ? <Text style={styles.cardSub}>{session.location.name}</Text> : null}
+            {(session.is_remote ? 'Video call' : session.location?.name) ? (
+              <Text style={styles.cardSub}>{session.is_remote ? 'Video call' : session.location?.name}</Text>
+            ) : null}
           </View>
         </View>
         <Text style={styles.cap}>{session.currentBookings}/{session.capacity}</Text>

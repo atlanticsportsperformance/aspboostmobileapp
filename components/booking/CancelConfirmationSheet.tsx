@@ -88,7 +88,7 @@ export default function CancelConfirmationSheet({
             </View>
             <Text style={styles.eventTitle}>{event.title}</Text>
             <Text style={styles.eventCoach}>{event.coachName}</Text>
-            <Text style={styles.eventLocation}>{event.location}</Text>
+            <Text style={styles.eventLocation}>{event.isRemote ? 'Video call' : event.location}</Text>
           </View>
 
           {/* Buttons */}

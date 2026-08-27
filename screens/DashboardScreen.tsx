@@ -15,6 +15,7 @@ import {
   AppState,
   AppStateStatus,
   Image,
+  Linking,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -198,6 +199,8 @@ interface Booking {
     start_time: string;
     end_time: string;
     title?: string;
+    is_remote?: boolean;
+    meeting_url?: string | null;
     scheduling_templates?: {
       name: string;
       scheduling_categories?: {
@@ -2204,6 +2207,8 @@ export default function DashboardScreen({ navigation }: any) {
               start_time,
               end_time,
               title,
+              is_remote,
+              meeting_url,
               scheduling_templates (
                 name,
                 scheduling_categories (
@@ -3390,6 +3395,11 @@ export default function DashboardScreen({ navigation }: any) {
                                 {startTime}
                                 {endTime ? ` – ${endTime}` : ''}
                               </Text>
+                              {booking.event?.is_remote && booking.event?.meeting_url ? (
+                                <TouchableOpacity onPress={() => Linking.openURL(booking.event.meeting_url as string)} accessibilityRole="link">
+                                  <Text style={{ color: '#9BDDFF', textDecorationLine: 'underline', fontSize: 12, marginTop: 4 }}>Join video call</Text>
+                                </TouchableOpacity>
+                              ) : null}
                             </View>
                             {passed ? (
                               <View style={styles.passedBadge}>

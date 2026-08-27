@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Linking,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -344,9 +345,14 @@ export default function ClassDetailsSheet({
             <View style={styles.detailRow}>
               <Text style={styles.label}>Location</Text>
               <Text style={styles.value}>
-                {event.location}
-                {event.resource ? ` • ${event.resource}` : ''}
+                {event.isRemote ? 'Video call' : event.location}
+                {!event.isRemote && event.resource ? ` • ${event.resource}` : ''}
               </Text>
+              {event.isRemote && event.isBooked && event.meetingUrl && (
+                <TouchableOpacity onPress={() => Linking.openURL(event.meetingUrl!)} accessibilityRole="link">
+                  <Text style={[styles.value, { color: '#9BDDFF', textDecorationLine: 'underline' }]}>Join video call</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Duration */}
