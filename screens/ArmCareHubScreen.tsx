@@ -11,7 +11,7 @@
  *
  * Theme: dark, red accent (#F87171 / #EF4444) matching the brand.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import {
   ScrollView,
   Animated,
   Easing,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -73,6 +74,7 @@ export default function ArmCareHubScreen() {
   const [recent, setRecent] = useState<ArmCareSession[]>([]);
   const last = recent[0] ?? null;
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Only the athlete themselves, or a coach/admin acting on their behalf,
   // may start an exam. Parents/guardians (and anyone else) are read-only —
@@ -116,10 +118,10 @@ export default function ArmCareHubScreen() {
     })();
   }, [athleteId]);
 
-  useEffect(() => {
-    if (!athleteId) return;
-    (async () => {
-      setLoading(true);
+  const loadRecent = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!athleteId) return;
+      if (!opts?.silent) setLoading(true);
       // Pull up to the 10 most recent sessions: index 0 drives the hero,
       // the rest power the ArmScore sparkline below it.
       const { data } = await supabase
@@ -132,9 +134,24 @@ export default function ArmCareHubScreen() {
         .order('exam_time', { ascending: false })
         .limit(10);
       setRecent((data ?? []) as ArmCareSession[]);
-      setLoading(false);
-    })();
-  }, [athleteId]);
+      if (!opts?.silent) setLoading(false);
+    },
+    [athleteId],
+  );
+
+  useEffect(() => {
+    if (!athleteId) return;
+    loadRecent();
+  }, [athleteId, loadRecent]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadRecent({ silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadRecent]);
 
   // Determine whether the signed-in user may start an exam for this athlete.
   // Coach-act-as is always allowed. Otherwise the athleteId must be the
@@ -198,6 +215,9 @@ export default function ArmCareHubScreen() {
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} />
+        }
       >
         {/* Header */}
         <View style={styles.headerRow}>

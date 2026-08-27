@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -157,6 +158,7 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
   const [filteredData, setFilteredData] = useState<SessionData[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
 
   useEffect(() => {
@@ -198,6 +200,19 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
     }
   }
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (athleteId) {
+        await fetchTrendsData(athleteId, { silent: true });
+      } else {
+        await loadAthleteAndData();
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId]);
+
   function applyTimeFilter() {
     if (allSessionData.length === 0) {
       setFilteredData([]);
@@ -228,8 +243,8 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
     setFilteredData(filtered);
   }
 
-  async function fetchTrendsData(id: string) {
-    setLoading(true);
+  async function fetchTrendsData(id: string, opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
 
     try {
       // Type definitions for paginated queries
@@ -389,7 +404,11 @@ export default function PitchingTrendsScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
+      >
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>

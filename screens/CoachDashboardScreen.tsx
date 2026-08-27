@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -34,6 +34,7 @@ export default function CoachDashboardScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
   const [sessions, setSessions] = useState<CoachSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [btState, setBtState] = useState<BluetoothPermissionState>('unknown');
@@ -45,14 +46,20 @@ export default function CoachDashboardScreen() {
     return () => unsub();
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     setExpandedId(null);
     try { setSessions(await getCoachTodaysSessions(selectedDate, undefined, !isAdmin)); }
     catch { setSessions([]); }
-    finally { setLoading(false); }
+    finally { if (!opts?.silent) setLoading(false); }
   }, [selectedDate, isAdmin]);
   useEffect(() => { load(); }, [load]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await load({ silent: true }); }
+    finally { setRefreshing(false); }
+  }, [load]);
 
   // Unique categories present in the loaded day, for the filter row.
   const categories = useMemo<Category[]>(() => {
@@ -129,7 +136,10 @@ export default function CoachDashboardScreen() {
         </View>
       )}
 
-      <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 120 }}>
+      <ScrollView
+        contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+      >
         {loading && <ActivityIndicator color="#9BDDFF" style={{ marginTop: 40 }} />}
         {!loading && visibleSessions.length === 0 && (
           <Text style={styles.empty}>

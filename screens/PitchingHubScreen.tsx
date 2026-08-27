@@ -10,7 +10,7 @@
  * "Pick your sport"). Big icon marks, radial glow behind each card, data
  * chips that preview what's inside, tap-scale feedback.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   ScrollView,
   Animated,
   Easing,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -68,28 +69,28 @@ export default function PitchingHubScreen() {
     })();
   }, [athleteId]);
 
+  const [refreshing, setRefreshing] = useState(false);
+
   // Fetch the two hero stats. Single queries; fail silently.
-  useEffect(() => {
-    if (!athleteId) return;
-    (async () => {
+  const loadHeroStats = useCallback(async (id: string) => {
       const todayIso = new Date().toISOString().split('T')[0];
       const [pr, today, lastArm] = await Promise.all([
         supabase
           .from('trackman_pitch_data')
           .select('rel_speed')
-          .eq('athlete_id', athleteId)
+          .eq('athlete_id', id)
           .order('rel_speed', { ascending: false })
           .limit(1),
         supabase
           .from('pulse_daily_workload')
           .select('w_day, throw_count')
-          .eq('athlete_id', athleteId)
+          .eq('athlete_id', id)
           .eq('training_date', todayIso)
           .maybeSingle(),
         supabase
           .from('armcare_sessions')
           .select('arm_score, exam_date')
-          .eq('athlete_id', athleteId)
+          .eq('athlete_id', id)
           .not('arm_score', 'is', null)
           .order('exam_date', { ascending: false })
           .order('exam_time', { ascending: false })
@@ -105,14 +106,29 @@ export default function PitchingHubScreen() {
         setLastArmScore(Number(lastArm.data.arm_score));
         setLastArmExamDate(lastArm.data.exam_date ?? null);
       }
-    })();
-  }, [athleteId]);
+  }, []);
+
+  useEffect(() => {
+    if (!athleteId) return;
+    loadHeroStats(athleteId);
+  }, [athleteId, loadHeroStats]);
+
+  const onRefresh = useCallback(async () => {
+    if (!athleteId) return;
+    setRefreshing(true);
+    try {
+      await loadHeroStats(athleteId);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId, loadHeroStats]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
       >
         {/* Header */}
         <View style={styles.headerRow}>

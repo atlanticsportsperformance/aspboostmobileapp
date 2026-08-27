@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Dimensions,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +32,7 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
   const { athleteId, pitchId } = route.params;
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [pitchData, setPitchData] = useState<MocapPitchDetail | null>(null);
   const [percentileData, setPercentileData] = useState<PercentileTable | null>(null);
   const [c3dData, setC3dData] = useState<C3DData | null>(null);
@@ -86,6 +88,15 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
       if (isMountedRef.current) setLoading(false);
     }
   }
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadAllData();
+    } finally {
+      if (isMountedRef.current) setRefreshing(false);
+    }
+  }, [athleteId, pitchId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const frameRate = c3dData?.frameRate || 360;
   const totalFrames = c3dData?.frameCount || 0;
@@ -183,6 +194,9 @@ export default function MocapPitchDetailScreen({ navigation, route }: any) {
           style={styles.scrollView}
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} />
+          }
         >
           {pitch?.scalarMetrics && (
             <PercentileBreakdown

@@ -16,6 +16,7 @@ import {
   Image,
   Linking,
   ActionSheetIOS,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -127,6 +128,8 @@ export default function MessagesScreen({ navigation, route }: any) {
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshingConversations, setRefreshingConversations] = useState(false);
+  const [refreshingMessages, setRefreshingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [athleteId, setAthleteId] = useState<string>('');
@@ -304,6 +307,26 @@ export default function MessagesScreen({ navigation, route }: any) {
       setLoading(false);
     }
   }
+
+  const onRefreshConversations = useCallback(async () => {
+    if (!currentUser?.id) return;
+    setRefreshingConversations(true);
+    try {
+      await fetchConversations(currentUser.id);
+    } finally {
+      setRefreshingConversations(false);
+    }
+  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onRefreshMessages = useCallback(async () => {
+    if (!selectedConversation?.id) return;
+    setRefreshingMessages(true);
+    try {
+      await fetchMessages(selectedConversation.id);
+    } finally {
+      setRefreshingMessages(false);
+    }
+  }, [selectedConversation?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchConversations(userId: string) {
     try {
@@ -1295,6 +1318,13 @@ export default function MessagesScreen({ navigation, route }: any) {
             data={filteredConversations}
             keyExtractor={item => item.id}
             contentContainerStyle={styles.conversationsList}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshingConversations}
+                onRefresh={onRefreshConversations}
+                tintColor="#9BDDFF"
+              />
+            }
             renderItem={({ item: conversation }) => {
               const otherParticipant = conversation.participants.find(
                 p => p.user_id !== currentUser?.id
@@ -1574,6 +1604,13 @@ export default function MessagesScreen({ navigation, route }: any) {
           style={styles.messagesContainer}
           contentContainerStyle={styles.messagesContent}
           onContentSizeChange={() => messagesEndRef.current?.scrollToEnd({ animated: false })}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshingMessages}
+              onRefresh={onRefreshMessages}
+              tintColor="#9BDDFF"
+            />
+          }
         >
           {messages.map((message) => {
             const isOwn = message.sender_id === currentUser?.id;

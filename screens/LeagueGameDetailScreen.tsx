@@ -29,6 +29,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAthleteId } from '../hooks/useAthleteId';
@@ -89,6 +90,7 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
   const [detail, setDetail] = useState<LeagueGameDetail | null>(null);
   const [role, setRole] = useState<Role>(initialRole);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (id: string, gid: string) => {
     const { data } = await fetchAcdlGameDetail(id, gid);
@@ -112,6 +114,16 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
     return () => {
       cancelled = true;
     };
+  }, [athleteId, gameId, load]);
+
+  const onRefresh = useCallback(async () => {
+    if (!athleteId || !gameId) return;
+    setRefreshing(true);
+    try {
+      await load(athleteId, gameId);
+    } finally {
+      setRefreshing(false);
+    }
   }, [athleteId, gameId, load]);
 
   const hasHitting = (detail?.hitting?.length ?? 0) > 0;
@@ -144,7 +156,13 @@ export default function LeagueGameDetailScreen({ navigation, route }: any) {
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACDL_BRAND_TEXT} />
+        }
+      >
         <View style={styles.band}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={20} color={ACDL_BAND_MUT} />

@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Dimensions,
   Animated,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -87,6 +88,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
     }
   }, [isParent, athleteId, linkedAthletes]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [radarData, setRadarData] = useState<RadarDataPoint[]>([]);
   const [compositeScore, setCompositeScore] = useState<number | null>(null);
   const [metricsInfo, setMetricsInfo] = useState<{ included: number; requested: number }>({ included: 0, requested: 6 });
@@ -208,9 +210,10 @@ export default function ForceProfileScreen({ route, navigation }: any) {
     return displayMap[`${testType}|${metric}`] || metric.replace('_trial_value', '').replace(/_/g, ' ');
   }
 
-  async function fetchForceProfileData() {
+  async function fetchForceProfileData(opts?: { silent?: boolean }) {
+    const silent = !!opts?.silent;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
 
       const { data: athlete } = await supabase
         .from('athletes')
@@ -224,7 +227,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       }
 
       if (!athlete?.org_id) {
-        setLoading(false);
+        if (!silent) setLoading(false);
         return;
       }
 
@@ -242,7 +245,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       if (percentiles.length === 0) {
         setRadarData([]);
         setCompositeScore(null);
-        setLoading(false);
+        if (!silent) setLoading(false);
         return;
       }
 
@@ -278,9 +281,18 @@ export default function ForceProfileScreen({ route, navigation }: any) {
     } catch (err) {
       console.error('Error fetching force profile:', err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([fetchForceProfileData({ silent: true }), fetchFabData()]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const availableMetrics = radarData.filter((m) => m.current !== null);
   const hasFullComposite = metricsInfo.included === metricsInfo.requested;
@@ -309,7 +321,13 @@ export default function ForceProfileScreen({ route, navigation }: any) {
         </View>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
+      >
         {availableMetrics.length === 0 ? (
           <View style={styles.noDataContainer}>
             <Ionicons name="warning" size={48} color="#FCD34D" />

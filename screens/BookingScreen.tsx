@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -77,6 +78,7 @@ export default function BookingScreen() {
   const [viewMode, setViewMode] = useState<'day' | 'list'>('list');
   const [listEvents, setListEvents] = useState<BookableEvent[]>([]);
   const [loadingListEvents, setLoadingListEvents] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Selected days for filtering (list view)
   const [selectedDays, setSelectedDays] = useState<Date[]>([]);
@@ -294,11 +296,11 @@ export default function BookingScreen() {
     setWeekDates(dates);
   };
 
-  const fetchEvents = async () => {
+  const fetchEvents = async (opts?: { silent?: boolean }) => {
     if (!selectedAthleteId || isFetchingEventsRef.current) return;
     isFetchingEventsRef.current = true;
 
-    if (isMountedRef.current) setLoadingEvents(true);
+    if (isMountedRef.current && !opts?.silent) setLoadingEvents(true);
     try {
       const eventsData = await getBookableEvents(selectedAthleteId, selectedDate);
       if (isMountedRef.current) setEvents(eventsData);
@@ -310,14 +312,14 @@ export default function BookingScreen() {
     }
   };
 
-  const fetchListEvents = async () => {
+  const fetchListEvents = async (opts?: { silent?: boolean }) => {
     if (!selectedAthleteId || weekDates.length === 0) return;
 
     // Increment fetch ID so stale responses are discarded
     const fetchId = ++listFetchIdRef.current;
     isFetchingListEventsRef.current = true;
 
-    if (isMountedRef.current) setLoadingListEvents(true);
+    if (isMountedRef.current && !opts?.silent) setLoadingListEvents(true);
     try {
       // Fetch all events for the week in a single batched call
       const allEvents = await getBookableEventsForWeek(selectedAthleteId, weekDates);
@@ -336,6 +338,19 @@ export default function BookingScreen() {
         isFetchingListEventsRef.current = false;
         if (isMountedRef.current) setLoadingListEvents(false);
       }
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      if (viewMode === 'day') {
+        await fetchEvents({ silent: true });
+      } else {
+        await fetchListEvents({ silent: true });
+      }
+    } finally {
+      if (isMountedRef.current) setRefreshing(false);
     }
   };
 
@@ -765,6 +780,9 @@ export default function BookingScreen() {
         style={styles.eventsList}
         contentContainerStyle={styles.eventsContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
       >
         {(viewMode === 'day' ? loadingEvents : loadingListEvents) ? (
           <View style={styles.eventsLoading}>

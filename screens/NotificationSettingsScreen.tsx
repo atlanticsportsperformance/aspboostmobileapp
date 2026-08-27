@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
+  RefreshControl,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -50,6 +51,7 @@ export default function NotificationSettingsScreen({ navigation }: any) {
   const [orgId, setOrgId] = useState<string>('');
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -73,6 +75,15 @@ export default function NotificationSettingsScreen({ navigation }: any) {
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadSettings(), checkPushStatus()]);
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
   async function checkPushStatus() {
@@ -253,7 +264,13 @@ export default function NotificationSettingsScreen({ navigation }: any) {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
+      >
         {/* Push Notifications Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>

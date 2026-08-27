@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View,
   Text,
+  RefreshControl,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
@@ -103,6 +104,9 @@ export default function WorkloadScreen() {
     Map<string, ThrowingWorkoutInstance>
   >(new Map());
   const [dataLoading, setDataLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const silentRefetchRef = useRef(false);
 
   // Load athlete profile once
   useEffect(() => {
@@ -164,7 +168,9 @@ export default function WorkloadScreen() {
     const run = async () => {
       const t0 = Date.now();
       console.log('[Workload] mount fetch START window=', windowStart, '→', today);
-      setDataLoading(true);
+      const silent = silentRefetchRef.current;
+      silentRefetchRef.current = false;
+      if (!silent) setDataLoading(true);
 
       const [athRows, dailyRows, targetRows, throwsRows, workoutRows] = await Promise.all([
         getJson('anthro', `athletes?select=height_inches,weight_lbs&id=eq.${athleteId}&limit=1`),
@@ -198,7 +204,10 @@ export default function WorkloadScreen() {
             `&workouts.category=eq.throwing`,
         ),
       ]);
-      if (cancelled) return;
+      if (cancelled) {
+        if (silent) setRefreshing(false);
+        return;
+      }
 
       // Build continuous series (one entry per day in window, missing days = 0)
       const byDate = new Map<string, number>();
@@ -263,6 +272,7 @@ export default function WorkloadScreen() {
       setThrows(newThrows);
       setThrowingWorkouts(newThrowingWorkouts);
       setDataLoading(false);
+      if (silent) setRefreshing(false);
 
       console.log(
         '[Workload] mount fetch DONE',
@@ -281,7 +291,14 @@ export default function WorkloadScreen() {
     return () => {
       cancelled = true;
     };
-  }, [athleteId, token]);
+  }, [athleteId, token, refreshNonce]);
+
+  // Pull-to-refresh: re-run the full mount fetch without the full-screen spinner.
+  const onRefresh = useCallback(() => {
+    silentRefetchRef.current = true;
+    setRefreshing(true);
+    setRefreshNonce((n) => n + 1);
+  }, []);
 
   // Throws-only refetch (cheapest query) triggered by live/sync commit events.
   // Uses a monotonic request counter + mounted ref so late responses from a
@@ -542,6 +559,9 @@ export default function WorkloadScreen() {
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+          }
         >
           <View style={styles.dayNavStrip}>
             <Pressable onPress={handlePrev} hitSlop={12} style={styles.navBtn}>

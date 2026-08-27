@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -189,6 +190,7 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
   const [playingLevel, setPlayingLevel] = useState<string>('high-school');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [fieldViewIndex, setFieldViewIndex] = useState(0);
 
@@ -253,6 +255,19 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
     }
   }
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (athleteId) {
+        await fetchBattedBallData(athleteId, { silent: true });
+      } else {
+        await loadAthleteAndData();
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId]);
+
   function applyTimeFilter() {
     if (allSessionData.length === 0) {
       setFilteredData([]);
@@ -291,8 +306,8 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
     setFilteredSwings(filteredSwingsData);
   }
 
-  async function fetchBattedBallData(id: string) {
-    setLoading(true);
+  async function fetchBattedBallData(id: string, opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
 
     // Interfaces for typed pagination
     interface HittraxSession {
@@ -482,7 +497,13 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+        }
+      >
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity

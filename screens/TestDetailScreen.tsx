@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   TextInput,
   Modal,
   FlatList,
+  RefreshControl,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
@@ -110,14 +111,24 @@ export default function TestDetailScreen({ route, navigation }: any) {
   const [compositeMetrics, setCompositeMetrics] = useState<string[]>([]);
   const [searchModalVisible, setSearchModalVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     fetchTestHistory();
   }, [athleteId, testType]);
 
-  async function fetchTestHistory() {
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      setLoading(true);
+      await fetchTestHistory({ silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId, testType]);
+
+  async function fetchTestHistory(opts?: { silent?: boolean }) {
+    try {
+      if (!opts?.silent) setLoading(true);
 
       // Get athlete info
       const { data: athlete } = await supabase
@@ -340,7 +351,13 @@ export default function TestDetailScreen({ route, navigation }: any) {
         </View>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
+      >
         {metrics.length === 0 ? (
           <View style={styles.noDataContainer}>
             <Ionicons name="analytics-outline" size={48} color="#6B7280" />

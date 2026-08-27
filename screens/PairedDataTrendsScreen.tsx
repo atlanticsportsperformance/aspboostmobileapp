@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -250,6 +251,7 @@ function getPitchSpeedCohorts(level: LevelFilter): number[] {
 export default function PairedDataTrendsScreen({ navigation, route }: any) {
   const [athleteData, setAthleteData] = useState<AthleteData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('highschool');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [selectedPitchSpeed, setSelectedPitchSpeed] = useState<number | null>(null);
@@ -328,6 +330,20 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     }
   }
 
+  const onRefresh = useCallback(async () => {
+    if (!athleteId) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        fetchAthleteData(athleteId, { silent: true }),
+        fetchSquaredUpData(athleteId),
+        fetchFullSwingTrendData(athleteId),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId, timeFilter]);
+
   function getDateRange(): Date | null {
     if (timeFilter === 'all') return null;
     const now = new Date();
@@ -343,8 +359,8 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
     }
   }
 
-  async function fetchAthleteData(id: string) {
-    setLoading(true);
+  async function fetchAthleteData(id: string, opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
     const startDateObj = getDateRange();
     const startDate = startDateObj ? startDateObj.toISOString() : null;
 
@@ -777,7 +793,11 @@ export default function PairedDataTrendsScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
+      >
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity

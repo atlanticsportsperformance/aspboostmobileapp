@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   Alert,
   Dimensions,
   TextInput,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -158,6 +159,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
   const [activeTab, setActiveTab] = useState<TabType>('memberships');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Active items (for regular athletes)
   const [memberships, setMemberships] = useState<Membership[]>([]);
@@ -331,6 +333,15 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       setLoading(false);
     }
   }
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadAthleteAndData();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [isParent, linkedAthletes, athleteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchDataForAllAthletes() {
     try {
@@ -865,7 +876,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       const data = await response.json();
 
       if (!response.ok) {
-        Alert.alert('Error', data.error || 'Failed to cancel membership');
+        // The API's `error` is a machine code (e.g. "commitment_locked"); show
+        // the human-readable `message` when it sends one.
+        Alert.alert('Error', data.message || data.error || 'Failed to cancel membership');
         return;
       }
 
@@ -917,7 +930,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       const data = await response.json();
 
       if (!response.ok) {
-        Alert.alert('Error', data.error || 'Failed to resume membership');
+        Alert.alert('Error', data.message || data.error || 'Failed to resume membership');
         return;
       }
 
@@ -1258,7 +1271,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         </View>
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
+      >
         {activeTab === 'memberships' ? (
           <>
             {/* PARENT VIEW: Per-athlete memberships */}

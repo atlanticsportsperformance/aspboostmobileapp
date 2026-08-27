@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
   Platform,
   Keyboard,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -195,6 +196,8 @@ export default function PerformanceScreen({ route, navigation }: any) {
   // View mode state
   const [viewMode, setViewMode] = useState<ViewMode>('personalRecords');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
 
   // Personal Records state
   const [maxes, setMaxes] = useState<AthleteMax[]>([]);
@@ -313,8 +316,8 @@ export default function PerformanceScreen({ route, navigation }: any) {
     }
   }
 
-  async function fetchData() {
-    setLoading(true);
+  async function fetchData(opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
     try {
       const [maxesData] = await Promise.all([
         fetchMaxes(),
@@ -331,9 +334,19 @@ export default function PerformanceScreen({ route, navigation }: any) {
     } catch (err) {
       console.error('Error fetching performance data:', err);
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([fetchData({ silent: true }), fetchFabData(), fetchCohortSummary()]);
+      setRefreshToken(t => t + 1);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId]);
 
   // Fetch the last ~90 days of exercise_logs for the exercises that have
   // PRs, derive per-exercise stats client-side. Pure math on existing
@@ -825,9 +838,14 @@ export default function PerformanceScreen({ route, navigation }: any) {
           getMetricDisplayName={getMetricDisplayName}
           getMetricUnit={getMetricUnit}
           isGlobalMetric={isGlobalMetric}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
         />
       ) : (
         <ExerciseHistoryView
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          refreshToken={refreshToken}
           athleteId={athleteId}
           timeRange={timeRange}
           setTimeRange={setTimeRange}
@@ -1388,6 +1406,8 @@ function PersonalRecordsView({
   getMetricDisplayName,
   getMetricUnit,
   isGlobalMetric,
+  refreshing,
+  onRefresh,
 }: {
   maxes: AthleteMax[];
   globalMaxes: AthleteMax[];
@@ -1402,9 +1422,15 @@ function PersonalRecordsView({
   getMetricDisplayName: (id: string) => string;
   getMetricUnit: (id: string) => string;
   isGlobalMetric: (id: string) => boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   return (
-    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+    >
       {/* Search + Add */}
       <View style={styles.searchAddRow}>
         <View style={styles.searchContainer}>
@@ -1725,6 +1751,9 @@ function ExerciseHistoryView({
   exerciseSearchQuery,
   setExerciseSearchQuery,
   customMeasurements,
+  refreshing,
+  onRefresh,
+  refreshToken,
 }: {
   athleteId: string;
   timeRange: TimeRange;
@@ -1740,6 +1769,9 @@ function ExerciseHistoryView({
   exerciseSearchQuery: string;
   setExerciseSearchQuery: (q: string) => void;
   customMeasurements: CustomMeasurement[];
+  refreshing: boolean;
+  onRefresh: () => void;
+  refreshToken: number;
 }) {
   const categories: { key: Category; label: string }[] = [
     { key: 'all', label: 'All' },
@@ -1749,7 +1781,11 @@ function ExerciseHistoryView({
   ];
 
   return (
-    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />}
+    >
       {/* Timeframe Selector */}
       <View style={styles.timeRangeContainer}>
         {(['7d', '30d', '90d', 'all'] as TimeRange[]).map(t => (
@@ -1874,6 +1910,7 @@ function ExerciseHistoryView({
           if (!exercise) return null;
           return (
             <ExercisePerformanceCard
+              refreshToken={refreshToken}
               key={exId}
               athleteId={athleteId}
               exercise={exercise}
@@ -1895,11 +1932,13 @@ function ExercisePerformanceCard({
   exercise,
   timeRange,
   customMeasurements,
+  refreshToken,
 }: {
   athleteId: string;
   exercise: Exercise;
   timeRange: TimeRange;
   customMeasurements: CustomMeasurement[];
+  refreshToken: number;
 }) {
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState<ExerciseLog[]>([]);
@@ -1908,7 +1947,7 @@ function ExercisePerformanceCard({
 
   useEffect(() => {
     fetchExerciseData();
-  }, [exercise.id, timeRange]);
+  }, [exercise.id, timeRange, refreshToken]);
 
   async function fetchExerciseData() {
     setLoading(true);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -107,6 +108,7 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
   const [filteredData, setFilteredData] = useState<SessionData[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
 
   useEffect(() => {
@@ -179,8 +181,8 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
     setFilteredData(filtered);
   }
 
-  async function fetchTrendsData(id: string) {
-    setLoading(true);
+  async function fetchTrendsData(id: string, opts?: { silent?: boolean }) {
+    if (!opts?.silent) setLoading(true);
 
     // Use paginated fetch to get ALL blast swings (bypasses 1000 row limit)
     interface BlastSwing {
@@ -302,6 +304,18 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
     setLoading(false);
   }
 
+  const onRefresh = useCallback(async () => {
+    if (!athleteId) return;
+    setRefreshing(true);
+    try {
+      await fetchTrendsData(athleteId, { silent: true });
+    } catch (error) {
+      console.error('Error refreshing trends:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [athleteId]);
+
   const avgOfAvgs = useMemo(() => {
     const validSessions = filteredData.filter(s => s.avgBatSpeed !== null);
     return validSessions.length > 0
@@ -344,7 +358,13 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+        }
+      >
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity

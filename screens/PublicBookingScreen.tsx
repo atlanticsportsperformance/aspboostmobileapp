@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
+  RefreshControl,
   ScrollView,
   ActivityIndicator,
   TextInput,
@@ -49,6 +50,7 @@ export default function PublicBookingScreen({ navigation }: any) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [weekDates, setWeekDates] = useState<Date[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Selected event
   const [selectedEvent, setSelectedEvent] = useState<PublicEvent | null>(null);
@@ -128,10 +130,10 @@ export default function PublicBookingScreen({ navigation }: any) {
     setWeekDates(dates);
   };
 
-  const fetchEvents = async () => {
+  const fetchEvents = async (opts?: { silent?: boolean }) => {
     if (!selectedOrg) return;
 
-    setLoadingEvents(true);
+    if (!opts?.silent) setLoadingEvents(true);
     try {
       // Fetch events for the selected date
       const startOfDay = new Date(selectedDate);
@@ -144,9 +146,18 @@ export default function PublicBookingScreen({ navigation }: any) {
     } catch (error) {
       console.error('Error fetching events:', error);
     } finally {
-      setLoadingEvents(false);
+      if (!opts?.silent) setLoadingEvents(false);
     }
   };
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([fetchEvents({ silent: true }), fetchCategories()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [selectedOrg, selectedDate]);
 
   const fetchCategories = async () => {
     if (!selectedOrg) return;
@@ -482,7 +493,13 @@ export default function PublicBookingScreen({ navigation }: any) {
       </ScrollView>
 
       {/* Events List */}
-      <ScrollView style={styles.eventsList} contentContainerStyle={styles.eventsContent}>
+      <ScrollView
+        style={styles.eventsList}
+        contentContainerStyle={styles.eventsContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" />
+        }
+      >
         {loadingEvents ? (
           <View style={styles.eventsLoading}>
             <ActivityIndicator size="small" color="#9BDDFF" />

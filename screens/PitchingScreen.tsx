@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -130,6 +131,7 @@ export default function PitchingScreen({ navigation, route }: any) {
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
   const { isMember } = useAthleteLifecycle();
 
@@ -169,6 +171,15 @@ export default function PitchingScreen({ navigation, route }: any) {
       };
     }, [])
   );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadAthleteAndData();
+    } finally {
+      if (isMountedRef.current) setRefreshing(false);
+    }
+  }, []);
 
   async function loadAthleteAndData() {
     // Prevent concurrent loads
@@ -494,7 +505,11 @@ export default function PitchingScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
+      >
         <View style={styles.header}>
           <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
             <Ionicons name="arrow-back" size={20} color={COLORS.gray400} />
