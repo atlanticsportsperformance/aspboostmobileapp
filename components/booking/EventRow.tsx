@@ -71,7 +71,24 @@ export default function EventRow({
       );
     }
 
-    // 4. Full capacity - show disabled button
+    // 4. Gated by a plan or qualification the athlete doesn't hold. The
+    //    server already decided and said why; the row says "Members only"
+    //    and the sheet spells out which plan.
+    if (event.isEligible === false && event.ineligibleReason) {
+      return (
+        <TouchableOpacity
+          style={[styles.reserveButton, styles.gatedButton]}
+          onPress={onPress}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.gatedText} numberOfLines={2}>
+            {event.ineligibleReason === 'membership_required' ? 'Members only' : 'Requirements'}
+          </Text>
+        </TouchableOpacity>
+      );
+    }
+
+    // 5. Full capacity - show disabled button
     if (isFull) {
       return (
         <View style={[styles.reserveButton, styles.fullButton]}>
@@ -80,7 +97,7 @@ export default function EventRow({
       );
     }
 
-    // 5. Available - show Reserve button
+    // 6. Available - show Reserve button
     return (
       <TouchableOpacity
         style={styles.reserveButton}
@@ -277,6 +294,19 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: '#FBBF24',  // amber-400
+    textAlign: 'center',
+  },
+  gatedButton: {
+    backgroundColor: 'rgba(155, 221, 255, 0.12)',
+    borderColor: 'rgba(155, 221, 255, 0.4)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: 100,
+  },
+  gatedText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#9BDDFF',
     textAlign: 'center',
   },
 });

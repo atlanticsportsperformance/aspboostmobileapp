@@ -72,9 +72,21 @@ export default function ClassDetailsSheet({
 
   // Check if blocked by restriction tags - this is the PRIMARY check
   // Use eligibility.canBook as the source of truth, not cached event data
-  const isBlocked = eligibility?.sourceType === 'blocked';
+  // The bookable-events route is the source of truth for plan/tag gates
+  // (checkEligibility only knows tags + drop-in price), so a server-gated
+  // event is blocked here too — otherwise the sheet offers a checkout the
+  // booking route will refuse.
+  const isGatedByServer = event.isEligible === false && !!event.ineligibleReason;
+  const isBlocked = eligibility?.sourceType === 'blocked' || isGatedByServer;
   const hasMissingRestrictions =
     eligibility?.missingRestrictions && eligibility.missingRestrictions.length > 0;
+  const requiredPlanNames = event.requiredMembershipTypeNames || [];
+  const gateTitle =
+    event.ineligibleReason === 'membership_required'
+      ? 'Members Only'
+      : hasMissingRestrictions
+        ? 'Requirements Not Met'
+        : 'Cannot Book This Session';
 
   // Check drop-in status - only valid if not blocked
   const isDropIn = !isBlocked && eligibility?.sourceType === 'drop_in';
@@ -372,10 +384,27 @@ export default function ClassDetailsSheet({
             {/* Restrictions Warning - Show when blocked by restriction tags */}
             {(isBlocked || hasMissingRestrictions) && (
               <View style={styles.warning}>
-                <Text style={styles.warningTitle}>
-                  {hasMissingRestrictions ? 'Requirements Not Met' : 'Cannot Book This Session'}
-                </Text>
-                {hasMissingRestrictions ? (
+                <Text style={styles.warningTitle}>{gateTitle}</Text>
+                {isGatedByServer ? (
+                  <>
+                    <Text style={styles.warningText}>
+                      {event.ineligibleMessage ||
+                        'This session has requirements that must be met before booking.'}
+                    </Text>
+                    {requiredPlanNames.map((name) => (
+                      <View key={name} style={styles.restrictionItem}>
+                        <Text style={styles.warningText}>• {name}</Text>
+                      </View>
+                    ))}
+                    {event.ineligibleReason === 'membership_required' && (
+                      <TouchableOpacity onPress={onViewMemberships} style={styles.viewMembershipsBtn}>
+                        <LinearGradient colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']} style={styles.viewMembershipsGradient}>
+                          <Text style={styles.viewMembershipsBtnText}>View Memberships & Packages</Text>
+                        </LinearGradient>
+                      </TouchableOpacity>
+                    )}
+                  </>
+                ) : hasMissingRestrictions ? (
                   eligibility!.missingRestrictions!.map((r, i) => (
                     <View key={i} style={styles.restrictionItem}>
                       <Text style={styles.warningText}>• {r.name}</Text>
