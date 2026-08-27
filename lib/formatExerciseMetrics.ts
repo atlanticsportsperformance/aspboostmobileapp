@@ -1,39 +1,54 @@
 /**
- * Formats exercise metrics for display in a consistent, compact format
- * React Native version - adapted from web app
+ * Formats exercise metrics for display in a consistent, compact format.
+ * React Native version — mirrors lib/format-exercise-metrics.ts on web.
+ *
+ * Nuances this must never drop: rep ranges ("8-10"), AMRAP (whole exercise
+ * or one set), time/distance as themselves (not "30 Reps"), "% of Set N"
+ * wave loading, "% of <other exercise>", per-set weights, paired-measurement
+ * secondary values. Set positions are preserved ("5, —, 1"), never
+ * collapsed by dropping blanks.
  */
 
 interface CustomMeasurement {
   id: string;
   name: string;
-  category: 'single' | 'paired';
-  primary_metric_id?: string;
-  primary_metric_name?: string;
-  primary_metric_type?: string;
-  secondary_metric_id?: string;
-  secondary_metric_name?: string;
-  secondary_metric_type?: string;
+  category?: 'single' | 'paired' | string;
+  primary_metric_id?: string | null;
+  primary_metric_name?: string | null;
+  primary_metric_type?: string | null;
+  secondary_metric_id?: string | null;
+  secondary_metric_name?: string | null;
+  secondary_metric_type?: string | null;
+}
+
+export interface FormatterIntensityTarget {
+  metric: string;
+  percent: number;
+  relative_to?: 'max' | 'set' | string | null;
+  reference_set?: number | null;
+  source_exercise_name?: string | null;
 }
 
 interface FormatExerciseMetricsOptions {
   exercise: {
-    enabled_measurements?: string[];
-    metric_targets?: Record<string, any>;
+    enabled_measurements?: string[] | null;
+    metric_targets?: Record<string, any> | null;
     set_configurations?: Array<{
-      metric_values?: Record<string, any>;
-      is_amrap?: boolean;
-      intensity_targets?: Array<{
-        metric: string;
-        percent: number;
-      }>;
-    }>;
-    intensity_targets?: Array<{
-      metric: string;
-      percent: number;
-    }>;
-    tracked_max_metrics?: string[];
-    is_amrap?: boolean;
-    sets?: number;
+      metric_values?: Record<string, any> | null;
+      is_amrap?: boolean | null;
+      intensity_targets?: FormatterIntensityTarget[] | null;
+    }> | null;
+    intensity_targets?: FormatterIntensityTarget[] | null;
+    tracked_max_metrics?: string[] | null;
+    is_amrap?: boolean | null;
+    sets?: number | null;
+    reps_min?: number | null;
+    reps_max?: number | null;
+    time_seconds?: number | null;
+    rest_seconds?: number | null;
+    tempo?: string | null;
+    rpe_target?: number | null;
+    // legacy
     reps?: string;
     weight?: string;
   };
@@ -41,204 +56,235 @@ interface FormatExerciseMetricsOptions {
   separator?: string;
 }
 
+// ─── helpers ────────────────────────────────────────────────────────
+
+function findMeasurement(key: string, customMeasurements: CustomMeasurement[]) {
+  return (
+    customMeasurements.find((m) => m.primary_metric_id === key || m.secondary_metric_id === key) ||
+    customMeasurements.find((m) => m.id === key)
+  );
+}
+
+function isTimeMetric(key: string, measurement?: CustomMeasurement): boolean {
+  if (key === 'time' || key.toLowerCase().endsWith('_time')) return true;
+  if (!measurement) return false;
+  const type = measurement.primary_metric_id === key ? measurement.primary_metric_type : measurement.secondary_metric_type;
+  return type === 'time';
+}
+
+export function formatSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds)) return String(seconds);
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function unitFor(key: string, measurement?: CustomMeasurement): string {
+  if (key === 'reps' || key.toLowerCase().endsWith('_reps')) return '';
+  if (key === 'weight') return ' lbs';
+  if (key === 'distance') return ' ft';
+  if (!measurement) return '';
+  const raw = measurement.primary_metric_id === key ? measurement.primary_metric_name : measurement.secondary_metric_name;
+  if (!raw || raw === measurement.name || /^[0:]+$/.test(raw) || raw.length > 8) return '';
+  return ` ${raw}`;
+}
+
+export function formatMetricValue(key: string, value: any, customMeasurements: CustomMeasurement[]): string {
+  if (value == null || value === '') return '—';
+  if (value === 'AMRAP') return 'AMRAP';
+  const measurement = findMeasurement(key, customMeasurements);
+  if (isTimeMetric(key, measurement)) {
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(n) ? formatSeconds(n) : String(value);
+  }
+  return `${value}${unitFor(key, measurement)}`;
+}
+
+export function formatRepRange(ex: { reps_min?: number | null; reps_max?: number | null }): string | null {
+  if (ex.reps_min == null || ex.reps_max == null || ex.reps_min === ex.reps_max) return null;
+  return `${ex.reps_min}-${ex.reps_max}`;
+}
+
+/** "90% of Set 1" | "60% of Bench Press" | "80%" | "" */
+export function describeIntensity(t: FormatterIntensityTarget | null | undefined): string {
+  if (!t || typeof t.percent !== 'number' || !(t.percent > 0)) return '';
+  if (t.relative_to === 'set' && t.reference_set) return `${t.percent}% of Set ${t.reference_set}`;
+  if (t.source_exercise_name) return `${t.percent}% of ${t.source_exercise_name}`;
+  return `${t.percent}%`;
+}
+
+function collapse(cells: string[], gap = '—'): string {
+  const filled = cells.map((c) => c || gap);
+  if (!filled.some((c) => c !== gap)) return '';
+  return filled.every((c) => c === filled[0]) ? filled[0] : filled.join(', ');
+}
+
+// ─── entry point ────────────────────────────────────────────────────
+
 export function formatExerciseMetrics(options: FormatExerciseMetricsOptions): string {
   const { exercise, customMeasurements, separator = ' • ' } = options;
 
   const summaries: string[] = [];
-
-  // Check if we have per-set or simple mode
-  const hasSetConfigurations = exercise.set_configurations && exercise.set_configurations.length > 0;
-  const hasMetricTargets = exercise.metric_targets && Object.keys(exercise.metric_targets).length > 0;
+  const setConfigs = exercise.set_configurations || [];
+  const hasSetConfigurations = setConfigs.length > 0;
+  const metricTargets = exercise.metric_targets || {};
+  const hasMetricTargets = Object.keys(metricTargets).length > 0;
+  const range = formatRepRange(exercise);
 
   // Fallback to legacy reps/weight if no modern metrics configured
   if (!hasSetConfigurations && !hasMetricTargets) {
     if (exercise.sets && exercise.reps) {
       return `${exercise.sets} × ${exercise.reps}${exercise.weight ? ` @ ${exercise.weight}` : ''}`;
     }
-    // AMRAP-only rows (is_amrap=true, no metric_targets) — surface AMRAP
-    // explicitly instead of falling through to empty display.
-    if ((exercise as any).is_amrap) return 'AMRAP';
-    return '';
+    const bits: string[] = [];
+    if (exercise.is_amrap) bits.push('AMRAP');
+    else if (range) bits.push(`Reps (${range})`);
+    if (exercise.time_seconds) bits.push(`Time (${formatSeconds(exercise.time_seconds)})`);
+    return bits.join(separator);
   }
 
-  // Group metrics by measurement - prioritize enabled_measurements
-  const measurementGroups: Record<string, { primary?: string; secondary?: string; measurement: any }> = {};
+  // Group metrics by measurement — prioritize enabled_measurements
+  const measurementGroups: Record<string, { primary?: string; secondary?: string; measurement: CustomMeasurement | null }> = {};
 
   if (exercise.enabled_measurements && exercise.enabled_measurements.length > 0) {
-    // Use enabled_measurements array to group properly
     exercise.enabled_measurements.forEach((measurementId: string) => {
-      const measurement = customMeasurements.find(m => m.id === measurementId);
-
+      const measurement = customMeasurements.find((m) => m.id === measurementId);
       if (measurement) {
         measurementGroups[measurement.id] = {
           measurement,
-          primary: measurement.primary_metric_id,
-          secondary: measurement.secondary_metric_id
+          primary: measurement.primary_metric_id || undefined,
+          secondary: measurement.secondary_metric_id || undefined,
         };
+      } else {
+        // Built-in id (reps/weight/time/distance) used directly
+        measurementGroups[measurementId] = { measurement: null, primary: measurementId };
       }
     });
   } else {
-    // Fallback: collect all metric keys and try to group them
     const allMetricKeys = new Set<string>();
     if (hasSetConfigurations) {
-      exercise.set_configurations.forEach((setConfig) => {
-        if (setConfig.metric_values) {
-          Object.keys(setConfig.metric_values).forEach(key => allMetricKeys.add(key));
-        }
+      setConfigs.forEach((setConfig) => {
+        if (setConfig.metric_values) Object.keys(setConfig.metric_values).forEach((key) => allMetricKeys.add(key));
       });
-    } else if (hasMetricTargets) {
-      Object.keys(exercise.metric_targets).forEach(key => allMetricKeys.add(key));
+    } else {
+      Object.keys(metricTargets).forEach((key) => allMetricKeys.add(key));
     }
-
-    Array.from(allMetricKeys).forEach((key: string) => {
-      let measurement = customMeasurements.find(m =>
-        m.primary_metric_id === key || m.secondary_metric_id === key
-      );
-
-      if (!measurement) {
-        measurement = customMeasurements.find(m => m.id === key);
-      }
-
+    Array.from(allMetricKeys).forEach((key) => {
+      const measurement = findMeasurement(key, customMeasurements);
       if (measurement) {
-        if (!measurementGroups[measurement.id]) {
-          measurementGroups[measurement.id] = { measurement };
-        }
-
-        if (measurement.primary_metric_id === key) {
-          measurementGroups[measurement.id].primary = key;
-        } else if (measurement.secondary_metric_id === key) {
-          measurementGroups[measurement.id].secondary = key;
-        } else {
-          measurementGroups[measurement.id].primary = key;
-        }
+        if (!measurementGroups[measurement.id]) measurementGroups[measurement.id] = { measurement };
+        if (measurement.primary_metric_id === key) measurementGroups[measurement.id].primary = key;
+        else if (measurement.secondary_metric_id === key) measurementGroups[measurement.id].secondary = key;
+        else measurementGroups[measurement.id].primary = key;
       } else {
         measurementGroups[key] = { measurement: null, primary: key };
       }
     });
   }
 
-  // Build display for each measurement group
-  Object.entries(measurementGroups).forEach(([measurementId, group]) => {
+  Object.entries(measurementGroups).forEach(([, group]) => {
     const { primary, secondary, measurement } = group;
-    const measurementName = measurement?.name || (primary === 'reps' ? 'Reps' : primary === 'weight' ? 'Weight' : primary);
+    if (!primary) return;
+    const measurementName =
+      measurement?.name || (primary === 'reps' ? 'Reps' : primary === 'weight' ? 'Weight' : primary === 'time' ? 'Time' : primary === 'distance' ? 'Distance' : primary);
+    const isReps = primary === 'reps' || primary.toLowerCase().endsWith('_reps');
 
-    // Check for AMRAP
-    let hasAMRAP = false;
+    // AMRAP: any per-set flag, or the exercise-level flag
+    const hasAMRAP = isReps && (hasSetConfigurations ? setConfigs.some((s) => s.is_amrap) || !!exercise.is_amrap : !!exercise.is_amrap);
+
+    // Primary values — keep set positions ("5, —, 1"), never drop blanks.
+    let primaryDisplay = '';
     if (hasSetConfigurations) {
-      hasAMRAP = exercise.set_configurations!.some(s => s.is_amrap);
+      const cells = setConfigs.map((s) => {
+        if (isReps && (s.is_amrap || (exercise.is_amrap && s.metric_values?.[primary] == null))) return 'AMRAP';
+        const v = s.metric_values?.[primary];
+        if (v == null || v === '') return isReps && range ? range : '';
+        return formatMetricValue(primary, v, customMeasurements);
+      });
+      primaryDisplay = collapse(cells);
     } else {
-      hasAMRAP = !!exercise.is_amrap;
+      const raw = metricTargets[primary];
+      if (isReps && range) primaryDisplay = range;
+      else if (raw != null && raw !== '' && raw !== 0) primaryDisplay = formatMetricValue(primary, raw, customMeasurements);
     }
 
-    // Get primary metric values (reps)
-    let primaryValues: (string | number)[] = [];
-    if (hasSetConfigurations && primary) {
-      primaryValues = exercise.set_configurations!
-        .map((s, idx) => {
-          if (primary === 'reps' && s.is_amrap) {
-            return 'AMRAP';
-          }
-          return s.metric_values?.[primary] || 0;
-        })
-        .filter(v => v != null && v !== '' && v !== 0);
-    } else if (primary && exercise.metric_targets?.[primary]) {
-      const targetValue = exercise.metric_targets[primary];
-      if (targetValue != null && targetValue !== '' && targetValue !== 0) {
-        primaryValues = [targetValue];
-      }
-    }
+    if (!primaryDisplay && !hasAMRAP) return;
 
-    if (primaryValues.length === 0 && !(hasAMRAP && primary === 'reps')) return;
-
-    const allSame = primaryValues.every(v => v === primaryValues[0]);
-    const primaryDisplay = allSame ? String(primaryValues[0]) : primaryValues.join(', ');
-
-    // PR tracking is now shown separately next to exercise name, not in metrics string
-
-    // Check for intensity - try secondary metric first, then primary, then any metric in this measurement
+    // Intensity — secondary metric first (ball velo), then primary. Per-set
+    // cells carry "of Set 1" / "of <exercise>".
     let intensityDisplay = '';
     const metricsToCheck = [secondary, primary].filter(Boolean) as string[];
-
-    if (exercise.set_configurations && exercise.set_configurations.length > 0) {
-      // Try each metric until we find intensity targets
+    if (hasSetConfigurations) {
       for (const metricId of metricsToCheck) {
-        const intensityPercents = exercise.set_configurations
-          .map(set => set.intensity_targets?.find(t => t.metric === metricId)?.percent)
-          .filter(p => p != null && p! > 0);
-
-        if (intensityPercents.length > 0) {
-          const allSame = intensityPercents.every(p => p === intensityPercents[0]);
-          if (allSame) {
-            intensityDisplay = ` @${intensityPercents[0]}%`;
-          } else {
-            intensityDisplay = ` @${intensityPercents.map(p => `${p}%`).join(', @')}`;
-          }
-          break; // Found intensity, stop looking
+        const cells = setConfigs.map((s) => describeIntensity(s.intensity_targets?.find((t) => t.metric === metricId)));
+        const collapsed = collapse(cells);
+        if (collapsed) {
+          intensityDisplay = ` @ ${collapsed}`;
+          break;
         }
       }
     } else if (exercise.intensity_targets) {
-      // Fallback to old intensity_targets format
       for (const metricId of metricsToCheck) {
-        const intensityPercent = exercise.intensity_targets?.find((t) => t.metric === metricId)?.percent;
-        if (intensityPercent && intensityPercent > 0) {
-          intensityDisplay = ` @${intensityPercent}%`;
+        const d = describeIntensity(exercise.intensity_targets.find((t) => t.metric === metricId));
+        if (d) {
+          intensityDisplay = ` @ ${d}`;
           break;
         }
       }
     }
 
-    // Get secondary metric value
+    // Secondary value (MPH etc.) — shown alongside intensity, not suppressed by it
     let secondaryDisplay = '';
-    if (!intensityDisplay && secondary) {
+    if (secondary) {
       if (hasSetConfigurations) {
-        const secondaryValues = exercise.set_configurations!
-          .map((s) => s.metric_values?.[secondary] || 0)
-          .filter(v => v > 0);
-        if (secondaryValues.length > 0) {
-          const secondaryValuesDisplay = secondaryValues.length > 1 ? secondaryValues.join(', ') : secondaryValues[0];
-          secondaryDisplay = ` (${secondaryValuesDisplay} ${measurement?.secondary_metric_name || 'MPH'})`;
-        }
-      } else if (exercise.metric_targets?.[secondary]) {
-        secondaryDisplay = ` (${exercise.metric_targets[secondary]} ${measurement?.secondary_metric_name || 'MPH'})`;
+        const cells = setConfigs.map((s) => {
+          const v = s.metric_values?.[secondary];
+          return v == null || v === '' ? '' : formatMetricValue(secondary, v, customMeasurements);
+        });
+        const collapsed = collapse(cells);
+        if (collapsed) secondaryDisplay = ` (${collapsed})`;
+      } else if (metricTargets[secondary] != null && metricTargets[secondary] !== '') {
+        secondaryDisplay = ` (${formatMetricValue(secondary, metricTargets[secondary], customMeasurements)})`;
       }
     }
 
-    // Build display text
-    let displayText = '';
-    if (hasAMRAP && primary === 'reps') {
-      const alreadyHasAMRAP = String(primaryDisplay).includes('AMRAP');
-
-      if (primaryValues.length === 0) {
-        displayText = `${measurementName} (AMRAP)${intensityDisplay}${secondaryDisplay}`;
-      } else if (alreadyHasAMRAP) {
-        const repsLabel = hasSetConfigurations ? '' : ' Reps';
-        displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${secondaryDisplay}`;
-      } else {
-        const repsLabel = hasSetConfigurations ? '' : ' Reps';
-        displayText = `${measurementName} (${primaryDisplay}${repsLabel} AMRAP)${intensityDisplay}${secondaryDisplay}`;
-      }
+    let displayText: string;
+    if (hasAMRAP) {
+      const alreadyHasAMRAP = primaryDisplay.includes('AMRAP');
+      if (!primaryDisplay) displayText = `${measurementName} (AMRAP)${intensityDisplay}${secondaryDisplay}`;
+      else if (alreadyHasAMRAP) displayText = `${measurementName} (${primaryDisplay})${intensityDisplay}${secondaryDisplay}`;
+      else displayText = `${measurementName} (${primaryDisplay} AMRAP)${intensityDisplay}${secondaryDisplay}`;
     } else {
-      const repsLabel = hasSetConfigurations ? '' : ' Reps';
-      displayText = `${measurementName} (${primaryDisplay}${repsLabel})${intensityDisplay}${secondaryDisplay}`;
+      displayText = `${measurementName} (${primaryDisplay})${intensityDisplay}${secondaryDisplay}`;
     }
     summaries.push(displayText);
   });
 
-  // Prepend the set count to each measurement line so the overview reads as
-  // "3 × Reps (3)" instead of just "Reps (3)" — the legacy `sets × reps` path
-  // already does this; this brings parity to the modern set_configurations /
-  // metric_targets paths. Resolve the count from set_configurations.length,
-  // then fall back to exercise.sets.
-  const setCount =
-    (exercise.set_configurations && exercise.set_configurations.length) ||
-    exercise.sets ||
-    0;
+  if (exercise.time_seconds && !('time' in metricTargets) && !hasSetConfigurations) {
+    summaries.push(`Time (${formatSeconds(exercise.time_seconds)})`);
+  }
+
+  // Prepend the set count to each measurement line ("3 × Reps (5)").
+  const setCount = (hasSetConfigurations && setConfigs.length) || exercise.sets || 0;
   if (setCount > 0 && summaries.length > 0) {
-    const decorated = summaries.map((s) => `${setCount} × ${s}`);
-    return decorated.join(separator);
+    return summaries.map((s) => `${setCount} × ${s}`).join(separator);
   }
 
   return summaries.join(separator);
+}
+
+/** "RPE 8 · Tempo 3-1-2-0 · Rest 1:30" — empty when none apply. */
+export function formatPrescriptionExtras(
+  exercise: { rpe_target?: number | null; tempo?: string | null; rest_seconds?: number | null } | null | undefined,
+  separator = ' · '
+): string {
+  if (!exercise) return '';
+  const parts: string[] = [];
+  if (exercise.rpe_target != null) parts.push(`RPE ${exercise.rpe_target}`);
+  if (exercise.tempo) parts.push(`Tempo ${exercise.tempo}`);
+  if (exercise.rest_seconds) parts.push(`Rest ${formatSeconds(exercise.rest_seconds)}`);
+  return parts.join(separator);
 }
 
 /**
