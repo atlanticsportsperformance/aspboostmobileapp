@@ -11,7 +11,7 @@
  */
 
 import React, { useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Platform, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -21,6 +21,8 @@ interface BookingLike {
   event: {
     start_time: string;
     title?: string;
+    is_remote?: boolean;
+    meeting_url?: string | null;
     scheduling_templates?: {
       name: string;
       scheduling_categories?: { name: string; color?: string };
@@ -53,6 +55,8 @@ interface Item {
   time: string | null;
   isToday: boolean;
   done: boolean;
+  /** Meet link for a booked remote session — renders a Join button. */
+  joinUrl: string | null;
 }
 
 interface Props {
@@ -109,6 +113,7 @@ export function UpcomingPreview({
         time: d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
         isToday: isSameDay(d, now),
         done: b.status === 'attended',
+        joinUrl: b.event.is_remote && b.event.meeting_url ? b.event.meeting_url : null,
       });
     }
 
@@ -124,6 +129,7 @@ export function UpcomingPreview({
         time: null,
         isToday: isSameDay(d, now),
         done: t.status === 'completed',
+        joinUrl: null,
       });
     }
 
@@ -138,6 +144,7 @@ export function UpcomingPreview({
         time: null,
         isToday: isSameDay(d, now),
         done: false,
+        joinUrl: null,
       });
     }
 
@@ -202,8 +209,19 @@ export function UpcomingPreview({
                   </View>
                 </View>
 
-                {/* Trailing: green check if done, else chevron */}
-                {item.done ? (
+                {/* Trailing: Join button for a remote session, green check if done, else chevron */}
+                {item.joinUrl && !item.done ? (
+                  <TouchableOpacity
+                    style={styles.joinBtn}
+                    onPress={() => Linking.openURL(item.joinUrl as string)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Join video call"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="videocam" size={14} color="#000" />
+                    <Text style={styles.joinText}>Join</Text>
+                  </TouchableOpacity>
+                ) : item.done ? (
                   <View style={styles.checkWrap}>
                     <Ionicons name="checkmark" size={12} color="#00ff55" />
                   </View>
@@ -333,6 +351,20 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
     flexShrink: 1,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  joinBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: ACCENT,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+  },
+  joinText: {
+    color: '#000',
+    fontSize: 13,
+    fontWeight: '700',
   },
   checkWrap: {
     width: 17,

@@ -465,7 +465,7 @@ export default function BookingScreen() {
       );
 
       if (result.success) {
-        Alert.alert('Success', 'Class reserved successfully!');
+        Alert.alert('Success', selectedEvent.isRemote ? 'Session reserved — the Join button is on the session.' : 'Class reserved successfully!');
         setSelectedEvent(null);
         // Refresh events based on current view mode
         if (viewMode === 'day') {
@@ -474,7 +474,7 @@ export default function BookingScreen() {
           fetchListEvents();
         }
       } else {
-        Alert.alert('Error', result.error || 'Failed to reserve class');
+        Alert.alert('Error', result.error || (selectedEvent.isRemote ? 'Failed to reserve session' : 'Failed to reserve class'));
       }
     } catch (error) {
       console.error('Error booking:', error);

@@ -3395,9 +3395,15 @@ export default function DashboardScreen({ navigation }: any) {
                                 {startTime}
                                 {endTime ? ` – ${endTime}` : ''}
                               </Text>
-                              {booking.event?.is_remote && booking.event?.meeting_url ? (
-                                <TouchableOpacity onPress={() => Linking.openURL(booking.event.meeting_url as string)} accessibilityRole="link">
-                                  <Text style={{ color: '#9BDDFF', textDecorationLine: 'underline', fontSize: 12, marginTop: 4 }}>Join video call</Text>
+                              {booking.event?.is_remote && booking.event?.meeting_url && !passed ? (
+                                <TouchableOpacity
+                                  onPress={() => Linking.openURL(booking.event.meeting_url as string)}
+                                  accessibilityRole="button"
+                                  accessibilityLabel="Join video call"
+                                  style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#9BDDFF', paddingVertical: 9, paddingHorizontal: 16, borderRadius: 18, marginTop: 8 }}
+                                >
+                                  <Ionicons name="videocam" size={15} color="#000" />
+                                  <Text style={{ color: '#000', fontSize: 14, fontWeight: '700' }}>Join video call</Text>
                                 </TouchableOpacity>
                               ) : null}
                             </View>

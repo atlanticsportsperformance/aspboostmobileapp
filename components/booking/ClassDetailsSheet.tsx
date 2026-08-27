@@ -360,12 +360,24 @@ export default function ClassDetailsSheet({
                 {event.isRemote ? 'Video call' : event.location}
                 {!event.isRemote && event.resource ? ` • ${event.resource}` : ''}
               </Text>
-              {event.isRemote && event.isBooked && event.meetingUrl && (
-                <TouchableOpacity onPress={() => Linking.openURL(event.meetingUrl!)} accessibilityRole="link">
-                  <Text style={[styles.value, { color: '#9BDDFF', textDecorationLine: 'underline' }]}>Join video call</Text>
-                </TouchableOpacity>
-              )}
             </View>
+
+            {/* Join — a real button, not a link, when the athlete is booked on a remote session */}
+            {event.isRemote && event.isBooked && event.meetingUrl && (
+              <TouchableOpacity
+                style={styles.joinBtn}
+                onPress={() => Linking.openURL(event.meetingUrl!)}
+                accessibilityRole="button"
+                accessibilityLabel="Join video call"
+              >
+                <LinearGradient colors={['#9BDDFF', '#7BC5F0']} style={styles.joinGradient}>
+                  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                    <Path d="M15 10l4.553-2.276A1 1 0 0 1 21 8.618v6.764a1 1 0 0 1-1.447.894L15 14M3 8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z" stroke="#000" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.joinText}>Join video call</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            )}
 
             {/* Duration */}
             <View style={styles.detailRow}>
@@ -513,7 +525,7 @@ export default function ClassDetailsSheet({
                     <ActivityIndicator size="small" color="#000" />
                   ) : (
                     <Text style={styles.reserveText}>
-                      {isFreeDropIn ? 'Reserve Free Session' : 'Reserve Class'}
+                      {isFreeDropIn ? 'Reserve Free Session' : event.isRemote ? 'Reserve Session' : 'Reserve Class'}
                     </Text>
                   )}
                 </LinearGradient>
@@ -634,6 +646,24 @@ const styles = StyleSheet.create({
   },
   detailRow: {
     marginBottom: 12,
+  },
+  joinBtn: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 16,
+    marginTop: 4,
+  },
+  joinGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+  },
+  joinText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#000',
   },
   spots: {
     fontSize: 14,
