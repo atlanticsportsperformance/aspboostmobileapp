@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -8,7 +8,7 @@ import FABMenu, { type FABMenuItem } from '../components/FABMenu';
 import { SettingsMenu, type SettingsMenuItem } from '../components/SettingsMenu';
 import { getCoachTodaysSessions, type CoachSession } from '../lib/coachScheduleApi';
 import { getCoachRosterStatus, splitCoverage, isNotLogging } from '../lib/coachRosterApi';
-import { splitToday, startsInLabel, bookedPreview, formatSessionTime, getUnreadSummary } from '../lib/coachOverviewApi';
+import { splitToday, startsInLabel, bookedPreview, formatSessionTime, getUnreadSummary, joinUrlFor } from '../lib/coachOverviewApi';
 import { useAuth } from '../contexts/AuthContext';
 import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
 
@@ -189,6 +189,21 @@ export default function CoachOverviewScreen() {
                     </View>
                   );
                 })()}
+                {(() => {
+                  const url = joinUrlFor(current, now);
+                  if (!url) return null;
+                  return (
+                    <TouchableOpacity
+                      style={styles.joinBtn}
+                      onPress={() => Linking.openURL(url)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Join video call"
+                    >
+                      <Ionicons name="videocam" size={16} color="#0A0A0A" />
+                      <Text style={styles.joinText}>Join video call</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
               </TouchableOpacity>
             ) : (
               <View style={styles.next}>
@@ -210,7 +225,22 @@ export default function CoachOverviewScreen() {
                       <Text style={styles.laterTime}>{formatSessionTime(s.startTime)}</Text>
                       <View style={[styles.laterDot, { backgroundColor: s.template?.scheduling_categories?.color || DEFAULT_COLOR }]} />
                       <Text style={styles.laterName} numberOfLines={1}>{s.template?.name ?? 'Session'}</Text>
-                      <Text style={styles.laterCap}>{s.currentBookings}/{s.capacity}</Text>
+                      {(() => {
+                        const url = joinUrlFor(s, now);
+                        if (!url) return <Text style={styles.laterCap}>{s.currentBookings}/{s.capacity}</Text>;
+                        return (
+                          <TouchableOpacity
+                            style={styles.joinPill}
+                            onPress={() => Linking.openURL(url)}
+                            accessibilityRole="button"
+                            accessibilityLabel="Join video call"
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="videocam" size={12} color="#0A0A0A" />
+                            <Text style={styles.joinPillText}>Join</Text>
+                          </TouchableOpacity>
+                        );
+                      })()}
                     </TouchableOpacity>
                   ))}
                   {later.length > 3 && (
@@ -314,6 +344,16 @@ const styles = StyleSheet.create({
   laterName: { flex: 1, fontSize: 13.5, color: '#FFFFFF' },
   laterCap: { fontFamily: 'Menlo', fontSize: 11.5, color: '#6B7280' },
   laterMore: { fontSize: 11.5, color: '#9BDDFF', fontWeight: '600', paddingTop: 10 },
+  joinBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    backgroundColor: '#9BDDFF', borderRadius: 12, paddingVertical: 11, marginTop: 12,
+  },
+  joinText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700' },
+  joinPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: '#9BDDFF', borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10,
+  },
+  joinPillText: { color: '#0A0A0A', fontSize: 11.5, fontWeight: '700' },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16 },
   stat: {

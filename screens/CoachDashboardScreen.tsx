@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, RefreshControl, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -10,6 +10,7 @@ import { getCoachTodaysSessions, type CoachSession, type CoachBooking } from '..
 import { useAuth } from '../contexts/AuthContext';
 import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
 import { isSameDay, addDays, dayLabel } from '../lib/coachDates';
+import { joinUrlFor } from '../lib/coachOverviewApi';
 
 const DEFAULT_COLOR = 'rgba(255,255,255,0.15)';
 
@@ -180,6 +181,9 @@ function SessionCard({ session, expanded, onToggle }: { session: CoachSession; e
   const catName = session.template?.scheduling_categories?.name;
   const start = new Date(session.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const roster: CoachBooking[] = (session.allBookings && session.allBookings.length ? session.allBookings : session.bookings) || [];
+  // Remote sessions the coach can still walk into get a real button; the card
+  // used to say "Video call" and leave them to hunt for the link elsewhere.
+  const joinUrl = joinUrlFor(session, new Date());
 
   return (
     <View style={[styles.card, { borderLeftColor: color }]}>
@@ -197,6 +201,18 @@ function SessionCard({ session, expanded, onToggle }: { session: CoachSession; e
         <Text style={styles.cap}>{session.currentBookings}/{session.capacity}</Text>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color="rgba(255,255,255,0.3)" style={{ marginLeft: 6 }} />
       </TouchableOpacity>
+
+      {joinUrl && (
+        <TouchableOpacity
+          style={styles.joinBtn}
+          onPress={() => Linking.openURL(joinUrl)}
+          accessibilityRole="button"
+          accessibilityLabel="Join video call"
+        >
+          <Ionicons name="videocam" size={15} color="#0A0A0A" />
+          <Text style={styles.joinText}>Join video call</Text>
+        </TouchableOpacity>
+      )}
 
       {expanded && (
         <View style={styles.roster}>
@@ -255,6 +271,13 @@ const styles = StyleSheet.create({
   catBadge: { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, overflow: 'hidden' },
   cardSub: { fontSize: 11, color: 'rgba(255,255,255,0.3)' },
   cap: { fontFamily: 'Menlo', fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.7)' },
+
+  joinBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    backgroundColor: '#9BDDFF', marginHorizontal: 14, marginBottom: 14,
+    borderRadius: 10, paddingVertical: 10,
+  },
+  joinText: { color: '#0A0A0A', fontSize: 13, fontWeight: '700' },
 
   roster: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)', backgroundColor: 'rgba(255,255,255,0.015)', paddingHorizontal: 14, paddingVertical: 6 },
   rosterEmpty: { fontSize: 12, color: 'rgba(255,255,255,0.25)', paddingVertical: 10, textAlign: 'center' },

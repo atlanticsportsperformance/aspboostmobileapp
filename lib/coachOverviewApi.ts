@@ -123,6 +123,24 @@ export async function getUnreadSummary(): Promise<UnreadSummary> {
   return countUnread(participations as ParticipationRow[], (messages || []) as MessageMetaRow[], user.id);
 }
 
+/**
+ * The video link for a remote session a coach can still walk into — null for
+ * anything in-person, unlinked, or already over. A session under way still
+ * returns its link: that is exactly when a coach reaches for it.
+ *
+ * Only http(s) is handed back. The URL is opened with Linking.openURL, which
+ * will happily dispatch any scheme it is given, and this value arrives from
+ * the server.
+ */
+export function joinUrlFor(session: CoachSession, now: Date): string | null {
+  if (!session.is_remote) return null;
+  const url = (session.meeting_url || '').trim();
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) return null;
+  if (new Date(session.endTime).getTime() <= now.getTime()) return null;
+  return url;
+}
+
 /** Wall-clock time for a session, in the device's timezone. */
 export function formatSessionTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });

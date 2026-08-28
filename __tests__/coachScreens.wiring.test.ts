@@ -277,3 +277,19 @@ describe('messaging fixes for staff', () => {
     expect(S).toContain("isStaff ? 'Start one with the button above' : 'Your coach will message you here'");
   });
 });
+
+describe('coaches can join their own remote sessions', () => {
+  it('Overview offers Join on the next session and on remote rows later today', () => {
+    const S = read('screens/CoachOverviewScreen.tsx');
+    expect(S).toContain('joinUrlFor(current, now)');
+    expect(S).toContain('joinUrlFor(s, now)');
+    expect(S).toContain('Linking.openURL(url)');
+    expect(S).toContain('accessibilityLabel="Join video call"');
+  });
+  it('the day list card offers it too — a coach browsing a future day', () => {
+    const S = read('screens/CoachDashboardScreen.tsx');
+    expect(S).toContain('const joinUrl = joinUrlFor(session, new Date());');
+    expect(S).toContain('Linking.openURL(joinUrl)');
+    expect(S).toContain('accessibilityLabel="Join video call"');
+  });
+});

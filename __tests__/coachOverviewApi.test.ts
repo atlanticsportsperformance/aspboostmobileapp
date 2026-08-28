@@ -1,5 +1,5 @@
 import {
-  splitToday, startsInLabel, bookedPreview, countUnread, formatSessionTime,
+  splitToday, startsInLabel, bookedPreview, countUnread, formatSessionTime, joinUrlFor,
 } from '../lib/coachOverviewApi';
 
 const at = (h: number, m = 0) => new Date(2026, 8, 30, h, m).toISOString();
@@ -131,5 +131,32 @@ describe('countUnread', () => {
 describe('formatSessionTime', () => {
   it('renders a wall-clock time', () => {
     expect(formatSessionTime(at(8, 30))).toMatch(/8:30/);
+  });
+});
+
+describe('joinUrlFor', () => {
+  const now = new Date(2026, 8, 30, 8, 15);
+  const remote = (extra: Partial<any> = {}) => session(8, { is_remote: true, meeting_url: 'https://meet.google.com/abc-defg-hij', ...extra });
+
+  it('gives the link for a remote session that has not ended', () => {
+    expect(joinUrlFor(remote(), now)).toBe('https://meet.google.com/abc-defg-hij');
+  });
+  it('a session already under way is still joinable — that is when it is needed most', () => {
+    expect(joinUrlFor(remote(), new Date(2026, 8, 30, 8, 59))).toBe('https://meet.google.com/abc-defg-hij');
+  });
+  it('goes away once the session has ended', () => {
+    expect(joinUrlFor(remote(), new Date(2026, 8, 30, 9, 1))).toBeNull();
+  });
+  it('an in-person session never offers a link, even if one is set', () => {
+    expect(joinUrlFor(remote({ is_remote: false }), now)).toBeNull();
+  });
+  it('a remote session with no link yet offers nothing to tap', () => {
+    expect(joinUrlFor(remote({ meeting_url: null }), now)).toBeNull();
+    expect(joinUrlFor(remote({ meeting_url: '' }), now)).toBeNull();
+    expect(joinUrlFor(session(8, { is_remote: true }), now)).toBeNull();
+  });
+  it('only ever hands back an http(s) link', () => {
+    expect(joinUrlFor(remote({ meeting_url: 'javascript:alert(1)' }), now)).toBeNull();
+    expect(joinUrlFor(remote({ meeting_url: 'http://meet.example/x' }), now)).toBe('http://meet.example/x');
   });
 });
