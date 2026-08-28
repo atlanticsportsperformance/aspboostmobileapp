@@ -94,7 +94,7 @@ function AppContent() {
           nav.navigate('Leaderboard');
           break;
         default:
-          nav.navigate(isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard');
+          nav.navigate(isStaff ? 'CoachOverview' : isParentAccount ? 'ParentDashboard' : 'Dashboard');
       }
     }
   }, [session, isParentAccount, isStaff]);
@@ -198,6 +198,7 @@ function AppContent() {
             <Stack.Screen name="Waivers" getComponent={() => require('./screens/WaiversScreen').default} />
             <Stack.Screen name="CoachTools" getComponent={() => require('./screens/CoachToolsScreen').default} />
             <Stack.Screen name="CoachArmCareSearch" getComponent={() => require('./screens/CoachArmCareSearchScreen').default} />
+            <Stack.Screen name="CoachOverview" getComponent={() => require('./screens/CoachOverviewScreen').default} />
             <Stack.Screen name="CoachRoster" getComponent={() => require('./screens/CoachRosterScreen').default} />
             <Stack.Screen name="AthleteProgram" getComponent={() => require('./screens/AthleteProgramScreen').default} />
             <Stack.Screen name="CoachCoverage" getComponent={() => require('./screens/CoachCoverageScreen').default} />

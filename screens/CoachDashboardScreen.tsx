@@ -77,6 +77,7 @@ export default function CoachDashboardScreen() {
   ];
 
   const fabItems: FABMenuItem[] = [
+    { id: 'overview', label: 'Overview', icon: 'grid', onPress: () => navigation.navigate('CoachOverview') },
     { id: 'schedule', label: 'Schedule', icon: 'home', isActive: true, onPress: () => {} },
     { id: 'roster', label: 'Roster', icon: 'people', onPress: () => navigation.navigate('CoachRoster') },
     { id: 'tools', label: 'Tools', icon: 'construct', onPress: () => navigation.navigate('CoachTools') },

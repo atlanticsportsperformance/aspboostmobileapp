@@ -45,7 +45,8 @@ describe('CompletedWorkout can be opened read-only', () => {
 describe('CoachRosterScreen', () => {
   const S = read('screens/CoachRosterScreen.tsx');
   it('takes its list from the server payload, never coach_athletes', () => {
-    expect(S).toContain("import { getCoachRosterStatus");
+    expect(S).toContain("from '../lib/coachRosterApi'");
+    expect(S).toContain('getCoachRosterStatus');
     expect(S).not.toContain("from('coach_athletes')");
     expect(S).not.toContain('getLinkedAthletes(');
   });
@@ -57,38 +58,50 @@ describe('CoachRosterScreen', () => {
     expect(S).toContain('Needs attention');
     expect(S).toContain('A–Z');
   });
-  it('renders the two chips and opens the program calendar', () => {
-    expect(S).toContain('runwayChip(');
-    expect(S).toContain('activityChip(');
+  it('renders one row per athlete with a severity stripe and category dots', () => {
+    expect(S).toContain('runwaySubtitle(');
+    expect(S).toContain('activitySubtitle(');
+    expect(S).toContain('severityTone(');
+    expect(S).toContain('programmedCategories(');
     expect(S).toContain("navigation.navigate('AthleteProgram', { athleteId: item.athlete_id, athleteName: item.athlete_name })");
   });
-  it('surfaces logsUnavailable and suppresses activity chips', () => {
-    expect(S).toContain('Activity unavailable right now');
+  it('surfaces logsUnavailable and suppresses the activity line', () => {
+    expect(S).toContain('activity unavailable right now');
+    expect(S).toContain('{!logsUnavailable && (');
+  });
+  it('asks for members, and only widens to everyone through the persisted All toggle', () => {
+    expect(S).toContain('getCoachRosterStatus({ includeAll })');
+    expect(S).toContain("const ROSTER_SCOPE_KEY = 'aspboost_coach_roster_scope';");
+    expect(S).toContain("AsyncStorage.setItem(ROSTER_SCOPE_KEY, next ? 'all' : 'member')");
+    // the preference must resolve before the first fetch, or the screen
+    // loads members and then immediately reloads with everyone
+    expect(S).toContain('if (prefsLoaded) load();');
   });
 });
 
-describe('coach home keeps its shape and gains Roster', () => {
+describe('the day list keeps its shape and can get back to Overview', () => {
   const S = read('screens/CoachDashboardScreen.tsx');
   it('imports the shared date helpers instead of declaring them', () => {
     expect(S).toContain("from '../lib/coachDates'");
     expect(S).not.toContain('function startOfDay(');
   });
-  it('Schedule stays first and active; Roster is added', () => {
+  it('Schedule stays the active item; Overview and Roster are reachable', () => {
     expect(S).toContain("{ id: 'schedule', label: 'Schedule', icon: 'home', isActive: true, onPress: () => {} },");
+    expect(S).toContain("{ id: 'overview', label: 'Overview', icon: 'grid', onPress: () => navigation.navigate('CoachOverview') },");
     expect(S).toContain("{ id: 'roster', label: 'Roster', icon: 'people', onPress: () => navigation.navigate('CoachRoster') },");
     expect(S).not.toContain('athleteId={');
   });
 });
 
-describe('App registers the three coach screens lazily', () => {
+describe('App registers the coach screens lazily', () => {
   const S = read('App.tsx');
-  for (const name of ['CoachRoster', 'AthleteProgram', 'CoachCoverage']) {
+  for (const name of ['CoachOverview', 'CoachRoster', 'AthleteProgram', 'CoachCoverage']) {
     it(`registers ${name}`, () => {
       expect(S).toContain(`<Stack.Screen name="${name}" getComponent={() => require('./screens/${name}Screen').default} />`);
     });
   }
-  it("does not change the staff landing", () => {
-    expect(S).toContain("nav.navigate(isStaff ? 'CoachDashboard' : isParentAccount ? 'ParentDashboard' : 'Dashboard');");
+  it('lands staff on Overview and leaves the athlete and parent landings alone', () => {
+    expect(S).toContain("nav.navigate(isStaff ? 'CoachOverview' : isParentAccount ? 'ParentDashboard' : 'Dashboard');");
   });
 });
 
@@ -108,11 +121,14 @@ describe('AthleteProgramScreen', () => {
     expect(S).toContain('groupDayWorkouts(');
     expect(S).toContain('CATEGORY_LABEL[');
   });
-  it('shows the runway banner from the same payload as the roster', () => {
-    expect(S).toContain('getCoachRosterStatus(');
-    expect(S).toContain('never programmed');
-    expect(S).toContain('ran out');
-    expect(S).toContain('Programming through');
+  it('shows the runway tiles from the same payload as the roster, for members and non-members alike', () => {
+    expect(S).toContain('getCoachRosterStatus({ includeAll: true })');
+    expect(S).toContain('categoryTile(');
+    expect(S).toContain('CATEGORY_NAME[');
+  });
+  it('marks a past day that was never opened as missed', () => {
+    expect(S).toContain('isMissedInstance(w, todayKey)');
+    expect(S).toContain("'Missed'");
   });
   it('opens completed workouts read-only and links only read-only screens', () => {
     expect(S).toContain("navigation.navigate('CompletedWorkout', { workoutInstanceId: w.id, readOnly: true })");
@@ -134,15 +150,22 @@ describe('AthleteProgramScreen', () => {
 
 describe('CoachCoverageScreen', () => {
   const S = read('screens/CoachCoverageScreen.tsx');
-  it('has the two tabs and uses the shared metric', () => {
-    expect(S).toContain('Running out');
-    expect(S).toContain('Not logging');
+  it('has the two tabs and uses the shared metrics', () => {
+    expect(S).toContain('Needs programming');
+    expect(S).toContain('Not following');
     expect(S).toContain('isNotLogging(');
     expect(S).toContain('sortNeedsAttention(');
   });
-  it('surfaces never-programmed categories distinctly and first', () => {
-    expect(S).toContain('workout_count === 0');
-    expect(S).toContain('Never programmed');
+  it('splits overdue from the coming week and names the reason', () => {
+    expect(S).toContain('splitCoverage(');
+    expect(S).toContain('coverageReason(');
+    expect(S).toContain('Out now · ');
+    expect(S).toContain('This week · ');
+  });
+  it('shares the roster member filter so the two screens never disagree', () => {
+    expect(S).toContain("const ROSTER_SCOPE_KEY = 'aspboost_coach_roster_scope';");
+    expect(S).toContain('getCoachRosterStatus({ includeAll })');
+    expect(S).toContain('if (prefsLoaded) load();');
   });
   it('opens the program calendar and never writes', () => {
     expect(S).toContain("navigation.navigate('AthleteProgram', { athleteId: item.athlete_id, athleteName: item.athlete_name })");
@@ -152,7 +175,7 @@ describe('CoachCoverageScreen', () => {
     expect(S).toContain('logsUnavailable');
     expect(S).toContain('Activity unavailable right now');
   });
-  it('shows an em dash instead of a count on the Not logging tab when logs are unavailable', () => {
+  it('shows an em dash instead of a count on the Not following tab when logs are unavailable', () => {
     expect(S).toContain("logsUnavailable ? '—' : String(notLogging.length)");
   });
 });
@@ -163,5 +186,76 @@ describe('CoachTools gains a Coverage tile', () => {
     expect(S).toContain("navigation.navigate('CoachCoverage')");
     expect(S).toContain('Coverage');
     expect(S).toContain('Who is running out · who is not logging');
+  });
+});
+
+describe('the roster screens wear the app palette', () => {
+  const files = ['screens/CoachRosterScreen.tsx', 'screens/AthleteProgramScreen.tsx', 'screens/CoachCoverageScreen.tsx'];
+  it('sits on the app ground, not a navy of its own', () => {
+    for (const f of files) {
+      expect(read(f)).not.toContain('#0B0F14');
+      expect(read(f)).toContain("backgroundColor: '#0A0A0A'");
+    }
+  });
+  it('spends the accent on marks, never as a panel fill', () => {
+    for (const f of files) {
+      const S = read(f);
+      // rgba(155,221,255,…) is only allowed at the low alphas used for an
+      // active control; the P4 screens filled whole surfaces at .08 and .18.
+      expect(S).not.toContain('rgba(155,221,255,0.18)');
+      expect(S).not.toContain('rgba(155,221,255,0.15)');
+    }
+  });
+  it('greys come from the app ramp, not ad-hoc white alphas', () => {
+    for (const f of files) {
+      const S = read(f);
+      expect(S).not.toContain("color: 'rgba(255,255,255,0.55)'");
+      expect(S).not.toContain("color: 'rgba(255,255,255,0.6)'");
+    }
+  });
+});
+
+describe('CoachOverviewScreen', () => {
+  const S = read('screens/CoachOverviewScreen.tsx');
+  it('builds the day from the existing sessions fetch, not a new one', () => {
+    expect(S).toContain('getCoachTodaysSessions(today, undefined, !isAdmin)');
+    expect(S).toContain('splitToday(sessions, now)');
+    expect(S).toContain('startsInLabel(current, now)');
+    expect(S).toContain('bookedPreview(current)');
+  });
+  it('takes its counts from the shared roster metrics', () => {
+    expect(S).toContain('splitCoverage(members, today)');
+    expect(S).toContain('isNotLogging(a, today)');
+    expect(S).toContain('getUnreadSummary()');
+  });
+  it('makes ONE plan-expirations call, not two — it is the heaviest request on the landing', () => {
+    expect((S.match(/getCoachRosterStatus\(/g) || []).length).toBe(1);
+    expect(S).not.toContain('getCoachRosterStatus({ includeAll: true })');
+  });
+  it('one failing block never blanks the others', () => {
+    expect(S).toContain('Promise.allSettled');
+    // a dash, never a silent zero, when a count could not be read
+    expect(S).toContain("(v === null ? '—' : String(v))");
+  });
+  it('every tile is a door, and the coverage tiles pick their tab', () => {
+    expect(S).toContain("navigation.navigate('CoachRoster')");
+    expect(S).toContain("navigation.navigate('Messages')");
+    expect(S).toContain("navigation.navigate('CoachCoverage', { tab: 'programming' })");
+    expect(S).toContain("navigation.navigate('CoachCoverage', { tab: 'following' })");
+    expect(S).toContain("navigation.navigate('CoachDashboard')");
+  });
+  it('is read-only, like the rest of the roster section', () => {
+    expect(S).not.toMatch(/\.(update|insert|delete|upsert)\(/);
+  });
+  it('marks itself as the active FAB item and keeps the others', () => {
+    expect(S).toContain("{ id: 'overview', label: 'Overview', icon: 'grid', isActive: true, onPress: () => {} },");
+    for (const id of ['schedule', 'roster', 'tools', 'messages']) expect(S).toContain(`id: '${id}'`);
+  });
+});
+
+describe('Coverage opens on the tab it was sent to', () => {
+  const S = read('screens/CoachCoverageScreen.tsx');
+  it('reads the route param, defaulting to programming', () => {
+    expect(S).toContain("route?.params?.tab === 'following' ? 'following' : 'programming'");
   });
 });
