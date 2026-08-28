@@ -272,21 +272,33 @@ export function categoryTile(
   return { value: `${d}d`, tone: d <= RUNWAY_WARN_DAYS ? 'amber' : 'grey', foot: `thru ${when}` };
 }
 
-/** A category with nothing scheduled ahead of it: overdue, or never built. */
+/**
+ * A category this athlete is actually trained in. Athletes are programmed in
+ * what they do — a pitcher has no hitting block and never will. Treating an
+ * untrained category as a gap flagged every member in the org, because not one
+ * of them carries all three.
+ */
+function trainedCategories(a: RosterAthlete): WorkoutType[] {
+  return CATEGORY_ORDER.filter((t) => (a.workouts?.[t]?.workout_count ?? 0) > 0);
+}
+
+/** A category they train that has nothing scheduled ahead of it any more. */
 function outCategories(a: RosterAthlete): WorkoutType[] {
-  return CATEGORY_ORDER.filter((t) => {
+  return trainedCategories(a).filter((t) => {
     const c = a.workouts?.[t];
     return !!c && c.days_until_next !== null && c.days_until_next <= 0;
   });
 }
-function neverCategories(a: RosterAthlete): WorkoutType[] {
-  return CATEGORY_ORDER.filter((t) => (a.workouts?.[t]?.workout_count ?? 0) === 0);
+
+/** No programming anywhere — the real never-programmed case. */
+function hasNoProgramming(a: RosterAthlete): boolean {
+  return trainedCategories(a).length === 0;
 }
 
 /**
  * The programming queue, split into two jobs: work that is already overdue
- * (or was never built) and work that runs out inside the warn window.
- * Athletes with runway everywhere are not on this screen at all.
+ * (or was never built at all) and work that runs out inside the warn window.
+ * Athletes with runway in everything they train are not on this screen.
  */
 export function splitCoverage(
   list: RosterAthlete[],
@@ -295,7 +307,7 @@ export function splitCoverage(
   const outNow: RosterAthlete[] = [];
   const thisWeek: RosterAthlete[] = [];
   for (const a of list) {
-    if (outCategories(a).length > 0 || neverCategories(a).length > 0) { outNow.push(a); continue; }
+    if (hasNoProgramming(a) || outCategories(a).length > 0) { outNow.push(a); continue; }
     const r = runwayDays(a);
     if (r !== null && r <= RUNWAY_WARN_DAYS) thisWeek.push(a);
   }
@@ -304,16 +316,14 @@ export function splitCoverage(
 
 /** Why this athlete is on the Coverage list, named by category. */
 export function coverageReason(a: RosterAthlete): string {
+  if (hasNoProgramming(a)) return 'Never programmed';
   const out = outCategories(a);
   if (out.length) return `${out.map((t) => CATEGORY_NAME[t]).join(', ')} out`;
-  const never = neverCategories(a);
-  if (never.length === CATEGORY_ORDER.length) return 'Never programmed';
-  const soon = CATEGORY_ORDER.filter((t) => {
+  const soon = trainedCategories(a).filter((t) => {
     const c = a.workouts?.[t];
     return !!c && c.days_until_next !== null && c.days_until_next <= RUNWAY_WARN_DAYS;
   });
   if (soon.length) return soon.map((t) => CATEGORY_NAME[t]).join(', ');
-  if (never.length) return `${never.map((t) => CATEGORY_NAME[t]).join(', ')} never programmed`;
   return '';
 }
 
@@ -329,4 +339,34 @@ export function isMissedInstance(
 ): boolean {
   if (!instance.scheduled_date || instance.scheduled_date >= todayKey) return false;
   return instance.status !== 'completed' && instance.status !== 'in_progress';
+}
+
+/**
+ * The few athletes a coach should look at first, for the Overview home screen:
+ * overdue programming, then programming running out, then people who have
+ * stopped logging. Each appears once, most urgent first, with the reason
+ * already resolved so the caller only renders it.
+ */
+export function attentionList(
+  list: RosterAthlete[],
+  now: Date,
+  limit = 5
+): Array<{ athlete: RosterAthlete; reason: string; tone: 'red' | 'amber' }> {
+  const { outNow, thisWeek } = splitCoverage(list, now);
+  const seen = new Set<string>();
+  const rows: Array<{ athlete: RosterAthlete; reason: string; tone: 'red' | 'amber' }> = [];
+
+  const push = (a: RosterAthlete, reason: string, tone: 'red' | 'amber') => {
+    if (seen.has(a.athlete_id) || rows.length >= limit) return;
+    seen.add(a.athlete_id);
+    rows.push({ athlete: a, reason, tone });
+  };
+
+  for (const a of outNow) push(a, coverageReason(a), 'red');
+  for (const a of thisWeek) push(a, coverageReason(a), 'amber');
+  for (const a of sortNeedsAttention(list.filter((x) => isNotLogging(x, now)), now)) {
+    const d = daysSinceLog(a, now);
+    push(a, d === null ? 'Never logged a set' : `No logs in ${d} days`, 'amber');
+  }
+  return rows;
 }

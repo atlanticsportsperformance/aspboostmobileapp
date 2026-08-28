@@ -7,7 +7,7 @@ import { performLogout } from '../lib/logout';
 import FABMenu, { type FABMenuItem } from '../components/FABMenu';
 import { SettingsMenu, type SettingsMenuItem } from '../components/SettingsMenu';
 import { getCoachTodaysSessions, type CoachSession } from '../lib/coachScheduleApi';
-import { getCoachRosterStatus, splitCoverage, isNotLogging } from '../lib/coachRosterApi';
+import { getCoachRosterStatus, splitCoverage, isNotLogging, attentionList, splitName, RosterAthlete } from '../lib/coachRosterApi';
 import { splitToday, startsInLabel, bookedPreview, formatSessionTime, getUnreadSummary, joinUrlFor } from '../lib/coachOverviewApi';
 import { useAuth } from '../contexts/AuthContext';
 import { onBluetoothStateChange, openBluetoothSettings, type BluetoothPermissionState } from '../lib/ble/permissions';
@@ -33,6 +33,7 @@ export default function CoachOverviewScreen() {
   const [sessions, setSessions] = useState<CoachSession[]>([]);
   const [counts, setCounts] = useState<Counts>(EMPTY_COUNTS);
   const [unread, setUnread] = useState<{ messages: number; conversations: number }>({ messages: 0, conversations: 0 });
+  const [attention, setAttention] = useState<Array<{ athlete: RosterAthlete; reason: string; tone: 'red' | 'amber' }>>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
@@ -80,8 +81,10 @@ export default function CoachOverviewScreen() {
           ? null
           : members.filter((a) => isNotLogging(a, today)).length,
       }));
+      setAttention(attentionList(members, today));
     } else {
       setCounts((c) => ({ ...c, members: null, needsProgramming: null, notFollowing: null }));
+      setAttention([]);
     }
 
     setUnread(unreadRes.status === 'fulfilled' ? unreadRes.value : { messages: 0, conversations: 0 });
@@ -290,6 +293,56 @@ export default function CoachOverviewScreen() {
                 <Text style={styles.statFoot}>{counts.notFollowing === null ? 'activity unavailable' : 'no logs in 7d'}</Text>
               </TouchableOpacity>
             </View>
+
+            {attention.length > 0 && (
+              <>
+                <View style={styles.secHdr}>
+                  <Text style={styles.secTitle}>Needs attention</Text>
+                  <TouchableOpacity onPress={() => navigation.navigate('CoachCoverage', { tab: 'programming' })} hitSlop={8}>
+                    <Text style={styles.secAction}>Coverage ›</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.attentionWrap}>
+                  {attention.map(({ athlete, reason, tone }) => {
+                    const n = splitName(athlete.athlete_name);
+                    return (
+                      <TouchableOpacity
+                        key={athlete.athlete_id}
+                        style={styles.attentionRow}
+                        onPress={() => navigation.navigate('AthleteProgram', { athleteId: athlete.athlete_id, athleteName: athlete.athlete_name })}
+                      >
+                        <View style={[styles.attentionAv, tone === 'red' && styles.attentionAvRed]}>
+                          <Text style={[styles.attentionAvTxt, tone === 'red' && styles.attentionAvTxtRed]}>
+                            {n.first[0] || ''}{n.last[0] || ''}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.attentionName} numberOfLines={1}>{athlete.athlete_name}</Text>
+                          <Text style={[styles.attentionReason, tone === 'red' ? styles.toneRed : styles.toneAmber]} numberOfLines={1}>
+                            {reason}
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={16} color="#4B5563" />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <View style={styles.secHdr}>
+              <Text style={styles.secTitle}>Quick actions</Text>
+            </View>
+            <View style={styles.actions}>
+              <TouchableOpacity style={styles.action} onPress={() => navigation.navigate('Messages')}>
+                <Ionicons name="chatbubble-ellipses-outline" size={19} color="#9BDDFF" />
+                <Text style={styles.actionText}>Message an athlete</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.action} onPress={() => navigation.navigate('CoachArmCareSearch')}>
+                <Ionicons name="fitness-outline" size={19} color="#F87171" />
+                <Text style={styles.actionText}>ArmCare test</Text>
+              </TouchableOpacity>
+            </View>
           </>
         )}
       </ScrollView>
@@ -367,4 +420,31 @@ const styles = StyleSheet.create({
   statValAmber: { color: '#FBBF24' },
   statValBlue: { color: '#9BDDFF' },
   statFoot: { fontSize: 10.5, color: '#6B7280', marginTop: 1 },
+
+  attentionWrap: {
+    marginHorizontal: 16, backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', borderRadius: 12, overflow: 'hidden',
+  },
+  attentionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  attentionAv: {
+    width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  attentionAvRed: { backgroundColor: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.28)' },
+  attentionAvTxt: { fontSize: 11, fontWeight: '700', color: '#9CA3AF' },
+  attentionAvTxtRed: { color: '#F87171' },
+  attentionName: { fontSize: 14.5, fontWeight: '600', color: '#FFFFFF' },
+  attentionReason: { fontSize: 11.5, marginTop: 1 },
+  toneRed: { color: '#F87171' },
+  toneAmber: { color: '#FBBF24' },
+
+  actions: { flexDirection: 'row', gap: 8, paddingHorizontal: 16 },
+  action: {
+    flex: 1, alignItems: 'center', gap: 7, paddingVertical: 16,
+    backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', borderRadius: 12,
+  },
+  actionText: { fontSize: 12, fontWeight: '600', color: '#FFFFFF', textAlign: 'center' },
 });

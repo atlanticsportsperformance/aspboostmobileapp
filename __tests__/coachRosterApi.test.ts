@@ -2,7 +2,7 @@ import {
   runwayDays, daysSinceLog, runwayChip, activityChip, isNotLogging, sortNeedsAttention, sortAlpha,
   groupDayWorkouts, splitName, NOT_LOGGING_STALE_DAYS, NOT_LOGGING_WINDOW_DAYS,
   getCoachRosterStatus, runwaySubtitle, activitySubtitle, severityTone, programmedCategories,
-  categoryTile, splitCoverage, coverageReason, isMissedInstance,
+  categoryTile, splitCoverage, coverageReason, isMissedInstance, attentionList,
 } from '../lib/coachRosterApi';
 import { supabase } from '../lib/supabase';
 
@@ -179,8 +179,26 @@ describe('coverage grouping', () => {
   });
   it('names the categories that are out rather than showing a bare number', () => {
     expect(coverageReason(ath('a', cat(-2), cat(-5), cat(30), null))).toBe('Strength, Throwing out');
-    expect(coverageReason(ath('a', cat(30), cat(null), cat(30), null))).toBe('Throwing never programmed');
+    expect(coverageReason(ath('a', cat(null), cat(null), cat(null), null))).toBe('Never programmed');
     expect(coverageReason(ath('a', cat(4), cat(30), cat(30), null))).toBe('Strength');
+  });
+  // Not one member in the org has all three categories programmed — athletes
+  // are programmed in what they actually train. Treating an untrained category
+  // as a gap flagged 100% of the roster and made the tile meaningless.
+  it('a category the athlete does not train is not a gap', () => {
+    const pitcher = ath('pitcher', cat(30, 5, '2026-09-26'), cat(30, 5, '2026-09-26'), cat(null), null);
+    expect(splitCoverage([pitcher], now)).toEqual({ outNow: [], thisWeek: [] });
+    const hitterOnly = ath('hitter', cat(null), cat(null), cat(20, 5, '2026-09-16'), null);
+    expect(splitCoverage([hitterOnly], now)).toEqual({ outNow: [], thisWeek: [] });
+  });
+  it('but a category they DO train running out still counts', () => {
+    const a = ath('a', cat(-3, 5, '2026-08-24'), cat(null), cat(null), null);
+    expect(splitCoverage([a], now).outNow.map((x) => x.athlete_id)).toEqual(['a']);
+    expect(coverageReason(a)).toBe('Strength out');
+  });
+  it('an athlete with no programming anywhere is the real never-programmed case', () => {
+    const a = ath('a', cat(null), cat(null), cat(null), null);
+    expect(splitCoverage([a], now).outNow.map((x) => x.athlete_id)).toEqual(['a']);
   });
 });
 
@@ -198,5 +216,38 @@ describe('missed instances', () => {
   it('work that was started or finished is not missed', () => {
     expect(isMissedInstance(inst('2026-08-26', 'completed'), '2026-08-27')).toBe(false);
     expect(isMissedInstance(inst('2026-08-26', 'in_progress'), '2026-08-27')).toBe(false);
+  });
+});
+
+describe('attentionList', () => {
+  it('orders overdue, then running out, then silent — each athlete once', () => {
+    const out = ath('out', cat(-2, 5, '2026-08-25'), cat(null), cat(null), '2026-08-27T00:00:00.000Z');
+    const soon = ath('soon', cat(4, 5, '2026-08-31'), cat(null), cat(null), '2026-08-27T00:00:00.000Z');
+    const silent = ath('silent', cat(30, 5, '2026-09-26'), cat(null), cat(null), null, true);
+    const rows = attentionList([silent, soon, out], now);
+    expect(rows.map((r) => r.athlete.athlete_id)).toEqual(['out', 'soon', 'silent']);
+    expect(rows.map((r) => r.tone)).toEqual(['red', 'amber', 'amber']);
+    expect(rows[0].reason).toBe('Strength out');
+    expect(rows[2].reason).toBe('Never logged a set');
+  });
+  it('an athlete who is both overdue and silent appears once, as overdue', () => {
+    const both = ath('both', cat(-2, 5, '2026-08-25'), cat(null), cat(null), null, true);
+    const rows = attentionList([both], now);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('red');
+  });
+  it('respects the limit', () => {
+    const many = [1, 2, 3, 4, 5, 6, 7].map((i) => ath(`a${i}`, cat(-i, 5, '2026-08-20'), cat(null), cat(null), null));
+    expect(attentionList(many, now, 5)).toHaveLength(5);
+  });
+  it('a healthy roster produces an empty list, not a crash', () => {
+    const fine = ath('fine', cat(30, 5, '2026-09-26'), cat(null), cat(null), '2026-08-27T00:00:00.000Z');
+    expect(attentionList([fine], now)).toEqual([]);
+  });
+  it('counts days since the last log in the reason', () => {
+    const silent = ath('s', cat(30, 5, '2026-09-26'), cat(null), cat(null), '2026-08-16T00:00:00.000Z', true);
+    // 2026-08-16T00:00Z is Aug 15 in a western local zone — daysSinceLog counts
+    // local calendar days, so this is 12, not 11.
+    expect(attentionList([silent], now)[0].reason).toBe('No logs in 12 days');
   });
 });

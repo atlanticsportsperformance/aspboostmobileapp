@@ -293,3 +293,19 @@ describe('coaches can join their own remote sessions', () => {
     expect(S).toContain('accessibilityLabel="Join video call"');
   });
 });
+
+describe('Overview fills the space below the tiles with work, not padding', () => {
+  const S = read('screens/CoachOverviewScreen.tsx');
+  it('lists the athletes to look at first, each opening their program', () => {
+    expect(S).toContain('attentionList(members, today)');
+    expect(S).toContain("navigation.navigate('AthleteProgram', { athleteId: athlete.athlete_id, athleteName: athlete.athlete_name })");
+    expect(S).toContain('Needs attention');
+  });
+  it('hides the section entirely when nobody needs attention', () => {
+    expect(S).toContain('{attention.length > 0 && (');
+  });
+  it('quick actions offer what the tiles above do not', () => {
+    expect(S).toContain('Message an athlete');
+    expect(S).toContain("navigation.navigate('CoachArmCareSearch')");
+  });
+});
