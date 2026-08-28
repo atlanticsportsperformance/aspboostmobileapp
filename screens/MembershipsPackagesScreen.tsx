@@ -250,6 +250,39 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     }
   }, [showPurchaseModal, selectedItem?.id]);
 
+  /** Price a code against a specific amount. Returns the quote, or null if it doesn't apply. */
+  async function quoteCoupon(code: string, amountCents: number): Promise<any | null> {
+    const targetAthleteId = purchaseForAthleteId || athleteId;
+    if (!targetAthleteId) return null;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return null;
+    const res = await fetch(`${API_URL}/api/stripe/validate-coupon`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        athlete_id: targetAthleteId,
+        code,
+        amount_cents: amountCents,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.valid) return null;
+    return {
+      coupon_id: data.coupon_id,
+      code: data.code,
+      description: data.description,
+      discount_amount_cents: data.discount_amount_cents,
+      new_amount_cents: data.new_amount_cents,
+      discount_percent: data.discount_percent,
+      discount_off_cents: data.discount_off_cents,
+      duration: data.duration,
+      duration_in_months: data.duration_in_months,
+    };
+  }
+
   async function applyCoupon() {
     if (!selectedItem || !selectedItem.price_amount) return;
     const code = couponInput.trim();
@@ -265,37 +298,15 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     setCouponApplying(true);
     setCouponError(null);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) throw new Error('Please log in.');
-      const res = await fetch(`${API_URL}/api/stripe/validate-coupon`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          athlete_id: targetAthleteId,
-          code,
-          amount_cents: selectedItem.price_amount,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.valid) {
-        setCouponError(data.error || 'That code isn\'t valid.');
+      // Quote against the plan actually being bought (a commitment tier costs
+      // less than month-to-month), not the membership's base price.
+      const quote = await quoteCoupon(code, effectivePriceCents || selectedItem.price_amount);
+      if (!quote) {
+        setCouponError('That code isn\'t valid.');
         setAppliedCoupon(null);
         return;
       }
-      setAppliedCoupon({
-        coupon_id: data.coupon_id,
-        code: data.code,
-        description: data.description,
-        discount_amount_cents: data.discount_amount_cents,
-        new_amount_cents: data.new_amount_cents,
-        discount_percent: data.discount_percent,
-        discount_off_cents: data.discount_off_cents,
-        duration: data.duration,
-        duration_in_months: data.duration_in_months,
-      });
+      setAppliedCoupon(quote);
       setCouponError(null);
     } catch (err: any) {
       setCouponError(err?.message || 'Could not apply code.');
@@ -718,6 +729,16 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       'yearly': '/year',
     };
     return periodMap[normalized] || '';
+  }
+
+  /** Shortest form, for the tight list rows: "/mo", "/qtr", "/yr". */
+  function getBillingPeriodTiny(period: string): string {
+    if (!period) return '';
+    const normalized = period.toLowerCase().replace(/[\s-]/g, '_');
+    if (normalized === 'monthly') return '/mo';
+    if (normalized === 'quarterly') return '/qtr';
+    if (normalized === 'annual' || normalized === 'yearly') return '/yr';
+    return '';
   }
 
   function getBillingPeriodLabel(period: string): string {
@@ -1393,6 +1414,117 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   const gatedMessageForSelectedAthlete =
     eligibilityForSelectedAthlete?.ineligible_message ?? (selectedItem as any)?.ineligible_message ?? null;
 
+  // The plan the buyer has chosen in the sheet: a commitment tier when one is
+  // selected, otherwise the membership's month-to-month price. Every price the
+  // sheet shows (header, coupon math, checkout button) reads this — the server
+  // charges the tier's own Stripe price, so showing the base price would lie.
+  const selectedMembershipTiers: any[] =
+    selectedItemType === 'membership' && selectedItem
+      ? committedTiers(selectedItem as MembershipType)
+      : [];
+  const selectedTier =
+    selectedMembershipTiers.find((o: any) => o.id === selectedPricingOptionId) || null;
+  const effectivePriceCents: number =
+    selectedTier?.price_amount ?? selectedItem?.price_amount ?? 0;
+
+  // A coupon preview is quoted against a specific amount; switching plans
+  // changes that amount, so re-quote the applied code against the new price.
+  useEffect(() => {
+    if (!appliedCoupon || !selectedItem || !effectivePriceCents) return;
+    let cancelled = false;
+    (async () => {
+      const quote = await quoteCoupon(appliedCoupon.code, effectivePriceCents);
+      if (cancelled) return;
+      if (quote) {
+        setAppliedCoupon(quote);
+      } else {
+        setAppliedCoupon(null);
+        setCouponError('Re-enter your code for this plan.');
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPricingOptionId]);
+
+  // ---- Membership list row helpers -------------------------------------
+  /** Active commitment tiers (2+ months), cheapest-sorted by sort_order. */
+  function committedTiers(type: MembershipType): any[] {
+    return (type.pricing_options || [])
+      .filter((o: any) => o.is_active && o.commitment_months >= 2)
+      .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  }
+
+  /** "$375–450" when the membership has commitment tiers, else "$450". */
+  function membershipPriceRange(type: MembershipType): string {
+    const base = type.price_amount ?? 0;
+    const tiers = committedTiers(type);
+    if (tiers.length === 0) return formatPrice(base);
+    const amounts = [base, ...tiers.map((o: any) => o.price_amount as number)];
+    const low = Math.min(...amounts);
+    const high = Math.max(...amounts);
+    if (low === high) return formatPrice(base);
+    return `${formatPrice(low)}–${(high / 100).toFixed(0)}`;
+  }
+
+  /** "Strength + Conditioning · Pitching Performance" — one scannable line. */
+  function membershipIncludedSummary(type: MembershipType): string {
+    const allocations = getMembershipServiceAllocations(type);
+    if (allocations.length === 0) return getBillingPeriodLabel(type.billing_period);
+    return allocations
+      .map((a) => (a.isUnlimited ? `${a.name} ∞` : `${a.name} ×${a.visits}`))
+      .join(' · ');
+  }
+
+  function openMembershipPurchase(type: MembershipType) {
+    setSelectedItem(type);
+    setSelectedItemType('membership');
+    const committed = committedTiers(type);
+    setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
+    setCommitmentConsent(false);
+    setShowPurchaseModal(true);
+  }
+
+  /** Compact one-per-row membership entry used by both the parent and athlete lists. */
+  function renderMembershipRow(type: MembershipType, activeLabel: string | null) {
+    const isGated = type.eligible === false;
+    const disabled = isGated || !!activeLabel;
+    const tiers = committedTiers(type);
+    return (
+      <TouchableOpacity
+        key={type.id}
+        style={[styles.membershipRow, disabled && styles.membershipRowDisabled]}
+        onPress={() => { if (!disabled) openMembershipPurchase(type); }}
+        disabled={disabled}
+        activeOpacity={0.7}
+      >
+        <View style={styles.membershipRowMain}>
+          <View style={styles.membershipRowTitleLine}>
+            <Text style={styles.membershipRowName} numberOfLines={1}>{type.name.trim()}</Text>
+            {activeLabel && (
+              <View style={styles.membershipRowActivePill}>
+                <Text style={styles.membershipRowActivePillText}>{activeLabel}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.membershipRowSubline} numberOfLines={1}>
+            {membershipIncludedSummary(type)}
+          </Text>
+          {isGated && type.ineligible_message && (
+            <Text style={styles.membershipRowGated} numberOfLines={2}>{type.ineligible_message}</Text>
+          )}
+        </View>
+        <View style={styles.membershipRowPriceCol}>
+          {tiers.length > 0 && <Text style={styles.membershipRowFrom}>plans from</Text>}
+          <Text style={styles.membershipRowPrice} numberOfLines={1}>
+            {membershipPriceRange(type)}
+            <Text style={styles.membershipRowPeriod}>{getBillingPeriodTiny(type.billing_period)}</Text>
+          </Text>
+        </View>
+        {!disabled && <Ionicons name="chevron-forward" size={18} color="#6B7280" />}
+      </TouchableOpacity>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
@@ -1706,74 +1838,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                       const athleteWithActive = athleteDataList.find(ad =>
                         ad.memberships.some(m => m.membership_type_id === type.id)
                       );
-                      const allocations = getMembershipServiceAllocations(type);
-                      const isGated = type.eligible === false;
-                      return (
-                        <TouchableOpacity
-                          key={type.id}
-                          style={styles.membershipTypeCard}
-                          onPress={() => {
-                            if (isGated) return;
-                            setSelectedItem(type);
-                            setSelectedItemType('membership');
-                            const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
-                            setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
-                            setCommitmentConsent(false);
-                            setShowPurchaseModal(true);
-                          }}
-                          disabled={isGated}
-                        >
-                          <View style={styles.membershipCardContent}>
-                            {/* Price at top */}
-                            <View style={styles.membershipPriceTop}>
-                              <Text style={styles.membershipPriceValue}>
-                                {formatPrice(type.price_amount)}
-                              </Text>
-                              <Text style={styles.membershipPricePeriod}>
-                                {getBillingPeriodShort(type.billing_period)}
-                              </Text>
-                            </View>
-
-                            {/* Name */}
-                            <Text style={styles.membershipCardName} numberOfLines={2}>
-                              {type.name}
-                            </Text>
-
-                            {/* Billing period label */}
-                            <Text style={styles.membershipBillingLabel}>
-                              {getBillingPeriodLabel(type.billing_period)}
-                            </Text>
-
-                            {/* Service allocations */}
-                            <View style={styles.membershipAllocations}>
-                              {allocations.map((alloc, index) => (
-                                <View key={index} style={styles.membershipAllocationRow}>
-                                  <Text style={styles.membershipAllocationName} numberOfLines={1}>
-                                    {alloc.name}
-                                  </Text>
-                                  <Text style={[
-                                    styles.membershipAllocationVisits,
-                                    alloc.isUnlimited && styles.membershipAllocationUnlimited
-                                  ]}>
-                                    {alloc.visits}
-                                  </Text>
-                                </View>
-                              ))}
-                            </View>
-                            {isGated && type.ineligible_message && (
-                              <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
-                                {type.ineligible_message}
-                              </Text>
-                            )}
-                          </View>
-                          {athleteWithActive && (
-                            <View style={styles.activeBadgeOverlay}>
-                              <Text style={styles.activeBadgeText}>
-                                Active: {athleteWithActive.athleteName.split(' ')[0]}
-                              </Text>
-                            </View>
-                          )}
-                        </TouchableOpacity>
+                      return renderMembershipRow(
+                        type,
+                        athleteWithActive ? `Active · ${athleteWithActive.athleteName.split(' ')[0]}` : null,
                       );
                     })
                   )}
@@ -2024,75 +2091,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   ) : (
                     availableMembershipTypes.map((type) => {
                       const hasActive = memberships.some(m => m.membership_type_id === type.id);
-                  const allocations = getMembershipServiceAllocations(type);
-                  const isGated = type.eligible === false;
-                  return (
-                    <TouchableOpacity
-                      key={type.id}
-                      style={[styles.membershipTypeCard, hasActive && styles.cardDisabled]}
-                      onPress={() => {
-                        if (!hasActive && !isGated) {
-                          setSelectedItem(type);
-                          setSelectedItemType('membership');
-                          const committed = (type.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2);
-                          setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
-                          setCommitmentConsent(false);
-                          setShowPurchaseModal(true);
-                        }
-                      }}
-                      disabled={hasActive || isGated}
-                    >
-                      <View style={styles.membershipCardContent}>
-                        {/* Price at top */}
-                        <View style={styles.membershipPriceTop}>
-                          <Text style={styles.membershipPriceValue}>
-                            {formatPrice(type.price_amount)}
-                          </Text>
-                          <Text style={styles.membershipPricePeriod}>
-                            {getBillingPeriodShort(type.billing_period)}
-                          </Text>
-                        </View>
-
-                        {/* Name */}
-                        <Text style={styles.membershipCardName} numberOfLines={2}>
-                          {type.name}
-                        </Text>
-
-                        {/* Billing period label */}
-                        <Text style={styles.membershipBillingLabel}>
-                          {getBillingPeriodLabel(type.billing_period)}
-                        </Text>
-
-                        {/* Service allocations */}
-                        <View style={styles.membershipAllocations}>
-                          {allocations.map((alloc, index) => (
-                            <View key={index} style={styles.membershipAllocationRow}>
-                              <Text style={styles.membershipAllocationName} numberOfLines={1}>
-                                {alloc.name}
-                              </Text>
-                              <Text style={[
-                                styles.membershipAllocationVisits,
-                                alloc.isUnlimited && styles.membershipAllocationUnlimited
-                              ]}>
-                                {alloc.visits}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                        {isGated && type.ineligible_message && (
-                          <Text style={{ marginTop: 8, fontSize: 12, color: '#F59E0B' }}>
-                            {type.ineligible_message}
-                          </Text>
-                        )}
-                      </View>
-                      {hasActive && (
-                        <View style={styles.activeBadgeOverlay}>
-                          <Text style={styles.activeBadgeText}>Active</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })
+                      return renderMembershipRow(type, hasActive ? 'Active' : null);
+                    })
               )}
             </View>
               </>
@@ -2537,7 +2537,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     <Text style={styles.purchaseModalName}>{selectedItem.name}</Text>
                     <View style={styles.purchaseModalPriceRow}>
                       <Text style={styles.purchaseModalPrice}>
-                        {formatPrice(selectedItem.price_amount)}
+                        {formatPrice(
+                          selectedItemType === 'membership' ? effectivePriceCents : selectedItem.price_amount,
+                        )}
                       </Text>
                       {selectedItemType === 'membership' && (
                         <Text style={styles.purchaseModalPricePeriod}>
@@ -2575,6 +2577,106 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     })()}
                   </View>
 
+                  {/* Choose your plan — first thing under the price, before any
+                      description, so the commitment discounts are never buried. */}
+                  {selectedItemType === 'membership' && selectedMembershipTiers.length > 0 && (() => {
+                    const membershipItem = selectedItem as MembershipType;
+                    const baseDollars = (membershipItem.price_amount ?? 0) / 100;
+                    const bestSave = Math.max(
+                      ...selectedMembershipTiers.map((o: any) => baseDollars - o.price_amount / 100),
+                    );
+                    return (
+                      <View style={styles.planPicker}>
+                        <Text style={styles.planPickerTitle}>Choose your plan</Text>
+
+                        {/* Month-to-month (the membership's base price) */}
+                        <TouchableOpacity
+                          onPress={() => setSelectedPricingOptionId(null)}
+                          activeOpacity={0.8}
+                          style={[styles.planOption, selectedPricingOptionId === null && styles.planOptionSelected]}
+                        >
+                          <Ionicons
+                            name={selectedPricingOptionId === null ? 'radio-button-on' : 'radio-button-off'}
+                            size={22}
+                            color={selectedPricingOptionId === null ? '#0A84FF' : '#C7CBD1'}
+                          />
+                          <View style={styles.planOptionMain}>
+                            <Text style={styles.planOptionLabel}>Month-to-month</Text>
+                            <Text style={styles.planOptionSub}>Cancel anytime</Text>
+                          </View>
+                          <Text style={styles.planOptionPrice}>
+                            ${baseDollars.toFixed(0)}
+                            <Text style={styles.planOptionPricePeriod}>/mo</Text>
+                          </Text>
+                        </TouchableOpacity>
+
+                        {/* Commitment tiers */}
+                        {selectedMembershipTiers.map((o: any) => {
+                          const monthly = o.price_amount / 100;
+                          const save = baseDollars - monthly;
+                          const selected = selectedPricingOptionId === o.id;
+                          const isBest = save > 0 && save === bestSave;
+                          return (
+                            <TouchableOpacity
+                              key={o.id}
+                              onPress={() => setSelectedPricingOptionId(o.id)}
+                              activeOpacity={0.8}
+                              style={[styles.planOption, selected && styles.planOptionSelected]}
+                            >
+                              <Ionicons
+                                name={selected ? 'radio-button-on' : 'radio-button-off'}
+                                size={22}
+                                color={selected ? '#0A84FF' : '#C7CBD1'}
+                              />
+                              <View style={styles.planOptionMain}>
+                                <View style={styles.planOptionLabelRow}>
+                                  <Text style={styles.planOptionLabel}>{o.label}</Text>
+                                  {isBest && (
+                                    <View style={styles.planBestPill}>
+                                      <Text style={styles.planBestPillText}>BEST VALUE</Text>
+                                    </View>
+                                  )}
+                                </View>
+                                <Text style={styles.planOptionSub}>
+                                  {o.commitment_months}-month lock
+                                  {save > 0 ? ` · save $${save.toFixed(0)}/mo` : ''}
+                                </Text>
+                              </View>
+                              <View style={styles.planOptionPriceCol}>
+                                {save > 0 && (
+                                  <Text style={styles.planOptionStrike}>${baseDollars.toFixed(0)}</Text>
+                                )}
+                                <Text style={styles.planOptionPrice}>
+                                  ${monthly.toFixed(0)}
+                                  <Text style={styles.planOptionPricePeriod}>/mo</Text>
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+
+                        {/* Consent — only for a commitment tier */}
+                        {selectedTier && (
+                          <TouchableOpacity
+                            onPress={() => setCommitmentConsent(v => !v)}
+                            style={styles.planConsentRow}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons
+                              name={commitmentConsent ? 'checkbox' : 'square-outline'}
+                              size={20}
+                              color={commitmentConsent ? '#0A84FF' : '#9CA3AF'}
+                            />
+                            <Text style={styles.planConsentText}>
+                              I agree to a {selectedTier.commitment_months}-month commitment, billed monthly.
+                              I can't cancel before the term ends, and it renews for another term unless I cancel.
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    );
+                  })()}
+
                   <View style={styles.purchaseModalDivider} />
 
                   {/* Description */}
@@ -2611,62 +2713,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                             </View>
                           ))}
                         </View>
-                      </View>
-                    );
-                  })()}
-
-                  {/* Commitment tier picker + consent */}
-                  {selectedItemType === 'membership' && (() => {
-                    const membershipItem = selectedItem as MembershipType | null;
-                    const committed = (membershipItem?.pricing_options || []).filter((o: any) => o.is_active && o.commitment_months >= 2)
-                      .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-                    if (committed.length === 0) return null;
-                    const baseDollars = (membershipItem?.price_amount ?? 0) / 100;
-                    return (
-                      <View style={{ marginTop: 16 }}>
-                        <Text style={{ color: '#9CA3AF', fontSize: 12, fontWeight: '600', textTransform: 'uppercase', marginBottom: 8 }}>Choose your plan</Text>
-                        {/* Month-to-month */}
-                        <TouchableOpacity
-                          onPress={() => setSelectedPricingOptionId(null)}
-                          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: selectedPricingOptionId === null ? '#9BDDFF' : 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 12, marginBottom: 8 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <Ionicons name={selectedPricingOptionId === null ? 'radio-button-on' : 'radio-button-off'} size={20} color="#9BDDFF" />
-                            <View style={{ marginLeft: 10 }}>
-                              <Text style={{ color: '#E5E7EB', fontWeight: '600' }}>Month-to-month</Text>
-                              <Text style={{ color: '#9CA3AF', fontSize: 12 }}>cancel anytime</Text>
-                            </View>
-                          </View>
-                          <Text style={{ color: '#E5E7EB', fontWeight: '700' }}>${baseDollars.toFixed(0)}/mo</Text>
-                        </TouchableOpacity>
-                        {/* Committed tiers */}
-                        {committed.map((o: any) => {
-                          const monthly = o.price_amount / 100;
-                          const save = baseDollars - monthly;
-                          const selected = selectedPricingOptionId === o.id;
-                          return (
-                            <TouchableOpacity key={o.id}
-                              onPress={() => setSelectedPricingOptionId(o.id)}
-                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: selected ? '#9BDDFF' : 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 12, marginBottom: 8 }}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color="#9BDDFF" />
-                                <View style={{ marginLeft: 10 }}>
-                                  <Text style={{ color: '#E5E7EB', fontWeight: '600' }}>{o.label}</Text>
-                                  <Text style={{ color: '#9CA3AF', fontSize: 12 }}>{o.commitment_months}-mo lock{save > 0 ? ` · save $${save.toFixed(0)}/mo` : ''}</Text>
-                                </View>
-                              </View>
-                              <Text style={{ color: '#E5E7EB', fontWeight: '700' }}>${monthly.toFixed(0)}/mo</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                        {/* Consent (only when a committed tier is selected) */}
-                        {selectedPricingOptionId !== null && (
-                          <TouchableOpacity onPress={() => setCommitmentConsent(v => !v)} style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 4 }}>
-                            <Ionicons name={commitmentConsent ? 'checkbox' : 'square-outline'} size={20} color="#9BDDFF" />
-                            <Text style={{ color: '#9CA3AF', fontSize: 12, marginLeft: 8, flex: 1 }}>
-                              I agree to a {committed.find((o: any) => o.id === selectedPricingOptionId)?.commitment_months}-month commitment, billed monthly. I can't cancel before the term ends, and it renews for another term unless I cancel.
-                            </Text>
-                          </TouchableOpacity>
-                        )}
                       </View>
                     );
                   })()}
@@ -2807,7 +2853,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     <View style={styles.totalRecap}>
                       <View style={styles.totalRecapRow}>
                         <Text style={styles.totalRecapLabel}>Subtotal</Text>
-                        <Text style={styles.totalRecapValue}>{formatPrice(selectedItem.price_amount)}</Text>
+                        <Text style={styles.totalRecapValue}>
+                          {formatPrice(
+                            selectedItemType === 'membership' ? effectivePriceCents : selectedItem.price_amount,
+                          )}
+                        </Text>
                       </View>
                       <View style={styles.totalRecapRow}>
                         <Text style={styles.totalRecapDiscountLabel}>Discount ({appliedCoupon.code})</Text>
@@ -2863,7 +2913,11 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     <Text style={styles.purchaseButtonText}>
                       {selectedItem?.price_amount && selectedItem.price_amount > 0
                         ? `Checkout - ${formatPrice(
-                            appliedCoupon ? appliedCoupon.new_amount_cents : selectedItem.price_amount,
+                            appliedCoupon
+                              ? appliedCoupon.new_amount_cents
+                              : selectedItemType === 'membership'
+                                ? effectivePriceCents
+                                : selectedItem.price_amount,
                           )}`
                         : 'Get Now'}
                     </Text>
@@ -3314,85 +3368,76 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   // Membership Type Card
-  membershipTypeCard: {
-    padding: 16,
-    borderRadius: 12,
+  // Compact membership list row (one per membership; scannable with many types)
+  membershipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    marginBottom: 12,
+    borderColor: 'rgba(255,255,255,0.12)',
     backgroundColor: 'rgba(255,255,255,0.05)',
-    position: 'relative',
+    marginBottom: 10,
   },
-  cardDisabled: {
+  membershipRowDisabled: {
     opacity: 0.5,
   },
-  membershipCardContent: {
-    width: '100%',
+  membershipRowMain: {
+    flex: 1,
+    minWidth: 0,
   },
-  membershipPriceTop: {
+  membershipRowTitleLine: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    marginBottom: 8,
-  },
-  membershipPriceValue: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#9BDDFF',
-  },
-  membershipPricePeriod: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    marginLeft: 2,
-  },
-  membershipCardName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  membershipBillingLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    marginBottom: 12,
-  },
-  membershipAllocations: {
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
-    paddingTop: 12,
+    alignItems: 'center',
     gap: 8,
   },
-  membershipAllocationRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  membershipRowName: {
+    flexShrink: 1,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
-  membershipAllocationName: {
-    fontSize: 14,
-    color: '#E5E7EB',
-    flex: 1,
+  membershipRowActivePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(16,185,129,0.18)',
   },
-  membershipAllocationVisits: {
-    fontSize: 14,
-    fontWeight: '600',
+  membershipRowActivePillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#34D399',
+  },
+  membershipRowSubline: {
+    marginTop: 3,
+    fontSize: 12,
     color: '#9CA3AF',
   },
-  membershipAllocationUnlimited: {
+  membershipRowGated: {
+    marginTop: 4,
+    fontSize: 11,
+    color: '#F59E0B',
+  },
+  membershipRowPriceCol: {
+    alignItems: 'flex-end',
+  },
+  membershipRowFrom: {
+    fontSize: 10,
+    color: '#6B7280',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  membershipRowPrice: {
+    fontSize: 17,
+    fontWeight: '700',
     color: '#9BDDFF',
-    fontSize: 18,
   },
-  activeBadgeOverlay: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    backgroundColor: 'rgba(155,221,255,0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  activeBadgeText: {
+  membershipRowPeriod: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#9BDDFF',
+    color: '#6B7280',
   },
   // Active Package Card
   activePackageCard: {
@@ -3655,6 +3700,96 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#9CA3AF',
     marginLeft: 4,
+  },
+  // Plan picker inside the (light) purchase sheet
+  planPicker: {
+    paddingHorizontal: 24,
+    paddingBottom: 20,
+  },
+  planPickerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6B7280',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 10,
+  },
+  planOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+  },
+  planOptionSelected: {
+    borderColor: '#0A84FF',
+    backgroundColor: 'rgba(10,132,255,0.06)',
+  },
+  planOptionMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  planOptionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  planOptionLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  planOptionSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  planBestPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(16,185,129,0.15)',
+  },
+  planBestPillText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    color: '#047857',
+  },
+  planOptionPriceCol: {
+    alignItems: 'flex-end',
+  },
+  planOptionStrike: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textDecorationLine: 'line-through',
+  },
+  planOptionPrice: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  planOptionPricePeriod: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  planConsentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 2,
+  },
+  planConsentText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#6B7280',
   },
   purchaseModalDescription: {
     fontSize: 14,
