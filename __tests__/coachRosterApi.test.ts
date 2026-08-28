@@ -1,7 +1,10 @@
 import {
   runwayDays, daysSinceLog, runwayChip, activityChip, isNotLogging, sortNeedsAttention, sortAlpha,
   groupDayWorkouts, splitName, NOT_LOGGING_STALE_DAYS, NOT_LOGGING_WINDOW_DAYS,
+  getCoachRosterStatus, runwaySubtitle, activitySubtitle, severityTone, programmedCategories,
+  categoryTile, splitCoverage, coverageReason, isMissedInstance,
 } from '../lib/coachRosterApi';
+import { supabase } from '../lib/supabase';
 
 const now = new Date(2026, 7, 27, 12);
 const cat = (days: number | null, count = days === null ? 0 : 5, last: string | null = days === null ? null : '2026-08-20') =>
@@ -82,5 +85,118 @@ describe('groupDayWorkouts', () => {
     const b = groupDayWorkouts([w('5', 'throwing', 'Arm care'), w('2', 'throwing', 'Bullpen'), w('9', 'throwing', 'Bullpen')]);
     expect(a).toEqual(b);
     expect(a[0].items.map((i) => i.id)).toEqual(['5', '2', '9']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Roster redesign: member filter, row copy, coverage grouping, missed instances
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('member filter', () => {
+  const originalFetch = global.fetch;
+  const originalGetSession = supabase.auth.getSession;
+  let calledUrl = '';
+  beforeEach(() => {
+    calledUrl = '';
+    supabase.auth.getSession = (async () => ({ data: { session: { access_token: 'test-token' } }, error: null })) as any;
+    (global as any).fetch = jest.fn(async (url: string) => {
+      calledUrl = url;
+      return { ok: true, json: async () => ({ athletes: [], logs_unavailable: false }) } as any;
+    });
+  });
+  afterEach(() => { (global as any).fetch = originalFetch; supabase.auth.getSession = originalGetSession; });
+
+  it('asks for members by default — the roster is the people a coach programs for', async () => {
+    await getCoachRosterStatus();
+    expect(calledUrl).toContain('lifecycle=member');
+    expect(calledUrl).not.toContain('lifecycle=all');
+  });
+  it('asks for everyone only when the All toggle is on', async () => {
+    await getCoachRosterStatus({ includeAll: true });
+    expect(calledUrl).toContain('lifecycle=all');
+  });
+  it('includeAll: false is the same as omitting it', async () => {
+    await getCoachRosterStatus({ includeAll: false });
+    expect(calledUrl).toContain('lifecycle=member');
+  });
+});
+
+describe('roster row copy', () => {
+  it('runway subtitle covers out / soon / never / healthy', () => {
+    expect(runwaySubtitle(ath('a', cat(-6), cat(null), cat(null), null))).toEqual({ text: 'Out of programming', tone: 'red' });
+    expect(runwaySubtitle(ath('a', cat(3), cat(null), cat(null), null))).toEqual({ text: '3 days left', tone: 'amber' });
+    expect(runwaySubtitle(ath('a', cat(1), cat(null), cat(null), null))).toEqual({ text: '1 day left', tone: 'amber' });
+    expect(runwaySubtitle(ath('a', cat(null), cat(null), cat(null), null))).toEqual({ text: 'Never programmed', tone: 'grey' });
+  });
+  it('a healthy athlete says how far out they are programmed, not nothing', () => {
+    const a = ath('a', cat(20, 5, '2026-10-14'), cat(null), cat(null), null);
+    expect(runwaySubtitle(a)).toEqual({ text: 'Programmed through Oct 14', tone: 'grey' });
+  });
+  it('falls back to a day count when the far date is missing', () => {
+    const a = ath('a', cat(20, 5, null), cat(null), cat(null), null);
+    expect(runwaySubtitle(a)).toEqual({ text: '20 days left', tone: 'grey' });
+  });
+  it('activity subtitle reads in plain language', () => {
+    expect(activitySubtitle(ath('a', cat(1), cat(null), cat(null), '2026-08-27T08:00:00.000Z'), now)).toBe('Logged today');
+    expect(activitySubtitle(ath('a', cat(1), cat(null), cat(null), '2026-08-26T08:00:00.000Z'), now)).toBe('Logged 1d ago');
+    expect(activitySubtitle(ath('a', cat(1), cat(null), cat(null), '2026-08-16T08:00:00.000Z'), now)).toBe('No logs 11d');
+    expect(activitySubtitle(ath('a', cat(1), cat(null), cat(null), null), now)).toBe('No logs');
+  });
+  it('severity drives the edge stripe: red out, amber inside the warn window, none beyond it', () => {
+    expect(severityTone(ath('a', cat(0), cat(null), cat(null), null))).toBe('red');
+    expect(severityTone(ath('a', cat(7), cat(null), cat(null), null))).toBe('amber');
+    expect(severityTone(ath('a', cat(8), cat(null), cat(null), null))).toBeNull();
+    expect(severityTone(ath('a', cat(null), cat(null), cat(null), null))).toBe('red');
+  });
+  it('category dots light only where programming exists', () => {
+    const a = ath('a', cat(5), cat(null), cat(9), null);
+    expect(programmedCategories(a)).toEqual(['strength_conditioning', 'hitting']);
+  });
+});
+
+describe('athlete program runway tiles', () => {
+  it('counts down, goes negative when overdue, and says Never when unprogrammed', () => {
+    const a = ath('a', cat(3, 5, '2026-10-03'), cat(-4, 5, '2026-09-26'), cat(null), null);
+    expect(categoryTile(a, 'strength_conditioning')).toEqual({ value: '3d', tone: 'amber', foot: 'thru Oct 3' });
+    expect(categoryTile(a, 'throwing')).toEqual({ value: '−4d', tone: 'red', foot: 'ran out Sep 26' });
+    expect(categoryTile(a, 'hitting')).toEqual({ value: 'Never', tone: 'none', foot: 'not programmed' });
+  });
+  it('a healthy category is neutral, not amber', () => {
+    const a = ath('a', cat(30, 5, '2026-10-30'), cat(null), cat(null), null);
+    expect(categoryTile(a, 'strength_conditioning')).toEqual({ value: '30d', tone: 'grey', foot: 'thru Oct 30' });
+  });
+});
+
+describe('coverage grouping', () => {
+  it('splits overdue from the coming week and leaves healthy athletes out', () => {
+    const out = ath('out', cat(-2, 5, '2026-08-25'), cat(null), cat(null), null);
+    const never = ath('never', cat(null), cat(null), cat(null), null);
+    const soon = ath('soon', cat(4, 5, '2026-08-31'), cat(20, 5, '2026-09-16'), cat(20, 5, '2026-09-16'), null);
+    const fine = ath('fine', cat(30, 5, '2026-09-26'), cat(30, 5, '2026-09-26'), cat(30, 5, '2026-09-26'), null);
+    const { outNow, thisWeek } = splitCoverage([soon, fine, out, never], now);
+    expect(outNow.map((a) => a.athlete_id)).toEqual(['never', 'out']);
+    expect(thisWeek.map((a) => a.athlete_id)).toEqual(['soon']);
+  });
+  it('names the categories that are out rather than showing a bare number', () => {
+    expect(coverageReason(ath('a', cat(-2), cat(-5), cat(30), null))).toBe('Strength, Throwing out');
+    expect(coverageReason(ath('a', cat(30), cat(null), cat(30), null))).toBe('Throwing never programmed');
+    expect(coverageReason(ath('a', cat(4), cat(30), cat(30), null))).toBe('Strength');
+  });
+});
+
+describe('missed instances', () => {
+  const inst = (date: string, status: string) => ({ scheduled_date: date, status });
+  it('a past day that was never opened is missed', () => {
+    expect(isMissedInstance(inst('2026-08-26', 'not_started'), '2026-08-27')).toBe(true);
+  });
+  it('today is never missed, however it stands', () => {
+    expect(isMissedInstance(inst('2026-08-27', 'not_started'), '2026-08-27')).toBe(false);
+  });
+  it('the future is never missed', () => {
+    expect(isMissedInstance(inst('2026-08-28', 'not_started'), '2026-08-27')).toBe(false);
+  });
+  it('work that was started or finished is not missed', () => {
+    expect(isMissedInstance(inst('2026-08-26', 'completed'), '2026-08-27')).toBe(false);
+    expect(isMissedInstance(inst('2026-08-26', 'in_progress'), '2026-08-27')).toBe(false);
   });
 });

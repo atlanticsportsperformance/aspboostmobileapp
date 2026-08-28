@@ -13,6 +13,10 @@ export const CATEGORY_ORDER: readonly WorkoutType[] = ['strength_conditioning', 
 export const CATEGORY_LABEL: Record<WorkoutType, string> = {
   strength_conditioning: 'S+C', throwing: 'Throwing', hitting: 'Hitting',
 };
+/** Full words, for anywhere the abbreviation would read as jargon. */
+export const CATEGORY_NAME: Record<WorkoutType, string> = {
+  strength_conditioning: 'Strength', throwing: 'Throwing', hitting: 'Hitting',
+};
 
 export interface CategoryStatus {
   last_workout_date: string | null;
@@ -32,17 +36,31 @@ export interface RosterAthlete {
   has_recent_scheduled_work?: boolean;
 }
 
+export interface RosterFetchOptions {
+  /**
+   * Show every athlete the caller can see, not just active members. Off by
+   * default: `client_lifecycle = 'member'` is kept exactly equal to "holds an
+   * active membership" by the database (migration
+   * 20260828010000_lifecycle_member_invariant), so it is the honest definition
+   * of the people a coach programs for. Without it the roster is ~4x longer,
+   * padded with athletes who have no programming because they were never
+   * meant to.
+   */
+  includeAll?: boolean;
+}
+
 /**
- * The ONE fetch behind the roster chips and the Coverage tabs. The server
+ * The ONE fetch behind the roster rows and the Coverage tabs. The server
  * decides which athletes the caller may see (resolveAthleteScope); the
- * client sends no athlete ids. lifecycle=all: five athletes hold an active
- * membership while sitting at cancelled_membership, and a coach must still
- * see them.
+ * client sends no athlete ids, only the lifecycle filter.
  */
-export async function getCoachRosterStatus(): Promise<{ athletes: RosterAthlete[]; logsUnavailable: boolean }> {
+export async function getCoachRosterStatus(
+  opts?: RosterFetchOptions
+): Promise<{ athletes: RosterAthlete[]; logsUnavailable: boolean }> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('Not authenticated');
-  const res = await fetch(`${API_URL}/api/dashboard/plan-expirations?lifecycle=all`, {
+  const lifecycle = opts?.includeAll ? 'all' : 'member';
+  const res = await fetch(`${API_URL}/api/dashboard/plan-expirations?lifecycle=${lifecycle}`, {
     headers: { Authorization: `Bearer ${session.access_token}` },
   });
   if (!res.ok) throw new Error(`Failed to fetch roster (${res.status})`);
@@ -172,4 +190,143 @@ export function groupDayWorkouts<T extends { id: string; workouts?: { name?: str
     else groups.push({ category, items: [it] });
   }
   return groups;
+}
+
+/**
+ * `YYYY-MM-DD` → "Oct 14". Bare dates are parsed part-by-part, never through
+ * `new Date(string)`, which reads them as UTC midnight and shifts the day back
+ * for anyone west of Greenwich.
+ */
+export function formatBareDate(date: string | null | undefined): string | null {
+  if (!date) return null;
+  const [y, m, d] = date.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/** The category that runs out first — the one the runway number describes. */
+function tightestCategory(a: RosterAthlete): CategoryStatus | null {
+  let best: CategoryStatus | null = null;
+  for (const t of CATEGORY_ORDER) {
+    const c = a.workouts?.[t];
+    if (!c || c.days_until_next === null || c.days_until_next === undefined) continue;
+    if (!best || c.days_until_next < (best.days_until_next as number)) best = c;
+  }
+  return best;
+}
+
+/**
+ * The roster row's first line. Unlike `runwayChip` this always says something:
+ * a healthy athlete reads "Programmed through Oct 14" rather than leaving the
+ * row looking unfinished.
+ */
+export function runwaySubtitle(a: RosterAthlete): { text: string; tone: 'red' | 'amber' | 'grey' } {
+  const r = runwayDays(a);
+  if (r === null) return { text: 'Never programmed', tone: 'grey' };
+  if (r <= 0) return { text: 'Out of programming', tone: 'red' };
+  if (r <= RUNWAY_WARN_DAYS) return { text: `${r} ${r === 1 ? 'day' : 'days'} left`, tone: 'amber' };
+  const through = formatBareDate(tightestCategory(a)?.last_workout_date);
+  return { text: through ? `Programmed through ${through}` : `${r} days left`, tone: 'grey' };
+}
+
+/** The roster row's second line: when this athlete last logged a set. */
+export function activitySubtitle(a: RosterAthlete, now: Date): string {
+  const d = daysSinceLog(a, now);
+  if (d === null) return 'No logs';
+  if (d === 0) return 'Logged today';
+  if (d <= NOT_LOGGING_STALE_DAYS) return `Logged ${d}d ago`;
+  return `No logs ${d}d`;
+}
+
+/**
+ * The left edge stripe. Never-programmed counts as red here even though its
+ * subtitle is grey — an athlete with no plan at all is the most urgent row on
+ * the screen, and the stripe is what a coach reads while scrolling.
+ */
+export function severityTone(a: RosterAthlete): 'red' | 'amber' | null {
+  const r = runwayDays(a);
+  if (r === null || r <= 0) return 'red';
+  if (r <= RUNWAY_WARN_DAYS) return 'amber';
+  return null;
+}
+
+/** Categories this athlete has any programming in — the lit dots on a row. */
+export function programmedCategories(a: RosterAthlete): WorkoutType[] {
+  return CATEGORY_ORDER.filter((t) => (a.workouts?.[t]?.workout_count ?? 0) > 0);
+}
+
+/** One runway tile on the athlete's program screen. */
+export function categoryTile(
+  a: RosterAthlete,
+  t: WorkoutType
+): { value: string; tone: 'red' | 'amber' | 'grey' | 'none'; foot: string } {
+  const c = a.workouts?.[t];
+  if (!c || c.workout_count === 0 || c.days_until_next === null || !c.last_workout_date) {
+    return { value: 'Never', tone: 'none', foot: 'not programmed' };
+  }
+  const d = c.days_until_next;
+  const when = formatBareDate(c.last_workout_date) || '';
+  // U+2212 MINUS, not a hyphen: it sits on the digit baseline and reads as a
+  // negative number rather than a stray dash.
+  if (d <= 0) return { value: `\u2212${Math.abs(d)}d`, tone: 'red', foot: `ran out ${when}` };
+  return { value: `${d}d`, tone: d <= RUNWAY_WARN_DAYS ? 'amber' : 'grey', foot: `thru ${when}` };
+}
+
+/** A category with nothing scheduled ahead of it: overdue, or never built. */
+function outCategories(a: RosterAthlete): WorkoutType[] {
+  return CATEGORY_ORDER.filter((t) => {
+    const c = a.workouts?.[t];
+    return !!c && c.days_until_next !== null && c.days_until_next <= 0;
+  });
+}
+function neverCategories(a: RosterAthlete): WorkoutType[] {
+  return CATEGORY_ORDER.filter((t) => (a.workouts?.[t]?.workout_count ?? 0) === 0);
+}
+
+/**
+ * The programming queue, split into two jobs: work that is already overdue
+ * (or was never built) and work that runs out inside the warn window.
+ * Athletes with runway everywhere are not on this screen at all.
+ */
+export function splitCoverage(
+  list: RosterAthlete[],
+  now: Date
+): { outNow: RosterAthlete[]; thisWeek: RosterAthlete[] } {
+  const outNow: RosterAthlete[] = [];
+  const thisWeek: RosterAthlete[] = [];
+  for (const a of list) {
+    if (outCategories(a).length > 0 || neverCategories(a).length > 0) { outNow.push(a); continue; }
+    const r = runwayDays(a);
+    if (r !== null && r <= RUNWAY_WARN_DAYS) thisWeek.push(a);
+  }
+  return { outNow: sortNeedsAttention(outNow, now), thisWeek: sortNeedsAttention(thisWeek, now) };
+}
+
+/** Why this athlete is on the Coverage list, named by category. */
+export function coverageReason(a: RosterAthlete): string {
+  const out = outCategories(a);
+  if (out.length) return `${out.map((t) => CATEGORY_NAME[t]).join(', ')} out`;
+  const never = neverCategories(a);
+  if (never.length === CATEGORY_ORDER.length) return 'Never programmed';
+  const soon = CATEGORY_ORDER.filter((t) => {
+    const c = a.workouts?.[t];
+    return !!c && c.days_until_next !== null && c.days_until_next <= RUNWAY_WARN_DAYS;
+  });
+  if (soon.length) return soon.map((t) => CATEGORY_NAME[t]).join(', ');
+  if (never.length) return `${never.map((t) => CATEGORY_NAME[t]).join(', ')} never programmed`;
+  return '';
+}
+
+/**
+ * A workout scheduled before today that was never opened. This is the "not
+ * following the plan" signal at the level a coach can act on — the specific
+ * day, rather than an athlete-wide staleness count. Today is never missed:
+ * the athlete still has the day to do it.
+ */
+export function isMissedInstance(
+  instance: { scheduled_date: string; status: string },
+  todayKey: string
+): boolean {
+  if (!instance.scheduled_date || instance.scheduled_date >= todayKey) return false;
+  return instance.status !== 'completed' && instance.status !== 'in_progress';
 }
