@@ -23,8 +23,20 @@ describe('an ineligible plan is shown, locked, with the reason', () => {
     expect(SOURCE).toContain('eligible === false');
   });
 
-  it('disables the CTA for a gated item', () => {
-    expect(SOURCE).toContain('disabled={hasActive || isGated}');
+  // The row CTA used to read `disabled={hasActive || isGated}` inline; the
+  // compact-rows rework moved both terms into named locals. Assert the rule —
+  // a gated plan cannot be bought — rather than one spelling of it.
+  it('disables the row CTA for a gated item', () => {
+    expect(SOURCE).toContain('const isGated = type.eligible === false;');
+    expect(SOURCE).toContain('const disabled = isGated || !!activeLabel;');
+    expect(SOURCE).toContain('disabled={disabled}');
+  });
+
+  it('disables checkout when the plan is gated for the athlete being bought for', () => {
+    expect(SOURCE).toContain('isSelectedItemGatedForAthlete');
+    const buyDisabled = SOURCE.split('const buyDisabled =')[1]?.split(';')[0] ?? '';
+    expect(buyDisabled).toContain('isSelectedItemGatedForAthlete');
+    expect(SOURCE).toContain('disabled={buyDisabled}');
   });
 });
 
