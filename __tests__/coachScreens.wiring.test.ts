@@ -259,3 +259,21 @@ describe('Coverage opens on the tab it was sent to', () => {
     expect(S).toContain("route?.params?.tab === 'following' ? 'following' : 'programming'");
   });
 });
+
+describe('messaging fixes for staff', () => {
+  it('the unread count ignores conversations the coach archived away', () => {
+    const S = read('lib/coachOverviewApi.ts');
+    // Messages hides archived conversations, so counting them would show a
+    // badge with nothing behind it to clear.
+    expect(S).toContain("('is_archived', false)");
+  });
+  it('directors are labelled in the recipient picker, not left blank', () => {
+    const S = read('screens/MessagesScreen.tsx');
+    expect(S).toContain("if (role === 'director') return 'Director';");
+  });
+  it('an empty inbox tells staff to start one, and waits for the role first', () => {
+    const S = read('screens/MessagesScreen.tsx');
+    expect(S).toContain('const { isStaff, rolesResolved } = useAuth();');
+    expect(S).toContain("isStaff ? 'Start one with the button above' : 'Your coach will message you here'");
+  });
+});

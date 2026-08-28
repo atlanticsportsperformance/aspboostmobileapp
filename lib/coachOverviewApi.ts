@@ -106,7 +106,10 @@ export async function getUnreadSummary(): Promise<UnreadSummary> {
   const { data: participations, error: partError } = await supabase
     .from('conversation_participants')
     .select('conversation_id, last_read_at')
-    .eq('user_id', user.id);
+    .eq('user_id', user.id)
+    // The Messages list hides archived conversations, so counting them here
+    // would show a badge the coach has no way to clear.
+    .eq('is_archived', false);
   if (partError || !participations || participations.length === 0) return { messages: 0, conversations: 0 };
 
   const conversationIds = participations.map((p: ParticipationRow) => p.conversation_id);

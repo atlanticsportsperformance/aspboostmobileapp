@@ -48,6 +48,7 @@ import {
 import { VideoAttachmentPreview } from '../components/VideoAttachmentPreview';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { LinkEmbed } from '../components/LinkEmbed';
+import { useAuth } from '../contexts/AuthContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -131,6 +132,10 @@ export default function MessagesScreen({ navigation, route }: any) {
   const [refreshingConversations, setRefreshingConversations] = useState(false);
   const [refreshingMessages, setRefreshingMessages] = useState(false);
   const [sending, setSending] = useState(false);
+  // Staff see a different empty inbox: they start conversations, athletes wait
+  // to be messaged. `rolesResolved` gates it so a coach never flashes the
+  // athlete copy while the role is still loading.
+  const { isStaff, rolesResolved } = useAuth();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [athleteId, setAthleteId] = useState<string>('');
   const [orgId, setOrgId] = useState<string>('');
@@ -1311,7 +1316,9 @@ export default function MessagesScreen({ navigation, route }: any) {
           <View style={styles.emptyState}>
             <Text style={styles.emptyIcon}>💬</Text>
             <Text style={styles.emptyTitle}>No conversations yet</Text>
-            <Text style={styles.emptySubtitle}>Your coach will message you here</Text>
+            <Text style={styles.emptySubtitle}>
+              {!rolesResolved ? ' ' : isStaff ? 'Start one with the button above' : 'Your coach will message you here'}
+            </Text>
           </View>
         ) : (
           <FlatList
@@ -1439,6 +1446,7 @@ export default function MessagesScreen({ navigation, route }: any) {
                     // Determine role label
                     const getRoleLabel = (role?: string) => {
                       if (role === 'admin' || role === 'super_admin') return 'Admin';
+                      if (role === 'director') return 'Director';
                       if (role === 'coach') return 'Coach';
                       return null;
                     };
