@@ -1507,7 +1507,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       >
         <View style={styles.membershipRowMain}>
           <View style={styles.membershipRowTitleLine}>
-            <Text style={styles.membershipRowName} numberOfLines={1}>{type.name.trim()}</Text>
+            <Text style={styles.membershipRowName} numberOfLines={2}>{type.name.trim()}</Text>
             {activeLabel && (
               <View style={styles.membershipRowActivePill}>
                 <Text style={styles.membershipRowActivePillText}>{activeLabel}</Text>
@@ -1522,7 +1522,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
           )}
         </View>
         <View style={styles.membershipRowPriceCol}>
-          {tiers.length > 0 && <Text style={styles.membershipRowFrom}>plans from</Text>}
+          {tiers.length > 0 && <Text style={styles.membershipRowFrom}>from</Text>}
           <Text style={styles.membershipRowPrice} numberOfLines={1}>
             {membershipPriceRange(type)}
             <Text style={styles.membershipRowPeriod}>{getBillingPeriodTiny(type.billing_period)}</Text>
@@ -3400,6 +3400,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flexWrap: 'wrap',
   },
   membershipRowName: {
     flexShrink: 1,
@@ -3438,7 +3439,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   membershipRowPrice: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#9BDDFF',
   },
