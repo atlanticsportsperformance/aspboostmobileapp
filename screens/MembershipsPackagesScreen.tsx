@@ -363,6 +363,33 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     }
   }
 
+  // A coupon preview is quoted against a specific amount; switching commitment
+  // plans changes that amount, so re-quote the applied code against the new
+  // price. Declared with the other hooks — the render below returns early while
+  // loading, so a hook placed after that point would break the hook order.
+  useEffect(() => {
+    if (!appliedCoupon || !selectedItem) return;
+    const tier = (selectedItemType === 'membership'
+      ? (selectedItem as MembershipType).pricing_options || []
+      : []
+    ).find((o: any) => o.id === selectedPricingOptionId);
+    const amountCents = (tier?.price_amount ?? selectedItem.price_amount) || 0;
+    if (!amountCents) return;
+    let cancelled = false;
+    (async () => {
+      const quote = await quoteCoupon(appliedCoupon.code, amountCents);
+      if (cancelled) return;
+      if (quote) {
+        setAppliedCoupon(quote);
+      } else {
+        setAppliedCoupon(null);
+        setCouponError('Re-enter your code for this plan.');
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPricingOptionId]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -1426,25 +1453,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     selectedMembershipTiers.find((o: any) => o.id === selectedPricingOptionId) || null;
   const effectivePriceCents: number =
     selectedTier?.price_amount ?? selectedItem?.price_amount ?? 0;
-
-  // A coupon preview is quoted against a specific amount; switching plans
-  // changes that amount, so re-quote the applied code against the new price.
-  useEffect(() => {
-    if (!appliedCoupon || !selectedItem || !effectivePriceCents) return;
-    let cancelled = false;
-    (async () => {
-      const quote = await quoteCoupon(appliedCoupon.code, effectivePriceCents);
-      if (cancelled) return;
-      if (quote) {
-        setAppliedCoupon(quote);
-      } else {
-        setAppliedCoupon(null);
-        setCouponError('Re-enter your code for this plan.');
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPricingOptionId]);
 
   // ---- Membership list row helpers -------------------------------------
   /** Active commitment tiers (2+ months), cheapest-sorted by sort_order. */

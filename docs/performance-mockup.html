@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ASP Boost — Performance Screen Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  /* ─── Base ─────────────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #050505; color-scheme: dark; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #E5E7EB;
+    background:
+      radial-gradient(ellipse 1200px 600px at 20% -10%, rgba(155,221,255,0.08), transparent 60%),
+      radial-gradient(ellipse 1000px 500px at 80% 100%, rgba(167,139,250,0.06), transparent 60%),
+      #050505;
+    min-height: 100vh;
+    padding: 56px 32px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page-header { max-width: 1200px; margin: 0 auto 48px; text-align: center; }
+  .page-header h1 {
+    font-size: 32px; font-weight: 800; letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 0%, #9BDDFF 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    margin-bottom: 12px;
+  }
+  .page-header p { color: #9CA3AF; font-size: 14px; max-width: 720px; margin: 0 auto; line-height: 1.6; }
+  .page-header .caveat { color: #FBBF24; font-size: 12px; margin-top: 8px; font-weight: 500; }
+
+  /* ─── Phone frames side-by-side ────────────────────────────────────── */
+  .phones {
+    display: flex; flex-wrap: wrap; gap: 48px;
+    justify-content: center; align-items: flex-start;
+    max-width: 1200px; margin: 0 auto;
+  }
+  .phone-stack { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .phone-label { font-size: 11px; letter-spacing: 0.18em; color: #6B7280; font-weight: 700; text-transform: uppercase; }
+  .phone {
+    width: 393px; height: 852px;
+    background: #1a1a1c;
+    border-radius: 56px;
+    padding: 14px;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.06),
+      0 30px 80px -20px rgba(0,0,0,0.7),
+      0 0 120px -30px rgba(155,221,255,0.15);
+    position: relative;
+  }
+  .screen {
+    width: 100%; height: 100%;
+    background: #0A0A0A;
+    border-radius: 42px;
+    overflow: hidden;
+    position: relative;
+    display: flex; flex-direction: column;
+  }
+  /* Dynamic Island */
+  .dynamic-island {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 120px; height: 36px; background: #000;
+    border-radius: 20px; z-index: 100;
+  }
+  /* iOS status bar */
+  .status-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 18px 32px 10px; height: 54px; flex-shrink: 0;
+    font-size: 16px; font-weight: 600;
+  }
+  .status-bar .icons { display: flex; gap: 6px; align-items: center; }
+  .status-bar svg { display: block; }
+
+  /* ─── Inside the screen ────────────────────────────────────────────── */
+  .scroll {
+    flex: 1; overflow-y: auto;
+    padding-bottom: 100px; /* room for tab bar */
+  }
+  .scroll::-webkit-scrollbar { display: none; }
+  .scroll { scrollbar-width: none; }
+
+  /* App header */
+  .app-header { padding: 16px 20px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .app-header .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .app-header h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: #fff; }
+  .app-header .athlete { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 12px; color: #9CA3AF; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, #9BDDFF 0%, #5BB8E8 100%);
+    color: #000; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px;
+    box-shadow: 0 0 0 2px rgba(155,221,255,0.2);
+  }
+
+  /* Tab toggle */
+  .tab-toggle {
+    display: flex; gap: 0; padding: 4px;
+    background: rgba(255,255,255,0.05); border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .tab-toggle button {
+    flex: 1; padding: 9px 0; border: none; background: transparent;
+    color: #9CA3AF; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 9px; transition: all 0.2s; font-family: inherit;
+  }
+  .tab-toggle button.active {
+    background: #9BDDFF; color: #000;
+    box-shadow: 0 2px 8px rgba(155,221,255,0.3);
+  }
+
+  /* Cohort summary strip (NEW vs prod — addresses §1.10 gap) */
+  .cohort-strip {
+    display: flex; gap: 8px; padding: 14px 20px 0;
+  }
+  .cohort-chip {
+    flex: 1; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .cohort-chip .label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #6B7280; font-weight: 700; }
+  .cohort-chip .value { font-size: 15px; font-weight: 800; color: #fff; line-height: 1.1; }
+  .cohort-chip .ctx { font-size: 10px; color: #9CA3AF; font-weight: 500; }
+  .cohort-chip.elite { border-left: 3px solid #4ADE80; }
+  .cohort-chip.optimize { border-left: 3px solid #9BDDFF; }
+  .cohort-chip.sharpen { border-left: 3px solid #FCD34D; }
+  .cohort-chip .value .pct { font-size: 11px; color: #9CA3AF; font-weight: 600; margin-left: 4px; }
+
+  /* Search row */
+  .search-row { padding: 14px 20px 0; display: flex; gap: 10px; align-items: center; }
+  .search {
+    flex: 1; background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 10px 14px;
+    display: flex; align-items: center; gap: 8px;
+    color: #6B7280; font-size: 13px;
+  }
+  .add-btn {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: #9BDDFF; color: #000;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 800;
+    box-shadow: 0 4px 12px -2px rgba(155,221,255,0.3);
+  }
+
+  /* Section headers */
+  .section-title {
+    padding: 22px 20px 10px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.15em;
+    color: #6B7280; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .section-title .meta { letter-spacing: 0; text-transform: none; color: #4B5563; font-size: 10px; }
+
+  /* PR card */
+  .pr-list { padding: 0 20px; display: flex; flex-direction: column; gap: 10px; }
+  .pr-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px; padding: 14px;
+    display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
+    align-items: start;
+    position: relative; overflow: hidden;
+  }
+  .pr-card .name { font-size: 15px; font-weight: 700; color: #fff; }
+  .pr-card .meta-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .pr-card .date { font-size: 11px; color: #9CA3AF; }
+  .pr-card .badge {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 6px;
+  }
+  .badge.weight { background: rgba(59,130,246,0.18); color: #93C5FD; }
+  .badge.velo { background: rgba(139,92,246,0.18); color: #C4B5FD; }
+  .badge.custom { background: rgba(34,197,94,0.18); color: #86EFAC; }
+  .badge.auto { background: rgba(245,158,11,0.15); color: #FCD34D; }
+  .badge.verified { background: rgba(74,222,128,0.15); color: #4ADE80; }
+  .pr-card .value {
+    grid-column: 2; grid-row: 1 / span 3;
+    text-align: right; padding-left: 4px;
+  }
+  .pr-card .value .num {
+    font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: #fff;
+    line-height: 1; font-family: 'Inter', sans-serif;
+  }
+  .pr-card .value .unit {
+    font-size: 11px; color: #9CA3AF; margin-left: 2px; font-weight: 600;
+  }
+  .pr-card .value .e1rm {
+    font-size: 10px; color: #FCD34D; margin-top: 6px;
+    font-weight: 700; letter-spacing: 0.04em;
+  }
+  .pr-card .sparkline-row {
+    grid-column: 1 / -1; margin-top: 10px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .pr-card .sparkline { flex: 1; height: 28px; }
+  .pr-card .delta {
+    font-size: 11px; font-weight: 700;
+    padding: 3px 7px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .delta.up { background: rgba(74,222,128,0.12); color: #4ADE80; }
+  .delta.flat { background: rgba(156,163,175,0.12); color: #9CA3AF; }
+  .delta.down { background: rgba(239,68,68,0.12); color: #FCA5A5; }
+  .pr-card .percentile {
+    grid-column: 1 / -1; margin-top: 8px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; color: #9CA3AF;
+  }
+  .pr-card .percentile-bar {
+    flex: 1; height: 4px; background: rgba(255,255,255,0.06);
+    border-radius: 2px; overflow: hidden; position: relative;
+  }
+  .pr-card .percentile-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, #EF4444 0%, #FCD34D 33%, #9BDDFF 66%, #4ADE80 100%);
+    border-radius: 2px;
+  }
+  .pr-card .percentile-bar .marker {
+    position: absolute; top: -2px; width: 2px; height: 8px;
+    background: #fff; border-radius: 1px;
+    box-shadow: 0 0 4px rgba(255,255,255,0.5);
+  }
+
+  /* ─── Exercise History tab specific ────────────────────────────────── */
+  .filter-row {
+    padding: 14px 20px 0; display: flex; gap: 6px; overflow-x: auto;
+  }
+  .filter-row::-webkit-scrollbar { display: none; }
+  .pill {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 999px; padding: 7px 12px;
+    font-size: 11px; font-weight: 600; color: #9CA3AF;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .pill.active { background: #3B82F6; color: #fff; border-color: transparent; }
+  .pill.active.alt { background: rgba(155,221,255,0.18); color: #9BDDFF; border-color: rgba(155,221,255,0.3); }
+
+  /* Exercise selector dropdown */
+  .selector {
+    margin: 14px 20px 0;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 12px;
+  }
+  .selector .header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: #9CA3AF; font-weight: 600;
+  }
+  .selected-chips {
+    display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap;
+  }
+  .chip {
+    background: rgba(155,221,255,0.15);
+    border: 1px solid rgba(155,221,255,0.25);
+    color: #9BDDFF;
+    border-radius: 999px;
+    padding: 5px 10px 5px 12px;
+    font-size: 11px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .chip .x {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: rgba(155,221,255,0.2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+  }
+
+  /* Exercise performance card */
+  .ex-card {
+    margin: 14px 20px 0;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .ex-card .head {
+    padding: 14px 16px; display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .ex-card .head .name { font-size: 16px; font-weight: 700; color: #fff; }
+  .ex-card .head .cat { font-size: 10px; color: #6B7280; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 2px; }
+  .ex-card .head .e1rm-pill {
+    background: rgba(245,158,11,0.12);
+    border: 1px solid rgba(245,158,11,0.25);
+    border-radius: 10px; padding: 5px 10px;
+    text-align: right;
+  }
+  .ex-card .head .e1rm-pill .l { font-size: 8px; letter-spacing: 0.15em; color: #FCD34D; font-weight: 700; }
+  .ex-card .head .e1rm-pill .v { font-size: 15px; font-weight: 800; color: #FBBF24; }
+
+  /* PR row inside ex-card */
+  .ex-pr-row {
+    padding: 12px 16px;
+    background: rgba(245,158,11,0.06);
+    border-bottom: 1px solid rgba(245,158,11,0.12);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .ex-pr-row .lbl { font-size: 10px; color: #FCD34D; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .ex-pr-row .val { font-size: 15px; font-weight: 800; color: #fff; }
+  .ex-pr-row .when { font-size: 10px; color: #9CA3AF; }
+
+  /* Chart container */
+  .chart-wrap { padding: 16px; }
+  .chart-wrap .chart-title-row {
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+  }
+  .chart-wrap .chart-title { font-size: 11px; color: #9CA3AF; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+  .chart-wrap .chart-meta { font-size: 11px; color: #6B7280; font-weight: 500; }
+  .chart-svg { width: 100%; height: 140px; display: block; }
+
+  /* Last 5 sessions table — NEW addresses §1.8 gap */
+  .sessions-mini {
+    border-top: 1px solid rgba(255,255,255,0.05);
+    padding: 12px 16px 14px;
+  }
+  .sessions-mini .lbl {
+    font-size: 10px; color: #9CA3AF; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  .sessions-mini table { width: 100%; border-collapse: collapse; }
+  .sessions-mini td {
+    padding: 6px 0; font-size: 12px; color: #E5E7EB;
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .sessions-mini td:first-child { color: #9CA3AF; font-size: 11px; }
+  .sessions-mini td.sets { font-weight: 600; }
+  .sessions-mini td.right { text-align: right; }
+  .sessions-mini td.pr-marker { color: #FCD34D; font-weight: 700; font-size: 10px; }
+
+  /* Tab bar */
+  .tab-bar {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 84px;
+    background: rgba(10,10,10,0.95);
+    backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid rgba(255,255,255,0.05);
+    display: flex; align-items: flex-start;
+    padding: 8px 0 24px;
+  }
+  .tab-bar .tab {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: #6B7280; font-size: 10px; font-weight: 600;
+  }
+  .tab-bar .tab.active { color: #9BDDFF; }
+  .tab-bar .tab svg { width: 22px; height: 22px; }
+
+  /* FAB */
+  .fab {
+    position: absolute; bottom: 100px; right: 16px;
+    width: 56px; height: 56px; border-radius: 18px;
+    background: linear-gradient(135deg, #B0E5FF 0%, #9BDDFF 50%, #7BC5F0 100%);
+    box-shadow: 0 8px 24px -4px rgba(155,221,255,0.5);
+    display: flex; align-items: center; justify-content: center;
+    color: #000; font-size: 22px;
+  }
+
+  /* Notes section below mockup */
+  .notes-section {
+    max-width: 1100px; margin: 80px auto 0;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 20px; padding: 36px 40px;
+  }
+  .notes-section h2 {
+    font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }
+  .notes-section p.sub { color: #9CA3AF; font-size: 13px; margin-bottom: 28px; }
+  .notes-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  }
+  .notes-grid h3 {
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #9BDDFF; font-weight: 700; margin-bottom: 12px;
+  }
+  .notes-grid ul { list-style: none; }
+  .notes-grid li {
+    font-size: 13px; line-height: 1.7; color: #D1D5DB; padding-left: 18px;
+    position: relative;
+  }
+  .notes-grid li::before {
+    content: "→"; position: absolute; left: 0; top: 0; color: #4ADE80; font-weight: 700;
+  }
+  .notes-grid .gap li::before { content: "·"; color: #EF4444; font-size: 20px; line-height: 1; top: 2px; }
+  .notes-grid code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; background: rgba(155,221,255,0.08);
+    color: #9BDDFF; padding: 1px 5px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <h1>ASP Boost — Performance Screen Mockup</h1>
+  <p>
+    Built from <code style="color:#9BDDFF;font-family:'JetBrains Mono',monospace;font-size:13px;">screens/PerformanceScreen.tsx</code>
+    with the polish layer the audit identified as missing. Both tabs shown side-by-side. Visual style, color palette,
+    component structure, and data shape all pulled from the actual iOS codebase. Sample data is realistic
+    (10-week strength block for a 16U RHP).
+  </p>
+  <p class="caveat">Items in <span style="color:#4ADE80;">green</span> already ship. Items in <span style="color:#FBBF24;">amber</span> are mockup-only additions to demonstrate the $100M-app target.</p>
+</header>
+
+<div class="phones">
+
+  <!-- ╔══════════════════════════════════════════════════════════╗ -->
+  <!-- ║                  PHONE 1: PERSONAL RECORDS               ║ -->
+  <!-- ╚══════════════════════════════════════════════════════════╝ -->
+  <div class="phone-stack">
+    <span class="phone-label">Tab 1 · Personal Records</span>
+    <div class="phone">
+      <div class="screen">
+        <div class="dynamic-island"></div>
+
+        <div class="status-bar">
+          <span>9:41</span>
+          <div class="icons">
+            <!-- signal -->
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="0.5"/><rect x="4.5" y="5" width="3" height="6" rx="0.5"/><rect x="9" y="3" width="3" height="8" rx="0.5"/><rect x="13.5" y="1" width="3" height="10" rx="0.5"/></svg>
+            <!-- wifi -->
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="#fff"><path d="M8 11l3-3c-1.5-1.5-4.5-1.5-6 0l3 3z"/><path d="M8 5c2.2 0 4.3.8 6 2.3l1.5-1.5C13.2 3.6 10.7 2.5 8 2.5S2.8 3.6 0.5 5.8L2 7.3C3.7 5.8 5.8 5 8 5z"/></svg>
+            <!-- battery -->
+            <svg width="26" height="12" viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="2.5" fill="none" stroke="#fff" stroke-opacity="0.4"/><rect x="2" y="2" width="19" height="8" rx="1.5" fill="#fff"/><rect x="23" y="4" width="2" height="4" rx="0.5" fill="#fff" fill-opacity="0.4"/></svg>
+          </div>
+        </div>
+
+        <div class="scroll">
+
+          <div class="app-header">
+            <div class="top">
+              <h1>Performance</h1>
+              <div class="avatar">MW</div>
+            </div>
+            <div class="athlete">
+              <span>Marcus Williams</span>
+              <span style="color:#4B5563;">·</span>
+              <span>16U RHP</span>
+              <span style="color:#4B5563;">·</span>
+              <span>ASP Boost</span>
+            </div>
+            <div class="tab-toggle" style="margin-top:12px;">
+              <button class="active">Personal Records</button>
+              <button>Exercise History</button>
+            </div>
+          </div>
+
+          <!-- Cohort summary strip — NEW vs production -->
+          <div class="cohort-strip">
+            <div class="cohort-chip optimize">
+              <span class="label">ArmScore</span>
+              <span class="value">82 <span class="pct">/100</span></span>
+              <span class="ctx">↑6 vs last test · Optimize</span>
+            </div>
+            <div class="cohort-chip optimize">
+              <span class="label">Force Comp</span>
+              <span class="value">67 <span class="pct">%ile</span></span>
+              <span class="ctx">vs HS RHP cohort</span>
+            </div>
+            <div class="cohort-chip sharpen">
+              <span class="label">Mocap</span>
+              <span class="value">14d</span>
+              <span class="ctx">since last session</span>
+            </div>
+          </div>
+
+          <div class="search-row">
+            <div class="search">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#6B7280" stroke-width="2"><circle cx="6" cy="6" r="4.5"/><path d="M10 10l3 3" stroke-linecap="round"/></svg>
+              <span>Search PRs…</span>
+            </div>
+            <div class="add-btn">＋</div>
+          </div>
+
+          <div class="section-title">
+            <span>Global Metrics</span>
+            <span class="meta">1 tracked</span>
+          </div>
+
+          <div class="pr-list">
+            <!-- 5oz Mound Velo with sparkline -->
+            <div class="pr-card">
+              <div class="name">5 oz Mound Velocity</div>
+              <div class="meta-row">
+                <span class="badge velo">Velocity</span>
+                <span class="badge verified">✓ Verified</span>
+                <span class="date">Apr 15 · Bullpen session, arm felt great</span>
+              </div>
+              <div class="value">
+                <span class="num">88.5</span><span class="unit">mph</span>
+                <div class="e1rm">↑3.2 mph in 90d</div>
+              </div>
+              <div class="sparkline-row">
+                <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="g-velo" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#C4B5FD" stop-opacity="0.5"/>
+                      <stop offset="100%" stop-color="#C4B5FD" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M 0,22 L 25,21 L 50,20 L 75,17 L 100,16 L 125,13 L 150,11 L 175,8 L 200,5 L 200,28 L 0,28 Z" fill="url(#g-velo)"/>
+                  <path d="M 0,22 L 25,21 L 50,20 L 75,17 L 100,16 L 125,13 L 150,11 L 175,8 L 200,5" stroke="#C4B5FD" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                  <circle cx="200" cy="5" r="2.5" fill="#C4B5FD"/>
+                </svg>
+                <span class="delta up">↑ 3.7%</span>
+              </div>
+              <div class="percentile">
+                <span style="font-weight:700;color:#9BDDFF;">68%</span>
+                <div class="percentile-bar">
+                  <div class="fill"></div>
+                  <div class="marker" style="left:68%;"></div>
+                </div>
+                <span>HS RHP norms</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-title">
+            <span>Exercise PRs</span>
+            <span class="meta">4 tracked</span>
+          </div>
+
+          <div class="pr-list">
+            <!-- Back Squat -->
+            <div class="pr-card">
+              <div class="name">Back Squat</div>
+              <div class="meta-row">
+                <span class="badge weight">Weight</span>
+                <span class="badge auto">Auto</span>
+                <span class="date">May 22 · 1RM</span>
+              </div>
+              <div class="value">
+                <span class="num">225</span><span class="unit">lb</span>
+                <div class="e1rm">e1RM 265 lb · 7 reps</div>
+              </div>
+              <div class="sparkline-row">
+                <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="g-bs" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#9BDDFF" stop-opacity="0.5"/>
+                      <stop offset="100%" stop-color="#9BDDFF" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M 0,20 L 33,18 L 66,15 L 100,15 L 133,11 L 166,8 L 200,3 L 200,28 L 0,28 Z" fill="url(#g-bs)"/>
+                  <path d="M 0,20 L 33,18 L 66,15 L 100,15 L 133,11 L 166,8 L 200,3" stroke="#9BDDFF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                  <circle cx="200" cy="3" r="2.5" fill="#9BDDFF"/>
+                </svg>
+                <span class="delta up">↑ 40 lb</span>
+              </div>
+              <div class="percentile">
+                <span style="font-weight:700;color:#4ADE80;">79%</span>
+                <div class="percentile-bar">
+                  <div class="fill"></div>
+                  <div class="marker" style="left:79%;"></div>
+                </div>
+                <span>16U RHP · BW 175</span>
+              </div>
+            </div>
+
+            <!-- Trap Bar DL -->
+            <div class="pr-card">
+              <div class="name">Trap Bar Deadlift</div>
+              <div class="meta-row">
+                <span class="badge weight">Weight</span>
+                <span class="badge auto">Auto</span>
+                <span class="date">May 24 · 3RM</span>
+              </div>
+              <div class="value">
+                <span class="num">315</span><span class="unit">lb</span>
+                <div class="e1rm">e1RM 343 lb</div>
+              </div>
+              <div class="sparkline-row">
+                <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="g-tbd" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#9BDDFF" stop-opacity="0.5"/>
+                      <stop offset="100%" stop-color="#9BDDFF" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M 0,18 L 40,17 L 80,14 L 120,11 L 160,7 L 200,4 L 200,28 L 0,28 Z" fill="url(#g-tbd)"/>
+                  <path d="M 0,18 L 40,17 L 80,14 L 120,11 L 160,7 L 200,4" stroke="#9BDDFF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                  <circle cx="200" cy="4" r="2.5" fill="#9BDDFF"/>
+                </svg>
+                <span class="delta up">↑ 35 lb</span>
+              </div>
+              <div class="percentile">
+                <span style="font-weight:700;color:#4ADE80;">84%</span>
+                <div class="percentile-bar">
+                  <div class="fill"></div>
+                  <div class="marker" style="left:84%;"></div>
+                </div>
+                <span>16U RHP · BW 175</span>
+              </div>
+            </div>
+
+            <!-- Bench Press -->
+            <div class="pr-card">
+              <div class="name">Bench Press</div>
+              <div class="meta-row">
+                <span class="badge weight">Weight</span>
+                <span class="date">May 18 · 5RM</span>
+              </div>
+              <div class="value">
+                <span class="num">165</span><span class="unit">lb</span>
+                <div class="e1rm">e1RM 191 lb</div>
+              </div>
+              <div class="sparkline-row">
+                <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+                  <path d="M 0,15 L 50,16 L 100,13 L 150,11 L 200,10" stroke="#9BDDFF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                  <circle cx="200" cy="10" r="2.5" fill="#9BDDFF"/>
+                </svg>
+                <span class="delta flat">↑ 10 lb</span>
+              </div>
+              <div class="percentile">
+                <span style="font-weight:700;color:#9BDDFF;">52%</span>
+                <div class="percentile-bar">
+                  <div class="fill"></div>
+                  <div class="marker" style="left:52%;"></div>
+                </div>
+                <span>16U RHP · BW 175</span>
+              </div>
+            </div>
+
+            <!-- Pull-up -->
+            <div class="pr-card">
+              <div class="name">Pull-up (BW)</div>
+              <div class="meta-row">
+                <span class="badge custom">Reps</span>
+                <span class="badge verified">✓ Verified</span>
+                <span class="date">May 12</span>
+              </div>
+              <div class="value">
+                <span class="num">14</span><span class="unit">reps</span>
+                <div class="e1rm">+3 in 60d</div>
+              </div>
+              <div class="sparkline-row">
+                <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+                  <path d="M 0,17 L 50,15 L 100,12 L 150,9 L 200,6" stroke="#86EFAC" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                  <circle cx="200" cy="6" r="2.5" fill="#86EFAC"/>
+                </svg>
+                <span class="delta up">↑ 27%</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- FAB -->
+        <div class="fab">＋</div>
+
+        <!-- Tab bar -->
+        <div class="tab-bar">
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8M5 9v12h14V9" stroke-linecap="round" stroke-linejoin="round"/></svg>Home</div>
+          <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l5-5 4 4 9-9M14 7h7v7" stroke-linecap="round" stroke-linejoin="round"/></svg>Performance</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18M8 2v4M16 2v4" stroke-linecap="round"/></svg>Workouts</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6" stroke-linecap="round"/></svg>Profile</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ╔══════════════════════════════════════════════════════════╗ -->
+  <!-- ║                PHONE 2: EXERCISE HISTORY                 ║ -->
+  <!-- ╚══════════════════════════════════════════════════════════╝ -->
+  <div class="phone-stack">
+    <span class="phone-label">Tab 2 · Exercise History</span>
+    <div class="phone">
+      <div class="screen">
+        <div class="dynamic-island"></div>
+
+        <div class="status-bar">
+          <span>9:41</span>
+          <div class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="0.5"/><rect x="4.5" y="5" width="3" height="6" rx="0.5"/><rect x="9" y="3" width="3" height="8" rx="0.5"/><rect x="13.5" y="1" width="3" height="10" rx="0.5"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="#fff"><path d="M8 11l3-3c-1.5-1.5-4.5-1.5-6 0l3 3z"/><path d="M8 5c2.2 0 4.3.8 6 2.3l1.5-1.5C13.2 3.6 10.7 2.5 8 2.5S2.8 3.6 0.5 5.8L2 7.3C3.7 5.8 5.8 5 8 5z"/></svg>
+            <svg width="26" height="12" viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="2.5" fill="none" stroke="#fff" stroke-opacity="0.4"/><rect x="2" y="2" width="19" height="8" rx="1.5" fill="#fff"/><rect x="23" y="4" width="2" height="4" rx="0.5" fill="#fff" fill-opacity="0.4"/></svg>
+          </div>
+        </div>
+
+        <div class="scroll">
+
+          <div class="app-header">
+            <div class="top">
+              <h1>Performance</h1>
+              <div class="avatar">MW</div>
+            </div>
+            <div class="athlete">
+              <span>Marcus Williams</span>
+              <span style="color:#4B5563;">·</span>
+              <span>16U RHP</span>
+              <span style="color:#4B5563;">·</span>
+              <span>10-week off-season block · Wk 7</span>
+            </div>
+            <div class="tab-toggle" style="margin-top:12px;">
+              <button>Personal Records</button>
+              <button class="active">Exercise History</button>
+            </div>
+          </div>
+
+          <!-- Time range pills -->
+          <div class="filter-row">
+            <div class="pill">7d</div>
+            <div class="pill active">30d</div>
+            <div class="pill">90d</div>
+            <div class="pill">All</div>
+            <div style="width:8px;flex-shrink:0;"></div>
+            <div class="pill active alt">All</div>
+            <div class="pill">Throwing</div>
+            <div class="pill">Strength</div>
+            <div class="pill">S&amp;C</div>
+          </div>
+
+          <!-- Exercise selector -->
+          <div class="selector">
+            <div class="header">
+              <span>Select exercises (up to 10)</span>
+              <span style="color:#6B7280;">2 selected</span>
+            </div>
+            <div class="selected-chips">
+              <span class="chip">Back Squat <span class="x">×</span></span>
+              <span class="chip">Trap Bar Deadlift <span class="x">×</span></span>
+            </div>
+          </div>
+
+          <!-- Back Squat exercise card -->
+          <div class="ex-card">
+            <div class="head">
+              <div>
+                <div class="name">Back Squat</div>
+                <div class="cat">Strength · Lower</div>
+              </div>
+              <div class="e1rm-pill">
+                <div class="l">e1RM</div>
+                <div class="v">265 lb</div>
+              </div>
+            </div>
+
+            <div class="ex-pr-row">
+              <span class="lbl">★ Best</span>
+              <span class="val">225 × 1</span>
+              <span class="when">May 22</span>
+            </div>
+
+            <div class="chart-wrap">
+              <div class="chart-title-row">
+                <span class="chart-title">Volume (lb)</span>
+                <span class="chart-meta">7 sessions · 30d</span>
+              </div>
+              <!-- Volume LineChart — mirror of PerformanceScreen.tsx:1842 -->
+              <svg class="chart-svg" viewBox="0 0 320 140" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="vol-grad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+                <!-- gridlines -->
+                <line x1="0" y1="20" x2="320" y2="20" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="50" x2="320" y2="50" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="80" x2="320" y2="80" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="110" x2="320" y2="110" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <!-- y-axis values -->
+                <text x="4" y="18" fill="#6B7280" font-size="9" font-family="JetBrains Mono">2400</text>
+                <text x="4" y="48" fill="#6B7280" font-size="9" font-family="JetBrains Mono">1800</text>
+                <text x="4" y="78" fill="#6B7280" font-size="9" font-family="JetBrains Mono">1200</text>
+                <text x="4" y="108" fill="#6B7280" font-size="9" font-family="JetBrains Mono">600</text>
+                <!-- area + line: 7 sessions over 30d, progressive overload -->
+                <!-- volumes (weight*reps total): 1300, 1500, 1650, 1800, 1700, 2050, 2250 -->
+                <path d="M 35,95 L 80,85 L 125,77 L 170,62 L 215,67 L 260,40 L 305,28 L 305,140 L 35,140 Z" fill="url(#vol-grad)"/>
+                <path d="M 35,95 L 80,85 L 125,77 L 170,62 L 215,67 L 260,40 L 305,28" stroke="#F59E0B" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                <!-- data points -->
+                <circle cx="35" cy="95" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="80" cy="85" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="125" cy="77" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="170" cy="62" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="215" cy="67" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="260" cy="40" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <!-- Active point with halo (most recent) -->
+                <circle cx="305" cy="28" r="6" fill="none" stroke="#F59E0B" stroke-opacity="0.3" stroke-width="3"/>
+                <circle cx="305" cy="28" r="4" fill="#FBBF24" stroke="#0A0A0A" stroke-width="2"/>
+                <!-- x-axis labels — FIXED gap §1.10: always visible -->
+                <text x="35" y="135" fill="#6B7280" font-size="8" text-anchor="middle">4/22</text>
+                <text x="80" y="135" fill="#6B7280" font-size="8" text-anchor="middle">4/29</text>
+                <text x="125" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/3</text>
+                <text x="170" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/8</text>
+                <text x="215" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/13</text>
+                <text x="260" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/18</text>
+                <text x="305" y="135" fill="#FBBF24" font-size="8" text-anchor="end" font-weight="700">5/22 ★</text>
+              </svg>
+            </div>
+
+            <!-- Last 5 sessions table — NEW vs production -->
+            <div class="sessions-mini">
+              <div class="lbl">Last 5 sessions</div>
+              <table>
+                <tr>
+                  <td>May 22</td>
+                  <td class="sets">5×5 · 4×3 · 1</td>
+                  <td class="right">225 lb peak</td>
+                  <td class="right pr-marker">★ PR</td>
+                </tr>
+                <tr>
+                  <td>May 18</td>
+                  <td class="sets">5×5</td>
+                  <td class="right">205 lb</td>
+                  <td class="right"></td>
+                </tr>
+                <tr>
+                  <td>May 13</td>
+                  <td class="sets">5×5</td>
+                  <td class="right">195 lb</td>
+                  <td class="right"></td>
+                </tr>
+                <tr>
+                  <td>May 8</td>
+                  <td class="sets">5×5</td>
+                  <td class="right">195 lb</td>
+                  <td class="right"></td>
+                </tr>
+                <tr>
+                  <td>May 3</td>
+                  <td class="sets">5×5</td>
+                  <td class="right">185 lb</td>
+                  <td class="right"></td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <!-- Trap Bar DL card (collapsed view) -->
+          <div class="ex-card">
+            <div class="head">
+              <div>
+                <div class="name">Trap Bar Deadlift</div>
+                <div class="cat">Strength · Lower</div>
+              </div>
+              <div class="e1rm-pill">
+                <div class="l">e1RM</div>
+                <div class="v">343 lb</div>
+              </div>
+            </div>
+
+            <div class="ex-pr-row">
+              <span class="lbl">★ Best</span>
+              <span class="val">315 × 3</span>
+              <span class="when">May 24</span>
+            </div>
+
+            <div class="chart-wrap">
+              <div class="chart-title-row">
+                <span class="chart-title">Volume (lb)</span>
+                <span class="chart-meta">5 sessions · 30d</span>
+              </div>
+              <svg class="chart-svg" viewBox="0 0 320 140" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="vol-grad-2" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="20" x2="320" y2="20" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="50" x2="320" y2="50" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="80" x2="320" y2="80" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <line x1="0" y1="110" x2="320" y2="110" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 4"/>
+                <text x="4" y="18" fill="#6B7280" font-size="9" font-family="JetBrains Mono">3200</text>
+                <text x="4" y="48" fill="#6B7280" font-size="9" font-family="JetBrains Mono">2400</text>
+                <text x="4" y="78" fill="#6B7280" font-size="9" font-family="JetBrains Mono">1600</text>
+                <text x="4" y="108" fill="#6B7280" font-size="9" font-family="JetBrains Mono">800</text>
+                <!-- 5 sessions: volumes 1750, 2100, 2400, 2700, 2835 -->
+                <path d="M 40,80 L 105,65 L 170,50 L 235,32 L 305,25 L 305,140 L 40,140 Z" fill="url(#vol-grad-2)"/>
+                <path d="M 40,80 L 105,65 L 170,50 L 235,32 L 305,25" stroke="#F59E0B" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="40" cy="80" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="105" cy="65" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="170" cy="50" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="235" cy="32" r="3" fill="#F59E0B" stroke="#0A0A0A" stroke-width="2"/>
+                <circle cx="305" cy="25" r="6" fill="none" stroke="#F59E0B" stroke-opacity="0.3" stroke-width="3"/>
+                <circle cx="305" cy="25" r="4" fill="#FBBF24" stroke="#0A0A0A" stroke-width="2"/>
+                <text x="40" y="135" fill="#6B7280" font-size="8" text-anchor="middle">4/26</text>
+                <text x="105" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/5</text>
+                <text x="170" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/12</text>
+                <text x="235" y="135" fill="#6B7280" font-size="8" text-anchor="middle">5/18</text>
+                <text x="305" y="135" fill="#FBBF24" font-size="8" text-anchor="end" font-weight="700">5/24 ★</text>
+              </svg>
+            </div>
+
+            <div class="sessions-mini">
+              <div class="lbl">Last 3 sessions</div>
+              <table>
+                <tr>
+                  <td>May 24</td>
+                  <td class="sets">3×3</td>
+                  <td class="right">315 lb</td>
+                  <td class="right pr-marker">★ PR</td>
+                </tr>
+                <tr>
+                  <td>May 18</td>
+                  <td class="sets">3×3</td>
+                  <td class="right">295 lb</td>
+                  <td class="right"></td>
+                </tr>
+                <tr>
+                  <td>May 12</td>
+                  <td class="sets">3×4</td>
+                  <td class="right">275 lb</td>
+                  <td class="right"></td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <!-- Add another exercise CTA -->
+          <div style="margin: 14px 20px; padding: 14px; background: rgba(155,221,255,0.04); border: 1px dashed rgba(155,221,255,0.2); border-radius: 14px; text-align: center; color: #9BDDFF; font-size: 13px; font-weight: 600;">
+            + Add another exercise (up to 10)
+          </div>
+
+        </div>
+
+        <!-- FAB -->
+        <div class="fab">＋</div>
+
+        <div class="tab-bar">
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8M5 9v12h14V9" stroke-linecap="round" stroke-linejoin="round"/></svg>Home</div>
+          <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l5-5 4 4 9-9M14 7h7v7" stroke-linecap="round" stroke-linejoin="round"/></svg>Performance</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18M8 2v4M16 2v4" stroke-linecap="round"/></svg>Workouts</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6" stroke-linecap="round"/></svg>Profile</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ╔══════════════════════════════════════════════════════════════════╗ -->
+<!-- ║          Notes: what this mockup added vs what ships now         ║ -->
+<!-- ╚══════════════════════════════════════════════════════════════════╝ -->
+<section class="notes-section">
+  <h2>What this mockup demonstrates</h2>
+  <p class="sub">
+    Visual style, color palette, and layout primitives are pulled verbatim from
+    <code style="color:#9BDDFF;font-family:'JetBrains Mono',monospace;font-size:12px;">screens/PerformanceScreen.tsx</code>.
+    The deltas below are the "$100M polish" the audit identified as missing — none of these are heavy lifts; most are 1-4 hours of work each.
+  </p>
+  <div class="notes-grid">
+    <div>
+      <h3>Already shipping (kept)</h3>
+      <ul>
+        <li>Two-tab toggle (Personal Records / Exercise History) with the cyan-on-black active state</li>
+        <li>Search + Add row in Personal Records tab</li>
+        <li>Time-range pills (7d/30d/90d/All) and category pills</li>
+        <li>Up-to-10 exercise multi-select selector with chip display</li>
+        <li>Per-exercise volume line chart with gridlines and tooltip-on-tap</li>
+        <li>FAB launcher for cross-feature nav (Hitting, Pitching, ArmCare, ForceProfile)</li>
+        <li>Badge taxonomy (Weight / Velocity / Custom / Auto / ✓ Verified)</li>
+        <li>Dark-glass card aesthetic — <code>rgba(255,255,255,0.04)</code> bg + <code>rgba(255,255,255,0.08)</code> border</li>
+      </ul>
+    </div>
+    <div class="gap">
+      <h3>Mockup-only (gaps the audit found)</h3>
+      <ul>
+        <li><strong>Cohort summary strip</strong> at top of PR tab: ArmScore, Force Composite percentile, days-since-Mocap. Currently siloed to separate screens, invisible from main dashboard</li>
+        <li><strong>e1RM badge</strong> on every PR card (Epley: <code>weight × (1 + reps/30)</code>) — data is already in <code>exercise_logs</code></li>
+        <li><strong>Sparkline trend</strong> on every PR card showing 90-day progression</li>
+        <li><strong>Percentile bar</strong> vs cohort (uses existing <code>force_plate_percentiles</code> pattern + missing hittrax norms ingestion)</li>
+        <li><strong>Delta chip</strong> (↑40 lb in 90d) — derived from <code>athlete_maxes</code> history</li>
+        <li><strong>Last-5-sessions mini-table</strong> per exercise card — directly under the chart, no separate modal needed</li>
+        <li><strong>X-axis labels always visible</strong> regardless of point count (current <code>LineChart</code> hides them when N&gt;7 at <code>PerformanceScreen.tsx:1948</code>)</li>
+        <li><strong>e1RM pill</strong> in exercise card header — instant context for the volume chart</li>
+        <li><strong>★ PR marker</strong> on the chart point and in the sessions table — visual reinforcement of new records</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2 style="margin-top: 36px;">The 5 bugs to fix before this polish lands</h2>
+  <p class="sub">From the full audit at <code style="color:#9BDDFF;font-family:'JetBrains Mono',monospace;font-size:12px;">docs/PERFORMANCE_LOGGER_AUDIT.md</code>:</p>
+  <div class="notes-grid">
+    <div class="gap">
+      <h3 style="color:#EF4444;">Data-corrupting</h3>
+      <ul>
+        <li><code>workout_instances.started_at</code> doesn't exist — every resume shows 0 elapsed (<code>WorkoutLoggerScreen.tsx:506,522</code>)</li>
+        <li><code>checkAndSavePR</code> has no <code>onConflict</code> — duplicate PR rows accumulate (<code>WorkoutLoggerScreen.tsx:769</code>)</li>
+        <li>Stale-closure debounce — Exercise A data saves under Exercise B (<code>WorkoutLoggerScreen.tsx:834</code>)</li>
+        <li><code>custom_measurements</code> query has no <code>org_id</code> filter — cross-org leak (<code>PerformanceScreen.tsx:265</code>)</li>
+      </ul>
+    </div>
+    <div class="gap">
+      <h3 style="color:#FBBF24;">Visible but small</h3>
+      <ul>
+        <li><code>actual_duration_seconds</code> + <code>actual_distance</code> invisible on CompletedWorkout (<code>CompletedWorkoutScreen.tsx:145</code>)</li>
+        <li><code>workoutData</code> null-deref crash on stale workout (<code>WorkoutLoggerScreen.tsx:278</code>)</li>
+        <li>No pull-to-refresh / <code>useFocusEffect</code> on PerformanceScreen — stale data after coach updates</li>
+        <li>Athlete notes per-set: save handler exists but TextInput never mounted (<code>exercise-detail-view.tsx:2984-2997</code> — dead styles)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>
