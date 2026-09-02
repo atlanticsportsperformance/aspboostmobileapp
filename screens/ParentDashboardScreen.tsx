@@ -35,6 +35,7 @@ import PitchingCard from '../components/dashboard/PitchingCard';
 import { UpcomingPreview } from '../components/dashboard/feed/UpcomingPreview';
 import { DataFeed } from '../components/dashboard/feed/DataFeed';
 import { cancelBooking } from '../lib/bookingApi';
+import { visibleRoutineExercises, previewExerciseName } from '../lib/workoutPreview';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH - 16;
@@ -65,14 +66,19 @@ interface WorkoutInstance {
       routine_exercises: Array<{
         id: string;
         order_index: number;
-        sets: number;
+        sets: number | null;
         metric_targets: any;
         selected_variation?: string | null;
+        is_placeholder?: boolean | null;
+        notes_only?: boolean | null;
+        placeholder_name?: string | null;
+        // Null for notes-only instruction rows, which carry no exercise at all.
+        // Typing this as non-null is what let `exercises.name` ship unguarded.
         exercises: {
           id: string;
           name: string;
           is_placeholder?: boolean;
-        };
+        } | null;
       }>;
     }>;
   };
@@ -529,6 +535,9 @@ export default function ParentDashboardScreen({ navigation }: any) {
                 sets,
                 metric_targets,
                 selected_variation,
+                is_placeholder,
+                notes_only,
+                placeholder_name,
                 exercises (
                   id,
                   name,
@@ -1858,8 +1867,10 @@ export default function ParentDashboardScreen({ navigation }: any) {
                               activeOpacity={0.7}
                             >
                               <View style={styles.workoutCardHeaderLeft}>
-                                <Text style={styles.workoutCardName}>{workout.workouts.name}</Text>
-                                {workout.workouts.estimated_duration_minutes && (
+                                <Text style={styles.workoutCardName}>
+                                  {workout.workouts?.name || 'Workout'}
+                                </Text>
+                                {workout.workouts?.estimated_duration_minutes && (
                                   <Text style={styles.workoutCardDuration}>
                                     {workout.workouts.estimated_duration_minutes} min
                                   </Text>
@@ -1878,17 +1889,22 @@ export default function ParentDashboardScreen({ navigation }: any) {
                             {/* Workout Content - Accordion Dropdown */}
                             {isExpanded && (
                               <View style={styles.workoutPreview}>
-                                {workout.workouts.notes && (
+                                {workout.workouts?.notes && (
                                   <View style={styles.workoutPreviewNotes}>
                                     <Text style={styles.workoutPreviewNotesText}>{workout.workouts.notes}</Text>
                                   </View>
                                 )}
 
-                                {workout.workouts.routines && workout.workouts.routines.length > 0 && (
+                                {workout.workouts?.routines && workout.workouts.routines.length > 0 && (
                                   <View style={styles.routinesList}>
-                                    {workout.workouts.routines
+                                    {[...workout.workouts.routines]
                                       .sort((a, b) => a.order_index - b.order_index)
-                                      .map((routine, routineIdx) => (
+                                      .map((routine, routineIdx) => {
+                                      const visibleExercises = visibleRoutineExercises(
+                                        routine.routine_exercises,
+                                      );
+
+                                      return (
                                         <View key={routine.id} style={styles.routinePreview}>
                                           <View style={styles.routinePreviewHeader}>
                                             <Text style={styles.routinePreviewName}>{routine.name}</Text>
@@ -1903,31 +1919,31 @@ export default function ParentDashboardScreen({ navigation }: any) {
                                             </Text>
                                           )}
 
-                                          {routine.routine_exercises && routine.routine_exercises.filter(re => !re.is_placeholder).length > 0 && (
+                                          {visibleExercises.length > 0 && (
                                             <View style={styles.exercisesList}>
-                                              {routine.routine_exercises
-                                                .filter(re => !re.is_placeholder)
-                                                .sort((a, b) => a.order_index - b.order_index)
-                                                .map((routineExercise, exerciseIdx) => (
+                                              {visibleExercises.map((routineExercise, exerciseIdx) => (
                                                   <View key={routineExercise.id} style={styles.exercisePreview}>
                                                     <Text style={styles.exercisePreviewCode}>
                                                       {String.fromCharCode(65 + routineIdx)}{exerciseIdx + 1}
                                                     </Text>
                                                     <Text style={styles.exercisePreviewName}>
-                                                      {routineExercise.exercises.name}
+                                                      {previewExerciseName(routineExercise)}
                                                       {routineExercise.selected_variation && (
                                                         <Text style={styles.exercisePreviewVariation}> ({routineExercise.selected_variation})</Text>
                                                       )}
                                                     </Text>
-                                                    <Text style={styles.exercisePreviewSets}>
-                                                      {routineExercise.sets} sets
-                                                    </Text>
+                                                    {!!routineExercise.sets && (
+                                                      <Text style={styles.exercisePreviewSets}>
+                                                        {routineExercise.sets} sets
+                                                      </Text>
+                                                    )}
                                                   </View>
                                                 ))}
                                             </View>
                                           )}
                                         </View>
-                                      ))}
+                                      );
+                                      })}
                                   </View>
                                 )}
                               </View>
