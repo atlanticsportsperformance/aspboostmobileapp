@@ -75,6 +75,10 @@ export default function BookingScreen() {
   const [categories, setCategories] = useState<SchedulingCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [remoteOnly, setRemoteOnly] = useState(false);
+  // Membership-aware Remote pill: shown only to athletes whose membership covers a
+  // remote session (server-decided: an eligible remote event paid by membership),
+  // and defaulted ON for them once per athlete until they touch it.
+  const remoteToggleTouchedRef = useRef<string | null>(null);
 
   // View mode: 'day' or 'list'
   const [viewMode, setViewMode] = useState<'day' | 'list'>('list');
@@ -597,6 +601,20 @@ export default function BookingScreen() {
   // Users should be able to filter by any category even if current view is empty
   const availableCategories = categories;
 
+  const isRemoteMember = currentEvents.some(
+    (e) => e.isRemote && e.isEligible && e.paymentSource === 'membership'
+  );
+  useEffect(() => {
+    if (!selectedAthleteId) return;
+    if (remoteToggleTouchedRef.current === selectedAthleteId) return;
+    if (isRemoteMember) {
+      setRemoteOnly(true);
+      remoteToggleTouchedRef.current = selectedAthleteId;
+    }
+    // A non-remote athlete never sees the pill; make sure a stale ON doesn't hide their classes.
+    if (!isRemoteMember && remoteOnly) setRemoteOnly(false);
+  }, [isRemoteMember, selectedAthleteId]);
+
   // Filter events by selected category, then by the Remote toggle
   const categoryFilteredEvents =
     selectedCategory === 'all'
@@ -738,10 +756,11 @@ export default function BookingScreen() {
         style={styles.categoryScroll}
         contentContainerStyle={styles.categoryContent}
       >
-        {/* Remote toggle — shows only video-call sessions, on top of any category filter */}
+        {/* Remote toggle — only for athletes whose membership covers remote sessions */}
+        {isRemoteMember && (
         <TouchableOpacity
           style={[styles.categoryPill, remoteOnly && styles.categoryPillSelected]}
-          onPress={() => setRemoteOnly((v) => !v)}
+          onPress={() => { remoteToggleTouchedRef.current = selectedAthleteId ?? 'me'; setRemoteOnly((v) => !v); }}
           accessibilityRole="switch"
           accessibilityState={{ checked: remoteOnly }}
           accessibilityLabel="Show only remote sessions"
@@ -760,6 +779,7 @@ export default function BookingScreen() {
             </View>
           )}
         </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={[

@@ -45,5 +45,9 @@ describe('Book a Class — Remote toggle', () => {
     expect(S).toContain('? categoryFilteredEvents.filter((e) => e.isRemote)');
     expect(S).toContain('setRemoteOnly((v) => !v)');
     expect(S).toContain("? 'No remote sessions available'");
+    // membership-aware: pill only for remote members, defaulted ON once per athlete
+    expect(S).toContain("(e) => e.isRemote && e.isEligible && e.paymentSource === 'membership'");
+    expect(S).toContain('{isRemoteMember && (');
+    expect(S).toContain('if (!isRemoteMember && remoteOnly) setRemoteOnly(false);');
   });
 });
