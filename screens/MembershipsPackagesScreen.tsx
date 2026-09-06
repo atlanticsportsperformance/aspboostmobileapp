@@ -208,6 +208,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   // term box is highlighted on each featured plan, and the remote coach.
   const [selectedDiscipline, setSelectedDiscipline] = useState<Discipline | null>(null);
   const [selectedTermByPlan, setSelectedTermByPlan] = useState<Record<string, string | null>>({});
+  // Accordion: which plan is expanded per discipline tab (default: the featured plan).
+  const [expandedPlanByDiscipline, setExpandedPlanByDiscipline] = useState<Record<string, string>>({});
   const [remoteCoach, setRemoteCoach] = useState<{ name: string; initials: string } | null>(null);
 
   // Purchase modal state
@@ -1661,18 +1663,25 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       );
     }
 
-    const accent = isRemoteTab ? '#F5A96B' : '#9BDDFF';
-    const accentDeep = isRemoteTab ? '#e08a45' : '#7BC5F0';
-    const onAccent = isRemoteTab ? '#1b0f05' : '#06141c';
-    const { terms, cheapest } = buildTermOptions(featuredPlan as any);
+    // Accordion: one expanded plan per tab; the rest collapse to rows.
+    const orderedPlans = [featuredPlan, ...otherPlans] as MembershipType[];
+    const expandedId = expandedPlanByDiscipline[activeRailEntry.discipline];
+    const panelPlan = (orderedPlans.find((p) => p.id === expandedId) ?? featuredPlan) as MembershipType;
+    const collapsedPlans = orderedPlans.filter((p) => p.id !== panelPlan.id);
+    const panelIsRemote = disciplinesForPlan(panelPlan as any).includes('Remote');
+
+    const accent = panelIsRemote ? '#F5A96B' : '#9BDDFF';
+    const accentDeep = panelIsRemote ? '#e08a45' : '#7BC5F0';
+    const onAccent = panelIsRemote ? '#1b0f05' : '#06141c';
+    const { terms, cheapest } = buildTermOptions(panelPlan as any);
     const selectedTermId =
-      featuredPlan.id in selectedTermByPlan
-        ? selectedTermByPlan[featuredPlan.id]
+      panelPlan.id in selectedTermByPlan
+        ? selectedTermByPlan[panelPlan.id]
         : cheapest?.optionId ?? null;
     const selectedTerm = terms.find((t) => t.optionId === selectedTermId) || terms[0];
-    const includes = buildIncludeLines(featuredPlan as any);
-    const featuredActiveLabel = activeLabelFor(featuredPlan);
-    const featuredGated = featuredPlan.eligible === false;
+    const includes = buildIncludeLines(panelPlan as any);
+    const featuredActiveLabel = activeLabelFor(panelPlan);
+    const featuredGated = panelPlan.eligible === false;
     const featuredDisabled = featuredGated || !!featuredActiveLabel;
 
     return (
@@ -1714,9 +1723,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 {isRemoteTab ? '🎥 TRAIN FROM ANYWHERE' : 'MOST POPULAR'}
               </Text>
             </LinearGradient>
-            <Text style={styles.featuredName}>{featuredPlan.name.trim()}</Text>
+            <Text style={styles.featuredName}>{panelPlan.name.trim()}</Text>
             <Text style={styles.featuredWho} numberOfLines={2}>
-              {featuredPlan.description?.trim() || planSummaryLine(featuredPlan as any)}
+              {panelPlan.description?.trim() || planSummaryLine(panelPlan as any)}
             </Text>
           </View>
 
@@ -1739,7 +1748,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
           <View style={styles.featuredPriceRow}>
             <Text style={styles.featuredPrice}>
-              {formatPrice(selectedTerm.priceCents, featuredPlan.price_currency)}
+              {formatPrice(selectedTerm.priceCents, panelPlan.price_currency)}
             </Text>
             <Text style={styles.featuredPer}>
               {selectedTerm.commitmentMonths
@@ -1757,17 +1766,17 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     key={term.optionId ?? 'monthly'}
                     style={[styles.termBox, on && { borderColor: accent, backgroundColor: isRemoteTab ? '#221609' : '#0E1B22' }]}
                     onPress={() =>
-                      setSelectedTermByPlan((prev) => ({ ...prev, [featuredPlan.id]: term.optionId }))
+                      setSelectedTermByPlan((prev) => ({ ...prev, [panelPlan.id]: term.optionId }))
                     }
                     activeOpacity={0.8}
                   >
                     <Text style={[styles.termLabel, on && { color: accent }]}>{term.label}</Text>
                     <Text style={styles.termPrice}>
-                      {formatPrice(term.priceCents, featuredPlan.price_currency)}
+                      {formatPrice(term.priceCents, panelPlan.price_currency)}
                     </Text>
                     {term.saveCents > 0 && (
                       <Text style={styles.termSave}>
-                        SAVE {formatPrice(term.saveCents, featuredPlan.price_currency)}
+                        SAVE {formatPrice(term.saveCents, panelPlan.price_currency)}
                       </Text>
                     )}
                   </TouchableOpacity>
@@ -1786,8 +1795,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             ))}
           </View>
 
-          {featuredGated && featuredPlan.ineligible_message && (
-            <Text style={styles.featuredGated}>{featuredPlan.ineligible_message}</Text>
+          {featuredGated && panelPlan.ineligible_message && (
+            <Text style={styles.featuredGated}>{panelPlan.ineligible_message}</Text>
           )}
 
           <TouchableOpacity
@@ -1809,14 +1818,14 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 ]}
                 numberOfLines={1}
               >
-                {featuredActiveLabel ? featuredActiveLabel : `Start ${featuredPlan.name.trim()}`}
+                {featuredActiveLabel ? featuredActiveLabel : `Start ${panelPlan.name.trim()}`}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
         </View>
 
-        {/* Everything else in this discipline */}
-        {otherPlans.map((type) => {
+        {/* Everything else in this discipline — tapping a row expands it and collapses the open one */}
+        {collapsedPlans.map((type) => {
           const activeLabel = activeLabelFor(type);
           const gated = type.eligible === false;
           const disabled = gated || !!activeLabel;
@@ -1826,8 +1835,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               key={type.id}
               style={[styles.miniRow, disabled && styles.miniRowDisabled]}
               activeOpacity={0.8}
-              disabled={disabled}
-              onPress={() => openMembershipPurchase(type, cheapestOther?.optionId ?? null)}
+              onPress={() =>
+                setExpandedPlanByDiscipline((prev) => ({
+                  ...prev,
+                  [activeRailEntry.discipline]: type.id,
+                }))
+              }
             >
               <View style={styles.miniMain}>
                 <Text style={styles.miniName} numberOfLines={1}>{type.name.trim()}</Text>
@@ -1843,7 +1856,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                   {formatPrice(cheapestOther?.priceCents ?? type.price_amount, type.price_currency)}
                   <Text style={styles.miniPer}>/mo</Text>
                 </Text>
-                {!disabled && <Ionicons name="chevron-forward" size={18} color="#4c4f56" />}
+                <Ionicons name="chevron-down" size={18} color="#4c4f56" />
               </View>
             </TouchableOpacity>
           );
