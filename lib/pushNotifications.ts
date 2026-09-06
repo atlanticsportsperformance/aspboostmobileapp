@@ -8,15 +8,37 @@ import { supabase } from './supabase';
 const API_URL = 'https://aspboostapp.vercel.app';
 const PUSH_TOKEN_KEY = '@push_token';
 
+// The conversation the user is currently looking at, if any. MessagesScreen
+// sets this when a thread opens and clears it when it closes; the foreground
+// handler below uses it to suppress a banner for a message that has already
+// landed in the open thread via realtime (otherwise every reply in an active
+// back-and-forth drops a banner over the thread you are reading).
+let currentOpenConversationId: string | null = null;
+
+export function setCurrentOpenConversationId(conversationId: string | null): void {
+  currentOpenConversationId = conversationId;
+}
+
+export function getCurrentOpenConversationId(): string | null {
+  return currentOpenConversationId;
+}
+
 // Configure how notifications appear when app is in foreground
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
+  handleNotification: async (notification) => {
+    const data = (notification?.request?.content?.data || {}) as Record<string, any>;
+    const conversationId = data.conversationId || data.conversation_id;
+    const isOpenThread =
+      !!currentOpenConversationId && conversationId === currentOpenConversationId;
+
+    return {
+      shouldShowAlert: !isOpenThread,
+      shouldPlaySound: !isOpenThread,
+      shouldSetBadge: true,
+      shouldShowBanner: !isOpenThread,
+      shouldShowList: true,
+    };
+  },
 });
 
 export interface PushNotificationState {

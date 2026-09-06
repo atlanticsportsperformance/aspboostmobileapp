@@ -60,9 +60,23 @@ function AppContent() {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
 
+  // A notification tap that arrives before auth has resolved (the cold-start
+  // replay below fires on a 500ms timer, which routinely beats session
+  // restore) used to be dropped on the floor by the `!session` bail below —
+  // the app just opened on the dashboard. Park the payload here instead and
+  // let the effect further down replay it the moment a session exists.
+  const pendingNotificationRef = useRef<{ type?: string; id?: string; screen?: string; conversationId?: string } | null>(null);
+
   // Handle notification tap navigation
   const handleNotificationNavigation = useCallback((data: { type?: string; id?: string; screen?: string; conversationId?: string }) => {
-    if (!navigationRef.current || !session) return;
+    if (!session) {
+      pendingNotificationRef.current = data;
+      return;
+    }
+    if (!navigationRef.current) {
+      pendingNotificationRef.current = data;
+      return;
+    }
 
     const nav = navigationRef.current as any;
 
@@ -120,6 +134,22 @@ function AppContent() {
 
     return cleanup;
   }, [handleNotificationNavigation]);
+
+  // Replay a notification tap that landed before the session was ready.
+  // Cleared before navigating so a later re-render can't route twice.
+  useEffect(() => {
+    if (!session) return;
+    const pending = pendingNotificationRef.current;
+    if (!pending) return;
+    pendingNotificationRef.current = null;
+    if (navigationRef.current) {
+      handleNotificationNavigation(pending);
+      return;
+    }
+    // Session resolved before the navigator mounted — give it a tick.
+    const timer = setTimeout(() => handleNotificationNavigation(pending), 300);
+    return () => clearTimeout(timer);
+  }, [session, handleNotificationNavigation]);
 
   // Set up push notifications when authenticated
   useEffect(() => {
