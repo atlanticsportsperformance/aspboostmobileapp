@@ -1,6 +1,14 @@
 import React from 'react';
 import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { useVideoPlayer, VideoView } from 'expo-video';
+// Lazy require: on an app binary built before expo-video shipped, a top-level
+// import crashes every screen that renders this modal. A stale binary gets a
+// plain "update the app" sheet instead.
+let ExpoVideo: typeof import('expo-video') | null = null;
+try {
+  ExpoVideo = require('expo-video');
+} catch {
+  ExpoVideo = null;
+}
 
 interface Props {
   // Callers must pass an already-resolved, directly-playable URL (e.g. from
@@ -13,12 +21,23 @@ interface Props {
   onClose: () => void;
 }
 
-export function VideoPlayerModal({ uri, visible, onClose }: Props) {
-  const player = useVideoPlayer(uri ?? '', (p) => {
+function NativePlayer({ uri }: { uri: string }) {
+  const player = ExpoVideo!.useVideoPlayer(uri, (p) => {
     p.loop = false;
     p.play();
   });
+  return (
+    <ExpoVideo.VideoView
+      player={player}
+      style={styles.video}
+      nativeControls
+      allowsFullscreen
+      contentFit="contain"
+    />
+  );
+}
 
+export function VideoPlayerModal({ uri, visible, onClose }: Props) {
   return (
     <Modal visible={visible && !!uri} animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.backdrop}>
@@ -26,14 +45,9 @@ export function VideoPlayerModal({ uri, visible, onClose }: Props) {
           <Text style={styles.closeIcon}>✕</Text>
         </TouchableOpacity>
 
-        {uri && (
-          <VideoView
-            player={player}
-            style={styles.video}
-            nativeControls
-            allowsFullscreen
-            contentFit="contain"
-          />
+        {uri && ExpoVideo && <NativePlayer uri={uri} />}
+        {uri && !ExpoVideo && (
+          <Text style={styles.fallback}>Video playback needs an app update — install the latest build to watch this here.</Text>
         )}
       </View>
     </Modal>
@@ -50,4 +64,5 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   closeIcon: { color: '#fff', fontSize: 16 },
+  fallback: { color: '#9CA3AF', fontSize: 15, textAlign: 'center', paddingHorizontal: 32, lineHeight: 22 },
 });
