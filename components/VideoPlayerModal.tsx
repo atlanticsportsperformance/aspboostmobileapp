@@ -22,12 +22,13 @@ interface Props {
 }
 
 function NativePlayer({ uri }: { uri: string }) {
-  const player = ExpoVideo!.useVideoPlayer(uri, (p) => {
+  const { useVideoPlayer, VideoView } = ExpoVideo!;
+  const player = useVideoPlayer(uri, (p) => {
     p.loop = false;
     p.play();
   });
   return (
-    <ExpoVideo.VideoView
+    <VideoView
       player={player}
       style={styles.video}
       nativeControls
