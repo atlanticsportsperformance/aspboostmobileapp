@@ -8,20 +8,14 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
-  LayoutAnimation,
-  Platform,
-  UIManager,
   Dimensions,
   TextInput,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-
-// Accordion animation on Android's old architecture needs an explicit opt-in.
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+// Reanimated drives the accordion — LayoutAnimation is a no-op on the new architecture.
+import Animated, { FadeIn, FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { initStripe, initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -1680,7 +1674,6 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     const rowsBefore = orderedPlans.slice(0, panelIndex);
     const rowsAfter = orderedPlans.slice(panelIndex + 1);
     const expandPlan = (id: string) => {
-      LayoutAnimation.configureNext(LayoutAnimation.create(260, 'easeInEaseOut', 'opacity'));
       setExpandedPlanByDiscipline((prev) => ({ ...prev, [activeRailEntry.discipline]: id }));
     };
     const panelIsRemote = disciplinesForPlan(panelPlan as any).includes('Remote');
@@ -1705,8 +1698,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       const disabled = gated || !!activeLabel;
       const { cheapest: cheapestOther } = buildTermOptions(type as any);
       return (
+        <Animated.View key={type.id} layout={LinearTransition.duration(240)} entering={FadeIn.duration(160)}>
         <TouchableOpacity
-          key={type.id}
           style={[styles.miniRow, disabled && styles.miniRowDisabled]}
           activeOpacity={0.8}
           onPress={() => expandPlan(type.id)}
@@ -1728,6 +1721,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         <Ionicons name="chevron-down" size={18} color="#4c4f56" />
           </View>
         </TouchableOpacity>
+        </Animated.View>
       );
     };
 
@@ -1761,7 +1755,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         {/* Rows above the expanded card */}
         {rowsBefore.map((type) => renderCollapsedRow(type))}
 
-        <View style={[styles.featuredPlan, panelIsRemote && styles.featuredPlanRemote]}>
+        <Animated.View
+          key={panelPlan.id}
+          layout={LinearTransition.duration(240)}
+          entering={FadeInDown.duration(220)}
+          style={[styles.featuredPlan, panelIsRemote && styles.featuredPlanRemote]}
+        >
           <View style={styles.featuredHead}>
             <LinearGradient
               colors={[accent, accentDeep]}
@@ -1872,7 +1871,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
               </Text>
             </LinearGradient>
           </TouchableOpacity>
-        </View>
+        </Animated.View>
 
         {/* Rows below the expanded card */}
         {rowsAfter.map((type) => renderCollapsedRow(type))}
@@ -3428,7 +3427,7 @@ const styles = StyleSheet.create({
   discRail: {
     flexDirection: 'row',
     gap: 8,
-    paddingBottom: 4,
+    paddingBottom: 16,
     paddingRight: 16,
   },
   discPill: {
@@ -3465,8 +3464,7 @@ const styles = StyleSheet.create({
     borderColor: '#242430',
     borderRadius: 22,
     overflow: 'hidden',
-    marginTop: 16,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   featuredPlanRemote: {
     borderColor: 'rgba(245,169,107,0.5)',

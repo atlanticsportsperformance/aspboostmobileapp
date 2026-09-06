@@ -312,7 +312,8 @@ describe('the memberships tab is wired to the helper, not to hardcoded plans', (
     expect(SOURCE).toContain('expandedPlanByDiscipline');
     expect(SOURCE).toContain('const rowsBefore = orderedPlans.slice(0, panelIndex);');
     expect(SOURCE).toContain('rowsAfter.map((type) => renderCollapsedRow(type))');
-    expect(SOURCE).toContain('LayoutAnimation.configureNext');
+    expect(SOURCE).toContain('layout={LinearTransition.duration(240)}');
+    expect(SOURCE).toContain('entering={FadeInDown.duration(220)}');
     expect(SOURCE).toContain('onPress={() => expandPlan(type.id)}');
   });
 
