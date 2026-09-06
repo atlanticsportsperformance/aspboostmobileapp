@@ -15,7 +15,6 @@
 // from the `/legacy` subpath. See lib/messagesApi.ts for the full rationale —
 // do not "modernize" this import without reading that comment first.
 import * as FileSystem from 'expo-file-system/legacy';
-import { Video as VideoCompressor } from 'react-native-compressor';
 import {
   signUpload,
   uploadFileToSignedUrl,
@@ -108,11 +107,22 @@ export async function prepareVideo(
     throw new VideoTooLongError();
   }
 
-  const compressedUri = await VideoCompressor.compress(uri, {
-    compressionMethod: 'manual',
-    maxSize: VIDEO_MAX_DIMENSION,
-    bitrate: 2_000_000,
-  });
+  // Lazy require: react-native-compressor needs the NitroModules native code;
+  // on an app binary built before that shipped, a top-level import crashes the
+  // whole Messages screen. A stale binary sends the original file instead
+  // (still bounded by the 60s / 100MB caps below).
+  let compressedUri = uri;
+  try {
+    const { Video: VideoCompressor } = require('react-native-compressor');
+    compressedUri = await VideoCompressor.compress(uri, {
+      compressionMethod: 'manual',
+      maxSize: VIDEO_MAX_DIMENSION,
+      bitrate: 2_000_000,
+    });
+  } catch (compressError) {
+    console.warn('Video compression unavailable, sending original:', compressError);
+    compressedUri = uri;
+  }
 
   const size = await fileSize(compressedUri);
 
