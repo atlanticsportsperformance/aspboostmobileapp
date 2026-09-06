@@ -310,8 +310,10 @@ describe('the memberships tab is wired to the helper, not to hardcoded plans', (
   it('purchases go through the expanded panel; tapping a compact row expands it (accordion)', () => {
     expect(SOURCE.split('openMembershipPurchase(').length).toBeGreaterThanOrEqual(2); // definition + panel CTA
     expect(SOURCE).toContain('expandedPlanByDiscipline');
-    expect(SOURCE).toContain('const collapsedPlans = orderedPlans.filter((p) => p.id !== panelPlan.id);');
-    expect(SOURCE).toContain('[activeRailEntry.discipline]: type.id,');
+    expect(SOURCE).toContain('const rowsBefore = orderedPlans.slice(0, panelIndex);');
+    expect(SOURCE).toContain('rowsAfter.map((type) => renderCollapsedRow(type))');
+    expect(SOURCE).toContain('LayoutAnimation.configureNext');
+    expect(SOURCE).toContain('onPress={() => expandPlan(type.id)}');
   });
 
   it('still shows an eligibility block on a gated plan', () => {

@@ -8,12 +8,20 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  LayoutAnimation,
+  Platform,
+  UIManager,
   Dimensions,
   TextInput,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+
+// Accordion animation on Android's old architecture needs an explicit opt-in.
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import { Ionicons } from '@expo/vector-icons';
 import { initStripe, initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -1663,11 +1671,18 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       );
     }
 
-    // Accordion: one expanded plan per tab; the rest collapse to rows.
+    // Accordion: one expanded plan per tab; the rest collapse to rows. Cards keep
+    // their position — the tapped row expands IN PLACE while the open one folds.
     const orderedPlans = [featuredPlan, ...otherPlans] as MembershipType[];
     const expandedId = expandedPlanByDiscipline[activeRailEntry.discipline];
     const panelPlan = (orderedPlans.find((p) => p.id === expandedId) ?? featuredPlan) as MembershipType;
-    const collapsedPlans = orderedPlans.filter((p) => p.id !== panelPlan.id);
+    const panelIndex = orderedPlans.findIndex((p) => p.id === panelPlan.id);
+    const rowsBefore = orderedPlans.slice(0, panelIndex);
+    const rowsAfter = orderedPlans.slice(panelIndex + 1);
+    const expandPlan = (id: string) => {
+      LayoutAnimation.configureNext(LayoutAnimation.create(260, 'easeInEaseOut', 'opacity'));
+      setExpandedPlanByDiscipline((prev) => ({ ...prev, [activeRailEntry.discipline]: id }));
+    };
     const panelIsRemote = disciplinesForPlan(panelPlan as any).includes('Remote');
 
     const accent = panelIsRemote ? '#F5A96B' : '#9BDDFF';
@@ -1683,6 +1698,38 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     const featuredActiveLabel = activeLabelFor(panelPlan);
     const featuredGated = panelPlan.eligible === false;
     const featuredDisabled = featuredGated || !!featuredActiveLabel;
+
+    const renderCollapsedRow = (type: MembershipType) => {
+      const activeLabel = activeLabelFor(type);
+      const gated = type.eligible === false;
+      const disabled = gated || !!activeLabel;
+      const { cheapest: cheapestOther } = buildTermOptions(type as any);
+      return (
+        <TouchableOpacity
+          key={type.id}
+          style={[styles.miniRow, disabled && styles.miniRowDisabled]}
+          activeOpacity={0.8}
+          onPress={() => expandPlan(type.id)}
+        >
+          <View style={styles.miniMain}>
+        <Text style={styles.miniName} numberOfLines={1}>{type.name.trim()}</Text>
+        <Text style={styles.miniSub} numberOfLines={1}>
+          {activeLabel || planSummaryLine(type as any)}
+        </Text>
+        {gated && !!type.ineligible_message && (
+          <Text style={styles.miniGated} numberOfLines={2}>{type.ineligible_message}</Text>
+        )}
+          </View>
+          <View style={styles.miniRight}>
+        <Text style={styles.miniPrice} numberOfLines={1}>
+          {formatPrice(cheapestOther?.priceCents ?? type.price_amount, type.price_currency)}
+          <Text style={styles.miniPer}>/mo</Text>
+        </Text>
+        <Ionicons name="chevron-down" size={18} color="#4c4f56" />
+          </View>
+        </TouchableOpacity>
+      );
+    };
 
     return (
       <View style={styles.finder}>
@@ -1711,6 +1758,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         </ScrollView>
 
         {/* Featured plan */}
+        {/* Rows above the expanded card */}
+        {rowsBefore.map((type) => renderCollapsedRow(type))}
+
         <View style={[styles.featuredPlan, panelIsRemote && styles.featuredPlanRemote]}>
           <View style={styles.featuredHead}>
             <LinearGradient
@@ -1824,43 +1874,8 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
           </TouchableOpacity>
         </View>
 
-        {/* Everything else in this discipline — tapping a row expands it and collapses the open one */}
-        {collapsedPlans.map((type) => {
-          const activeLabel = activeLabelFor(type);
-          const gated = type.eligible === false;
-          const disabled = gated || !!activeLabel;
-          const { cheapest: cheapestOther } = buildTermOptions(type as any);
-          return (
-            <TouchableOpacity
-              key={type.id}
-              style={[styles.miniRow, disabled && styles.miniRowDisabled]}
-              activeOpacity={0.8}
-              onPress={() =>
-                setExpandedPlanByDiscipline((prev) => ({
-                  ...prev,
-                  [activeRailEntry.discipline]: type.id,
-                }))
-              }
-            >
-              <View style={styles.miniMain}>
-                <Text style={styles.miniName} numberOfLines={1}>{type.name.trim()}</Text>
-                <Text style={styles.miniSub} numberOfLines={1}>
-                  {activeLabel || planSummaryLine(type as any)}
-                </Text>
-                {gated && !!type.ineligible_message && (
-                  <Text style={styles.miniGated} numberOfLines={2}>{type.ineligible_message}</Text>
-                )}
-              </View>
-              <View style={styles.miniRight}>
-                <Text style={styles.miniPrice} numberOfLines={1}>
-                  {formatPrice(cheapestOther?.priceCents ?? type.price_amount, type.price_currency)}
-                  <Text style={styles.miniPer}>/mo</Text>
-                </Text>
-                <Ionicons name="chevron-down" size={18} color="#4c4f56" />
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+        {/* Rows below the expanded card */}
+        {rowsAfter.map((type) => renderCollapsedRow(type))}
 
         <Text style={styles.finderCaption}>
           {isRemoteTab
