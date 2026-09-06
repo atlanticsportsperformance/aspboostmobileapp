@@ -16,6 +16,7 @@ import Svg, { Circle, Line, Path, Text as SvgText, Defs, LinearGradient as SvgLi
 import { supabase } from '../lib/supabase';
 import { loadForceProfileMetrics } from '../lib/force-profile';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
+import { getUnreadMessagesCount } from '../lib/unreadMessages';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
@@ -187,12 +188,7 @@ export default function ForceProfileScreen({ route, navigation }: any) {
       }
 
       // Count unread messages
-      const { count: unreadCount } = await supabase
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('receiver_id', user.id)
-        .eq('read', false);
-      setUnreadMessagesCount(unreadCount || 0);
+      setUnreadMessagesCount(await getUnreadMessagesCount(user.id));
     } catch (err) {
       console.error('Error fetching FAB data:', err);
     }

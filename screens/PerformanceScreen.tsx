@@ -21,6 +21,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Line, Circle, Text as SvgText, Path, G } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import { getUnreadMessagesCount } from '../lib/unreadMessages';
 import { useAthlete } from '../contexts/AthleteContext';
 import { armScoreZone, colorFor } from '../lib/armcare/zones';
 
@@ -478,7 +479,7 @@ export default function PerformanceScreen({ route, navigation }: any) {
         supabase.from('command_training_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteId),
         supabase.from('armcare_sessions').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteId),
         supabase.from('force_plate_percentiles').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteId),
-        supabase.from('messages').select('id', { count: 'exact', head: true }).eq('receiver_id', user.id).eq('read', false),
+        getUnreadMessagesCount(user.id),
         supabase.from('athlete_notes').select('id', { count: 'exact', head: true }).eq('athlete_id', athleteId),
         supabase.from('athletes').select('last_viewed_resources_at').eq('id', athleteId).single(),
       ]);
@@ -487,7 +488,7 @@ export default function PerformanceScreen({ route, navigation }: any) {
       setHasPitchingData((trackmanPitches.count || 0) > 0 || (commandSessions.count || 0) > 0);
       setHasArmCareData((armCareSessions.count || 0) > 0);
       setHasForceProfileData((forceData.count || 0) > 0);
-      setUnreadMessagesCount(unreadMessages.count || 0);
+      setUnreadMessagesCount(unreadMessages || 0);
 
       // Count new resources since last viewed
       if (athleteLastViewed?.data?.last_viewed_resources_at) {

@@ -13,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
+import { getUnreadMessagesCount } from '../lib/unreadMessages';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
@@ -271,12 +272,7 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       setHasResourcesData((resourcesCount || 0) > 0);
 
       // Get unread messages count
-      const { count: unreadCount } = await supabase
-        .from('messages')
-        .select('*', { count: 'exact', head: true })
-        .eq('recipient_id', currentUserId)
-        .eq('read', false);
-      setUnreadMessagesCount(unreadCount || 0);
+      setUnreadMessagesCount(await getUnreadMessagesCount(currentUserId));
 
       // Get new resources count (using last_viewed_resources_at like Dashboard)
       if ((resourcesCount || 0) > 0) {

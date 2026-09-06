@@ -22,6 +22,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase, recreateSupabaseClient } from '../lib/supabase';
 import { loadForceProfileMetrics } from '../lib/force-profile';
 import { performLogout } from '../lib/logout';
+import { getUnreadMessagesCount } from '../lib/unreadMessages';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -2145,7 +2146,6 @@ export default function DashboardScreen({ navigation }: any) {
           mocapPitchesResult,
           resourcesResult,
           athleteLastViewedResult,
-          conversationParticipantsResult,
           workoutsResult,
           bookingsResult,
           armcareTestInstancesResult,
@@ -2159,8 +2159,6 @@ export default function DashboardScreen({ navigation }: any) {
           freshClient.from('resources').select('id', { count: 'exact', head: true }).eq('athlete_id', user.id),
           // Get last viewed resources timestamp
           freshClient.from('athletes').select('last_viewed_resources_at').eq('id', athlete.id).single(),
-          // Fetch user's conversation participants for unread count calculation
-          freshClient.from('conversation_participants').select('conversation_id, last_read_at').eq('user_id', user.id).eq('is_archived', false),
           // Load workout instances with full routine details
           freshClient.from('workout_instances').select(`
             id,
@@ -2272,33 +2270,9 @@ export default function DashboardScreen({ navigation }: any) {
           .filter(Boolean); // Remove null entries
         setBookings(normalizedBookings);
 
-        // Unread messages: one count-only query per conversation, in parallel.
-        // Server-side count(*) with last_read_at filter replaces the previous
-        // fetch-all-messages-and-count-in-memory approach.
+        // Unread messages: shared helper (conversation_participants.last_read_at).
         (async () => {
-          try {
-            const participants = conversationParticipantsResult.data || [];
-            if (participants.length === 0) {
-              setUnreadMessagesCount(0);
-              return;
-            }
-
-            const counts = await Promise.all(
-              participants.map((p) =>
-                supabase
-                  .from('messages')
-                  .select('id', { count: 'exact', head: true })
-                  .eq('conversation_id', p.conversation_id)
-                  .eq('is_deleted', false)
-                  .neq('sender_id', user.id)
-                  .gt('created_at', p.last_read_at || '1970-01-01')
-              )
-            );
-            const totalUnread = counts.reduce((sum, r) => sum + (r.count || 0), 0);
-            setUnreadMessagesCount(totalUnread);
-          } catch (err) {
-            console.error('Error calculating unread messages:', err);
-          }
+          setUnreadMessagesCount(await getUnreadMessagesCount(user.id, freshClient));
         })();
 
         // Count NEW resources if we have last viewed timestamp
