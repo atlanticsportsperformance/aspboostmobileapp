@@ -15,7 +15,6 @@
 // from the `/legacy` subpath. See lib/messagesApi.ts for the full rationale —
 // do not "modernize" this import without reading that comment first.
 import * as FileSystem from 'expo-file-system/legacy';
-import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Video as VideoCompressor } from 'react-native-compressor';
 import {
   signUpload,
@@ -138,6 +137,10 @@ export async function generateThumbnail(
   videoUri: string
 ): Promise<{ uri: string; size: number } | null> {
   try {
+    // Lazy require: on an app binary built before this native module existed,
+    // a top-level import crashes the whole Messages screen; a missing poster
+    // frame should degrade instead.
+    const VideoThumbnails = require('expo-video-thumbnails');
     const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 1000 });
     return { uri, size: await fileSize(uri) };
   } catch (error) {

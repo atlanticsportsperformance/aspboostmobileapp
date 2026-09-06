@@ -26,7 +26,6 @@ import { supabase } from '../lib/supabase';
 import * as Notifications from 'expo-notifications';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import {
@@ -55,6 +54,16 @@ import { LinkEmbed } from '../components/LinkEmbed';
 import { MessageAttachmentImage } from '../components/MessageAttachmentImage';
 import { setCurrentOpenConversationId } from '../lib/pushNotifications';
 import { useAuth } from '../contexts/AuthContext';
+
+// expo-image-manipulator loaded lazily: an app binary built before the module
+// existed must fall back to the original image, not crash the screen.
+function getImageManipulator(): typeof import('expo-image-manipulator') | null {
+  try {
+    return require('expo-image-manipulator');
+  } catch {
+    return null;
+  }
+}
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -1599,10 +1608,12 @@ export default function MessagesScreen({ navigation, route }: any) {
     // Convert HEIC/HEIF images to JPEG using ImageManipulator
     if (mimeType === 'image/heic' || mimeType === 'image/heif' || fileName.toLowerCase().endsWith('.heic') || fileName.toLowerCase().endsWith('.heif')) {
       try {
-        const manipulated = await ImageManipulator.manipulateAsync(
+        const IM = getImageManipulator();
+        if (!IM) throw new Error('expo-image-manipulator unavailable in this build');
+        const manipulated = await IM.manipulateAsync(
           attachment.uri,
           [], // No transformations, just convert format
-          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          { compress: 0.8, format: IM.SaveFormat.JPEG }
         );
         fileUri = manipulated.uri;
         mimeType = 'image/jpeg';
@@ -1638,10 +1649,12 @@ export default function MessagesScreen({ navigation, route }: any) {
           (attachment.width || 0) >= (attachment.height || 0)
             ? { resize: { width: MAX_IMAGE_DIMENSION } }
             : { resize: { height: MAX_IMAGE_DIMENSION } };
-        const resized = await ImageManipulator.manipulateAsync(
+        const IM2 = getImageManipulator();
+        if (!IM2) throw new Error('expo-image-manipulator unavailable in this build');
+        const resized = await IM2.manipulateAsync(
           fileUri,
           [resizeAction],
-          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          { compress: 0.8, format: IM2.SaveFormat.JPEG }
         );
         fileUri = resized.uri;
         mimeType = 'image/jpeg';

@@ -178,8 +178,12 @@ describe('the discipline rail', () => {
 });
 
 describe('the featured plan', () => {
-  it('is the plan with the most unlimited coverage', () => {
-    expect(pickFeaturedPlan([pitching, collegePitching, twoWay])!.id).toBe(twoWay.id);
+  it('prefers the most tab-specific plan — Pitching Performance beats Two Way', () => {
+    expect(pickFeaturedPlan([pitching, collegePitching, twoWay])!.id).toBe(pitching.id);
+  });
+
+  it('a single-discipline plan beats a broader one even with less coverage', () => {
+    expect(pickFeaturedPlan([collegePitching, twoWay])!.id).toBe(collegePitching.id);
   });
 
   it('breaks a tie on the higher price', () => {

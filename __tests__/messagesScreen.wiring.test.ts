@@ -193,7 +193,10 @@ describe('photos are downscaled before upload (item 14)', () => {
     expect(SCREEN).toContain('longestEdge > MAX_IMAGE_DIMENSION');
     expect(SCREEN).toContain('{ resize: { width: MAX_IMAGE_DIMENSION } }');
     expect(SCREEN).toContain('{ resize: { height: MAX_IMAGE_DIMENSION } }');
-    expect(SCREEN).toContain("{ compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }");
+    // the manipulator is lazy-required so a stale app binary degrades instead of crashing
+    expect(SCREEN).toContain("return require('expo-image-manipulator');");
+    expect(SCREEN).toContain('{ compress: 0.8, format: IM.SaveFormat.JPEG }');
+    expect(SCREEN).toContain('{ compress: 0.8, format: IM2.SaveFormat.JPEG }');
   });
 
   it('carries the picker dimensions through to prepareForUpload', () => {

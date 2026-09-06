@@ -132,10 +132,17 @@ function unlimitedCount(plan: PlanLike): number {
   return planGroupings(plan).filter((g) => g.is_unlimited !== false).length;
 }
 
-/** Most unlimited coverage wins; ties go to the higher base price. */
+/**
+ * The most tab-specific plan wins (fewest disciplines — Pitching Performance
+ * beats Two Way on the Pitching tab); ties go to more unlimited coverage,
+ * then the higher base price.
+ */
 export function pickFeaturedPlan(plans: PlanLike[]): PlanLike | null {
   if (!plans || plans.length === 0) return null;
   return plans.reduce((best, p) => {
+    const bd = disciplinesForPlan(best).length;
+    const pd = disciplinesForPlan(p).length;
+    if (pd !== bd) return pd < bd ? p : best;
     const bu = unlimitedCount(best);
     const pu = unlimitedCount(p);
     if (pu !== bu) return pu > bu ? p : best;
