@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import {
   getLinkedAthletes,
@@ -73,6 +74,7 @@ export default function BookingScreen() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [categories, setCategories] = useState<SchedulingCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [remoteOnly, setRemoteOnly] = useState(false);
 
   // View mode: 'day' or 'list'
   const [viewMode, setViewMode] = useState<'day' | 'list'>('list');
@@ -595,11 +597,14 @@ export default function BookingScreen() {
   // Users should be able to filter by any category even if current view is empty
   const availableCategories = categories;
 
-  // Filter events by selected category
-  const filteredEvents =
+  // Filter events by selected category, then by the Remote toggle
+  const categoryFilteredEvents =
     selectedCategory === 'all'
       ? dayFilteredEvents
       : dayFilteredEvents.filter((e) => e.category === selectedCategory);
+  const filteredEvents = remoteOnly
+    ? categoryFilteredEvents.filter((e) => e.isRemote)
+    : categoryFilteredEvents;
 
   // Group events by date for list view
   const groupedEvents: Record<string, BookableEvent[]> = {};
@@ -733,6 +738,29 @@ export default function BookingScreen() {
         style={styles.categoryScroll}
         contentContainerStyle={styles.categoryContent}
       >
+        {/* Remote toggle — shows only video-call sessions, on top of any category filter */}
+        <TouchableOpacity
+          style={[styles.categoryPill, remoteOnly && styles.categoryPillSelected]}
+          onPress={() => setRemoteOnly((v) => !v)}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: remoteOnly }}
+          accessibilityLabel="Show only remote sessions"
+        >
+          {remoteOnly ? (
+            <LinearGradient colors={['#9BDDFF', '#7BC5F0']} style={styles.categoryPillGradient}>
+              <View style={styles.remotePillInner}>
+                <Ionicons name="videocam" size={13} color="#000" />
+                <Text style={styles.categoryTextSelected}>Remote</Text>
+              </View>
+            </LinearGradient>
+          ) : (
+            <View style={styles.remotePillRow}>
+              <Ionicons name="videocam-outline" size={13} color="#9BDDFF" />
+              <Text style={[styles.categoryText, styles.remotePillText]}>Remote</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[
             styles.categoryPill,
@@ -795,6 +823,8 @@ export default function BookingScreen() {
                 ? 'No classes available for this date'
                 : selectedDays.length > 0
                 ? `No classes available for selected day${selectedDays.length > 1 ? 's' : ''}`
+                : remoteOnly
+                ? 'No remote sessions available'
                 : selectedCategory !== 'all'
                 ? 'No classes in this category'
                 : 'No classes available this week'}
@@ -1045,6 +1075,22 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     gap: 8,
     alignItems: 'center',
+  },
+  remotePillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  remotePillInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  remotePillText: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
   },
   categoryPill: {
     borderRadius: 20,

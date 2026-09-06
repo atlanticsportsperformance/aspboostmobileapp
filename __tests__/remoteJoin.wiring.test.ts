@@ -37,3 +37,13 @@ describe('remote sessions — Join is a button, and it shows on the dashboard', 
     expect(S).toContain("booking.event?.is_remote && booking.event?.meeting_url && !passed");
   });
 });
+
+describe('Book a Class — Remote toggle', () => {
+  it('BookingScreen has a remote-only pill that filters on isRemote on top of the category filter', () => {
+    const S = read('screens/BookingScreen.tsx');
+    expect(S).toContain('const [remoteOnly, setRemoteOnly] = useState(false);');
+    expect(S).toContain('? categoryFilteredEvents.filter((e) => e.isRemote)');
+    expect(S).toContain('setRemoteOnly((v) => !v)');
+    expect(S).toContain("? 'No remote sessions available'");
+  });
+});
