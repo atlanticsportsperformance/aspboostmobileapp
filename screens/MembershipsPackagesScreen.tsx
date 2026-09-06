@@ -1604,26 +1604,19 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     {athleteData.memberships.length > 0 ? (
                       athleteData.memberships.map((membership) => {
                         const usageCounters = membership.membership_usage_counters || [];
-                        const isPaused = membership.status === 'paused';
                         const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
-                        const hasScheduledPause = !!membership.pause_at;
-                        const hasScheduledResume = !!membership.resume_at;
                         const isLocked = !!membership.locked_until && new Date(membership.locked_until) > new Date();
 
                         // Determine card border color based on status (keep athlete color on left)
-                        const cardBorderColor = isPaused
-                          ? 'rgba(234, 179, 8, 0.3)'
-                          : isScheduledForCancel
-                            ? 'rgba(239, 68, 68, 0.3)'
-                            : 'rgba(255,255,255,0.1)';
+                        const cardBorderColor = isScheduledForCancel
+                          ? 'rgba(239, 68, 68, 0.3)'
+                          : 'rgba(255,255,255,0.1)';
 
                         // Determine icon colors based on status
-                        const iconColors: [string, string] = isPaused
-                          ? ['#EAB308', '#CA8A04']
-                          : isScheduledForCancel
-                            ? ['#EF4444', '#DC2626']
-                            : ['#9BDDFF', '#7BC5F0'];
-                        const iconTextColor = isPaused || isScheduledForCancel ? '#FFF' : '#000';
+                        const iconColors: [string, string] = isScheduledForCancel
+                          ? ['#EF4444', '#DC2626']
+                          : ['#9BDDFF', '#7BC5F0'];
+                        const iconTextColor = isScheduledForCancel ? '#FFF' : '#000';
 
                         return (
                           <View key={membership.id} style={[styles.activeMembershipCard, { borderLeftColor: athleteData.color, borderLeftWidth: 3, borderColor: cardBorderColor }]}>
@@ -1635,7 +1628,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                   style={styles.iconGradient}
                                 >
                                   <Ionicons
-                                    name={isPaused ? 'pause-circle' : isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
+                                    name={isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
                                     size={16}
                                     color={iconTextColor}
                                   />
@@ -1647,16 +1640,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 </Text>
                                 <Text style={[
                                   styles.activeMembershipRenewal,
-                                  isPaused && styles.textYellow,
-                                  isScheduledForCancel && !isPaused && styles.textRed,
+                                  isScheduledForCancel && styles.textRed,
                                 ]}>
-                                  {isPaused ? (
-                                    hasScheduledResume
-                                      ? `Paused • Resumes ${formatDate(membership.resume_at!)}`
-                                      : 'Paused'
-                                  ) : hasScheduledPause ? (
-                                    `Pauses ${formatDate(membership.pause_at!)}`
-                                  ) : membership.cancel_at ? (
+                                  {membership.cancel_at ? (
                                     `Cancels ${formatDate(membership.cancel_at)}`
                                   ) : isScheduledForCancel ? (
                                     `Cancels ${formatDate(membership.current_period_end)}`
@@ -1863,26 +1849,19 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                     <Text style={styles.sectionTitle}>YOUR MEMBERSHIP</Text>
                     {memberships.map((membership) => {
                       const usageCounters = membership.membership_usage_counters || [];
-                      const isPaused = membership.status === 'paused';
                       const isScheduledForCancel = membership.cancel_at_period_end || !!membership.cancel_at;
-                      const hasScheduledPause = !!membership.pause_at;
-                      const hasScheduledResume = !!membership.resume_at;
                       const isLocked = !!membership.locked_until && new Date(membership.locked_until) > new Date();
 
                       // Determine card border color based on status
-                      const cardBorderColor = isPaused
-                        ? 'rgba(234, 179, 8, 0.3)'
-                        : isScheduledForCancel
-                          ? 'rgba(239, 68, 68, 0.3)'
-                          : 'rgba(255,255,255,0.1)';
+                      const cardBorderColor = isScheduledForCancel
+                        ? 'rgba(239, 68, 68, 0.3)'
+                        : 'rgba(255,255,255,0.1)';
 
                       // Determine icon colors based on status
-                      const iconColors: [string, string] = isPaused
-                        ? ['#EAB308', '#CA8A04']
-                        : isScheduledForCancel
-                          ? ['#EF4444', '#DC2626']
-                          : ['#9BDDFF', '#7BC5F0'];
-                      const iconTextColor = isPaused || isScheduledForCancel ? '#FFF' : '#000';
+                      const iconColors: [string, string] = isScheduledForCancel
+                        ? ['#EF4444', '#DC2626']
+                        : ['#9BDDFF', '#7BC5F0'];
+                      const iconTextColor = isScheduledForCancel ? '#FFF' : '#000';
 
                       return (
                         <View key={membership.id} style={[styles.activeMembershipCard, { borderColor: cardBorderColor }]}>
@@ -1894,7 +1873,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                                 style={styles.iconGradient}
                               >
                                 <Ionicons
-                                  name={isPaused ? 'pause-circle' : isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
+                                  name={isScheduledForCancel ? 'alert-circle' : 'checkmark-circle'}
                                   size={16}
                                   color={iconTextColor}
                                 />
@@ -1906,16 +1885,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                               </Text>
                               <Text style={[
                                 styles.activeMembershipRenewal,
-                                isPaused && styles.textYellow,
-                                isScheduledForCancel && !isPaused && styles.textRed,
+                                isScheduledForCancel && styles.textRed,
                               ]}>
-                                {isPaused ? (
-                                  hasScheduledResume
-                                    ? `Paused • Resumes ${formatDate(membership.resume_at!)}`
-                                    : 'Paused'
-                                ) : hasScheduledPause ? (
-                                  `Pauses ${formatDate(membership.pause_at!)}`
-                                ) : membership.cancel_at ? (
+                                {membership.cancel_at ? (
                                   `Cancels ${formatDate(membership.cancel_at)}`
                                 ) : isScheduledForCancel ? (
                                   `Cancels ${formatDate(membership.current_period_end)}`
