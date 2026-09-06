@@ -1711,7 +1711,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         </ScrollView>
 
         {/* Featured plan */}
-        <View style={[styles.featuredPlan, isRemoteTab && styles.featuredPlanRemote]}>
+        <View style={[styles.featuredPlan, panelIsRemote && styles.featuredPlanRemote]}>
           <View style={styles.featuredHead}>
             <LinearGradient
               colors={[accent, accentDeep]}
@@ -1803,7 +1803,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             style={styles.featuredCta}
             activeOpacity={0.85}
             disabled={featuredDisabled}
-            onPress={() => openMembershipPurchase(featuredPlan, selectedTerm.optionId)}
+            onPress={() => openMembershipPurchase(panelPlan, selectedTerm.optionId)}
           >
             <LinearGradient
               colors={featuredDisabled ? ['#2A2A33', '#22222A'] : [accent, accentDeep]}
