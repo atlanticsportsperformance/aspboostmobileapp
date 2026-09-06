@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { initStripe, initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
+import {
+  Discipline,
+  buildDisciplineRail,
+  buildIncludeLines,
+  buildTermOptions,
+  disciplinesForPlan,
+  initialsFor,
+  pickFeaturedPlan,
+  planSummaryLine,
+  remoteCategoryIds,
+} from '../lib/membershipDisciplines';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
@@ -193,6 +204,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
   // Manage menu state
   const [showManageMenu, setShowManageMenu] = useState<string | null>(null);
 
+  // Plan finder (memberships tab): which discipline pill is selected, which
+  // term box is highlighted on each featured plan, and the remote coach.
+  const [selectedDiscipline, setSelectedDiscipline] = useState<Discipline | null>(null);
+  const [selectedTermByPlan, setSelectedTermByPlan] = useState<Record<string, string | null>>({});
+  const [remoteCoach, setRemoteCoach] = useState<{ name: string; initials: string } | null>(null);
+
   // Purchase modal state
   const [selectedItem, setSelectedItem] = useState<MembershipType | PackageType | null>(null);
   const [selectedItemType, setSelectedItemType] = useState<'membership' | 'package'>('membership');
@@ -249,6 +266,82 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       setCouponError(null);
     }
   }, [showPurchaseModal, selectedItem?.id]);
+
+  // ---- Plan finder derivation -------------------------------------------
+  /** Discipline pills, in fixed order, with only the disciplines that have plans. */
+  const disciplineRail = useMemo(
+    () => buildDisciplineRail(availableMembershipTypes as any[]),
+    [availableMembershipTypes]
+  );
+
+  /** Membership type ids the athlete (or any linked athlete) already holds. */
+  const activeMembershipTypeIds = useMemo(() => {
+    const ids = memberships.map((m) => m.membership_type_id);
+    for (const ad of athleteDataList) for (const m of ad.memberships) ids.push(m.membership_type_id);
+    return ids;
+  }, [memberships, athleteDataList]);
+
+  // Default the rail to the discipline of a plan the athlete already holds,
+  // otherwise to the first pill that has plans.
+  useEffect(() => {
+    if (disciplineRail.length === 0) return;
+    if (selectedDiscipline && disciplineRail.some((r) => r.discipline === selectedDiscipline)) return;
+    const held = availableMembershipTypes.find((t) => activeMembershipTypeIds.includes(t.id));
+    const heldDiscipline = held
+      ? disciplinesForPlan(held as any).find((d) => disciplineRail.some((r) => r.discipline === d))
+      : undefined;
+    setSelectedDiscipline(heldDiscipline ?? disciplineRail[0].discipline);
+  }, [disciplineRail, activeMembershipTypeIds, availableMembershipTypes, selectedDiscipline]);
+
+  /** The rail entry currently on screen. */
+  const activeRailEntry =
+    disciplineRail.find((r) => r.discipline === selectedDiscipline) || disciplineRail[0] || null;
+  const featuredPlan = activeRailEntry
+    ? (pickFeaturedPlan(activeRailEntry.plans) as MembershipType | null)
+    : null;
+  const otherPlans = activeRailEntry
+    ? (activeRailEntry.plans.filter((p) => p.id !== featuredPlan?.id) as MembershipType[])
+    : [];
+  const isRemoteTab = activeRailEntry?.discipline === 'Remote';
+
+  // Resolve the remote coach once per mount, from the remote plan's own
+  // scheduling template. Hidden entirely if it doesn't resolve.
+  useEffect(() => {
+    if (!isRemoteTab || !featuredPlan || remoteCoach) return;
+    const categoryIds = remoteCategoryIds(featuredPlan as any);
+    if (categoryIds.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: templates } = await supabase
+          .from('scheduling_templates')
+          .select('default_staff_id')
+          .eq('is_remote', true)
+          .in('category_id', categoryIds)
+          .not('default_staff_id', 'is', null)
+          .limit(1);
+        const staffId = templates?.[0]?.default_staff_id;
+        if (!staffId) return;
+        const { data: staffRow } = await supabase
+          .from('staff')
+          .select('user_id')
+          .eq('id', staffId)
+          .maybeSingle();
+        if (!staffRow?.user_id) return;
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('first_name, last_name')
+          .eq('id', staffRow.user_id)
+          .maybeSingle();
+        const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim();
+        if (!name || cancelled) return;
+        setRemoteCoach({ name, initials: initialsFor(name) });
+      } catch {
+        // A missing coach is a hidden line, never an error state.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isRemoteTab, featuredPlan?.id, remoteCoach]);
 
   /** Price a code against a specific amount. Returns the quote, or null if it doesn't apply. */
   async function quoteCoupon(code: string, amountCents: number): Promise<any | null> {
@@ -1483,11 +1576,23 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       .join(' · ');
   }
 
-  function openMembershipPurchase(type: MembershipType) {
+  /**
+   * Opens the existing purchase sheet. `presetOptionId` carries the term the
+   * buyer picked on the plan finder into the sheet's own tier picker; when it
+   * is undefined the sheet falls back to the membership's default tier exactly
+   * as before.
+   */
+  function openMembershipPurchase(type: MembershipType, presetOptionId?: string | null) {
     setSelectedItem(type);
     setSelectedItemType('membership');
     const committed = committedTiers(type);
-    setSelectedPricingOptionId(committed.find((o: any) => o.is_default)?.id ?? null);
+    const preset =
+      presetOptionId !== undefined && committed.some((o: any) => o.id === presetOptionId)
+        ? presetOptionId
+        : presetOptionId === null
+          ? null
+          : committed.find((o: any) => o.is_default)?.id ?? null;
+    setSelectedPricingOptionId(preset);
     setCommitmentConsent(false);
     setShowPurchaseModal(true);
   }
@@ -1533,6 +1638,226 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
     );
   }
 
+  /**
+   * The memberships tab: a discipline rail, one featured plan panel for the
+   * selected discipline, compact rows for the rest, and a caption. Everything
+   * is derived from the plans' own coverage — see lib/membershipDisciplines.
+   */
+  function renderPlanFinder(activeLabelFor: (type: MembershipType) => string | null) {
+    if (availableMembershipTypes.length === 0) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.emptyText}>No memberships available at this time.</Text>
+        </View>
+      );
+    }
+    if (!activeRailEntry || !featuredPlan) {
+      // Plans exist but none map to a discipline — fall back to plain rows so
+      // nothing ever becomes unbuyable because of a naming change.
+      return (
+        <View style={styles.section}>
+          {availableMembershipTypes.map((type) => renderMembershipRow(type, activeLabelFor(type)))}
+        </View>
+      );
+    }
+
+    const accent = isRemoteTab ? '#F5A96B' : '#9BDDFF';
+    const accentDeep = isRemoteTab ? '#e08a45' : '#7BC5F0';
+    const onAccent = isRemoteTab ? '#1b0f05' : '#06141c';
+    const { terms, cheapest } = buildTermOptions(featuredPlan as any);
+    const selectedTermId =
+      featuredPlan.id in selectedTermByPlan
+        ? selectedTermByPlan[featuredPlan.id]
+        : cheapest?.optionId ?? null;
+    const selectedTerm = terms.find((t) => t.optionId === selectedTermId) || terms[0];
+    const includes = buildIncludeLines(featuredPlan as any);
+    const featuredActiveLabel = activeLabelFor(featuredPlan);
+    const featuredGated = featuredPlan.eligible === false;
+    const featuredDisabled = featuredGated || !!featuredActiveLabel;
+
+    return (
+      <View style={styles.finder}>
+        {/* Discipline rail */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.discRail}
+        >
+          {disciplineRail.map((entry) => {
+            const on = entry.discipline === activeRailEntry.discipline;
+            return (
+              <TouchableOpacity
+                key={entry.discipline}
+                style={[styles.discPill, on && styles.discPillOn]}
+                onPress={() => setSelectedDiscipline(entry.discipline)}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.discDot, { backgroundColor: entry.color }]} />
+                <Text style={[styles.discPillText, on && styles.discPillTextOn]}>
+                  {entry.discipline}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* Featured plan */}
+        <View style={[styles.featuredPlan, isRemoteTab && styles.featuredPlanRemote]}>
+          <View style={styles.featuredHead}>
+            <LinearGradient
+              colors={[accent, accentDeep]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.featuredBadge}
+            >
+              <Text style={[styles.featuredBadgeText, { color: onAccent }]}>
+                {isRemoteTab ? '🎥 TRAIN FROM ANYWHERE' : 'MOST POPULAR'}
+              </Text>
+            </LinearGradient>
+            <Text style={styles.featuredName}>{featuredPlan.name.trim()}</Text>
+            <Text style={styles.featuredWho} numberOfLines={2}>
+              {featuredPlan.description?.trim() || planSummaryLine(featuredPlan as any)}
+            </Text>
+          </View>
+
+          {isRemoteTab && remoteCoach && (
+            <View style={styles.coachLine}>
+              <LinearGradient
+                colors={['#F5A96B', '#d97a33']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.coachAvatar}
+              >
+                <Text style={styles.coachAvatarText}>{remoteCoach.initials}</Text>
+              </LinearGradient>
+              <View>
+                <Text style={styles.coachName}>Coach {remoteCoach.name}</Text>
+                <Text style={styles.coachRole}>Your remote pitching coach</Text>
+              </View>
+            </View>
+          )}
+
+          <View style={styles.featuredPriceRow}>
+            <Text style={styles.featuredPrice}>
+              {formatPrice(selectedTerm.priceCents, featuredPlan.price_currency)}
+            </Text>
+            <Text style={styles.featuredPer}>
+              {selectedTerm.commitmentMonths
+                ? `/mo · ${selectedTerm.commitmentMonths}-month plan`
+                : '/mo'}
+            </Text>
+          </View>
+
+          {terms.length > 1 && (
+            <View style={styles.termRow}>
+              {terms.map((term) => {
+                const on = term.optionId === selectedTerm.optionId;
+                return (
+                  <TouchableOpacity
+                    key={term.optionId ?? 'monthly'}
+                    style={[styles.termBox, on && { borderColor: accent, backgroundColor: isRemoteTab ? '#221609' : '#0E1B22' }]}
+                    onPress={() =>
+                      setSelectedTermByPlan((prev) => ({ ...prev, [featuredPlan.id]: term.optionId }))
+                    }
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.termLabel, on && { color: accent }]}>{term.label}</Text>
+                    <Text style={styles.termPrice}>
+                      {formatPrice(term.priceCents, featuredPlan.price_currency)}
+                    </Text>
+                    {term.saveCents > 0 && (
+                      <Text style={styles.termSave}>
+                        SAVE {formatPrice(term.saveCents, featuredPlan.price_currency)}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
+          <View style={styles.includes}>
+            {includes.map((line, idx) => (
+              <View key={`${line.text}-${idx}`} style={styles.includeLine}>
+                <Ionicons name="checkmark" size={15} color="#34D399" />
+                <Text style={styles.includeText} numberOfLines={2}>{line.text}</Text>
+                {!!line.hint && <Text style={styles.includeHint}>{line.hint}</Text>}
+              </View>
+            ))}
+          </View>
+
+          {featuredGated && featuredPlan.ineligible_message && (
+            <Text style={styles.featuredGated}>{featuredPlan.ineligible_message}</Text>
+          )}
+
+          <TouchableOpacity
+            style={styles.featuredCta}
+            activeOpacity={0.85}
+            disabled={featuredDisabled}
+            onPress={() => openMembershipPurchase(featuredPlan, selectedTerm.optionId)}
+          >
+            <LinearGradient
+              colors={featuredDisabled ? ['#2A2A33', '#22222A'] : [accent, accentDeep]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.featuredCtaInner}
+            >
+              <Text
+                style={[
+                  styles.featuredCtaText,
+                  { color: featuredDisabled ? '#8A8F98' : onAccent },
+                ]}
+                numberOfLines={1}
+              >
+                {featuredActiveLabel ? featuredActiveLabel : `Start ${featuredPlan.name.trim()}`}
+              </Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+
+        {/* Everything else in this discipline */}
+        {otherPlans.map((type) => {
+          const activeLabel = activeLabelFor(type);
+          const gated = type.eligible === false;
+          const disabled = gated || !!activeLabel;
+          const { cheapest: cheapestOther } = buildTermOptions(type as any);
+          return (
+            <TouchableOpacity
+              key={type.id}
+              style={[styles.miniRow, disabled && styles.miniRowDisabled]}
+              activeOpacity={0.8}
+              disabled={disabled}
+              onPress={() => openMembershipPurchase(type, cheapestOther?.optionId ?? null)}
+            >
+              <View style={styles.miniMain}>
+                <Text style={styles.miniName} numberOfLines={1}>{type.name.trim()}</Text>
+                <Text style={styles.miniSub} numberOfLines={1}>
+                  {activeLabel || planSummaryLine(type as any)}
+                </Text>
+                {gated && !!type.ineligible_message && (
+                  <Text style={styles.miniGated} numberOfLines={2}>{type.ineligible_message}</Text>
+                )}
+              </View>
+              <View style={styles.miniRight}>
+                <Text style={styles.miniPrice} numberOfLines={1}>
+                  {formatPrice(cheapestOther?.priceCents ?? type.price_amount, type.price_currency)}
+                  <Text style={styles.miniPer}>/mo</Text>
+                </Text>
+                {!disabled && <Ionicons name="chevron-forward" size={18} color="#4c4f56" />}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+
+        <Text style={styles.finderCaption}>
+          {isRemoteTab
+            ? 'Sessions happen over Google Meet — the link is on every booking'
+            : 'Cancel or manage anytime in Settings · commitment plans bill monthly'}
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
@@ -1541,7 +1866,12 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
           <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Memberships & Packages</Text>
+        <Text style={[styles.title, activeTab === 'memberships' && styles.titleFinder]}>
+          {activeTab === 'memberships' ? 'Find your plan' : 'Memberships & Packages'}
+        </Text>
+        {activeTab === 'memberships' && (
+          <Text style={styles.titleSub}>Pick what you train — see only those plans.</Text>
+        )}
 
         {/* Tab Switcher */}
         <View style={styles.tabContainer}>
@@ -1822,23 +2152,15 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 ))}
 
                 {/* Available Memberships for Purchase (parent view) */}
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>AVAILABLE MEMBERSHIPS</Text>
-                  {availableMembershipTypes.length === 0 ? (
-                    <Text style={styles.emptyText}>No memberships available at this time.</Text>
-                  ) : (
-                    availableMembershipTypes.map((type) => {
-                      // Check if ANY linked athlete has this membership active
-                      const athleteWithActive = athleteDataList.find(ad =>
-                        ad.memberships.some(m => m.membership_type_id === type.id)
-                      );
-                      return renderMembershipRow(
-                        type,
-                        athleteWithActive ? `Active · ${athleteWithActive.athleteName.split(' ')[0]}` : null,
-                      );
-                    })
-                  )}
-                </View>
+                {renderPlanFinder((type) => {
+                  // Check if ANY linked athlete has this membership active
+                  const athleteWithActive = athleteDataList.find(ad =>
+                    ad.memberships.some(m => m.membership_type_id === type.id)
+                  );
+                  return athleteWithActive
+                    ? `Active · ${athleteWithActive.athleteName.split(' ')[0]}`
+                    : null;
+                })}
               </>
             ) : (
               <>
@@ -2064,17 +2386,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
                 )}
 
                 {/* Available Memberships */}
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>MEMBERSHIPS</Text>
-                  {availableMembershipTypes.length === 0 ? (
-                    <Text style={styles.emptyText}>No memberships available at this time.</Text>
-                  ) : (
-                    availableMembershipTypes.map((type) => {
-                      const hasActive = memberships.some(m => m.membership_type_id === type.id);
-                      return renderMembershipRow(type, hasActive ? 'Active' : null);
-                    })
-              )}
-            </View>
+                {renderPlanFinder((type) =>
+                  memberships.some(m => m.membership_type_id === type.id) ? 'Active' : null
+                )}
               </>
             )}
           </>
@@ -3066,6 +3380,279 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 16,
   },
+  titleFinder: {
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    marginBottom: 2,
+  },
+  titleSub: {
+    fontSize: 13,
+    color: '#8A8F98',
+    marginBottom: 14,
+  },
+
+  // ---- Plan finder (memberships tab) ----
+  finder: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  discRail: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingBottom: 4,
+    paddingRight: 16,
+  },
+  discPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#242430',
+    backgroundColor: '#131318',
+  },
+  discPillOn: {
+    backgroundColor: '#0E1B22',
+    borderColor: '#9BDDFF',
+  },
+  discDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 99,
+  },
+  discPillText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#8A8F98',
+  },
+  discPillTextOn: {
+    color: '#F5F6F8',
+  },
+  featuredPlan: {
+    backgroundColor: '#131318',
+    borderWidth: 1,
+    borderColor: '#242430',
+    borderRadius: 22,
+    overflow: 'hidden',
+    marginTop: 16,
+    marginBottom: 14,
+  },
+  featuredPlanRemote: {
+    borderColor: 'rgba(245,169,107,0.5)',
+  },
+  featuredHead: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+  },
+  featuredBadge: {
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    marginBottom: 10,
+  },
+  featuredBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  featuredName: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    color: '#F5F6F8',
+    marginBottom: 2,
+  },
+  featuredWho: {
+    fontSize: 13,
+    color: '#8A8F98',
+  },
+  coachLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+  },
+  coachAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 99,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coachAvatarText: {
+    fontWeight: '800',
+    color: '#1b0f05',
+    fontSize: 13,
+  },
+  coachName: {
+    color: '#E6E9ED',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  coachRole: {
+    fontSize: 13,
+    color: '#8A8F98',
+  },
+  featuredPriceRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  featuredPrice: {
+    fontSize: 44,
+    fontWeight: '800',
+    letterSpacing: -1.5,
+    color: '#F5F6F8',
+  },
+  featuredPer: {
+    fontSize: 14,
+    color: '#8A8F98',
+    fontWeight: '600',
+    paddingBottom: 8,
+  },
+  termRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+  },
+  termBox: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#242430',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    backgroundColor: '#0F0F14',
+  },
+  termLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8A8F98',
+    letterSpacing: 0.4,
+  },
+  termPrice: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#F5F6F8',
+    marginTop: 2,
+  },
+  termSave: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#34D399',
+    marginTop: 2,
+  },
+  includes: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    gap: 8,
+  },
+  includeLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  includeText: {
+    fontSize: 14,
+    color: '#D6DAE0',
+    flexShrink: 1,
+  },
+  includeHint: {
+    marginLeft: 'auto',
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#8A8F98',
+  },
+  featuredGated: {
+    marginHorizontal: 18,
+    marginTop: 12,
+    fontSize: 12.5,
+    color: '#FBBF24',
+  },
+  featuredCta: {
+    marginHorizontal: 18,
+    marginTop: 14,
+    marginBottom: 18,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  featuredCtaInner: {
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  featuredCtaText: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  miniRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#131318',
+    borderWidth: 1,
+    borderColor: '#242430',
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    gap: 12,
+  },
+  miniRowDisabled: {
+    opacity: 0.55,
+  },
+  miniMain: {
+    flex: 1,
+  },
+  miniName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#F5F6F8',
+    letterSpacing: -0.2,
+  },
+  miniSub: {
+    fontSize: 12.5,
+    color: '#8A8F98',
+    marginTop: 2,
+  },
+  miniGated: {
+    fontSize: 12,
+    color: '#FBBF24',
+    marginTop: 4,
+  },
+  miniRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  miniPrice: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#9BDDFF',
+  },
+  miniPer: {
+    fontSize: 11.5,
+    color: '#8A8F98',
+    fontWeight: '600',
+  },
+  finderCaption: {
+    fontSize: 11,
+    color: '#5b5f66',
+    textAlign: 'center',
+    marginTop: 6,
+    marginBottom: 8,
+    lineHeight: 16,
+  },
+
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: 'rgba(255,255,255,0.05)',
