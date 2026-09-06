@@ -52,6 +52,7 @@ import {
 import { VideoAttachmentPreview } from '../components/VideoAttachmentPreview';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { LinkEmbed } from '../components/LinkEmbed';
+import { MessageAttachmentImage } from '../components/MessageAttachmentImage';
 import { setCurrentOpenConversationId } from '../lib/pushNotifications';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -108,6 +109,12 @@ interface Message {
   sender_id: string | null;
   created_at: string;
   sender: Profile | null;
+  // Local-only, set on an optimistic bubble that hasn't been confirmed by
+  // the server yet. Absent on every message that came from the database.
+  status?: 'sending' | 'failed';
+  // Local-only: how many attachments this optimistic send carries. The real
+  // attachment records don't exist until the server accepts the message.
+  localAttachmentCount?: number;
   is_system_message?: boolean;
   system_message_type?: string;
   attachments?: Array<{
@@ -135,6 +142,9 @@ export default function MessagesScreen({ navigation, route }: any) {
   // the param clear alone can't do this job. Holds the conversation id
   // currently mid-auto-open, or null once that chain has settled.
   const autoOpeningIdRef = useRef<string | null>(null);
+  // The conversation id we've already tried to un-archive for a push — see
+  // the miss branch of the auto-open effect.
+  const unarchiveAttemptedRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -197,6 +207,10 @@ export default function MessagesScreen({ navigation, route }: any) {
   // re-upload would orphan the first object. Cleared on send success, on
   // attachment removal, and whenever the selected conversation changes.
   const uploadedAttachmentsCacheRef = useRef<Record<string, OutgoingAttachment>>({});
+  // Payloads for failed sends, keyed by the optimistic bubble's local id, so
+  // "Tap to retry" has something to re-send. Entries are removed once the
+  // send succeeds.
+  const pendingSendsRef = useRef<Record<string, { content: string; attachments: typeof attachments }>>({});
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
 
   // Image viewer state
@@ -253,7 +267,27 @@ export default function MessagesScreen({ navigation, route }: any) {
     if (!routeConversationId) return;
     if (autoOpeningIdRef.current === routeConversationId) return;
     const target = conversations.find(c => c.id === routeConversationId);
-    if (!target) return;
+    if (!target) {
+      // The push points at a conversation that isn't in the list. The list
+      // filters `is_archived = false`, so the overwhelmingly common cause is
+      // that the user archived this thread and the other party has now
+      // replied — receiving a message is an un-archive in every other
+      // messaging app, and this used to be a silent dead end: tap the push,
+      // land on the inbox, nothing happens, no way to reach the message.
+      // Un-archive this user's participant row and refetch; the refreshed
+      // `conversations` re-runs this effect, which then finds the target.
+      //
+      // Guarded by `unarchiveAttemptedRef` so a genuinely unreachable id
+      // (deleted, or one the user was removed from) retries at most once
+      // instead of looping on every list update.
+      if (loading) return;
+      if (unarchiveAttemptedRef.current === routeConversationId) return;
+      unarchiveAttemptedRef.current = routeConversationId;
+      unarchiveAndRefetch(routeConversationId).catch((error) =>
+        console.error('Could not open the archived conversation from a notification:', error)
+      );
+      return;
+    }
     autoOpeningIdRef.current = routeConversationId;
     selectConversation(target)
       .then(() => {
@@ -460,6 +494,25 @@ export default function MessagesScreen({ navigation, route }: any) {
     }
   }
 
+  // Un-archives one conversation for the current user and reloads the list.
+  // Only ever called for a conversation a push notification pointed at — the
+  // server only sends that push to participants, so the user is entitled to
+  // the thread; the row simply sits behind `is_archived = true`.
+  async function unarchiveAndRefetch(conversationId: string) {
+    const userId = currentUser?.id;
+    if (!userId) return;
+
+    const { error } = await supabase
+      .from('conversation_participants')
+      .update({ is_archived: false })
+      .eq('conversation_id', conversationId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    await fetchConversations(userId);
+  }
+
   // One page of thread history. 100 was already the (unpaginated) cap; it is
   // now the page size, walked backwards by `loadOlderMessages`.
   const MESSAGE_PAGE_SIZE = 100;
@@ -660,10 +713,14 @@ export default function MessagesScreen({ navigation, route }: any) {
               markConversationAsRead(selectedConversation.id);
             }
 
-            // Scroll to bottom
-            setTimeout(() => {
-              messagesEndRef.current?.scrollToEnd({ animated: true });
-            }, 100);
+            // Scroll to bottom — but only if the user is reading the live
+            // end. Someone scrolled back through history doesn't get yanked
+            // forward because a new message arrived.
+            if (isNearBottomRef.current) {
+              setTimeout(() => {
+                messagesEndRef.current?.scrollToEnd({ animated: true });
+              }, 100);
+            }
           }
         }
       )
@@ -700,14 +757,180 @@ export default function MessagesScreen({ navigation, route }: any) {
     };
   }, [currentUser]);
 
+  // Inbox realtime. The subscription above only covers the OPEN thread and
+  // brand-new conversations, so a message arriving in an existing
+  // conversation the user wasn't looking at left the list showing a stale
+  // preview and a stale unread count until a manual pull-to-refresh. This
+  // one has no conversation filter — RLS already scopes `messages` to
+  // conversations the user participates in.
+  const selectedConversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversation?.id ?? null;
+  }, [selectedConversation?.id]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const channel = supabase
+      .channel('inbox-messages')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row = payload.new as {
+            id: string;
+            conversation_id: string;
+            content: string;
+            created_at: string;
+            sender_id: string | null;
+            is_deleted?: boolean;
+          };
+          if (!row?.conversation_id) return;
+          if (row.is_deleted) return;
+          // The open thread has its own subscription, which also marks it
+          // read — leave it alone.
+          if (row.conversation_id === selectedConversationIdRef.current) return;
+          // Nothing to badge for the user's own message sent from another
+          // device; the preview still updates below.
+          const fromSomeoneElse = row.sender_id !== currentUser.id;
+
+          let known = true;
+          setConversations(prev => {
+            const idx = prev.findIndex(c => c.id === row.conversation_id);
+            if (idx === -1) {
+              known = false;
+              return prev;
+            }
+            const updated = {
+              ...prev[idx],
+              last_message: {
+                content: row.content || '',
+                created_at: row.created_at,
+                sender_id: row.sender_id,
+              },
+              unread_count: prev[idx].unread_count + (fromSomeoneElse ? 1 : 0),
+              updated_at: row.created_at,
+            };
+            // Newest conversation to the top, matching the list's
+            // updated_at-descending order.
+            return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+          });
+
+          // A message in a conversation this client has never seen (created
+          // while the app was open, or previously archived) — the list is
+          // the only place that can resolve it.
+          if (!known) {
+            fetchConversations(currentUser.id).catch((error) =>
+              console.error('Could not refresh conversations for an unknown thread:', error)
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tell the push handler which thread is on screen so it can suppress a
+  // banner for a message the user is already watching arrive.
+  useEffect(() => {
+    setCurrentOpenConversationId(selectedConversation?.id ?? null);
+    return () => setCurrentOpenConversationId(null);
+  }, [selectedConversation?.id]);
+
+  // Realtime recovery on foreground. iOS suspends the websocket while the
+  // app is backgrounded, and Supabase's reconnect does not replay what was
+  // missed — so anything that arrived during that window is simply absent.
+  // Refetch on the background -> active transition.
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    let previousState: AppStateStatus = AppState.currentState;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const cameToForeground =
+        (previousState === 'background' || previousState === 'inactive') && nextState === 'active';
+      previousState = nextState;
+      if (!cameToForeground) return;
+
+      fetchConversations(currentUser.id).catch((error) =>
+        console.error('Could not refresh conversations on foreground:', error)
+      );
+      const openId = selectedConversationIdRef.current;
+      if (openId) {
+        fetchMessages(openId).catch((error) =>
+          console.error('Could not refresh messages on foreground:', error)
+        );
+      }
+    });
+
+    return () => subscription.remove();
+  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function sendMessage() {
     if (!selectedConversation || (!newMessage.trim() && attachments.length === 0)) return;
 
-    setSending(true);
-    setUploading(attachments.length > 0);
     const messageContent = newMessage.trim();
     const currentAttachments = [...attachments];
+    // Clear the composer immediately — the text now lives in the optimistic
+    // bubble (and, if the send fails, in pendingSendsRef for the retry).
     setNewMessage('');
+
+    await performSend(selectedConversation.id, messageContent, currentAttachments, null);
+  }
+
+  // Re-runs a failed send from its stashed payload. Cheap: every attachment
+  // that already uploaded is still in uploadedAttachmentsCacheRef keyed by
+  // its local uri, so only the parts that actually failed are redone.
+  async function retrySend(localId: string) {
+    const pending = pendingSendsRef.current[localId];
+    if (!pending || !selectedConversation) return;
+    if (sending) return;
+    setMessages(prev => prev.map(m => (m.id === localId ? { ...m, status: 'sending' as const } : m)));
+    await performSend(selectedConversation.id, pending.content, pending.attachments, localId);
+  }
+
+  /**
+   * The real send. A message is rendered into the thread the instant the
+   * user hits send — previously the bubble only appeared after the whole
+   * upload + API round trip, which on gym LTE with a video meant a minute of
+   * a thread that looked like nothing had happened.
+   *
+   * `retryOfLocalId` is the id of the optimistic bubble being retried, or
+   * null for a first attempt. A first failure leaves a "Tap to retry"
+   * bubble and no alert; only a failed RETRY raises the alert, so the user
+   * isn't interrupted by a modal for something they can fix with one tap.
+   */
+  async function performSend(
+    conversationId: string,
+    messageContent: string,
+    currentAttachments: typeof attachments,
+    retryOfLocalId: string | null
+  ) {
+    const isRetry = retryOfLocalId !== null;
+    const localId = retryOfLocalId ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    setSending(true);
+    setUploading(currentAttachments.length > 0);
+
+    if (!isRetry) {
+      const optimistic: Message = {
+        id: localId,
+        content: messageContent,
+        sender_id: currentUser?.id ?? null,
+        created_at: new Date().toISOString(),
+        sender: null,
+        status: 'sending',
+        localAttachmentCount: currentAttachments.length,
+      };
+      setMessages(prev => [...prev, optimistic]);
+      // The user just sent something — always follow it, wherever they were
+      // scrolled.
+      isNearBottomRef.current = true;
+      shouldForceScrollRef.current = true;
+    }
     // Attachments deliberately stay mounted (with their thumbnails and, as
     // the upload loop below progresses, a real per-attachment progress bar)
     // for the whole send. This used to clear here, which unmounted the
@@ -746,7 +969,7 @@ export default function MessagesScreen({ navigation, route }: any) {
             setPreparingVideo(true);
             try {
               uploaded = await uploadVideoAttachment(
-                selectedConversation.id,
+                conversationId,
                 { uri: attachment.uri, name: attachment.name, mimeType: 'video/mp4', size: attachment.size ?? 0 },
                 attachment.duration,
                 onProgress
@@ -757,7 +980,7 @@ export default function MessagesScreen({ navigation, route }: any) {
           } else {
             const prepared = await prepareForUpload(attachment);
             try {
-              uploaded = await uploadAttachment(selectedConversation.id, prepared, onProgress);
+              uploaded = await uploadAttachment(conversationId, prepared, onProgress);
             } finally {
               // Delete the throwaway HEIC->JPEG conversion whether the
               // upload above succeeded or threw, exactly as the video path
@@ -798,7 +1021,7 @@ export default function MessagesScreen({ navigation, route }: any) {
       // All sends go through the API — including attachment-only sends,
       // which the server now accepts — so email/push/in-app notifications
       // fire. The API route owns the conversation's updated_at bump.
-      const data = await sendMessageApi(selectedConversation.id, messageContent, uploadedAttachments);
+      const data = await sendMessageApi(conversationId, messageContent, uploadedAttachments);
 
       // The send succeeded, so every attachment in this batch is now
       // durably referenced by the message — nothing left to reuse on retry.
@@ -806,22 +1029,35 @@ export default function MessagesScreen({ navigation, route }: any) {
         delete uploadedAttachmentsCacheRef.current[attachment.uri];
       }
 
-      // Add message to local state
+      // Swap the optimistic bubble for the server's message, in place, so
+      // the thread doesn't reorder or flicker. The realtime subscription may
+      // also have delivered this same message already — drop the duplicate.
+      delete pendingSendsRef.current[localId];
       if (data) {
         setMessages(prev => {
-          const exists = prev.some(m => m.id === data.id);
-          if (exists) return prev;
-          return [...prev, data as unknown as Message];
+          const withoutServerDupe = prev.filter(m => m.id !== (data as any).id);
+          const idx = withoutServerDupe.findIndex(m => m.id === localId);
+          const server = data as unknown as Message;
+          if (idx === -1) return [...withoutServerDupe, server];
+          const next = [...withoutServerDupe];
+          next[idx] = server;
+          return next;
         });
+      } else {
+        // No message body came back (shouldn't happen) — the optimistic
+        // bubble can't stay marked 'sending' forever.
+        setMessages(prev => prev.filter(m => m.id !== localId));
       }
 
       // Refresh conversations to update last message
       await fetchConversations(currentUser.id);
 
       // Scroll to bottom
-      setTimeout(() => {
-        messagesEndRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+      if (isNearBottomRef.current) {
+        setTimeout(() => {
+          messagesEndRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
 
       // The message is durably sent — now, and only now, drop this batch's
       // attachments from the composer strip. Filtered by uri rather than a
@@ -832,20 +1068,33 @@ export default function MessagesScreen({ navigation, route }: any) {
       setUploadProgress({});
     } catch (error) {
       console.error('Error sending message:', error);
-      setNewMessage(messageContent);
-      // Attachments were never cleared above (see the comment where this
-      // function captures `currentAttachments`), so they're already sitting
-      // in the composer ready for a retry — nothing to restore here. Calling
-      // setAttachments(currentAttachments) again would be a redundant
-      // double-restore that could also clobber an attachment added mid-send.
+      // The composer text is NOT restored: it is already visible in the
+      // failed bubble, and pendingSendsRef holds the payload the retry
+      // re-sends. Putting it back in the input as well would let the user
+      // send the same message twice without realising.
+      //
+      // Attachments were never cleared above (see the comment where
+      // sendMessage captures `currentAttachments`), so they're already
+      // sitting in the composer — nothing to restore there either.
+      pendingSendsRef.current[localId] = { content: messageContent, attachments: currentAttachments };
+      setMessages(prev =>
+        prev.some(m => m.id === localId)
+          ? prev.map(m => (m.id === localId ? { ...m, status: 'failed' as const } : m))
+          : prev
+      );
+
       // Surface the real error (expired session, rejected mime, locked
       // conversation, network drop, ...) instead of one indistinguishable
       // generic message — this is the only diagnostic a device tester gets.
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Failed to send message. Please try again.';
-      Alert.alert('Error', message);
+      // Only on a failed RETRY, though: a first failure already says so on
+      // the bubble, one tap from fixing itself, and a modal there is noise.
+      if (isRetry) {
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : 'Failed to send message. Please try again.';
+        Alert.alert('Error', message);
+      }
     } finally {
       setSending(false);
       setUploading(false);
@@ -1886,7 +2135,9 @@ export default function MessagesScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={message.id}
                 style={[styles.messageRow, isOwn && styles.messageRowOwn]}
-                onLongPress={() => isOwn && deleteMessage(message.id)}
+                // `message.status` marks an optimistic bubble whose server
+                // row doesn't exist yet — there is nothing to delete.
+                onLongPress={() => isOwn && !message.status && deleteMessage(message.id)}
                 activeOpacity={0.8}
               >
                 {!isOwn && (
@@ -1926,26 +2177,18 @@ export default function MessagesScreen({ navigation, route }: any) {
                               }}
                             >
                               {attachment.file_type === 'image' ? (
-                                attachment.storage_path && !authHeadersReady ? (
-                                  // Auth headers haven't loaded yet — this
-                                  // request needs them (attachmentUrl() hits
-                                  // the authorizing endpoint), so hold off
-                                  // rather than firing it unauthenticated.
-                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
-                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
-                                  </View>
-                                ) : (
-                                  <Image
-                                    source={{
-                                      uri: attachment.storage_path
-                                        ? attachmentUrl(attachment.storage_path)
-                                        : attachment.file_url ?? '',
-                                      headers: authHeaders,
-                                    }}
-                                    style={styles.attachmentImage}
-                                    resizeMode="cover"
-                                  />
-                                )
+                                // Holds off until auth headers exist, and
+                                // retries once through a freshly signed URL
+                                // if the load fails — see the component.
+                                <MessageAttachmentImage
+                                  storagePath={attachment.storage_path}
+                                  fileUrl={attachment.file_url}
+                                  endpointUrl={
+                                    attachment.storage_path ? attachmentUrl(attachment.storage_path) : ''
+                                  }
+                                  authHeaders={authHeaders}
+                                  authHeadersReady={authHeadersReady}
+                                />
                               ) : attachment.file_type === 'video' ? (
                                 (attachment.mime_type || '').includes('youtube') ||
                                 (attachment.mime_type || '').includes('vimeo') ? (
@@ -2001,9 +2244,25 @@ export default function MessagesScreen({ navigation, route }: any) {
                           {message.content}
                         </Text>
                       )}
-                      <Text style={[styles.messageTime, styles.messageTimeOwn]}>
-                        {formatMessageTime(message.created_at)}
-                      </Text>
+                      {/* Optimistic bubble: this send hasn't been confirmed
+                          by the server yet. The real attachment records
+                          don't exist until it is, so the count stands in for
+                          the thumbnails. */}
+                      {message.status && (message.localAttachmentCount ?? 0) > 0 && (
+                        <Text style={[styles.messageText, styles.messageTextOwn]}>
+                          📎 {message.localAttachmentCount} attachment
+                          {message.localAttachmentCount === 1 ? '' : 's'}
+                        </Text>
+                      )}
+                      {message.status === 'failed' ? (
+                        <TouchableOpacity onPress={() => retrySend(message.id)} disabled={sending}>
+                          <Text style={styles.messageFailedText}>Not sent · Tap to retry</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <Text style={[styles.messageTime, styles.messageTimeOwn]}>
+                          {message.status === 'sending' ? 'Sending…' : formatMessageTime(message.created_at)}
+                        </Text>
+                      )}
                     </LinearGradient>
                   ) : (
                     <>
@@ -2027,26 +2286,18 @@ export default function MessagesScreen({ navigation, route }: any) {
                               }}
                             >
                               {attachment.file_type === 'image' ? (
-                                attachment.storage_path && !authHeadersReady ? (
-                                  // Auth headers haven't loaded yet — this
-                                  // request needs them (attachmentUrl() hits
-                                  // the authorizing endpoint), so hold off
-                                  // rather than firing it unauthenticated.
-                                  <View style={[styles.attachmentImage, styles.attachmentImagePending]}>
-                                    <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
-                                  </View>
-                                ) : (
-                                  <Image
-                                    source={{
-                                      uri: attachment.storage_path
-                                        ? attachmentUrl(attachment.storage_path)
-                                        : attachment.file_url ?? '',
-                                      headers: authHeaders,
-                                    }}
-                                    style={styles.attachmentImage}
-                                    resizeMode="cover"
-                                  />
-                                )
+                                // Holds off until auth headers exist, and
+                                // retries once through a freshly signed URL
+                                // if the load fails — see the component.
+                                <MessageAttachmentImage
+                                  storagePath={attachment.storage_path}
+                                  fileUrl={attachment.file_url}
+                                  endpointUrl={
+                                    attachment.storage_path ? attachmentUrl(attachment.storage_path) : ''
+                                  }
+                                  authHeaders={authHeaders}
+                                  authHeadersReady={authHeadersReady}
+                                />
                               ) : attachment.file_type === 'video' ? (
                                 (attachment.mime_type || '').includes('youtube') ||
                                 (attachment.mime_type || '').includes('vimeo') ? (
@@ -2553,6 +2804,12 @@ const styles = StyleSheet.create({
   messagesContent: {
     padding: 16,
     paddingBottom: 8,
+  },
+  messageFailedText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7F1D1D',
+    marginTop: 4,
   },
   loadEarlierButton: {
     alignSelf: 'center',

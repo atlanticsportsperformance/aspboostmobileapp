@@ -197,6 +197,23 @@ export async function unregisterPushToken(): Promise<boolean> {
  * Call this after successful login
  */
 export async function setupPushNotifications(): Promise<string | null> {
+  // The server sends Android message pushes with channelId 'messages'. An
+  // unregistered channel id on Android means the notification is posted to
+  // the default channel with default importance — no heads-up banner. Create
+  // it before any token registration so the very first push lands correctly.
+  // Best-effort: a channel failure must not abort push setup entirely.
+  if (Platform.OS === 'android') {
+    try {
+      await Notifications.setNotificationChannelAsync('messages', {
+        name: 'Messages',
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: 'default',
+      });
+    } catch (channelError) {
+      console.warn('Could not create the Android "messages" notification channel:', channelError);
+    }
+  }
+
   const hasPermission = await requestNotificationPermissions();
 
   if (!hasPermission) {
