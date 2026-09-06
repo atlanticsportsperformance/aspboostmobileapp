@@ -17,10 +17,13 @@ import {
   Linking,
   ActionSheetIOS,
   RefreshControl,
+  AppState,
+  type AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import * as Notifications from 'expo-notifications';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -41,6 +44,7 @@ import {
 import {
   uploadVideoAttachment,
   MAX_VIDEO_DURATION_SECONDS,
+  MAX_ATTACHMENT_BYTES,
   VideoTooLongError,
   VideoTooLargeError,
   safeDeleteFile,
@@ -48,9 +52,15 @@ import {
 import { VideoAttachmentPreview } from '../components/VideoAttachmentPreview';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { LinkEmbed } from '../components/LinkEmbed';
+import { setCurrentOpenConversationId } from '../lib/pushNotifications';
 import { useAuth } from '../contexts/AuthContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Longest edge, in pixels, that a photo attachment is downscaled to before
+// upload. Nothing in this app renders an attachment above a phone screen's
+// width, so a 12–48MP camera original is only upload time and storage.
+const MAX_IMAGE_DIMENSION = 2048;
 
 interface Profile {
   id: string;
@@ -141,6 +151,20 @@ export default function MessagesScreen({ navigation, route }: any) {
   const [orgId, setOrgId] = useState<string>('');
   const messagesEndRef = useRef<ScrollView>(null);
 
+  // Auto-scroll bookkeeping. `isNearBottomRef` tracks whether the user is
+  // parked at the live end of the thread; `shouldForceScrollRef` is a
+  // one-shot override set when we KNOW the view should jump to the bottom
+  // regardless (opening a thread, the user's own send) — see the
+  // ScrollView's onContentSizeChange.
+  const isNearBottomRef = useRef(true);
+  const shouldForceScrollRef = useRef(true);
+
+  // Pagination over a long thread. `fetchMessages` loads the newest page;
+  // `loadOlderMessages` walks backwards from `oldestLoadedAtRef`.
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const oldestLoadedAtRef = useRef<string | null>(null);
+
   // New conversation dialog state
   const [showNewConversationDialog, setShowNewConversationDialog] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<Profile[]>([]);
@@ -156,6 +180,10 @@ export default function MessagesScreen({ navigation, route }: any) {
     type: string;
     size?: number;
     duration?: number;
+    // Pixel dimensions from the picker, used by prepareForUpload to decide
+    // whether a photo needs downscaling (and along which edge).
+    width?: number;
+    height?: number;
   }>>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
@@ -432,11 +460,11 @@ export default function MessagesScreen({ navigation, route }: any) {
     }
   }
 
-  async function fetchMessages(conversationId: string) {
-    try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select(`
+  // One page of thread history. 100 was already the (unpaginated) cap; it is
+  // now the page size, walked backwards by `loadOlderMessages`.
+  const MESSAGE_PAGE_SIZE = 100;
+
+  const MESSAGE_SELECT = `
           id,
           content,
           sender_id,
@@ -451,16 +479,29 @@ export default function MessagesScreen({ navigation, route }: any) {
             email,
             avatar_url
           )
-        `)
+        `;
+
+  async function fetchMessages(conversationId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select(MESSAGE_SELECT)
         .eq('conversation_id', conversationId)
         .eq('is_deleted', false)
-        // Bound to the most recent 100 (newest-first, then reversed for display)
-        // instead of loading an entire long thread. TODO: add load-older pagination.
+        // Newest page first, then reversed for display. Older pages are
+        // fetched on demand by loadOlderMessages.
         .order('created_at', { ascending: false })
-        .limit(100);
+        .limit(MESSAGE_PAGE_SIZE);
 
       if (error) throw error;
-      setMessages((data || []).reverse());
+      const page = (data || []).reverse();
+      setMessages(page);
+      oldestLoadedAtRef.current = page.length > 0 ? (page[0] as any).created_at : null;
+      setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
+
+      // Opening a thread always lands at the live end.
+      isNearBottomRef.current = true;
+      shouldForceScrollRef.current = true;
 
       // Scroll to bottom after messages load
       setTimeout(() => {
@@ -471,6 +512,58 @@ export default function MessagesScreen({ navigation, route }: any) {
     }
   }
 
+  // Fetches the page of messages immediately older than the oldest one
+  // currently loaded and prepends it. The ScrollView's
+  // `maintainVisibleContentPosition` keeps the row the user is looking at
+  // pinned in place while the content above it grows.
+  async function loadOlderMessages() {
+    const conversationId = selectedConversation?.id;
+    const before = oldestLoadedAtRef.current;
+    if (!conversationId || !before || loadingOlder || !hasMoreMessages) return;
+
+    setLoadingOlder(true);
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select(MESSAGE_SELECT)
+        .eq('conversation_id', conversationId)
+        .eq('is_deleted', false)
+        .lt('created_at', before)
+        .order('created_at', { ascending: false })
+        .limit(MESSAGE_PAGE_SIZE);
+
+      if (error) throw error;
+
+      const older = (data || []).reverse();
+      if (older.length === 0) {
+        setHasMoreMessages(false);
+        return;
+      }
+
+      oldestLoadedAtRef.current = (older[0] as any).created_at;
+      setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
+      setMessages(prev => {
+        const seen = new Set(prev.map(m => m.id));
+        const fresh = (older as unknown as Message[]).filter(m => !seen.has(m.id));
+        return [...fresh, ...prev];
+      });
+    } catch (error) {
+      console.error('Error loading older messages:', error);
+      Alert.alert('Error', 'Could not load earlier messages. Please try again.');
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
+
+  // Feeds `isNearBottomRef` (see the ScrollView's onContentSizeChange). 120px
+  // of slack so a partially-scrolled-up-by-a-pixel view still follows.
+  function handleMessagesScroll(event: any) {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const distanceFromBottom =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    isNearBottomRef.current = distanceFromBottom <= 120;
+  }
+
   async function selectConversation(conversation: Conversation) {
     setSelectedConversation(conversation);
     setMessages([]);
@@ -479,12 +572,16 @@ export default function MessagesScreen({ navigation, route }: any) {
   }
 
   async function markConversationAsRead(conversationId: string) {
+    // Without this guard the update below ran with `user_id = undefined`,
+    // which matches no row — the read never persisted and the badge came
+    // back on the next fetch.
+    if (!currentUser?.id) return;
     try {
       await supabase
         .from('conversation_participants')
         .update({ last_read_at: new Date().toISOString() })
         .eq('conversation_id', conversationId)
-        .eq('user_id', currentUser?.id);
+        .eq('user_id', currentUser.id);
 
       // Update local state
       setConversations(prev =>
@@ -492,6 +589,16 @@ export default function MessagesScreen({ navigation, route }: any) {
           c.id === conversationId ? { ...c, unread_count: 0 } : c
         )
       );
+
+      // The server sends a `badge` count on message pushes, so the app icon
+      // keeps whatever the last push set until something clears it. Reading
+      // a thread is the moment to do that. Best-effort: a failure here must
+      // never break marking the conversation read.
+      try {
+        await Notifications.setBadgeCountAsync(0);
+      } catch (badgeError) {
+        console.warn('Could not clear the app icon badge:', badgeError);
+      }
     } catch (error) {
       console.error('Error marking as read:', error);
     }
@@ -962,6 +1069,15 @@ export default function MessagesScreen({ navigation, route }: any) {
     return null;
   }
 
+  // ImagePicker reports `duration` in MILLISECONDS (and only for videos —
+  // a photo asset has none). lib/videoAttachment.prepareVideo already reads
+  // it that way, so this converts the same direction. A photo (undefined)
+  // normalizes to 0 so it never trips a duration check.
+  function normalizeAssetDurationSeconds(duration: number | null | undefined): number {
+    if (!duration || !Number.isFinite(duration)) return 0;
+    return Math.round(duration / 1000);
+  }
+
   // Pick image from library
   async function pickImage() {
     try {
@@ -988,7 +1104,23 @@ export default function MessagesScreen({ navigation, route }: any) {
       });
 
       if (!result.canceled && result.assets) {
-        const newAttachments = result.assets.map(asset => {
+        // `videoMaxDuration` only trims what the picker RECORDS; a video
+        // already in the library comes back at its full length, so an
+        // over-length clip used to be accepted here and only rejected
+        // minutes later, after compression, by prepareVideo's
+        // VideoTooLongError. Reject it at pick time instead.
+        const overLength = result.assets.filter(
+          (asset) => normalizeAssetDurationSeconds(asset.duration) > MAX_VIDEO_DURATION_SECONDS
+        );
+        if (overLength.length > 0) {
+          Alert.alert('Video Too Long', `Videos must be ${MAX_VIDEO_DURATION_SECONDS} seconds or shorter.`);
+        }
+        const accepted = result.assets.filter(
+          (asset) => normalizeAssetDurationSeconds(asset.duration) <= MAX_VIDEO_DURATION_SECONDS
+        );
+        if (accepted.length === 0) return;
+
+        const newAttachments = accepted.map(asset => {
           let mimeType = asset.mimeType || (asset.type === 'video' ? 'video/mp4' : 'image/jpeg');
           let fileName = asset.fileName || `file_${Date.now()}`;
 
@@ -1003,6 +1135,8 @@ export default function MessagesScreen({ navigation, route }: any) {
             type: mimeType,
             size: asset.fileSize,
             duration: asset.duration ?? undefined,
+            width: asset.width,
+            height: asset.height,
           };
         });
         setAttachments(prev => [...prev, ...newAttachments]);
@@ -1034,6 +1168,8 @@ export default function MessagesScreen({ navigation, route }: any) {
           name: asset.fileName || `photo_${Date.now()}.jpg`,
           type: asset.mimeType || 'image/jpeg',
           size: asset.fileSize,
+          width: asset.width,
+          height: asset.height,
         }]);
       }
     } catch (error) {
@@ -1104,7 +1240,23 @@ export default function MessagesScreen({ navigation, route }: any) {
       });
 
       if (!result.canceled && result.assets) {
-        const newAttachments = result.assets.map(asset => ({
+        // The server rejects anything over MAX_ATTACHMENT_BYTES at signUpload
+        // time, which meant the user watched a 300MB file upload before being
+        // told no. Check it here, before it is ever added to the composer.
+        const tooLarge = result.assets.filter((a) => (a.size ?? 0) > MAX_ATTACHMENT_BYTES);
+        if (tooLarge.length > 0) {
+          const limitMb = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+          Alert.alert(
+            'File Too Large',
+            tooLarge.length === 1
+              ? `"${tooLarge[0].name}" is larger than ${limitMb}MB and can't be sent.`
+              : `${tooLarge.length} files are larger than ${limitMb}MB and can't be sent.`
+          );
+        }
+        const accepted = result.assets.filter((a) => (a.size ?? 0) <= MAX_ATTACHMENT_BYTES);
+        if (accepted.length === 0) return;
+
+        const newAttachments = accepted.map(asset => ({
           uri: asset.uri,
           name: asset.name,
           type: asset.mimeType || 'application/octet-stream',
@@ -1188,6 +1340,8 @@ export default function MessagesScreen({ navigation, route }: any) {
     name: string;
     type: string;
     size?: number;
+    width?: number;
+    height?: number;
   }): Promise<LocalFile & { tempUri?: string }> {
     let mimeType = attachment.type;
     let fileName = attachment.name;
@@ -1212,7 +1366,50 @@ export default function MessagesScreen({ navigation, route }: any) {
       }
     }
 
+    // Downscale photos to a sane longest edge before upload. A modern phone
+    // camera shot is 12–48MP / 4–12MB; nothing in this app ever renders one
+    // above a phone screen's width, so the full-resolution original is pure
+    // upload time on gym LTE and pure storage cost. 2048px is still well
+    // above any display size here, and `compress` re-encodes at 0.8.
+    //
+    // Skipped for the HEIC branch above, which already produced a converted
+    // JPEG, and for GIFs, which ImageManipulator would flatten to a single
+    // frame.
+    const longestEdge = Math.max(attachment.width || 0, attachment.height || 0);
+    if (
+      mimeType.startsWith('image/') &&
+      mimeType !== 'image/gif' &&
+      fileUri === attachment.uri &&
+      longestEdge > MAX_IMAGE_DIMENSION
+    ) {
+      try {
+        // Resize the LONGER edge so a portrait shot isn't upscaled — passing
+        // only `width` would enlarge a tall narrow image.
+        const resizeAction =
+          (attachment.width || 0) >= (attachment.height || 0)
+            ? { resize: { width: MAX_IMAGE_DIMENSION } }
+            : { resize: { height: MAX_IMAGE_DIMENSION } };
+        const resized = await ImageManipulator.manipulateAsync(
+          fileUri,
+          [resizeAction],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        fileUri = resized.uri;
+        mimeType = 'image/jpeg';
+        fileName = fileName.replace(/\.[^.]+$/, '') + '.jpg';
+      } catch (resizeError) {
+        // Non-fatal: send the original rather than failing the whole message.
+        console.warn('Could not downscale image, sending original:', resizeError);
+      }
+    }
+
     let size = attachment.size || 0;
+    if (fileUri !== attachment.uri) {
+      // The file on disk is no longer the picked asset, so its reported size
+      // is stale — re-read it below rather than signing an upload for the
+      // wrong byte count.
+      size = 0;
+    }
     if (!size) {
       // This SDK's InfoOptions has no `size` flag to opt into — size comes
       // back whenever the file exists, with no extra option needed.
@@ -1548,7 +1745,10 @@ export default function MessagesScreen({ navigation, route }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoid}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        // Android needs an explicit behavior too — with `undefined` the
+        // composer sat under the soft keyboard. 'height' is the behavior
+        // that works with the pan windowSoftInputMode set in app.json.
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
       >
         {/* Chat Header */}
@@ -1611,7 +1811,20 @@ export default function MessagesScreen({ navigation, route }: any) {
           ref={messagesEndRef}
           style={styles.messagesContainer}
           contentContainerStyle={styles.messagesContent}
-          onContentSizeChange={() => messagesEndRef.current?.scrollToEnd({ animated: false })}
+          // Only follow new content when the user is already reading the
+          // bottom of the thread (or just sent something). This used to
+          // scrollToEnd unconditionally, so anything that changed content
+          // height — an image finishing its load, a YouTube embed sizing
+          // itself, a realtime message arriving — yanked the view away from
+          // whatever the user had scrolled back to read.
+          onScroll={handleMessagesScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={() => {
+            if (isNearBottomRef.current || shouldForceScrollRef.current) {
+              shouldForceScrollRef.current = false;
+              messagesEndRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
           refreshControl={
             <RefreshControl
               refreshing={refreshingMessages}
@@ -1619,7 +1832,29 @@ export default function MessagesScreen({ navigation, route }: any) {
               tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A"
             />
           }
+          // Keeps the row the user is reading pinned while an older page is
+          // prepended above it. Index 1 skips the "Load earlier" header.
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
         >
+          {/* Load-older control. An explicit button rather than an
+              on-scroll-to-top trigger: this ScrollView already owns a
+              pull-to-refresh gesture at the top, and stacking an
+              auto-paginate on the same edge fires it every time the user
+              flicks up. */}
+          {hasMoreMessages && (
+            <TouchableOpacity
+              style={styles.loadEarlierButton}
+              onPress={loadOlderMessages}
+              disabled={loadingOlder}
+            >
+              {loadingOlder ? (
+                <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+              ) : (
+                <Text style={styles.loadEarlierText}>Load earlier messages</Text>
+              )}
+            </TouchableOpacity>
+          )}
+
           {messages.map((message) => {
             const isOwn = message.sender_id === currentUser?.id;
             const isSystemMessage = message.is_system_message === true;
@@ -2318,6 +2553,21 @@ const styles = StyleSheet.create({
   messagesContent: {
     padding: 16,
     paddingBottom: 8,
+  },
+  loadEarlierButton: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    minHeight: 32,
+    justifyContent: 'center',
+  },
+  loadEarlierText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
+    fontWeight: '600',
   },
   messageRow: {
     flexDirection: 'row',
