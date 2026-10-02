@@ -924,7 +924,34 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       // The validate-coupon call earlier was a preview only — the actual
       // discount is applied here (PaymentIntent amount) and inside the
       // subscription create call below (for recurring memberships).
-      const couponCodeForCheckout = appliedCoupon?.code || undefined;
+      //
+      // A code typed into the box but never Applied used to be dropped in
+      // SILENCE: this body read `appliedCoupon` only, so the card was charged
+      // full price while the code sat on screen looking accepted. That is how
+      // a $450 membership billed at full price with GHOST200 in the field
+      // (2026-10-02) — the SetupIntent carried no coupon at all. Resolve a
+      // pending code here, and refuse to charge when it does not check out
+      // rather than quietly overcharging and leaving a refund to clean up.
+      let couponForCheckout = appliedCoupon;
+      const pendingCode = couponInput.trim();
+      if (!couponForCheckout && pendingCode) {
+        const quote = await quoteCoupon(
+          pendingCode,
+          effectivePriceCents || selectedItem.price_amount
+        );
+        if (!quote) {
+          setCouponError("That code isn't valid. Remove it or fix it to continue.");
+          Alert.alert(
+            'Check your promo code',
+            `"${pendingCode}" isn't a valid code. Remove it or correct it, then try again.`
+          );
+          return;
+        }
+        setAppliedCoupon(quote);
+        couponForCheckout = quote;
+      }
+
+      const couponCodeForCheckout = couponForCheckout?.code || undefined;
       const bodyParams = selectedItemType === 'membership'
         ? {
             athlete_id: targetAthleteId,

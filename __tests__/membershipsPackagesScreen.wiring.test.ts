@@ -70,3 +70,33 @@ describe('the uncommitted error-shape fixes survive', () => {
     expect(occurrences).toBeGreaterThanOrEqual(2);
   });
 });
+
+// 2026-10-02: a $450 membership was charged in full with GHOST200 sitting in
+// the promo box. The checkout body read `appliedCoupon` only, so a code the
+// parent typed but never tapped Apply on was dropped without a word and the
+// SetupIntent carried no coupon. Never charge past a pending code again.
+describe('a promo code typed but never Applied still counts at checkout', () => {
+  it('resolves the pending code instead of reading only the applied one', () => {
+    expect(SOURCE).toContain('const pendingCode = couponInput.trim();');
+    expect(SOURCE).toContain('if (!couponForCheckout && pendingCode) {');
+    expect(SOURCE).toContain('const couponCodeForCheckout = couponForCheckout?.code || undefined;');
+  });
+
+  it('prices the pending code against the plan actually being bought', () => {
+    const block = SOURCE.split('const pendingCode = couponInput.trim();')[1]?.slice(0, 400) ?? '';
+    expect(block).toContain('quoteCoupon(');
+    expect(block).toContain('effectivePriceCents || selectedItem.price_amount');
+  });
+
+  it('refuses to charge when the pending code does not check out', () => {
+    const block = SOURCE.split('const pendingCode = couponInput.trim();')[1]?.slice(0, 700) ?? '';
+    expect(block).toContain('if (!quote) {');
+    expect(block).toContain('Check your promo code');
+    expect(block).toContain('return;');
+  });
+
+  it('never sends the raw typed string as the coupon — only a validated quote', () => {
+    expect(SOURCE).not.toContain('coupon_code: couponInput');
+    expect(SOURCE).toContain('couponForCheckout = quote;');
+  });
+});
