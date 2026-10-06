@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { fetchLeagueCalendarEvents, leagueEventToBooking, leagueWindow } from '../lib/leagueCalendar';
 import {
   View,
   Text,
@@ -196,7 +195,6 @@ interface WorkoutInstance {
 interface Booking {
   id: string;
   status: string;
-  is_league?: boolean;
   event: {
     id: string;
     start_time: string;
@@ -2270,9 +2268,7 @@ export default function DashboardScreen({ navigation }: any) {
             return { ...booking, event };
           })
           .filter(Boolean); // Remove null entries
-        const lw = leagueWindow();
-        const leagueEvents = await fetchLeagueCalendarEvents(freshClient, athlete.id, lw.from, lw.to);
-        setBookings([...normalizedBookings, ...leagueEvents.map(leagueEventToBooking)]);
+        setBookings(normalizedBookings);
 
         // Unread messages: shared helper (conversation_participants.last_read_at).
         (async () => {
@@ -3319,7 +3315,7 @@ export default function DashboardScreen({ navigation }: any) {
                               styles.bookingCard,
                               passed && styles.bookingCardPassed,
                             ]}
-                            onPress={() => !passed && !booking.is_league && handleBookingPress(booking)}
+                            onPress={() => !passed && handleBookingPress(booking)}
                             activeOpacity={passed ? 1 : 0.7}
                             disabled={passed}
                           >
