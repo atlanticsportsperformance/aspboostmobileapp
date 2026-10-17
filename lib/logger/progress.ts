@@ -27,7 +27,11 @@ export function exerciseDashes(
     });
 }
 
+// Minutes beyond this are a stale started_at (a workout resumed a day later),
+// not real session time — the line then shows sets only.
+export const MAX_ELAPSED_MIN = 240;
+
 export function progressLine(p: { doneSets: number; totalSets: number }, elapsedMin: number): string {
   const base = `${p.doneSets}/${p.totalSets} sets`;
-  return elapsedMin > 0 ? `${base} · ${elapsedMin} min` : base;
+  return elapsedMin > 0 && elapsedMin <= MAX_ELAPSED_MIN ? `${base} · ${elapsedMin} min` : base;
 }

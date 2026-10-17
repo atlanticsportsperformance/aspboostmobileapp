@@ -44,7 +44,6 @@ import {
   ballWeightOrder,
   formatSetMetrics as formatSetLine,
   formatWeightReps,
-  getBallWeight,
   getMeasurementName,
   getMetricLabel,
   isBallMetric,

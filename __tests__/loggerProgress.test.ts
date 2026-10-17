@@ -48,4 +48,10 @@ describe('workout progress', () => {
     expect(progressLine({ doneSets: 7, totalSets: 16 }, 24)).toBe('7/16 sets · 24 min');
     expect(progressLine({ doneSets: 0, totalSets: 16 }, 0)).toBe('0/16 sets');
   });
+
+  it('progressLine hides minutes over 240', () => {
+    expect(progressLine({ doneSets: 2, totalSets: 16 }, 240)).toBe('2/16 sets · 240 min');
+    expect(progressLine({ doneSets: 2, totalSets: 16 }, 241)).toBe('2/16 sets');
+    expect(progressLine({ doneSets: 2, totalSets: 16 }, 605)).toBe('2/16 sets');
+  });
 });

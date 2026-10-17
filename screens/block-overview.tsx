@@ -194,18 +194,19 @@ export default function BlockOverview({
   const next = nextStep(sequence, completedSets);
 
   // A1, A2, B1… per visible row — the list and the Continue label share it.
-  const codeById = useMemo(() => {
-    const map: Record<string, string> = {};
+  // Also an id → row map for the Continue name lookup.
+  const { codeById, exerciseById } = useMemo(() => {
+    const codes: Record<string, string> = {};
+    const byId: Record<string, RoutineExercise> = {};
     workout.routines.forEach((routine, routineIndex) => {
       visibleExercises(routine).forEach((ex, exerciseIndex) => {
-        map[ex.id] = getExerciseCode(routineIndex, exerciseIndex);
+        codes[ex.id] = getExerciseCode(routineIndex, exerciseIndex);
+        byId[ex.id] = ex;
       });
     });
-    return map;
+    return { codeById: codes, exerciseById: byId };
   }, [workout.routines]);
-  const nextExercise = next
-    ? workout.routines.flatMap(r => r.routine_exercises).find(ex => ex.id === next.reId)
-    : undefined;
+  const nextExercise = next ? exerciseById[next.reId] : undefined;
   const continueLabel = next
     ? `Continue · ${codeById[next.reId] ?? ''} ${nextExercise?.exercises?.name ?? ''}`.trim()
     : '';
@@ -530,7 +531,7 @@ export default function BlockOverview({
                         {showDoneLine ? (
                           <Text style={styles.doneLine}>{doneSummary(exercise)}</Text>
                         ) : current ? (
-                          <Text style={[styles.currentLine, dim]} numberOfLines={2}>
+                          <Text style={styles.currentLine} numberOfLines={2}>
                             {current.logged ? `${current.logged} · ` : ''}
                             <Text style={styles.currentNext}>{current.next}</Text>
                           </Text>
