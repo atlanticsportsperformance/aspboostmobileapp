@@ -28,6 +28,7 @@ export class FakeOvrDevice implements OvrDevice {
   private repListeners = new Set<OvrRepListener>();
   private stateListeners = new Set<OvrStateListener>();
   private autoTimer: ReturnType<typeof setInterval> | null = null;
+  private dropTimer: ReturnType<typeof setTimeout> | null = null;
 
   async connect(namePrefixOrExactName?: string): Promise<void> {
     this.deviceName =
@@ -40,6 +41,10 @@ export class FakeOvrDevice implements OvrDevice {
 
   disconnect(): void {
     this.stopAutoRun();
+    if (this.dropTimer) {
+      clearTimeout(this.dropTimer);
+      this.dropTimer = null;
+    }
     this.setState('idle');
   }
 
@@ -61,8 +66,21 @@ export class FakeOvrDevice implements OvrDevice {
     };
   }
 
-  /** Emit one rep (defaults: a plausible ~0.8 m/s squat rep at the current load). */
-  emitRep(partial: Partial<OvrRep> = {}): OvrRep {
+  /** Simulate a sensor drop: `reconnecting` for `ms`, then `connected` again. */
+  simulateDrop(ms = 2000): void {
+    if (this.state !== 'connected') return;
+    this.setState('reconnecting');
+    if (this.dropTimer) clearTimeout(this.dropTimer);
+    this.dropTimer = setTimeout(() => {
+      this.dropTimer = null;
+      if (this.state === 'reconnecting') this.setState('connected');
+    }, ms);
+  }
+
+  /** Emit one rep (defaults: a plausible ~0.8 m/s squat rep at the current
+   *  load). Like the real sensor, nothing is emitted unless connected. */
+  emitRep(partial: Partial<OvrRep> = {}): OvrRep | null {
+    if (this.state !== 'connected') return null;
     const meanV = partial.meanV ?? 0.8;
     const peakV = partial.peakV ?? round2(meanV * 1.6);
     const romIn = partial.romIn ?? 24;
@@ -86,7 +104,8 @@ export class FakeOvrDevice implements OvrDevice {
     return rep;
   }
 
-  /** Emit `n` reps every `intervalMs`, velocity dropping ~3% per rep. Returns a stop fn. */
+  /** Emit `n` reps every `intervalMs`, velocity dropping ~3% per rep.
+   *  Ticks while not connected are skipped (not counted). Returns a stop fn. */
   autoRun(n: number, intervalMs = 2500): () => void {
     this.stopAutoRun();
     let i = 0;
@@ -96,8 +115,7 @@ export class FakeOvrDevice implements OvrDevice {
         this.stopAutoRun();
         return;
       }
-      this.emitRep({ meanV: round2(startV * Math.pow(0.97, i)) });
-      i++;
+      if (this.emitRep({ meanV: round2(startV * Math.pow(0.97, i)) })) i++;
     }, intervalMs);
     return () => this.stopAutoRun();
   }
@@ -113,7 +131,13 @@ export class FakeOvrDevice implements OvrDevice {
     this.state = state;
     this.error = error;
     const status: OvrStatus = { state, error, deviceName: this.deviceName };
-    this.stateListeners.forEach((cb) => cb(status));
+    this.stateListeners.forEach((cb) => {
+      try {
+        cb(status);
+      } catch (e) {
+        console.warn('[ovr-fake] state listener threw', e);
+      }
+    });
   }
 }
 

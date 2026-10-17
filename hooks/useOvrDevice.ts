@@ -21,7 +21,11 @@ export interface OvrLastRep {
 export function useOvrDevice(opts: { fake?: boolean } = {}) {
   // Created once per mount; `fake` is read on first render only.
   const [device] = useState<OvrDevice>(() => createOvrDevice({ fake: opts.fake }));
-  const [status, setStatus] = useState<OvrStatus>({ state: device.state });
+  const [status, setStatus] = useState<OvrStatus>(() => ({
+    state: device.state,
+    error: device.error,
+    deviceName: device.deviceName,
+  }));
   const [lastRep, setLastRep] = useState<OvrLastRep | null>(null);
   const seqRef = useRef(0);
 

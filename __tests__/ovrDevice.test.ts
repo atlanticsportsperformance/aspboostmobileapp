@@ -46,15 +46,37 @@ function makeDevice(name: string): MockDevice {
   return d;
 }
 
+// A live scan: the callback stays registered until stopDeviceScan(), and
+// devices advertised later are delivered to it (like ble-plx).
+let scanCb: Listener | null = null;
 const mgr = {
   advertised: [] as MockDevice[],
-  state: jest.fn(async () => 'PoweredOn'),
+  bleState: 'PoweredOn',
+  stateCbs: new Set<Listener>(),
+  state: jest.fn(async (): Promise<string> => mgr.bleState),
+  onStateChange: jest.fn((cb: Listener, emitCurrent: boolean) => {
+    mgr.stateCbs.add(cb);
+    if (emitCurrent) cb(mgr.bleState);
+    return { remove: () => mgr.stateCbs.delete(cb) };
+  }),
+  setBleState(s: string) {
+    mgr.bleState = s;
+    [...mgr.stateCbs].forEach((cb) => cb(s));
+  },
   startDeviceScan: jest.fn((_u: any, _o: any, cb: Listener) => {
+    scanCb = cb;
     const list = [...mgr.advertised];
-    Promise.resolve().then(() => list.forEach((d) => cb(null, d)));
+    Promise.resolve().then(() => list.forEach((d) => scanCb === cb && cb(null, d)));
     return Promise.resolve();
   }),
-  stopDeviceScan: jest.fn(() => Promise.resolve()),
+  stopDeviceScan: jest.fn(() => {
+    scanCb = null;
+    return Promise.resolve();
+  }),
+  advertise(d: MockDevice) {
+    mgr.advertised.push(d);
+    scanCb?.(null, d);
+  },
 };
 
 jest.mock('../lib/ble/manager', () => ({
@@ -79,6 +101,9 @@ async function settle(ms = 0) {
 beforeEach(() => {
   jest.useFakeTimers();
   mgr.advertised = [];
+  mgr.bleState = 'PoweredOn';
+  mgr.stateCbs.clear();
+  scanCb = null;
   jest.clearAllMocks();
 });
 afterEach(() => {
@@ -225,15 +250,148 @@ describe('OvrBleDevice', () => {
     expect(ascii(s.writeCharacteristicWithResponseForService.mock.calls[0][2])).toBe('135');
   });
 
-  it('first connect failure goes to error without retrying', async () => {
+  it('first scan fails → reconnecting → retry → connected; disconnect stops the loop', async () => {
     const dev = new OvrBleDevice({ scanTimeoutMs: 500 });
+    const { states } = track(dev);
     const p = dev.connect();
-    await settle(500);
+    await settle(500); // scan #1 times out
     await p;
-    expect(dev.state).toBe('error');
+    expect(dev.state).toBe('reconnecting');
     expect(dev.error).toMatch(/No OVR sensor/);
-    await settle(30_000);
     expect(mgr.startDeviceScan).toHaveBeenCalledTimes(1);
+
+    await settle(backoffMs(0)); // retry #1 scanning; error still visible
+    expect(mgr.startDeviceScan).toHaveBeenCalledTimes(2);
+    expect(dev.error).toMatch(/No OVR sensor/);
+
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertise(s); // sensor wakes up mid-scan
+    await settle(0);
+    expect(dev.state).toBe('connected');
+    expect(dev.error).toBeUndefined();
+    expect(states[0]).toBe('scanning');
+
+    // Same loop, then a user disconnect stops it.
+    mgr.advertised = [];
+    s.drop();
+    expect(dev.state).toBe('reconnecting');
+    dev.disconnect();
+    await settle(60_000);
+    expect(dev.state).toBe('idle');
+    expect(s.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for Bluetooth PoweredOn before scanning', async () => {
+    mgr.bleState = 'Resetting';
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    const dev = new OvrBleDevice();
+    const p = dev.connect();
+    await settle(100);
+    expect(mgr.startDeviceScan).not.toHaveBeenCalled();
+    mgr.setBleState('PoweredOn');
+    await p;
+    expect(dev.state).toBe('connected');
+  });
+
+  it('Unsupported Bluetooth is terminal', async () => {
+    mgr.bleState = 'Unsupported';
+    const dev = new OvrBleDevice();
+    await dev.connect();
+    expect(dev.state).toBe('error');
+    await settle(60_000);
+    expect(mgr.startDeviceScan).not.toHaveBeenCalled();
+  });
+
+  it('a stale scan timer never stops a newer scan (disconnect → reconnect within 15 s)', async () => {
+    const dev = new OvrBleDevice(); // default 15 s scan timeout
+    void dev.connect();
+    await settle(2000);
+    dev.disconnect();
+    await settle(3000); // t = 5 s
+    const p = dev.connect();
+    await settle(10_500); // t = 15.5 s: past the first scan's old deadline
+    expect(mgr.stopDeviceScan).toHaveBeenCalledTimes(1); // only by disconnect()
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertise(s);
+    await p;
+    expect(dev.state).toBe('connected');
+    expect(s.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('connect() does not stop a scan it does not own', async () => {
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    const dev = new OvrBleDevice();
+    await dev.connect();
+    const stops = mgr.stopDeviceScan.mock.calls.length;
+    dev.disconnect(); // no scan in flight
+    expect(mgr.stopDeviceScan.mock.calls.length).toBe(stops);
+  });
+
+  it('disconnect() while connected removes both subscriptions and cancels the connection', async () => {
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    const dev = new OvrBleDevice();
+    await dev.connect();
+    const discSub = s.onDisconnected.mock.results[0].value;
+    const dataSub = s.monitorCharacteristicForService.mock.results[0].value;
+    const r1 = jest.spyOn(discSub, 'remove');
+    const r2 = jest.spyOn(dataSub, 'remove');
+    dev.disconnect();
+    expect(r1).toHaveBeenCalled();
+    expect(r2).toHaveBeenCalled();
+    expect(s.cancelConnection).toHaveBeenCalled();
+    expect(dev.state).toBe('idle');
+  });
+
+  it('loads set while reconnecting are written once on connect, latest value', async () => {
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    const dev = new OvrBleDevice();
+    await dev.connect();
+    s.drop();
+    await dev.writeLoad(100);
+    await dev.writeLoad(120);
+    expect(s.writeCharacteristicWithResponseForService).not.toHaveBeenCalled();
+    await settle(backoffMs(0));
+    expect(dev.state).toBe('connected');
+    expect(s.writeCharacteristicWithResponseForService).toHaveBeenCalledTimes(1);
+    expect(ascii(s.writeCharacteristicWithResponseForService.mock.calls[0][2])).toBe('120');
+  });
+
+  it('a failed load write on connect retries once, then surfaces the error', async () => {
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    s.writeCharacteristicWithResponseForService.mockRejectedValue(new Error('ATT'));
+    const dev = new OvrBleDevice();
+    await dev.writeLoad(135);
+    await dev.connect();
+    await settle(500);
+    expect(s.writeCharacteristicWithResponseForService).toHaveBeenCalledTimes(2);
+    expect(dev.state).toBe('connected');
+    expect(dev.error).toMatch(/Load write failed/);
+  });
+
+  it('connect() during a reconnect loop leaves a single loop', async () => {
+    const s = makeDevice('OVR_Velocity-6C8E');
+    mgr.advertised = [s];
+    const dev = new OvrBleDevice({ scanTimeoutMs: 1000 });
+    await dev.connect();
+    mgr.advertised = [];
+    s.drop(); // loop A pending
+    const p = dev.connect(); // loop B
+    await settle(1000); // B's first scan times out → B retries
+    await p;
+    await settle(20_000);
+    // A's retry timer was cleared: only B scans, one at a time.
+    const scans = mgr.startDeviceScan.mock.calls.length;
+    const stops = mgr.stopDeviceScan.mock.calls.length;
+    expect(scans - stops).toBeLessThanOrEqual(1);
+    mgr.advertise(s);
+    await settle(10_000);
+    expect(dev.state).toBe('connected');
+    expect(s.connect).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -260,5 +418,20 @@ describe('FakeOvrDevice', () => {
     await settle(5000);
     expect(got).toHaveLength(4);
     stop();
+  });
+
+  it('emits nothing unless connected, and simulateDrop goes reconnecting → connected', async () => {
+    const fake = new FakeOvrDevice();
+    const got: OvrRep[] = [];
+    fake.onRep((r) => got.push(r));
+    expect(fake.emitRep()).toBeNull();
+    await fake.connect();
+    fake.simulateDrop(1000);
+    expect(fake.state).toBe('reconnecting');
+    expect(fake.emitRep()).toBeNull();
+    await settle(1000);
+    expect(fake.state).toBe('connected');
+    fake.emitRep();
+    expect(got).toHaveLength(1);
   });
 });
