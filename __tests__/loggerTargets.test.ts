@@ -1,4 +1,4 @@
-import { roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor } from '../lib/logger/targets';
+import { roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor, nextSetPrefill } from '../lib/logger/targets';
 import type { LoggerRoutineExercise } from '../types/logger';
 
 function re(extra: Partial<LoggerRoutineExercise> = {}): LoggerRoutineExercise {
@@ -160,5 +160,41 @@ describe('backoffUpdates', () => {
     const r = backoffUpdates({ ...base, logged: { 0: { weight: 220 } }, expected: {}, active: null });
     expect(r.apply).toEqual([]);
     expect(r.expected).toEqual({ '1:weight': 200, '2:weight': 200 });
+  });
+});
+
+describe('nextSetPrefill — Next Set carry-forward (final review I1)', () => {
+  const base = { maxes: {}, moundVelocity: null };
+
+  it('back-off set: set 1 = 220 → set 2 gets 200 (not 220); per-set reps are not copied', () => {
+    const logged = { 0: { weight: '220', reps: '2' } };
+    expect(nextSetPrefill({ ...base, re: wave, nextSetIndex: 1, prev: logged[0], logged })).toEqual({ weight: 200 });
+  });
+
+  it('plain straight sets still copy the previous set', () => {
+    const e = re();
+    const logged = { 0: { weight: '135', reps: '8', notes: 'easy' } };
+    expect(nextSetPrefill({ ...base, re: e, nextSetIndex: 1, prev: logged[0], logged })).toEqual({ weight: '135', reps: '8' });
+  });
+
+  it('skips prescribed values, % of max, measured velocity, and values already in the next set', () => {
+    const e = re({
+      metric_targets: { reps: 5 },
+      intensity_targets: [{ metric: 'weight', percent: 80 }],
+    });
+    const logged = { 0: { reps: '5', weight: '180', velo_5oz: 82, distance: 10, time_seconds: 30 }, 1: { distance: 12 } };
+    expect(nextSetPrefill({ ...base, re: e, nextSetIndex: 1, prev: logged[0], logged })).toEqual({ time_seconds: 30 });
+  });
+
+  it('chained back-off anchors on the logged value of the reference set', () => {
+    const chain = re({
+      set_configurations: [
+        {},
+        { intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 1 }] },
+        { intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 2 }] },
+      ],
+    });
+    const logged = { 0: { weight: 220 }, 1: { weight: 195 } };
+    expect(nextSetPrefill({ ...base, re: chain, nextSetIndex: 2, prev: logged[1], logged })).toEqual({ weight: 175 });
   });
 });

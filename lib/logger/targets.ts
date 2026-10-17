@@ -199,3 +199,48 @@ export function backoffUpdates(args: BackoffUpdateArgs): {
   }
   return { apply, expected };
 }
+
+// Does the coach prescribe this set's `metric` itself (per-set or exercise-
+// level value, or any intensity target: % of max or % of an earlier set)?
+export function hasOwnTarget(re: LoggerRoutineExercise, setIndex: number, metric: string): boolean {
+  return prescribedValue(re, setIndex, metric) !== undefined || intensityTargetFor(re, setIndex, metric) !== undefined;
+}
+
+const isEmpty = (v: unknown) => v == null || v === '';
+
+export interface CarryArgs extends Omit<TargetArgs, 'setIndex' | 'metric'> {
+  // The set being moved to (0-indexed) and the set just logged.
+  nextSetIndex: number;
+  prev: Record<string, unknown>;
+}
+
+// "Next Set →" on straight sets: what to pre-fill in the next set. Copies the
+// set just logged ONLY for fields the next set has no target of its own for —
+// a prescribed value (5/3/1 waves) or a % of max shows as the placeholder and
+// fills on Log Set. Back-off fields ("90% of set 1") take their backoffFills
+// value. Measured values (throwing velocity) are never copied, and a value
+// already in the next set is never overwritten.
+export function nextSetPrefill(args: CarryArgs): Record<string, unknown> {
+  const { re, nextSetIndex, prev } = args;
+  const current = args.logged[nextSetIndex] || {};
+  const out: Record<string, unknown> = {};
+
+  for (const [field, value] of Object.entries(prev)) {
+    if (field === 'notes' || isEmpty(value)) continue;
+    if (isThrowingVelocityMetric(field)) continue;
+    if (hasOwnTarget(re, nextSetIndex, field)) continue;
+    if (!isEmpty(current[field])) continue;
+    out[field] = value;
+  }
+
+  const targets = re.set_configurations?.[nextSetIndex]?.intensity_targets || re.intensity_targets || [];
+  for (const t of targets) {
+    if (referenceIndex(t, nextSetIndex) == null || !isEmpty(current[t.metric])) continue;
+    // Earlier sets anchor on what was actually logged, so only this set is computed.
+    const others = new Set<number>();
+    for (let i = 0; i < Math.max(re.sets || 0, re.set_configurations?.length ?? 0); i++) if (i !== nextSetIndex) others.add(i);
+    const fill = backoffFills({ ...args, metric: t.metric, edited: others })[nextSetIndex];
+    if (fill != null) out[t.metric] = fill;
+  }
+  return out;
+}

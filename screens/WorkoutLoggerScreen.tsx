@@ -36,6 +36,7 @@ import type {
 } from '../types/logger';
 import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
+import { nextSetPrefill } from '../lib/logger/targets';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
 import { loggerOutbox } from '../lib/logger/outbox';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
@@ -936,12 +937,21 @@ export default function WorkoutLoggerScreen() {
       return;
     }
 
-    // Straight sets staying on the same exercise: auto-fill from previous set
+    // Straight sets staying on the same exercise: pre-fill the next set from
+    // the one just logged — except fields the next set has its own target
+    // for (prescribed value, % of max) and measured values; back-off fields
+    // get their computed value (lib/logger/targets nextSetPrefill).
     if (isStraight && next.reId === activeExerciseId) {
-      Object.keys(currentSetData).forEach(field => {
-        if (field !== 'notes' && currentSetData[field] != null && currentSetData[field] !== '') {
-          handleInputChange(next.setIndex, field, currentSetData[field], activeExerciseId, true);
-        }
+      const prefill = nextSetPrefill({
+        re: exercise,
+        nextSetIndex: next.setIndex,
+        prev: currentSetData,
+        logged: inputsRef.current[activeExerciseId] || [],
+        maxes: athleteMaxes,
+        moundVelocity,
+      });
+      Object.entries(prefill).forEach(([field, value]) => {
+        handleInputChange(next.setIndex, field, value, activeExerciseId, true);
       });
     }
 
@@ -952,7 +962,7 @@ export default function WorkoutLoggerScreen() {
       [next.reId]: next.setIndex,
     }));
     setActiveExerciseId(next.reId);
-  }, [activeExerciseId, workout, allExercises, sequence, currentSetIndexes, handleInputChange, persistSet, startRestAfter]);
+  }, [activeExerciseId, workout, allExercises, sequence, currentSetIndexes, handleInputChange, persistSet, startRestAfter, athleteMaxes, moundVelocity]);
 
   // Navigation handlers
   const handleExercisePress = (exerciseId: string) => {

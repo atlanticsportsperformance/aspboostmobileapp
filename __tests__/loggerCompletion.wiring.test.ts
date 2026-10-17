@@ -22,6 +22,11 @@ describe('workout logger — set completion survives leaving and resuming', () =
     const fn = body('const handleNextSet', '// Navigation handlers');
     expect(fn).toContain('persistSet(activeExerciseId, currentSetIndex, true)');
   });
+  it('Next Set pre-fills through nextSetPrefill, never a raw copy of every field', () => {
+    const fn = body('const handleNextSet', '// Navigation handlers');
+    expect(fn).toContain('nextSetPrefill({');
+    expect(fn).not.toContain('Object.keys(currentSetData).forEach');
+  });
   it('quick-complete persists both completing and un-completing', () => {
     const fn = body('const handleToggleExerciseComplete', '// Helper to get max value');
     expect(fn).toContain('await persistSet(exerciseId, setIndex, newStatus)');
