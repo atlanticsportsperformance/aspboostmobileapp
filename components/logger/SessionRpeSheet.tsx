@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal, Pressable, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { LOGGER_COLORS } from '../../lib/logger/theme';
 
@@ -16,6 +16,11 @@ type Props = {
 // for session RPE. Skip finishes without touching session_rpe.
 export default function SessionRpeSheet({ visible, onSelect, onSkip, onCancel }: Props) {
   const [picked, setPicked] = useState<number | null>(null);
+  // Fresh pick every time the sheet opens — after a failed finish the athlete
+  // reopens it and must be able to choose again (not only Skip).
+  useEffect(() => {
+    if (visible) setPicked(null);
+  }, [visible]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.backdrop} onPress={() => {}}>

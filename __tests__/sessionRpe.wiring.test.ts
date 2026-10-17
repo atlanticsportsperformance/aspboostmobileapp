@@ -30,6 +30,9 @@ describe('session RPE gating (wiring)', () => {
     expect(sheet).toContain('[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]');
     expect(sheet).toContain('Skip');
   });
+  it('sheet resets its pick each time it opens (a failed finish can pick again)', () => {
+    expect(sheet).toMatch(/useEffect\(\(\) => \{\s*if \(visible\) setPicked\(null\);\s*\}, \[visible\]\);/);
+  });
   it('Android back cancels, does not complete', () => {
     expect(sheet).toContain('onRequestClose={onCancel}');
     expect(logger).toContain('handleCancelSessionRpe = () => setShowSessionRpe(false)');
