@@ -37,6 +37,8 @@ import type {
   LoggerWorkout as Workout,
 } from '../types/logger';
 import { nextStep, type SeqStep } from '../lib/logger/sequence';
+import RpeRow from '../components/logger/RpeRow';
+import { LOGGER_COLORS } from '../lib/logger/theme';
 interface PRAlert {
   metric: string;
   value: number;
@@ -86,6 +88,9 @@ interface ExerciseDetailViewProps {
     isAutoFill?: boolean
   ) => void;
   onToggleSetComplete: (setIndex: number, autoFillValues?: Record<string, any>) => void;
+  /** Per-set athlete RPE for this exercise, keyed `reId:setIndex`. */
+  rpeValues?: Record<string, number | null>;
+  onRpeChange?: (setIndex: number, value: number) => void;
   onNextSet: () => void;
   onPrevExercise: () => void;
   onNextExercise: () => void;
@@ -477,6 +482,8 @@ export default function ExerciseDetailView({
   exerciseHistory,
   onInputChange,
   onToggleSetComplete,
+  rpeValues,
+  onRpeChange,
   onNextSet,
   onPrevExercise,
   onNextExercise,
@@ -1053,6 +1060,9 @@ export default function ExerciseDetailView({
               {isCompleted ? <Text style={styles.setRowCheckIcon}>✓</Text> : null}
             </View>
             <Text style={styles.setRowLabel}>Set {i + 1}</Text>
+            {isCompleted && exercise.ask_rpe && rpeValues?.[`${exercise.id}:${i}`] == null && (
+              <Text style={styles.setRowRpeMissing}>RPE?</Text>
+            )}
             <Text
               style={[
                 styles.setRowSummary,
@@ -1246,6 +1256,14 @@ export default function ExerciseDetailView({
               );
             })()}
           </View>
+
+          {exercise.ask_rpe && onRpeChange && (
+            <RpeRow
+              target={setConfig?.rpe ?? null}
+              value={rpeValues?.[`${exercise.id}:${i}`] ?? null}
+              onChange={(v) => onRpeChange(i, v)}
+            />
+          )}
 
           {/* Per-set notes from coach (read-only display) */}
           {setConfig?.notes && (
@@ -2628,6 +2646,13 @@ const styles = StyleSheet.create({
   },
   setRowSummaryUpcoming: {
     color: '#6b7280',
+  },
+  setRowRpeMissing: {
+    color: LOGGER_COLORS.rpe,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginRight: 8,
   },
   setRowEdit: {
     color: '#9BDDFF',

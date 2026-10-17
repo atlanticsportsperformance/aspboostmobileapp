@@ -101,6 +101,8 @@ export default function WorkoutLoggerScreen() {
   // rpe per `reId:setIndex` as loaded — the upsert RPC writes the whole row,
   // so a known rpe must be sent back or it would be cleared.
   const rpeRef = useRef<Record<string, number | null>>({});
+  // Render mirror of rpeRef (the RPE row reads it).
+  const [rpeValues, setRpeValues] = useState<Record<string, number | null>>({});
   const restTimer = useRestTimer();
   // Sets whose completion toggle is still saving — a fast double-tap on Log
   // Set is ignored instead of flipping the set back locally.
@@ -353,6 +355,7 @@ export default function WorkoutLoggerScreen() {
         if ('rpe' in l) rpeMap[`${l.routine_exercise_id}:${l.set_number - 1}`] = l.rpe ?? null;
       });
       rpeRef.current = rpeMap;
+      setRpeValues(rpeMap);
 
       // Populate exerciseInputs from existing logs
       const inputsMap: Record<string, any[]> = {};
@@ -978,6 +981,17 @@ export default function WorkoutLoggerScreen() {
       });
   }, [activeExerciseId, allExercises, handleInputChange, persistSet, startRestAfter]);
 
+  // RPE tap: update the set's rpe (the value every later save carries) and
+  // save at once — as a draft, or as complete if the set is already logged.
+  const handleRpeChange = useCallback((setIndex: number, value: number) => {
+    if (!activeExerciseId) return;
+    const next = { ...rpeRef.current, [`${activeExerciseId}:${setIndex}`]: value };
+    rpeRef.current = next;
+    setRpeValues(next);
+    cancelDraft(activeExerciseId, setIndex);
+    persistSet(activeExerciseId, setIndex, completedRef.current[activeExerciseId]?.[setIndex] === true);
+  }, [activeExerciseId, persistSet]);
+
   // Get current exercise and routine
   const currentExercise = useMemo(() => {
     return allExercises.find(ex => ex.id === activeExerciseId);
@@ -1114,6 +1128,8 @@ export default function WorkoutLoggerScreen() {
         lastWeekRows={lastWeekRows}
         onInputChange={handleInputChange}
         onToggleSetComplete={handleToggleSetComplete}
+        rpeValues={rpeValues}
+        onRpeChange={handleRpeChange}
         onNextSet={handleNextSet}
         onPrevExercise={handlePrevExercise}
         onNextExercise={handleNextExercise}
