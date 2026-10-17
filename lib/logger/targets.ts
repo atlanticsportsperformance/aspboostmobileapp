@@ -26,6 +26,8 @@ export interface IntensityResult {
   percent: number;
   calculatedValue?: number;
   sourceExerciseName?: string | null;
+  // 1-indexed set this target is a % of ("90% of set 1"); absent for % of max.
+  referenceSet?: number;
 }
 
 // Nearest 5 lb — something that goes on a bar (80% of 227 is 180, not 182).
@@ -84,10 +86,11 @@ export function intensityFor(args: TargetArgs): IntensityResult | null {
         percent: target.percent,
         calculatedValue: roundFor(refNum * (target.percent / 100), metric),
         sourceExerciseName: `Set ${target.reference_set}`,
+        referenceSet: target.reference_set!,
       };
     }
     // Reference set not logged yet — show the percentage, no number.
-    return { percent: target.percent, sourceExerciseName: `Set ${target.reference_set} (not logged yet)` };
+    return { percent: target.percent, sourceExerciseName: `Set ${target.reference_set}`, referenceSet: target.reference_set! };
   }
 
   const sourceExerciseId = target.source_exercise_id || re.exercise_id;
@@ -109,6 +112,20 @@ export function intensityFor(args: TargetArgs): IntensityResult | null {
     };
   }
   return { percent: target.percent, sourceExerciseName: target.source_exercise_name };
+}
+
+// "90% of set 1", "70% of Back Squat max", "80% of max".
+export function intensityText(t: IntensityResult): string {
+  if (t.referenceSet != null) return `${t.percent}% of set ${t.referenceSet}`;
+  return t.sourceExerciseName ? `${t.percent}% of ${t.sourceExerciseName} max` : `${t.percent}% of max`;
+}
+
+// Placeholder for a % target that has no number yet: "90% of set 1" while
+// the reference set is not logged; "80% · no max set" only for % of max with
+// no max on file. null when the target resolves to a number.
+export function pendingTargetText(t: IntensityResult | null): string | null {
+  if (!t || t.calculatedValue != null) return null;
+  return t.referenceSet != null ? intensityText(t) : `${t.percent}% · no max set`;
 }
 
 // The number a set's input should show/auto-fill: the computed intensity
@@ -243,4 +260,13 @@ export function nextSetPrefill(args: CarryArgs): Record<string, unknown> {
     if (fill != null) out[t.metric] = fill;
   }
   return out;
+}
+
+// Overview hint: the athlete has to type a weight for this set — the exercise
+// tracks weight (`fields` from metricFieldsFor), nothing is typed yet, and
+// there is no prescribed weight or % target that works out to a number.
+export function needsWeightEntry(args: Omit<TargetArgs, 'metric'> & { fields: string[] }): boolean {
+  if (!args.fields.includes('weight')) return false;
+  if (!isEmpty(args.logged[args.setIndex]?.weight)) return false;
+  return resolveTarget({ ...args, metric: 'weight' }) == null;
 }

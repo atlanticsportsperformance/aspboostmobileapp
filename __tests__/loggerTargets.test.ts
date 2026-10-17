@@ -1,4 +1,7 @@
-import { roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor, nextSetPrefill } from '../lib/logger/targets';
+import {
+  roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor, nextSetPrefill,
+  intensityText, pendingTargetText, needsWeightEntry,
+} from '../lib/logger/targets';
 import type { LoggerRoutineExercise } from '../types/logger';
 
 function re(extra: Partial<LoggerRoutineExercise> = {}): LoggerRoutineExercise {
@@ -33,7 +36,7 @@ describe('logger targets', () => {
     expect(resolveTarget({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: { 0: { weight: '220' } } })).toBe(200);
     expect(resolveTarget({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: {} })).toBeNull();
     expect(intensityFor({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: {} })).toEqual({
-      percent: 90, sourceExerciseName: 'Set 1 (not logged yet)',
+      percent: 90, sourceExerciseName: 'Set 1', referenceSet: 1,
     });
   });
 
@@ -196,5 +199,68 @@ describe('nextSetPrefill — Next Set carry-forward (final review I1)', () => {
     });
     const logged = { 0: { weight: 220 }, 1: { weight: 195 } };
     expect(nextSetPrefill({ ...base, re: chain, nextSetIndex: 2, prev: logged[1], logged })).toEqual({ weight: 175 });
+  });
+});
+
+describe('target text', () => {
+  const pctMax = re({ intensity_targets: [{ metric: 'weight', percent: 80 }] });
+  const pctBench = re({ intensity_targets: [{ metric: 'weight', percent: 70, source_exercise_id: 'ex-B', source_exercise_name: 'Bench' }] });
+
+  it('caption reads "90% of set 1" / "70% of Bench max" / "80% of max"', () => {
+    expect(intensityText(intensityFor({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: {} })!)).toBe('90% of set 1');
+    expect(intensityText(intensityFor({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: { 0: { weight: 220 } } })!)).toBe('90% of set 1');
+    expect(intensityText(intensityFor({ re: pctBench, setIndex: 0, metric: 'weight', maxes: {}, logged: {} })!)).toBe('70% of Bench max');
+    expect(intensityText(intensityFor({ re: pctMax, setIndex: 0, metric: 'weight', maxes: {}, logged: {} })!)).toBe('80% of max');
+  });
+
+  it('placeholder for an unlogged reference set names the set, not "no max set"', () => {
+    const t = intensityFor({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: {} });
+    expect(pendingTargetText(t)).toBe('90% of set 1');
+  });
+
+  it('"no max set" only for % of max with no max on file', () => {
+    expect(pendingTargetText(intensityFor({ re: pctMax, setIndex: 0, metric: 'weight', maxes: {}, logged: {} }))).toBe('80% · no max set');
+    expect(pendingTargetText(intensityFor({ re: pctBench, setIndex: 0, metric: 'weight', maxes: {}, logged: {} }))).toBe('70% · no max set');
+  });
+
+  it('no placeholder text once the target works out to a number, or with no target', () => {
+    expect(pendingTargetText(intensityFor({ re: wave, setIndex: 1, metric: 'weight', maxes: {}, logged: { 0: { weight: 220 } } }))).toBeNull();
+    expect(pendingTargetText(intensityFor({ re: pctMax, setIndex: 0, metric: 'weight', maxes: { 'ex-A': { weight: 300 } }, logged: {} }))).toBeNull();
+    expect(pendingTargetText(intensityFor({ re: wave, setIndex: 0, metric: 'weight', maxes: {}, logged: {} }))).toBeNull();
+    expect(pendingTargetText(null)).toBeNull();
+  });
+});
+
+describe('needsWeightEntry', () => {
+  const fields = ['weight', 'reps'];
+  const base = { maxes: {}, logged: {}, fields };
+
+  it('weight tracked, nothing prescribed → athlete enters it', () => {
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 0 })).toBe(true);
+  });
+
+  it('not when the exercise does not track weight', () => {
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 0, fields: ['reps'] })).toBe(false);
+  });
+
+  it('not when a weight is prescribed (per set or exercise level, 0 counts)', () => {
+    expect(needsWeightEntry({ ...base, re: re({ set_configurations: [{ metric_values: { weight: 135 } }] }), setIndex: 0 })).toBe(false);
+    expect(needsWeightEntry({ ...base, re: re({ metric_targets: { weight: 0 } }), setIndex: 2 })).toBe(false);
+  });
+
+  it('% of max: hint only while no max is on file', () => {
+    const e = re({ intensity_targets: [{ metric: 'weight', percent: 80 }] });
+    expect(needsWeightEntry({ ...base, re: e, setIndex: 0 })).toBe(true);
+    expect(needsWeightEntry({ ...base, re: e, setIndex: 0, maxes: { 'ex-A': { weight: 300 } } })).toBe(false);
+  });
+
+  it('% of set K: resolves once set K is logged', () => {
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 1 })).toBe(true);
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 1, logged: { 0: { weight: '220' } } })).toBe(false);
+  });
+
+  it('not when the athlete already typed a weight for that set', () => {
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 0, logged: { 0: { weight: '185' } } })).toBe(false);
+    expect(needsWeightEntry({ ...base, re: wave, setIndex: 0, logged: { 0: { weight: '' } } })).toBe(true);
   });
 });
