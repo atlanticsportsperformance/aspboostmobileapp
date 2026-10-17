@@ -29,6 +29,13 @@ describe('workout progress', () => {
     expect(workoutProgress(seq, { A: [true, true, true], ghost: [true] })).toEqual({ doneSets: 2, totalSets: 2 });
   });
 
+  it('a workout with a placeholder can reach done == total', () => {
+    const ph = { ...re('P', 3), is_placeholder: true };
+    const seq = buildSequence([routine('r1', 'straight', [re('A', 2), ph])]);
+    const p = workoutProgress(seq, { A: [true, true] });
+    expect(p).toEqual({ doneSets: 2, totalSets: 2 });
+  });
+
   it('dashes mark current set', () => {
     const seq = buildSequence([routine('r1', 'straight', [re('A', 3)])]);
     expect(exerciseDashes('A', seq, { A: [true, false, false] }, { reId: 'A', setIndex: 1 }))

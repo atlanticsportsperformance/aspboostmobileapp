@@ -23,12 +23,17 @@ function setCount(re: LoggerRoutineExercise): number {
   return Math.max(0, re.sets || 0);
 }
 
+// Same rule block-overview uses to hide placeholder rows from the list.
+function isPlaceholder(re: LoggerRoutineExercise): boolean {
+  return !!(re.is_placeholder || re.exercises?.is_placeholder);
+}
+
 export function buildSequence(routines: LoggerRoutine[]): SeqStep[] {
   const seq: SeqStep[] = [];
   for (const routine of routines) {
     const scheme = normalizeScheme(routine.scheme);
     if (scheme === 'text') continue;
-    const rows = (routine.routine_exercises || []).filter(re => !re.notes_only && setCount(re) > 0);
+    const rows = (routine.routine_exercises || []).filter(re => !re.notes_only && !isPlaceholder(re) && setCount(re) > 0);
     if (rows.length === 0) continue;
 
     if (scheme === 'straight') {

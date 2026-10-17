@@ -102,3 +102,16 @@ describe('screens use the sequence engine', () => {
     expect(src).not.toContain('simulatedIndexes');
   });
 });
+
+describe('placeholders', () => {
+  it('placeholder rows are excluded from the sequence', () => {
+    const seq = buildSequence([
+      routine('r1', 'straight', [
+        re('A', 2),
+        re('P', 3, { is_placeholder: true }),
+        re('Q', 3, { exercises: { id: 'q', name: 'q', is_placeholder: true } }),
+      ]),
+    ]);
+    expect(pairs(seq)).toEqual([['A', 0], ['A', 1]]);
+  });
+});
