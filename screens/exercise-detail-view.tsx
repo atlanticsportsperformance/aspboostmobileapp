@@ -1692,9 +1692,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    minHeight: 52,
+    minHeight: 64,
   },
-  trSub: { minHeight: 42 },
+  trSub: { minHeight: 48 }, // extra ball lines inside a set
   n: {
     color: 'rgba(255,255,255,0.55)',
     fontSize: 15,

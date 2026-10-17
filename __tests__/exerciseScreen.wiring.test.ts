@@ -176,4 +176,9 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(L).toContain('onSelectSet={handleSelectSet}');
     expect(L).toContain('setCurrentSetIndexes(prev => ({ ...prev, [activeExerciseId]: setIndex }));');
   });
+
+  it('set rows are at least 64 pt tall (header row unchanged)', () => {
+    const tr = D.slice(D.indexOf('  tr: {'), D.indexOf('  trSub:'));
+    expect(tr).toContain('minHeight: 64,');
+  });
 });
