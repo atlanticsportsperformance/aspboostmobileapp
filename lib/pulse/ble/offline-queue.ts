@@ -13,8 +13,8 @@
  * Zero throws lost even if the athlete is in a gym with no cell service.
  */
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { createQueue } from '../../offline/queue';
 import { pulseEvents } from './pulse-events';
 
 const STORAGE_KEY = 'pulse_offline_throw_queue';
@@ -33,34 +33,47 @@ export interface QueuedThrowRow {
   is_valid: boolean;
 }
 
-let memoryQueue: QueuedThrowRow[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 let supabaseRef: SupabaseClient | null = null;
+let activeClient: SupabaseClient | null = null;
 let currentIntervalMs = DEFAULT_INTERVAL_MS;
+// Mirror of the persisted length so queueSize() can stay synchronous.
+let cachedSize = 0;
 
-/** Enqueue a row that failed to commit. Persists to AsyncStorage. */
-export async function enqueueThrow(row: QueuedThrowRow): Promise<void> {
-  memoryQueue.push(row);
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(memoryQueue));
-  } catch {
-    // AsyncStorage write failed — still in memory, will retry
-  }
-}
+const queue = createQueue<QueuedThrowRow>(STORAGE_KEY, async row => {
+  const client = activeClient ?? supabaseRef;
+  if (!client) throw new Error('no supabase client');
+  const { error } = await client.from('pulse_throws').insert([row]);
+  if (error) throw error;
+});
 
-/** Enqueue multiple rows at once. */
-export async function enqueueThrows(rows: QueuedThrowRow[]): Promise<void> {
-  memoryQueue.push(...rows);
+async function refreshSize(): Promise<void> {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(memoryQueue));
+    cachedSize = await queue.size();
   } catch {
     // non-fatal
   }
 }
 
+/** Enqueue a row that failed to commit. Persists to AsyncStorage. */
+export async function enqueueThrow(row: QueuedThrowRow): Promise<void> {
+  cachedSize++;
+  try {
+    await queue.enqueue(row);
+  } catch {
+    // AsyncStorage write failed
+  }
+  await refreshSize();
+}
+
+/** Enqueue multiple rows at once. */
+export async function enqueueThrows(rows: QueuedThrowRow[]): Promise<void> {
+  for (const row of rows) await enqueueThrow(row);
+}
+
 /** How many throws are waiting to be committed. */
 export function queueSize(): number {
-  return memoryQueue.length;
+  return cachedSize;
 }
 
 /**
@@ -69,37 +82,22 @@ export function queueSize(): number {
  */
 export async function flushQueue(supabase?: SupabaseClient): Promise<number> {
   const client = supabase ?? supabaseRef;
-  if (!client || memoryQueue.length === 0) return 0;
-
-  const batch = [...memoryQueue];
+  if (!client || cachedSize === 0) return 0;
+  activeClient = client;
   try {
-    const { error, count } = await client
-      .from('pulse_throws')
-      .insert(batch, { count: 'exact' });
-
-    if (error) {
-      console.warn('[offline-queue] flush failed, will retry:', error.message);
-      return 0;
-    }
-
-    // Success — clear the queue
-    memoryQueue = [];
-    try {
-      await AsyncStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // non-fatal
-    }
-    const committed = count ?? batch.length;
-    if (committed > 0) {
+    const { sent, failed } = await queue.flush();
+    if (failed > 0) console.warn('[offline-queue] flush failed, will retry');
+    if (sent > 0) {
       // Notify listeners (WorkloadScreen, ThrowingThrowsFeed) that new rows
-      // landed in Supabase so they can refetch. The queue is now the primary
-      // live-write path, so this is how commits propagate to the UI.
+      // landed in Supabase so they can refetch.
       pulseEvents.emitThrowsCommitted();
     }
-    return committed;
+    return sent;
   } catch (err: any) {
     console.warn('[offline-queue] flush threw, will retry:', err?.message);
     return 0;
+  } finally {
+    await refreshSize();
   }
 }
 
@@ -109,27 +107,11 @@ export async function flushQueue(supabase?: SupabaseClient): Promise<number> {
  */
 export async function startOfflineQueue(supabase: SupabaseClient): Promise<void> {
   supabaseRef = supabase;
-
-  // Hydrate from AsyncStorage
-  try {
-    const stored = await AsyncStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        memoryQueue = parsed;
-        console.warn(`[offline-queue] hydrated ${memoryQueue.length} queued throws from storage`);
-      }
-    }
-  } catch {
-    // non-fatal
-  }
-
-  // Flush immediately if there's anything from a previous session
-  if (memoryQueue.length > 0) {
+  await refreshSize();
+  if (cachedSize > 0) {
+    console.warn(`[offline-queue] hydrated ${cachedSize} queued throws from storage`);
     flushQueue().catch(() => {});
   }
-
-  // Periodic retry on the current interval
   restartTimer();
 }
 
@@ -139,7 +121,7 @@ function restartTimer(): void {
     flushTimer = null;
   }
   flushTimer = setInterval(() => {
-    if (memoryQueue.length > 0) {
+    if (cachedSize > 0) {
       flushQueue().catch(() => {});
     }
   }, currentIntervalMs);
