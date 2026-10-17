@@ -86,7 +86,7 @@ describe('Rack screen wiring', () => {
   });
 
   it('exercise override goes to the executor (no screen re-dispatch)', () => {
-    expect(S).toContain('executor.setOverride(activeId, ex);');
+    expect(S).toContain('executor.setOverride(activeId, ex, setNumber);');
     expect(S).not.toContain("type: 'localContext'");
     expect(CARD).toContain('onPick={onPickExercise}');
   });
@@ -253,7 +253,7 @@ describe('fix round 3 wiring', () => {
     expect(CARD).toContain('view.loadNote');
     const P = read('components/rack/ExercisePicker.tsx');
     expect(P).toContain('Pick an exercise');
-    expect(P).toContain('{remaining.map(e => {');
+    expect(P).toContain('{exercises.map(e => {'); // the live picker lists every exercise with its progress
   });
   it('summary overlay has the card\'s 20 px inset and a row variant for the portrait card', () => {
     const sum = CARD.slice(CARD.indexOf('  summary: {'), CARD.indexOf('  summaryRow:'));

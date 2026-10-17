@@ -37,7 +37,7 @@
 import { IDLE_END_MS, LATE_REP_MS, REOPEN_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
 import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAthlete, type TodayExercise } from './api';
-import { rackInstancesOf, resolveRackSet, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
+import { pickerRowsOf, rackInstancesOf, resolveRackSet, type PickerRow, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
 import { intensityFor, type LoggedSets } from '../logger/targets';
 import { withTimeout, type RackPersist } from './persist';
 
@@ -106,7 +106,9 @@ export interface RackExecutor {
   /** Coach exercise pick for an athlete (null clears) — resolveRackSet's
    *  override input. Beats a phone context made before it; a newer phone
    *  context clears it. Cleared when the active athlete changes. */
-  setOverride(athleteId: string, ex: TodayExercise | null): void;
+  setOverride(athleteId: string, ex: TodayExercise | null, setNumber?: number | null): void;
+  /** The iPad picker's live rows for an athlete (progress + set chips), from the resolver's own logs. */
+  pickerRows(athleteId: string): PickerRow[];
   /** End any live set (iPad Done) and wait until its writes are queued. */
   endLive(): Promise<void>;
   /** Writes held in memory because their enqueue failed. */
@@ -473,7 +475,7 @@ export function createRackExecutor(opts: {
       instances,
       logs: logsFor(athleteId),
       phone,
-      override: ov ? { workoutInstanceId: ov.workoutInstanceId, routineExerciseId: ov.routineExerciseId } : null,
+      override: ov ? { workoutInstanceId: ov.workoutInstanceId, routineExerciseId: ov.routineExerciseId, setNumber: ovr?.setNumber ?? null } : null,
       lastRackExercise: lastRackExerciseOf(athleteId),
       liftingContinues,
     });
@@ -498,10 +500,11 @@ export function createRackExecutor(opts: {
       setNumber: set?.setNumber ?? null,
     };
     const reason = set?.reason ?? null;
+    const exact = reason === 'override' && override?.athleteId === athleteId && override.setNumber != null && set?.setNumber === override.setNumber;
     if (
       cur && cur.athleteId === athleteId && cur.resolved &&
       cur.workoutInstanceId === next.workoutInstanceId && cur.routineExerciseId === next.routineExerciseId &&
-      cur.exerciseId === next.exerciseId && cur.setNumber === next.setNumber && (cur.reason ?? null) === reason
+      cur.exerciseId === next.exerciseId && cur.setNumber === next.setNumber && (cur.reason ?? null) === reason && !!cur.exact === exact
     ) return;
     apply(
       {
@@ -509,6 +512,7 @@ export function createRackExecutor(opts: {
         athleteId,
         resolved: true,
         reason,
+        exact,
         ...next,
         loadLb: null,
         zoneMin: ex?.zoneMin ?? null,
@@ -551,9 +555,9 @@ export function createRackExecutor(opts: {
         !!ref && !!last && ref.workoutInstanceId === last.workoutInstanceId && ref.routineExerciseId === last.routineExerciseId;
       const onLast = !!res && !res.none && isLast(res);
       const ov = override && override.athleteId === athleteId ? override.ex : null;
-      const phone = phoneRef();
-      // The phone still on the finished last exercise (it sends set N+1) is not "something else".
-      const somethingElseOpen = (!!phone && !isLast(phone)) || (!!ov && !isLast(ov));
+      // Something else open = the phone's UNFINISHED exercise is the pick (a
+      // finished one is only viewing) or a coach pick on another exercise.
+      const somethingElseOpen = (!!res && !res.none && res.reason === 'phone' && !isLast(res)) || (!!ov && !isLast(ov));
       // Hold first: an idle-ended set (≤ REOPEN_MS ago, nothing else open) is reopened.
       if (res && last && lastSet && rec.hold && lastSet.endedAtMs != null && at - lastSet.endedAtMs < REOPEN_MS && !somethingElseOpen) {
         applyResolution(athleteId, {
@@ -1003,18 +1007,24 @@ export function createRackExecutor(opts: {
       starting = true;
     }
     apply(event, at);
-    if (starting) publishStart();
+    if (starting) {
+      // A coach's explicit set is used once: the next set follows the normal rules.
+      if (override?.setNumber != null && state.live?.athleteId === override.athleteId && state.live.context.routineExerciseId === override.ex.routineExerciseId) {
+        override = { ...override, setNumber: null };
+      }
+      publishStart();
+    }
   };
 
   // ---------------------------------------------------------------- today
 
   /** The coach's pick + the phone context it was made over (phoneSig). */
-  let override: { athleteId: string; ex: TodayExercise; phoneSig: string } | null = null;
+  let override: { athleteId: string; ex: TodayExercise; phoneSig: string; setNumber: number | null } | null = null;
 
-  const setOverride = (athleteId: string, ex: TodayExercise | null) => {
-    if (queued(() => setOverride(athleteId, ex))) return;
+  const setOverride = (athleteId: string, ex: TodayExercise | null, setNumber: number | null = null) => {
+    if (queued(() => setOverride(athleteId, ex, setNumber))) return;
     override = ex
-      ? { athleteId, ex, phoneSig: athleteId === state.activeAthleteId ? refSig(phoneRef()) : '' }
+      ? { athleteId, ex, phoneSig: athleteId === state.activeAthleteId ? refSig(phoneRef()) : '', setNumber }
       : override?.athleteId === athleteId ? null : override;
     if (athleteId === state.activeAthleteId) {
       reresolve();
@@ -1076,6 +1086,10 @@ export function createRackExecutor(opts: {
     },
     unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length }),
     ipadOwnsContext,
+    pickerRows: (athleteId: string) => {
+      const a = today.find(t => t.athleteId === athleteId);
+      return a ? pickerRowsOf(rackInstancesOf(a), logsFor(athleteId)) : [];
+    },
     start() {
       if (running) return;
       running = true;

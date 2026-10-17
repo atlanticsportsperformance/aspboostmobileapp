@@ -273,6 +273,8 @@ export interface RackView {
   addable: TodayAthlete[];
   /** The active athlete's remaining exercises (override dropdown). */
   remaining: TodayExercise[];
+  /** All of the active athlete's exercises today, in workout order (live picker). */
+  exercises: TodayExercise[];
   scaleV: number;
 }
 
@@ -562,6 +564,7 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     tiles,
     addable,
     remaining: active?.remaining ?? [],
+    exercises: active?.exercises ?? [],
     scaleV,
   };
 }

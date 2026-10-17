@@ -53,7 +53,7 @@ export interface RackSetLog {
 export interface RackExerciseRef {
   workoutInstanceId: string | null;
   routineExerciseId: string | null;
-  /** The phone's open set (its own first incomplete set); phone context only. */
+  /** Phone: its open set (its own first incomplete set) — a "below is done" hint. Override: the coach's explicit set. */
   setNumber?: number | null;
 }
 
@@ -63,7 +63,7 @@ export interface ResolveRackSetInput {
   logs: RackSetLog[];
   /** Exercise (and set) the phone has open; null on the overview / no phone. */
   phone?: RackExerciseRef | null;
-  /** The coach's iPad pick. */
+  /** The coach's iPad pick (setNumber = an explicit set, honoured even when done). */
   override?: RackExerciseRef | null;
   /** Exercise of the athlete's last rack set. */
   lastRackExercise?: RackExerciseRef | null;
@@ -138,25 +138,29 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
   });
   const continuesOn = (h: Hit) => !!input.liftingContinues && same(h, input.lastRackExercise);
 
-  // 1 + 5: the phone-open exercise.
-  if (phone) {
-    const n = openSet(phone);
-    if (phone.ex.group && !phone.ex.rackLift) {
+  // 1 + 5: the phone-open exercise — a TARGET only while it is unfinished. A
+  // finished exercise open on the phone is viewing/editing: it never moves
+  // the rack (no target, no instance preference, never an extra set); only
+  // its "done through N" hint above counts.
+  const phoneTarget = phone && openSet(phone) != null ? phone : null;
+  if (phoneTarget) {
+    if (phoneTarget.ex.group && !phoneTarget.ex.rackLift) {
       // A superset partner (A2): the rack serves the block's rack lift.
-      const lift = phone.inst.exercises
-        .map(ex => ({ inst: phone.inst, ex }))
-        .find(h => h.ex.group === phone.ex.group && h.ex.rackLift && openSet(h) != null);
+      const lift = phoneTarget.inst.exercises
+        .map(ex => ({ inst: phoneTarget.inst, ex }))
+        .find(h => h.ex.group === phoneTarget.ex.group && h.ex.rackLift && openSet(h) != null);
       if (lift) return pick(lift, openSet(lift)!, 'superset-lift');
-    } else if (n != null) {
-      return pick(phone, n, 'phone');
-    } else if (continuesOn(phone)) {
-      return pick(phone, extraSet(phone), 'extra-set');
+    } else {
+      return pick(phoneTarget, openSet(phoneTarget)!, 'phone');
     }
   }
 
-  // 1: the coach override (any exercise the coach picked).
+  // 1: the coach override (any exercise the coach picked). A coach's explicit
+  // set is honoured exactly — even a done one (a re-do; the rack's write
+  // updates that set row).
   const override = find(input.override);
   if (override) {
+    if (input.override?.setNumber != null && input.override.setNumber > 0) return pick(override, input.override.setNumber, 'override');
     const n = openSet(override);
     if (n != null) return pick(override, n, 'override');
     if (continuesOn(override)) return pick(override, extraSet(override), 'extra-set');
@@ -167,7 +171,7 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
   if (last && input.liftingContinues && openSet(last) == null) return pick(last, extraSet(last), 'extra-set');
 
   // 1 + 6: first unfinished rack lift — the phone-open instance first.
-  const order = phone ? [phone.inst, ...instances.filter(i => i !== phone.inst)] : instances;
+  const order = phoneTarget ? [phoneTarget.inst, ...instances.filter(i => i !== phoneTarget.inst)] : instances;
   for (const inst of order) {
     for (const ex of inst.exercises) {
       if (!ex.rackLift) continue;
@@ -186,6 +190,56 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
 export function rackSetLine(name: string, setNumber: number | null | undefined, sets: number | null | undefined): string {
   if (setNumber == null) return name;
   return `${name} · Set ${setNumber}${sets ? ` of ${sets}` : ''}`;
+}
+
+/** One row of the iPad's live exercise+set picker. */
+export interface PickerRow {
+  workoutInstanceId: string;
+  routineExerciseId: string;
+  sets: number;
+  /** Set chips 1..sets, done = complete in the logs. */
+  chips: { setNumber: number; done: boolean }[];
+  /** "+ extra": the first free number past the prescription. */
+  extraSet: number;
+  doneCount: number;
+  finished: boolean;
+  /** "2/3", "3/3 ✓". */
+  progress: string;
+}
+
+/** The picker's live progress — from the SAME logs the resolver reads (no extra queries). */
+export function pickerRowsOf(instances: RackSetInstance[], logs: RackSetLog[]): PickerRow[] {
+  const complete = new Set(logs.filter(l => l.isComplete).map(l => keyOf(l.workoutInstanceId, l.routineExerciseId, l.setNumber)));
+  const rows: PickerRow[] = [];
+  for (const inst of instances) {
+    for (const ex of inst.exercises) {
+      const sets = Math.max(0, ex.sets ?? 1);
+      const isDone = (n: number) => complete.has(keyOf(inst.workoutInstanceId, ex.routineExerciseId, n));
+      const chips = Array.from({ length: sets }, (_, k) => ({ setNumber: k + 1, done: isDone(k + 1) }));
+      const doneCount = chips.filter(c => c.done).length;
+      let extraSet = sets + 1;
+      while (isDone(extraSet)) extraSet++;
+      const finished = sets > 0 && doneCount === sets;
+      rows.push({
+        workoutInstanceId: inst.workoutInstanceId,
+        routineExerciseId: ex.routineExerciseId,
+        sets,
+        chips,
+        extraSet,
+        doneCount,
+        finished,
+        progress: `${doneCount}/${sets}${finished ? ' ✓' : ''}`,
+      });
+    }
+  }
+  return rows;
+}
+
+/** The picker chip preselected when an exercise expands: the resolver's set on the current one, else its lowest open set (else + extra). */
+export function preselectedSet(row: PickerRow | undefined, isCurrent: boolean, currentSetNumber: number | null): number {
+  if (isCurrent && currentSetNumber != null) return currentSetNumber;
+  const open = row?.chips.find(c => !c.done);
+  return open ? open.setNumber : row?.extraSet ?? 1;
 }
 
 // ---------------------------------------------------------------- inputs

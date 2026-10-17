@@ -532,3 +532,29 @@ describe('phoneRackNow / followOnFinish / banner strip', () => {
     ).toBeNull();
   });
 });
+
+describe('fix round 3: the phone follows a coach’s exact set; a finished open never moves the strip', () => {
+  const { coachSetChoice, phoneRackNow } = require('../lib/rack/phoneView');
+  const { rackInstanceFromLogger, rackLogsFromCompleted } = require('../lib/rack/resolveRackSet');
+  const ctx = (re: string, set: number) => ({ workoutInstanceId: 'wi', routineExerciseId: re, setNumber: set, loadLb: null });
+
+  it('coachSetChoice: a new iPad row that is not the phone’s echo nor the auto-pick → that exact set', () => {
+    const base = { workoutInstanceId: 'wi', isEcho: () => false, autoPick: { routineExerciseId: 'rdl', setNumber: 2 } };
+    expect(coachSetChoice({ ...base, ctx: ctx('squat', 2), prev: { exercise: 'rdl', set: 2 } })).toEqual({ routineExerciseId: 'squat', setNumber: 2 });
+    expect(coachSetChoice({ ...base, ctx: ctx('rdl', 1), prev: { exercise: 'rdl', set: 2 } })).toEqual({ routineExerciseId: 'rdl', setNumber: 1 }); // same exercise, set change
+    expect(coachSetChoice({ ...base, ctx: ctx('rdl', 2), prev: { exercise: 'squat', set: 4 } })).toBeNull(); // the auto-pick
+    expect(coachSetChoice({ ...base, ctx: ctx('squat', 2), prev: { exercise: 'rdl', set: 2 }, isEcho: () => true })).toBeNull();
+    expect(coachSetChoice({ ...base, ctx: ctx('squat', 2), prev: undefined })).toBeNull(); // baseline
+    expect(coachSetChoice({ ...base, ctx: ctx('squat', 2), prev: { exercise: 'squat', set: 2 } })).toBeNull(); // unchanged
+  });
+
+  it('phoneRackNow: a finished exercise open → the rack’s set; a chosen set → exactly it (even done)', () => {
+    const reRow = (id: string) => ({ id, exercise_id: `ex-${id}`, sets: 3, velocity_min_mps: null, velocity_max_mps: null, enabled_measurements: ['weight'], exercises: { name: id, is_placeholder: false } });
+    const instance = rackInstanceFromLogger('wi', [{ id: 'r', scheme: 'straight', routine_exercises: [reRow('squat'), reRow('rdl')] }]);
+    const logs = rackLogsFromCompleted('wi', { squat: [true, true, true], rdl: [true, false, false] });
+    const sess = { active_athlete_id: 'me', workout_instance_id: 'wi', routine_exercise_id: 'rdl', set_number: 2, state: 'idle', load_lb: null, pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null };
+    const base = { instance, logs, session: sess, athleteId: 'me', workoutInstanceId: 'wi', isEcho: () => false };
+    expect(phoneRackNow({ ...base, openExerciseId: 'squat' })).toMatchObject({ routineExerciseId: 'rdl', setNumber: 2 });
+    expect(phoneRackNow({ ...base, openExerciseId: null, chosen: { routineExerciseId: 'squat', setNumber: 2 } })).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, source: 'ipad' });
+  });
+});

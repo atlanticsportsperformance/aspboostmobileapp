@@ -624,6 +624,8 @@ export function phoneRackNow(i: {
   /** Exercise open on the phone (null on the overview). */
   openExerciseId: string | null;
   isEcho: (ctx: RackCtx) => boolean;
+  /** A coach's explicit exercise + set (coachSetChoice) — honoured exactly. */
+  chosen?: { routineExerciseId: string; setNumber: number } | null;
 }): PhoneRackNow | null {
   const s = i.session;
   if (!s || s.active_athlete_id !== i.athleteId) return null;
@@ -646,7 +648,11 @@ export function phoneRackNow(i: {
       : lastSent
         ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: lastSent.routineExerciseId, setNumber: lastSent.setNumber }
         : null,
-    override: coach ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: row.routineExerciseId } : null,
+    override: i.chosen
+      ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.chosen.routineExerciseId, setNumber: i.chosen.setNumber }
+      : coach
+        ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: row.routineExerciseId }
+        : null,
   });
   if (res.none) return null;
   const ahead = rowFromIpad && row.routineExerciseId === res.routineExerciseId && row.setNumber != null && row.setNumber > res.setNumber;
@@ -710,4 +716,28 @@ export function followOnFinish(i: OpenState & { prev: OpenTrack | null; rackNow:
   t.pending = false; // owed once: follow now (or nothing to follow to)
   const to = i.rackNow && i.openId && i.rackNow.routineExerciseId !== i.openId ? i.rackNow.routineExerciseId : null;
   return { track: t, follow: to };
+}
+
+/**
+ * A coach's explicit exercise + set from the iPad picker, seen in the row: a
+ * NEW row context (exercise or set changed since the last read of this
+ * activation) that the phone didn't send and that isn't the rack's own
+ * auto-pick for the phone's state. The phone then follows that exact set —
+ * even a done one (a re-do).
+ */
+export function coachSetChoice(i: {
+  ctx: RackCtx;
+  /** The row's (exercise, set) on the previous read; undefined = first read (baseline). */
+  prev: { exercise: string | null; set: number | null } | undefined;
+  workoutInstanceId: string;
+  isEcho: (ctx: RackCtx) => boolean;
+  autoPick: { routineExerciseId: string; setNumber: number } | null;
+}): { routineExerciseId: string; setNumber: number } | null {
+  const c = i.ctx;
+  if (!i.prev || !c.routineExerciseId || c.setNumber == null) return null;
+  if (c.workoutInstanceId && c.workoutInstanceId !== i.workoutInstanceId) return null;
+  if (i.prev.exercise === c.routineExerciseId && i.prev.set === c.setNumber) return null;
+  if (i.isEcho(c)) return null;
+  if (i.autoPick && i.autoPick.routineExerciseId === c.routineExerciseId && i.autoPick.setNumber === c.setNumber) return null;
+  return { routineExerciseId: c.routineExerciseId, setNumber: c.setNumber };
 }

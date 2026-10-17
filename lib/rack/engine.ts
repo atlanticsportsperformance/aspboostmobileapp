@@ -276,7 +276,7 @@ export interface RackEngineState {
    * resolveRackSet (authoritative for the next set); otherwise the iPad's
    * pick, used only while the server row has no workout.
    */
-  localContext: (RackContext & { athleteId: string; resolved?: boolean; reason?: string | null }) | null;
+  localContext: (RackContext & { athleteId: string; resolved?: boolean; reason?: string | null; exact?: boolean }) | null;
   /** Last row applied from the server (null until the first sync). */
   session: RackSessionRow | null;
   activeAthleteId: string | null;
@@ -340,6 +340,8 @@ export type RackEvent =
       resolved?: boolean;
       /** resolveRackSet's reason (who picked it) — the iPad's source label. */
       reason?: string | null;
+      /** A coach's explicit set: used exactly — no complete-set guard, no idle reopen (a re-do). */
+      exact?: boolean;
       workoutInstanceId: string | null;
       routineExerciseId: string | null;
       exerciseId: string | null;
@@ -485,7 +487,7 @@ export function nextContext(s: RackEngineState): RackContext {
     };
   }
   if (server.workoutInstanceId == null && local) {
-    const { athleteId: _a, resolved: _r, reason: _why, ...ctx } = local;
+    const { athleteId: _a, resolved: _r, reason: _why, exact: _x, ...ctx } = local;
     return ctx;
   }
   return server;
@@ -672,6 +674,8 @@ function numberFor(
   raw: RackContext,
 ): { setNumber: number | null; reopen: boolean } {
   if (isFree(raw)) return { setNumber: raw.setNumber, reopen: false };
+  // A coach's explicit set (a re-do of a done set included) is used as is.
+  if (resolvedFor(s, athleteId) && s.localContext?.exact && raw.setNumber != null) return { setNumber: raw.setNumber, reopen: false };
   const prev = s.lastEndByAthlete[athleteId];
   if (prev && prev.hold && holdMatches(s, athleteId, prev.rawContext, raw)) {
     // Idle end, same exercise: same set_number, reps carried forward.

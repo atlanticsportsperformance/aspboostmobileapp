@@ -70,6 +70,7 @@ import {
   rackFollowToast,
   rackStripLine,
   withRackSet,
+  coachSetChoice,
   type OpenState,
   type OpenTrack,
   zoneOf,
@@ -147,6 +148,7 @@ export default function WorkoutLoggerScreen() {
   // Rack VBT: extra sets the rack wrote past the prescription (reId → set_number → log row).
   const [rackExtra, setRackExtra] = useState<Record<string, Record<number, Record<string, any>>>>({});
   // Rack VBT: where Next goes once the open exercise is finished (set later, with the rack hook).
+  const setRackChosenRef = useRef<(v: null) => void>(() => undefined);
   const rackNextAfterRef = useRef<(reId: string, setIndex: number) => { reId: string; setNumber: number } | null>(() => null);
   // Sets whose completion toggle is still saving — a fast double-tap on Log
   // Set is ignored instead of flipping the set back locally.
@@ -1054,6 +1056,7 @@ export default function WorkoutLoggerScreen() {
   // Navigation handlers
   const handleExercisePress = (exerciseId: string) => {
     setRackFocus(null);
+    setRackChosenRef.current(null);
     setActiveExerciseId(exerciseId);
     setViewMode('exercise');
   };
@@ -1071,6 +1074,7 @@ export default function WorkoutLoggerScreen() {
   // open set at a time; the Done button then logs that set).
   const handleSelectSet = useCallback((setIndex: number) => {
     if (!activeExerciseId) return;
+    setRackChosenRef.current(null);
     setCurrentSetIndexes(prev => ({ ...prev, [activeExerciseId]: setIndex }));
   }, [activeExerciseId]);
 
@@ -1162,10 +1166,13 @@ export default function WorkoutLoggerScreen() {
   // Pending rack writes: key `reId:setIndex` → { setNumber, started }.
   const rackPendingRef = useRef<Record<string, { setNumber: number; started: number }>>({});
   const rackFastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rackSeenRef = useRef<{ exercise: string | null | undefined; load: number | null | undefined }>({
+  const rackSeenRef = useRef<{ exercise: string | null | undefined; load: number | null | undefined; set?: number | null }>({
     exercise: undefined,
     load: undefined,
   });
+  // A coach's explicit exercise + set from the iPad picker (followed exactly, even a done set).
+  const [rackChosen, setRackChosen] = useState<{ routineExerciseId: string; setNumber: number } | null>(null);
+  setRackChosenRef.current = setRackChosen;
   const rackToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rackOnSetEndedRef = useRef<(e: EndedSet) => void>(() => undefined);
   const rackOnTickRef = useRef<() => void>(() => undefined);
@@ -1365,6 +1372,8 @@ export default function WorkoutLoggerScreen() {
   rackOnSetEndedRef.current = (e: EndedSet) => {
     if (e.workoutInstanceId && e.workoutInstanceId !== workoutInstanceId) return;
     if (!e.routineExerciseId || e.setNumber == null) return;
+    // The coach's chosen set was lifted: back to the normal rules.
+    if (rackChosen && rackChosen.routineExerciseId === e.routineExerciseId && rackChosen.setNumber === e.setNumber) setRackChosen(null);
     // Extra sets past the prescription are awaited too (shown as their own row).
     if (!allExercises.some(x => x.id === e.routineExerciseId)) return;
     awaitRackWrite(e.routineExerciseId, e.setNumber);
@@ -1397,18 +1406,22 @@ export default function WorkoutLoggerScreen() {
   // The resolver's set when it serves the open exercise; otherwise (a superset
   // partner, a row the iPad doesn't serve) the open exercise's own first
   // incomplete set — the same rule — so the row still says what's open.
+  const chosenHere = rackChosen && ctxExercise && rackChosen.routineExerciseId === ctxExercise.id && rackChosen.setNumber <= (ctxExercise.sets ?? 1) ? rackChosen : null;
   const ctxSetIndex = ctxExercise
-    ? phoneRackSet && !phoneRackSet.none && phoneRackSet.routineExerciseId === ctxExercise.id
+    ? chosenHere
+      ? chosenHere.setNumber - 1
+      : phoneRackSet && !phoneRackSet.none && phoneRackSet.routineExerciseId === ctxExercise.id
       ? phoneRackSet.setNumber - 1
       : firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets ?? 1)
     : null;
   // The iPad's auto-pick for this phone's state (no phone context): a null→X
   // to exactly this is not a coach override (followTarget, N4).
-  const rackAutoPick = useMemo(() => {
+  const rackAutoPickSet = useMemo(() => {
     if (!rackInstance) return null;
     const r = resolveRackSet({ instances: [rackInstance], logs: rackLogs });
-    return r.none ? null : r.routineExerciseId;
+    return r.none ? null : { routineExerciseId: r.routineExerciseId, setNumber: r.setNumber };
   }, [rackInstance, rackLogs]);
+  const rackAutoPick = rackAutoPickSet?.routineExerciseId ?? null;
   const ctxKey = ctxExercise && ctxSetIndex != null ? `${ctxExercise.id}:${ctxSetIndex}` : null;
   const ctxOwnWeight =
     ctxExercise && ctxSetIndex != null && ctxKey &&
@@ -1507,6 +1520,7 @@ export default function WorkoutLoggerScreen() {
         workoutInstanceId,
         openExerciseId: viewMode === 'exercise' ? activeExerciseId : null,
         isEcho: rack.isEcho,
+        chosen: rackChosen,
       })
     : null;
   const rackNowEx = rackNow ? allExercises.find(x => x.id === rackNow.routineExerciseId) : undefined;
@@ -1613,10 +1627,29 @@ export default function WorkoutLoggerScreen() {
     if (!s) {
       rackSeenRef.current = { exercise: undefined, load: undefined };
       setRackFocus(null);
+      setRackChosen(null);
       return;
     }
     const now = Date.now();
     const ctx = rackContextOf(s);
+    // A coach's explicit set from the iPad picker: follow exactly (toast), even a done set.
+    const chosen = coachSetChoice({
+      ctx,
+      prev: rackSeenRef.current.exercise === undefined ? undefined : { exercise: rackSeenRef.current.exercise ?? null, set: rackSeenRef.current.set ?? null },
+      workoutInstanceId,
+      isEcho: rack.isEcho,
+      autoPick: rackAutoPickSet,
+    });
+    if (chosen) {
+      setRackChosen(chosen);
+      const chEx = allExercises.find(x => x.id === chosen.routineExerciseId);
+      if (chEx && chosen.setNumber <= (chEx.sets ?? 1)) {
+        setCurrentSetIndexes(prev => ({ ...prev, [chosen.routineExerciseId]: chosen.setNumber - 1 }));
+        if (viewMode === 'exercise') setActiveExerciseId(chosen.routineExerciseId);
+        else setRackFocus({ reId: chosen.routineExerciseId, setIndex: chosen.setNumber - 1 });
+        showRackToast(rackFollowToast(rack.activeRackName, rackExerciseName(chosen.routineExerciseId), chosen.setNumber));
+      }
+    }
     const target = followTarget({
       session: s,
       prevRackExercise: rackSeenRef.current.exercise,
@@ -1654,8 +1687,8 @@ export default function WorkoutLoggerScreen() {
         }
       }
     }
-    rackSeenRef.current = { exercise: ctx.routineExerciseId, load: ctx.loadLb };
-    if (!target) return;
+    rackSeenRef.current = { exercise: ctx.routineExerciseId, load: ctx.loadLb, set: ctx.setNumber };
+    if (!target || chosen) return;
     showRackToast(`${rack.activeRackName ?? 'The rack'} switched you to ${rackExerciseName(target)}`);
     if (rackEditingRef.current) {
       rackPendingFollowRef.current = target; // never while typing — after blur

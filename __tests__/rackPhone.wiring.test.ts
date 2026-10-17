@@ -186,3 +186,12 @@ describe('rack phone wiring — fix round 1 (review 10c + owner sync)', () => {
     expect(D).toContain('{x.rackLine && <Text style={styles.rackSummary}>{x.rackLine}</Text>}');
   });
 });
+
+describe('rack phone wiring — fix round 3', () => {
+  it('a coach’s exact set is followed (toast) and sent back as the phone’s set', () => {
+    expect(L).toContain('const chosen = coachSetChoice({');
+    expect(L).toContain('showRackToast(rackFollowToast(rack.activeRackName, rackExerciseName(chosen.routineExerciseId), chosen.setNumber));');
+    expect(L).toContain('? chosenHere\n      ? chosenHere.setNumber - 1');
+    expect(L).toContain('chosen: rackChosen,');
+  });
+});

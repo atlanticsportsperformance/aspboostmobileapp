@@ -201,7 +201,19 @@ function rig(initialLogs: SetLogRow[] = []) {
   const api: ExecutorApi = {
     startSet: jest.fn(async (_r, a, st) => put({ active_athlete_id: a, state: 'lifting', set_started_at: st, pending_end: false })),
     setActive: jest.fn(async (_r, a) => put({ active_athlete_id: a })),
-    endSet: jest.fn(async () => put({ state: 'idle', set_started_at: null, pending_end: false })),
+    // rack_end_set: the set ends; a context sent mid-set (pending_*) becomes the live one.
+    endSet: jest.fn(async () =>
+      put({
+        state: 'idle', set_started_at: null, pending_end: false,
+        ...(server.pending_routine_exercise_id != null
+          ? {
+              workout_instance_id: server.pending_workout_instance_id, routine_exercise_id: server.pending_routine_exercise_id,
+              set_number: server.pending_set_number, load_lb: server.pending_load_lb,
+              pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null,
+            }
+          : {}),
+      }),
+    ),
     athleteSets: jest.fn(async () => logs),
     setIpadContext: jest.fn(async (_r, a, c) =>
       server.state === 'lifting'
@@ -554,6 +566,94 @@ describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "
     r.ex.setOverride('tyler', today().exercises.find((e: TodayExercise) => e.routineExerciseId === 'rdl')!);
     await settle();
     expect(buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t }).sourceLine).toBe('PICKED ON IPAD');
+  });
+});
+
+describe('fix round 3 (owner bugs)', () => {
+  const rdlAt2 = () => [...logRows('squat', 1, 2, 3), ...logRows('bulgarian', 1, 2, 3), ...logRows('rdl', 1)];
+
+  it('pure: a FINISHED exercise open on the phone is viewing/editing — never a target, never an extra set', () => {
+    const logs = [...done('wi', 'squat', 1, 2, 3), ...done('wi', 'rdl', 1)];
+    const viewing = { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 4 };
+    expect(resolve({ logs, phone: viewing })).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    expect(resolve({ logs: [...logs, ...done('wi', 'bulgarian', 1, 2, 3)], phone: viewing })).toMatchObject({ routineExerciseId: 'rdl', setNumber: 2 });
+    // un-checking set 2 makes it unfinished → a target again (normal rules)
+    expect(resolve({ logs: [...done('wi', 'squat', 1, 3), ...done('wi', 'rdl', 1)], phone: { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 2 } })).toMatchObject({
+      routineExerciseId: 'squat', setNumber: 2, reason: 'phone',
+    });
+  });
+
+  it('iPad: opening finished squat on the phone leaves the rack on RDL set 2; un-checking squat set 2 makes it the target', async () => {
+    const r = rig(rdlAt2());
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'rdl', set_number: 2 });
+    const published = (r.api.setIpadContext as jest.Mock).mock.calls.length;
+    // the phone opens finished squat → sends "done through 3"
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 4 }, r.advance(1000));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'rdl', setNumber: 2 });
+    expect((r.api.setIpadContext as jest.Mock).mock.calls.slice(published).map(c => c[2].routineExerciseId)).not.toContain('squat');
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'rdl', setNumber: 2 }); // never "squat set 4"
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    await settle();
+    // un-check squat set 2 on the phone → it sends squat:2
+    r.setLogs(rdlAt2().filter(l => !(l.routineExerciseId === 'squat' && l.setNumber === 2)).concat(logRows('rdl', 2)));
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, reason: 'phone' });
+  });
+
+  it('picker: live progress per exercise from the resolver’s own logs (chips, done marks, + extra)', () => {
+    const { pickerRowsOf } = require('../lib/rack/resolveRackSet');
+    const rows = pickerRowsOf([W], [...done('wi', 'squat', 1, 2, 3), ...done('wi', 'rdl', 1, 2), draft('wi', 'bulgarian', 1)]);
+    const by = (re: string) => rows.find((x: any) => x.routineExerciseId === re);
+    expect(by('squat')).toMatchObject({ progress: '3/3 ✓', finished: true, extraSet: 4 });
+    expect(by('rdl')).toMatchObject({ progress: '2/3', finished: false, extraSet: 4 });
+    expect(by('rdl').chips).toEqual([{ setNumber: 1, done: true }, { setNumber: 2, done: true }, { setNumber: 3, done: false }]);
+    expect(by('bulgarian')).toMatchObject({ progress: '0/3', doneCount: 0 }); // a draft is not done
+    const { preselectedSet } = require('../lib/rack/resolveRackSet');
+    expect(preselectedSet(by('rdl'), true, 3)).toBe(3); // the resolver's current set
+    expect(preselectedSet(by('rdl'), false, null)).toBe(3); // lowest open
+    expect(preselectedSet(by('squat'), false, null)).toBe(4); // finished → + extra
+  });
+
+  it('picker: the executor’s rows follow its log reads (no extra query) and the rack’s own writes', async () => {
+    const r = rig(logRows('squat', 1));
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    const reads = (r.api.athleteSets as jest.Mock).mock.calls.length;
+    expect(r.ex.pickerRows('tyler').find(x => x.routineExerciseId === 'squat')?.progress).toBe('1/3');
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    expect(r.ex.pickerRows('tyler').find(x => x.routineExerciseId === 'squat')?.progress).toBe('2/3'); // at once
+    expect((r.api.athleteSets as jest.Mock).mock.calls.length).toBe(reads); // pickerRows itself never queries
+  });
+
+  it('picker: a coach pick of exercise + set (even a done one) publishes that set and resolves to exactly it, once', async () => {
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    r.ex.setOverride('tyler', SIM().exercises.find(e => e.routineExerciseId === 'squat')!, 2); // re-do done set 2
+    await settle();
+    expect((r.api.setIpadContext as jest.Mock).mock.calls.at(-1)?.[2]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, reason: 'override', exact: true });
+    const { buildRackView } = require('../lib/rack/viewModel');
+    expect(buildRackView({ state: r.ex.getState(), today: [SIM()], rackName: 'Rack 1', nowMs: r.t }).sourceLine).toBe('PICKED ON IPAD');
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 }); // no guard bump
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    await settle();
+    expect((r.persist.endSet as jest.Mock).mock.calls.at(-1)?.[0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    // used once: the next set follows the normal rules
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
   });
 });
 

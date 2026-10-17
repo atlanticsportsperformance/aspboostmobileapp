@@ -256,9 +256,13 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
 
   const selectAthlete = useCallback((athleteId: string) => dispatch({ type: 'selectAthlete', athleteId }), [dispatch]);
   const activeId = state.activeAthleteId;
-  const pickExercise = (ex: TodayExercise) => {
-    if (activeId) executor.setOverride(activeId, ex);
+  // Coach pick (exercise + set) → published override; the phone follows.
+  const pickExercise = (ex: TodayExercise, setNumber: number) => {
+    if (activeId) executor.setOverride(activeId, ex, setNumber);
   };
+  // Live picker rows from the resolver's own cached logs (no extra query); state
+  // changes (log reads notify) re-render this.
+  const pickerRows = activeId ? executor.pickerRows(activeId) : [];
 
   const dropColor = view.zone && view.dropPct != null && view.dropStopPct != null && view.dropPct >= view.dropStopPct ? RACK_COLORS.red : '#fff';
   const time = new Date(nowMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -328,6 +332,7 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
       compact={layout.compactCard}
       onDone={() => dispatch({ type: 'ipadDone' })}
       onPickExercise={pickExercise}
+      pickerRows={pickerRows}
     />
   );
 

@@ -11,6 +11,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import type { TodayExercise } from '../../lib/rack/api';
+import type { PickerRow } from '../../lib/rack/resolveRackSet';
 import { RACK_COLORS, type RackView } from '../../lib/rack/viewModel';
 import ExercisePicker from './ExercisePicker';
 
@@ -22,10 +23,13 @@ export interface AthleteCardProps {
   compact?: boolean;
   /** Big Done → engine `ipadDone`. */
   onDone: () => void;
-  onPickExercise: (ex: TodayExercise) => void;
+  /** Coach pick of exercise + set → executor.setOverride (published; the phone follows). */
+  onPickExercise: (ex: TodayExercise, setNumber: number) => void;
+  /** The picker's live rows (executor.pickerRows — the resolver's own logs). */
+  pickerRows?: PickerRow[];
 }
 
-export default function AthleteCard({ view, rackName, layout = 'column', compact = false, onDone, onPickExercise }: AthleteCardProps) {
+export default function AthleteCard({ view, rackName, layout = 'column', compact = false, onDone, onPickExercise, pickerRows = [] }: AthleteCardProps) {
   const a = view.athlete;
   const row = layout === 'row';
   const c = compact && !row;
@@ -41,8 +45,10 @@ export default function AthleteCard({ view, rackName, layout = 'column', compact
           </Text>
           <ExercisePicker
             label={view.exerciseLine}
-            remaining={view.remaining}
+            exercises={view.exercises}
+            rows={pickerRows}
             currentRoutineExerciseId={view.routineExerciseId}
+            currentSetNumber={view.setNumber}
             phoneOwnsContext={view.contextSource === 'phone'}
             onPick={onPickExercise}
             prompt={view.needsPick}
