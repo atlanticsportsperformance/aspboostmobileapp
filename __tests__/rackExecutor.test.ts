@@ -1,6 +1,6 @@
 import * as engineModule from '../lib/rack/engine';
 import { createRackEngine, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
-import { createRackExecutor, SEED_TIMEOUT_MS, type ExecutorApi } from '../lib/rack/executor';
+import { createRackExecutor, SEED_RETRY_MS, type ExecutorApi } from '../lib/rack/executor';
 import type { WrittenSet } from '../lib/rack/api';
 import type { OvrRep } from '../lib/ovr/protocol';
 
@@ -186,14 +186,16 @@ describe('executor ordering', () => {
 });
 
 describe('seed high-water', () => {
-  it('seedHighWater lands before the athlete\'s reps reach the engine', async () => {
+  it("seedHighWater lands before the athlete's reps reach the engine; syncs are not held", async () => {
     const seed = deferred<WrittenSet[]>();
     const r = rig({ api: { todaysWrittenSets: jest.fn(() => seed.promise) } });
     r.ex.dispatch({ type: 'sessionSync', row: row() });
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
     await flushMicro();
+    expect(r.ex.getState().activeAthleteId).toBe('tyler'); // sync applied at once
+    expect(events.some(e => e.type === 'rep')).toBe(false);
+    expect(r.ex.isSyncing()).toBe(true);
     expect(r.persist.writeRep).not.toHaveBeenCalled();
-    expect(events.some(e => e.type === 'rep' || e.type === 'sessionSync')).toBe(false);
 
     seed.resolve([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]);
     await flushMicro();
@@ -201,25 +203,51 @@ describe('seed high-water', () => {
     const types = events.map(e => e.type);
     expect(types.indexOf('seedHighWater')).toBeLessThan(types.indexOf('rep'));
     expect(r.api.todaysWrittenSets).toHaveBeenCalledWith(['tyler']);
+    expect(r.ex.isSyncing()).toBe(false);
     // Phone said set 1, today already has set 3 → the rack writes set 4.
-    const written = (r.persist.writeRep as jest.Mock).mock.calls[0][0];
-    expect(written.setNumber).toBe(4);
+    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0].setNumber).toBe(4);
   });
 
-  it('proceeds after 3 s without the seed and logs it', async () => {
+  it('seed fails twice then succeeds: reps wait (no cap) and land above the high-water', async () => {
     jest.useFakeTimers();
-    const r = rig({ api: { todaysWrittenSets: jest.fn(() => new Promise<WrittenSet[]>(() => {})) } });
+    const seedFn = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]);
+    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    r.ex.start();
     r.ex.dispatch({ type: 'sessionSync', row: row() });
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
-    await jest.advanceTimersByTimeAsync(SEED_TIMEOUT_MS - 10);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
+    await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
+    expect(seedFn).toHaveBeenCalledTimes(2);
     expect(r.persist.writeRep).not.toHaveBeenCalled();
-    await jest.advanceTimersByTimeAsync(20);
+    expect(r.ex.isSyncing()).toBe(true);
+    await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
+    expect(seedFn).toHaveBeenCalledTimes(3);
     await r.ex.idle();
-    expect(r.persist.writeRep).toHaveBeenCalledTimes(1);
-    expect(r.log).toHaveBeenCalledWith(expect.stringContaining('not back after'));
+    const written = (r.persist.writeRep as jest.Mock).mock.calls.map(c => c[0]);
+    expect(written).toHaveLength(2);
+    expect(written.every(w => w.setNumber === 4)).toBe(true);
+    expect(r.ex.isSyncing()).toBe(false);
+    r.ex.stop();
   });
 
-  it('a tile tap seeds the chosen athlete once (not again on the confirming sync)', async () => {
+  it('a Done during the hold is applied and replayed after the held reps (the set still ends)', async () => {
+    const seed = deferred<WrittenSet[]>();
+    const r = rig({ api: { todaysWrittenSets: jest.fn(() => seed.promise) } });
+    r.ex.dispatch({ type: 'sessionSync', row: row() });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    seed.resolve([]);
+    await flushMicro();
+    await r.ex.idle();
+    expect(r.persist.endSet).toHaveBeenCalledTimes(1);
+    expect(r.api.endSet).toHaveBeenCalledWith(RACK, 'tyler');
+  });
+
+  it("a tile tap seeds the chosen athlete once (not again on the confirming sync)", async () => {
     const r = rig();
     await activeTyler(r);
     r.ex.dispatch({ type: 'selectAthlete', athleteId: 'jake' });
@@ -228,6 +256,18 @@ describe('seed high-water', () => {
     expect(r.api.setActive).toHaveBeenCalledWith(RACK, 'jake');
     expect((r.api.todaysWrittenSets as jest.Mock).mock.calls).toEqual([[['tyler']], [['jake']]]);
     expect(r.ex.getState().activeAthleteId).toBe('jake');
+  });
+
+  it('a set with no exerciseId gets it from the engine map before persist', async () => {
+    const r = rig();
+    r.ex.dispatch({ type: 'sessionSync', row: row({ exercise_id: null }) });
+    r.ex.dispatch({ type: 'contextMeta', exerciseId: 'ex-squat', routineExerciseId: 're-squat', zoneMin: null, zoneMax: null, dropStopPct: null });
+    await flushMicro();
+    await r.ex.idle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0].exerciseId).toBe('ex-squat');
   });
 });
 
@@ -249,19 +289,16 @@ describe('ticks and flushes', () => {
     r.ex.dispatch({ type: 'sessionSync', row: row({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null }) });
     await flushMicro();
     await r.ex.idle();
+    const exA = { workoutInstanceId: 'wi-9', routineExerciseId: 're-a', exerciseId: 'ex-a', name: 'A', sets: 3, completedSets: 3, zoneMin: null, zoneMax: null, dropStopPct: null };
+    const exB = { workoutInstanceId: 'wi-9', routineExerciseId: 're-b', exerciseId: 'ex-b', name: 'B', sets: 3, completedSets: 0, zoneMin: 0.6, zoneMax: 0.9, dropStopPct: 20 };
     r.ex.setToday([
       {
         athleteId: 'tyler',
         firstName: 'Tyler',
         lastName: 'B',
-        workoutInstanceId: 'wi-9',
-        exercises: [
-          { routineExerciseId: 're-a', exerciseId: 'ex-a', name: 'A', sets: 3, completedSets: 3, zoneMin: null, zoneMax: null, dropStopPct: null },
-          { routineExerciseId: 're-b', exerciseId: 'ex-b', name: 'B', sets: 3, completedSets: 0, zoneMin: 0.6, zoneMax: 0.9, dropStopPct: 20 },
-        ],
-        remaining: [
-          { routineExerciseId: 're-b', exerciseId: 'ex-b', name: 'B', sets: 3, completedSets: 0, zoneMin: 0.6, zoneMax: 0.9, dropStopPct: 20 },
-        ],
+        instances: [{ workoutInstanceId: 'wi-9', status: 'not_started', createdAt: '2026-10-17T10:00:00Z', exercises: [exA, exB], remaining: [exB] }],
+        exercises: [exA, exB],
+        remaining: [exB],
       },
     ]);
     expect(events.filter(e => e.type === 'contextMeta')).toHaveLength(2);

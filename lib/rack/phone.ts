@@ -4,6 +4,19 @@
 // and ordered by rep_index. The callback gets the set the newest rep belongs to.
 
 import { supabase } from '../supabase';
+import { todayKey } from './api';
+
+let topicSeq = 0;
+/**
+ * A realtime topic unique to one subscription. realtime-js `channel(topic)`
+ * returns the EXISTING channel for a repeated topic — a second subscriber
+ * would then never get events, and the first one's removeChannel would kill
+ * both. Every subscription gets its own suffix and removes only its channel.
+ */
+export function uniqueTopic(base: string): string {
+  topicSeq += 1;
+  return `${base}:${topicSeq.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export interface RepChip {
   clientRepId: string;
@@ -76,21 +89,43 @@ export function subscribeMyRack(
   client: any = supabase,
 ): MyRackSubscription {
   const sets = new Map<string, ChipSet>();
+  let closed = false;
+  const push = (row: any) => {
+    const set = addRepRow(sets, row);
+    if (set && !closed) onSet(set, sets);
+  };
+  // Reps written while this phone wasn't connected: today's rows for the
+  // athlete, replayed through the same reducer (deduped by client_rep_id).
+  const backfill = async () => {
+    try {
+      const since = new Date(`${todayKey()}T00:00:00`).toISOString();
+      const { data, error } = await client
+        .from('vbt_reps')
+        .select('client_rep_id, rack_id, workout_instance_id, routine_exercise_id, set_number, rep_index, load_lb, mean_velocity, peak_velocity, rom_in, is_partial, received_at')
+        .eq('athlete_id', athleteId)
+        .gte('received_at', since)
+        .order('received_at', { ascending: true });
+      if (error) throw error;
+      for (const row of (data as any[]) ?? []) push(row);
+    } catch (e) {
+      console.warn('[rack phone] backfill failed', e);
+    }
+  };
   const channel = client
-    .channel(`vbt_reps:${athleteId}`)
+    .channel(uniqueTopic(`vbt_reps:${athleteId}`))
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'vbt_reps', filter: `athlete_id=eq.${athleteId}` },
-      (payload: { new?: any }) => {
-        const set = addRepRow(sets, payload.new);
-        if (set) onSet(set, sets);
-      },
+      (payload: { new?: any }) => push(payload.new),
     )
-    .subscribe();
+    .subscribe((status: string) => {
+      if (status === 'SUBSCRIBED') backfill();
+    });
   return {
     sets: () => sets,
     chipsFor: (wi, re, n) => sets.get(chipKey(wi, re, n))?.chips ?? [],
     unsubscribe: () => {
+      closed = true;
       client.removeChannel(channel);
     },
   };

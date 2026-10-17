@@ -10,11 +10,14 @@ import { supabase } from '../lib/supabase';
 import { createRackApi, type RackClient, type TodayAthlete } from '../lib/rack/api';
 import { createRackPersist } from '../lib/rack/persist';
 import { createRackExecutor, type RackExecutor } from '../lib/rack/executor';
+import { uniqueTopic } from '../lib/rack/phone';
 import { createRackEngine, type RackEngineState, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
 import type { OvrDevice } from '../lib/ovr/ovr-device';
 
 export interface UseRackSession {
   state: RackEngineState;
+  /** Reps held until today's written sets load (show "Syncing…"). */
+  syncing: boolean;
   dispatch: (event: RackEvent) => void;
   executor: RackExecutor;
   today: TodayAthlete[];
@@ -36,6 +39,7 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
   }, [rackId, orgId, sensor]);
 
   const [state, setState] = useState<RackEngineState>(() => executor.getState());
+  const [syncing, setSyncing] = useState(false);
   const [today, setToday] = useState<TodayAthlete[]>([]);
 
   const refreshToday = useMemo(
@@ -53,7 +57,11 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
 
   useEffect(() => {
     setState(executor.getState());
-    const off = executor.subscribe(setState);
+    setSyncing(executor.isSyncing());
+    const off = executor.subscribe((s, sy) => {
+      setState(s);
+      setSyncing(sy);
+    });
     executor.start();
 
     const sync = (row: RackSessionRow | null) => {
@@ -62,7 +70,7 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
     const readRow = () => api.getSession(rackId).then(sync).catch(e => console.warn('[rack] session read failed', e));
 
     const channel = supabase
-      .channel(`rack_session:${rackId}`)
+      .channel(uniqueTopic(`rack_session:${rackId}`))
       .on(
         'postgres_changes' as any,
         { event: '*', schema: 'public', table: 'rack_sessions', filter: `rack_id=eq.${rackId}` },
@@ -71,8 +79,12 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
         },
       )
       .subscribe((status: string) => {
-        // (Re)subscribed: rows may have been missed while disconnected.
-        if (status === 'SUBSCRIBED') readRow();
+        // (Re)subscribed: rows may have been missed while disconnected, and
+        // the network is back — flush both queues now.
+        if (status === 'SUBSCRIBED') {
+          readRow();
+          executor.flush();
+        }
       });
 
     const offRep = sensor.onRep((rep, receivedAtMs) => executor.dispatch({ type: 'rep', rep }, receivedAtMs));
@@ -88,5 +100,5 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
     };
   }, [executor, api, rackId, sensor, refreshToday]);
 
-  return { state, dispatch: executor.dispatch, executor, today, refreshToday };
+  return { state, syncing, dispatch: executor.dispatch, executor, today, refreshToday };
 }

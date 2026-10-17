@@ -78,9 +78,13 @@ export function setKeyOf(s: Pick<SetSummary, 'workoutInstanceId' | 'routineExerc
   return `${s.workoutInstanceId}:${s.routineExerciseId}:${s.setNumber}`;
 }
 
-/** The upsert_exercise_log row for an ended (or amended) set; null when free. */
+/**
+ * The upsert_exercise_log row for an ended (or amended) set. null when free,
+ * or when the exercise is unknown (exercise_logs.exercise_id is NOT NULL — the
+ * row would fail with 23502; the caller resolves it first or downgrades).
+ */
 export function setWriteRow(summary: SetSummary, orgId: string | null): LogRow | null {
-  if (!setKeyOf(summary)) return null;
+  if (!setKeyOf(summary) || !summary.exerciseId) return null;
   const row = buildLogRow(
     {
       workoutInstanceId: summary.workoutInstanceId!,
@@ -90,15 +94,16 @@ export function setWriteRow(summary: SetSummary, orgId: string | null): LogRow |
     { reps: summary.fullReps, weight: summary.loadLb },
     {
       athleteId: summary.athleteId,
-      exerciseId: summary.exerciseId as string,
+      exerciseId: summary.exerciseId,
       orgId,
       complete: true,
       // Unknown load: leave the phone's weight alone (a null key would clear it).
       fields: summary.loadLb == null ? ['reps'] : ['reps', 'weight'],
     },
   );
-  if (summary.exerciseId == null) delete row.exercise_id;
-  delete row.metric_data; // never replace metric_data — patch only
+  // fields ['reps','weight'] never builds metric_data; kept as a guard so a
+  // future buildLogRow change can't make the rack replace the phone's metrics.
+  delete row.metric_data;
   row.metric_data_patch = {
     vbt: {
       reps: summary.reps.map(r => ({ v: r.v, pv: r.pv, rom: r.rom, partial: r.partial })),
@@ -118,19 +123,24 @@ export function setWriteRow(summary: SetSummary, orgId: string | null): LogRow |
 
 type PgError = { code?: string; message?: string } | null | undefined;
 
+export const SEND_TIMEOUT_MS = 10_000;
+export const REP_DEAD_KEY = 'rack_vbt_reps_dead_v1';
+export const SET_DEAD_KEY = 'rack_set_writes_dead_v1';
+
 /** Unique violation on client_rep_id: the rep is already stored. */
 export function isUniqueViolation(error: PgError): boolean {
   return error?.code === '23505';
 }
 
-// Expired/missing JWT, timeouts and rate limits are not the row's fault: keep
-// the item and retry, never drop it.
-const TRANSIENT_STATUS = new Set([401, 408, 425, 429]);
-const TRANSIENT_CODES = new Set(['PGRST301', 'PGRST302', 'PGRST303']);
+// Auth/session problems (expired JWT, deactivated or re-scoped Racks login,
+// RLS 42501), timeouts and rate limits are not the row's fault: keep the item
+// and back off — never drop it.
+const TRANSIENT_STATUS = new Set([401, 403, 408, 425, 429]);
+const isTransientCode = (code?: string) => code === '42501' || (!!code && /^PGRST30\d$/.test(code));
 
-/** true = the server rejected the row itself (drop it); false = retry later. */
+/** true = the server rejected the row itself; false = keep it and retry. */
 export function isPermanentError(error: PgError, status?: number): boolean {
-  if (error?.code && TRANSIENT_CODES.has(error.code)) return false;
+  if (isTransientCode(error?.code)) return false;
   if (typeof status === 'number') {
     if (TRANSIENT_STATUS.has(status)) return false;
     return status >= 400 && status < 500;
@@ -139,10 +149,21 @@ export function isPermanentError(error: PgError, status?: number): boolean {
   return typeof error?.code === 'string' && error.code !== '' && !/^PGRST/.test(error.code);
 }
 
-function failure(what: string, error: PgError, status?: number): Error {
+function failure(what: string, error: PgError, status?: number): Error & { permanent?: boolean } {
   const err = new Error(`${what}: ${error?.message ?? 'failed'}`) as Error & { permanent?: boolean };
   if (isPermanentError(error, status)) err.permanent = true;
   return err;
+}
+
+/** Rejects with a transient (non-permanent) error after `ms`. */
+export function withTimeout<T>(p: PromiseLike<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    Promise.resolve(p).finally(() => timer && clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what}: timed out after ${ms} ms`)), ms);
+    }),
+  ]);
 }
 
 // ---------------------------------------------------------------- persist
@@ -150,15 +171,23 @@ function failure(what: string, error: PgError, status?: number): Error {
 export interface RackPersist {
   /** Durably queue one rep (resolves once it is on disk). */
   writeRep(rep: RepWrite): Promise<void>;
-  /** Durably queue an ended set's write. No-op for a free set. */
+  /**
+   * Durably queue an ended set's write. No-op for a free set. A set with no
+   * exerciseId is resolved from routine_exercises first; if that fails it is
+   * downgraded to a free set (vbt_reps only) and logged.
+   */
   endSet(summary: SetSummary): Promise<void>;
   /** Same as endSet: re-writes the whole set, replacing any queued write. */
   amendSet(summary: SetSummary): Promise<void>;
-  /** Flush both queues (reps first). Never rejects. */
-  flush(): Promise<void>;
+  /** Flush both queues (reps first). Never rejects. Skipped while backing
+   *  off after a transient failure unless `force`. */
+  flush(opts?: { force?: boolean }): Promise<void>;
   pending(): Promise<{ reps: number; sets: number }>;
   readonly repQueue: Queue<VbtRepRow>;
   readonly setQueue: Queue<SetWriteItem>;
+  /** Items the server rejected as malformed (kept, never deleted). */
+  readonly deadReps: Queue<VbtRepRow>;
+  readonly deadSets: Queue<SetWriteItem>;
 }
 
 export function createRackPersist(opts: {
@@ -166,67 +195,135 @@ export function createRackPersist(opts: {
   orgId: string;
   batchSize?: number;
   log?: (...args: unknown[]) => void;
+  now?: () => number;
+  sendTimeoutMs?: number;
 }): RackPersist {
   const { client, orgId } = opts;
   const log = opts.log ?? ((...a: unknown[]) => console.warn('[rack persist]', ...a));
+  const now = opts.now ?? (() => Date.now());
+  const timeoutMs = opts.sendTimeoutMs ?? SEND_TIMEOUT_MS;
+
+  const deadReps = createQueue<VbtRepRow>(REP_DEAD_KEY, async () => {}, { idOf: r => r.client_rep_id });
+  const deadSets = createQueue<SetWriteItem>(SET_DEAD_KEY, async () => {});
 
   const sendReps = async (rows: VbtRepRow[]) => {
     let res: { error: PgError; status?: number };
     try {
-      res = await client
-        .from('vbt_reps')
-        .upsert(rows, { onConflict: 'client_rep_id', ignoreDuplicates: true });
+      res = await withTimeout(
+        client.from('vbt_reps').upsert(rows, { onConflict: 'client_rep_id', ignoreDuplicates: true }),
+        timeoutMs,
+        'vbt_reps',
+      );
     } catch (error) {
-      throw failure('vbt_reps unreachable', error as PgError);
+      throw failure('vbt_reps unreachable', { message: String((error as Error)?.message ?? error) });
     }
     if (!res.error || isUniqueViolation(res.error)) return;
     throw failure('vbt_reps', res.error, res.status);
   };
 
-  const repQueue = createQueue<VbtRepRow>(REP_QUEUE_KEY, row => sendReps([row]), {
-    idOf: r => r.client_rep_id,
-    sendBatch: sendReps,
-    batchSize: opts.batchSize ?? 50,
-  });
+  const repQueue = createQueue<VbtRepRow>(
+    REP_QUEUE_KEY,
+    async row => {
+      try {
+        await sendReps([row]);
+      } catch (e) {
+        if ((e as { permanent?: boolean }).permanent) {
+          log('rep rejected; moved to dead letter', e, row.client_rep_id);
+          await deadReps.enqueue(row);
+        }
+        throw e;
+      }
+    },
+    { idOf: r => r.client_rep_id, sendBatch: sendReps, batchSize: opts.batchSize ?? 50 },
+  );
 
   const setQueue = createQueue<SetWriteItem>(
     SET_QUEUE_KEY,
     async item => {
       let res: { data: unknown; error: any; status?: number };
       try {
-        res = await client.rpc('upsert_exercise_log', { p_row: item.row });
+        res = await withTimeout(client.rpc('upsert_exercise_log', { p_row: item.row }), timeoutMs, 'upsert_exercise_log');
       } catch (error) {
-        throw failure('upsert_exercise_log unreachable', error as PgError);
+        throw failure('upsert_exercise_log unreachable', { message: String((error as Error)?.message ?? error) });
       }
       if (res.error) {
+        const err = failure('upsert_exercise_log', res.error, res.status);
         log('upsert_exercise_log failed', res.error, item.key);
-        throw failure('upsert_exercise_log', res.error, res.status);
+        if (err.permanent) await deadSets.enqueue(item);
+        throw err;
       }
     },
     { idOf: i => i.key, replace: true },
   );
 
+  const exerciseCache = new Map<string, string>();
+  const resolveExerciseId = async (routineExerciseId: string): Promise<string | null> => {
+    const hit = exerciseCache.get(routineExerciseId);
+    if (hit) return hit;
+    try {
+      const { data, error } = await withTimeout(
+        client.from('routine_exercises').select('exercise_id').eq('id', routineExerciseId).maybeSingle(),
+        timeoutMs,
+        'routine_exercises',
+      ) as { data: { exercise_id?: string | null } | null; error: PgError };
+      if (error) throw error;
+      const id = data?.exercise_id ?? null;
+      if (id) exerciseCache.set(routineExerciseId, id);
+      return id;
+    } catch (e) {
+      log('exercise_id lookup failed', e, routineExerciseId);
+      return null;
+    }
+  };
+
   const writeSet = async (summary: SetSummary) => {
     const key = setKeyOf(summary);
-    const row = key ? setWriteRow(summary, orgId) : null;
-    if (!key || !row) return; // free set: vbt_reps only
-    await setQueue.enqueue({ key, row });
+    if (!key) return; // free set: vbt_reps only
+    let s = summary;
+    if (!s.exerciseId) {
+      const exerciseId = await resolveExerciseId(s.routineExerciseId!);
+      if (!exerciseId) {
+        log('set has no exercise_id; written as a free set (vbt_reps only)', key);
+        return;
+      }
+      s = { ...s, exerciseId };
+    }
+    const row = setWriteRow(s, orgId);
+    if (row) await setQueue.enqueue({ key, row });
   };
+
+  // Back-off after a transient failure, so per-rep flushes don't hammer a
+  // 401/403 server: 2 s doubling to 60 s, reset on a clean pass.
+  let backoffMs = 0;
+  let retryAt = 0;
 
   return {
     writeRep: rep => repQueue.enqueue(vbtRepRow(rep, orgId)),
     endSet: writeSet,
     amendSet: writeSet,
-    async flush() {
+    async flush(o) {
+      if (!o?.force && now() < retryAt) return;
+      let stuck = false;
       try {
-        await repQueue.flush();
+        const r = await repQueue.flush();
+        if (r.failed > 0 && (await repQueue.size()) > 0) stuck = true;
       } catch (e) {
+        stuck = true;
         log('rep flush failed', e);
       }
       try {
-        await setQueue.flush();
+        const r = await setQueue.flush();
+        if (r.failed > 0 && (await setQueue.size()) > 0) stuck = true;
       } catch (e) {
+        stuck = true;
         log('set flush failed', e);
+      }
+      if (stuck) {
+        backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
+        retryAt = now() + backoffMs;
+      } else {
+        backoffMs = 0;
+        retryAt = 0;
       }
     },
     async pending() {
@@ -234,5 +331,7 @@ export function createRackPersist(opts: {
     },
     repQueue,
     setQueue,
+    deadReps,
+    deadSets,
   };
 }

@@ -45,6 +45,7 @@ export interface Rack {
 }
 
 export interface TodayExercise {
+  workoutInstanceId: string;
   routineExerciseId: string;
   exerciseId: string;
   name: string;
@@ -57,15 +58,50 @@ export interface TodayExercise {
   dropStopPct: number | null;
 }
 
+/** One of today's workout instances for an athlete (not skipped/completed). */
+export interface TodayInstance {
+  workoutInstanceId: string;
+  status: string;
+  createdAt: string;
+  /** Every (non-placeholder) exercise, in workout order. */
+  exercises: TodayExercise[];
+  /** Exercises with sets still to do, in workout order. */
+  remaining: TodayExercise[];
+}
+
+/** One athlete with a workout today — ONE entry per athlete. */
 export interface TodayAthlete {
   athleteId: string;
   firstName: string;
   lastName: string;
-  workoutInstanceId: string;
-  /** Remaining exercises of today's workout, in workout order. */
-  remaining: TodayExercise[];
-  /** Every (non-placeholder) exercise of the workout, in order (for contextMeta). */
+  /** Not-skipped, not-completed instances, earliest created first. */
+  instances: TodayInstance[];
+  /** All instances' exercises, instance order then workout order (contextMeta). */
   exercises: TodayExercise[];
+  /** All instances' remaining exercises, same order (Task 9 override list). */
+  remaining: TodayExercise[];
+}
+
+/** Statuses a rack can still log into (skipped/completed are excluded). */
+export const OPEN_INSTANCE_STATUSES = ['not_started', 'in_progress'] as const;
+
+/**
+ * The iPad's exercise pick for an athlete: an instance the server/phone
+ * context points at wins, else the earliest instance with remaining work
+ * (instances are already ordered by created_at — workout_instances has no
+ * scheduled time). Returns its first remaining exercise.
+ */
+export function pickLocalExercise(
+  athlete: TodayAthlete,
+  contextInstanceIds: (string | null | undefined)[] = [],
+): TodayExercise | null {
+  for (const id of contextInstanceIds) {
+    if (!id) continue;
+    const inst = athlete.instances.find(i => i.workoutInstanceId === id);
+    if (inst?.remaining[0]) return inst.remaining[0];
+  }
+  for (const inst of athlete.instances) if (inst.remaining[0]) return inst.remaining[0];
+  return null;
 }
 
 export interface WrittenSet {
@@ -168,7 +204,7 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       const { data, error } = await client
         .from('workout_instances')
         .select(
-          `id, athlete_id, scheduled_date,
+          `id, athlete_id, scheduled_date, status, created_at,
            athletes!inner ( id, org_id, first_name, last_name ),
            workouts ( id, routines ( id, order_index, routine_exercises (
              id, order_index, sets, exercise_id, is_placeholder, notes_only,
@@ -176,20 +212,25 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
              exercises ( id, name, is_placeholder ) ) ) )`,
         )
         .eq('scheduled_date', today)
-        .eq('athletes.org_id', orgId);
+        .eq('org_id', orgId)
+        .in('status', [...OPEN_INSTANCE_STATUSES]);
       if (error) throw new RackRpcError('workout_instances', error);
       const instances = (data as any[]) ?? [];
       if (instances.length === 0) return [];
 
       const done = await completedCounts(instances.map(i => i.id));
-      const out: TodayAthlete[] = [];
-      for (const wi of instances) {
+      const byAthlete = new Map<string, TodayAthlete>();
+      const ordered = [...instances].sort(
+        (a, b) => String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) || String(a.id).localeCompare(String(b.id)),
+      );
+      for (const wi of ordered) {
         const routines = [...(wi.workouts?.routines ?? [])].sort(byOrder);
         const exercises: TodayExercise[] = [];
         for (const r of routines) {
           for (const re of [...(r.routine_exercises ?? [])].sort(byOrder)) {
             if (re.notes_only || re.is_placeholder || re.exercises?.is_placeholder || !re.exercise_id) continue;
             exercises.push({
+              workoutInstanceId: wi.id,
               routineExerciseId: re.id,
               exerciseId: re.exercise_id,
               name: re.exercises?.name ?? '',
@@ -201,17 +242,32 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
             });
           }
         }
-        out.push({
-          athleteId: wi.athlete_id,
-          firstName: wi.athletes?.first_name ?? '',
-          lastName: wi.athletes?.last_name ?? '',
+        const inst: TodayInstance = {
           workoutInstanceId: wi.id,
+          status: wi.status,
+          createdAt: wi.created_at,
           exercises,
           remaining: exercises.filter(e => e.completedSets < (e.sets ?? 1)),
-        });
+        };
+        let a = byAthlete.get(wi.athlete_id);
+        if (!a) {
+          a = {
+            athleteId: wi.athlete_id,
+            firstName: wi.athletes?.first_name ?? '',
+            lastName: wi.athletes?.last_name ?? '',
+            instances: [],
+            exercises: [],
+            remaining: [],
+          };
+          byAthlete.set(wi.athlete_id, a);
+        }
+        a.instances.push(inst);
+        a.exercises.push(...inst.exercises);
+        a.remaining.push(...inst.remaining);
       }
-      out.sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`));
-      return out;
+      return [...byAthlete.values()].sort((a, b) =>
+        `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`),
+      );
     },
 
     /**
@@ -254,7 +310,7 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
   async function completedCounts(instanceIds: string[]): Promise<Map<string, number>> {
     const { data, error } = await client
       .from('exercise_logs')
-      .select('workout_instance_id, routine_exercise_id, set_number, is_complete')
+      .select('workout_instance_id, routine_exercise_id')
       .in('workout_instance_id', instanceIds)
       .eq('is_complete', true);
     if (error) throw new RackRpcError('exercise_logs', error);

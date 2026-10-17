@@ -67,11 +67,24 @@ const rep = (over: Partial<RepWrite> = {}): RepWrite => ({
   ...over,
 });
 
-function mockClient(opts: { upsertResult?: () => any; rpcResult?: () => any } = {}) {
+function mockClient(opts: { upsertResult?: () => any; rpcResult?: () => any; exerciseOf?: (re: string) => any } = {}) {
   const upsert = jest.fn(async (_rows: any[], _o: any) => (opts.upsertResult ? opts.upsertResult() : { error: null, status: 201 }));
   const rpc = jest.fn(async (_fn: string, _args: any) => (opts.rpcResult ? opts.rpcResult() : { data: 'log-id', error: null, status: 200 }));
-  const from = jest.fn((_t: string) => ({ upsert }));
-  return { client: { rpc, from } as any, rpc, upsert, from };
+  const lookup = jest.fn();
+  const from = jest.fn((t: string) => {
+    if (t !== 'routine_exercises') return { upsert };
+    let id = '';
+    const q: any = {
+      select: () => q,
+      eq: (_c: string, v: string) => ((id = v), q),
+      maybeSingle: async () => {
+        lookup(id);
+        return opts.exerciseOf ? opts.exerciseOf(id) : { data: null, error: null };
+      },
+    };
+    return q;
+  });
+  return { client: { rpc, from } as any, rpc, upsert, from, lookup };
 }
 
 beforeEach(() => {
@@ -127,6 +140,34 @@ describe('set row shape', () => {
     expect(fn).toBe('upsert_exercise_log');
     expect(args.p_row).toEqual(setWriteRow(summary(), ORG));
     expect(args.p_row).not.toHaveProperty('metric_data');
+  });
+});
+
+describe('missing exercise_id', () => {
+  it('is resolved from routine_exercises before enqueuing', async () => {
+    const m = mockClient({ exerciseOf: () => ({ data: { exercise_id: 'ex-from-re' }, error: null }) });
+    const p = createRackPersist({ client: m.client, orgId: ORG });
+    await p.endSet(summary({ exerciseId: null }));
+    expect(m.lookup).toHaveBeenCalledWith('re-squat');
+    const [item] = await p.setQueue.peekAll();
+    expect(item.row.exercise_id).toBe('ex-from-re');
+  });
+
+  it('still null → downgraded to a free set (vbt_reps only), logged, nothing that would hit 23502', async () => {
+    const log = jest.fn();
+    const m = mockClient({ exerciseOf: () => ({ data: { exercise_id: null }, error: null }) });
+    const p = createRackPersist({ client: m.client, orgId: ORG, log });
+    await p.endSet(summary({ exerciseId: null }));
+    expect(await p.setQueue.size()).toBe(0);
+    expect(setWriteRow(summary({ exerciseId: null }), ORG)).toBeNull();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('free set'), 'wi-1:re-squat:2');
+  });
+
+  it('lookup failing (offline) also downgrades, never enqueues a null exercise_id', async () => {
+    const m = mockClient({ exerciseOf: () => { throw new TypeError('Network request failed'); } });
+    const p = createRackPersist({ client: m.client, orgId: ORG, log: () => {} });
+    await p.endSet(summary({ exerciseId: null }));
+    expect(await p.setQueue.size()).toBe(0);
   });
 });
 
@@ -230,14 +271,45 @@ describe('vbt_reps queue', () => {
     expect(await p.repQueue.size()).toBe(1);
   });
 
-  it('an expired JWT (401) keeps the rep queued; other 4xx drop it', async () => {
-    const m = mockClient({ upsertResult: () => ({ error: { code: 'PGRST301', message: 'JWT expired' }, status: 401 }) });
-    const p = createRackPersist({ client: m.client, orgId: ORG });
+  it.each([
+    ['expired JWT', { code: 'PGRST301', message: 'JWT expired' }, 401],
+    ['forbidden', { code: '', message: 'forbidden' }, 403],
+    ['RLS 42501 (403)', { code: '42501', message: 'new row violates row-level security policy' }, 403],
+    ['RLS 42501 (no status)', { code: '42501', message: 'rls' }, undefined],
+    ['PGRST303', { code: 'PGRST303', message: 'jwt' }, 401],
+  ])('auth failure (%s) keeps reps and sets queued', async (_n, error, status) => {
+    const m = mockClient({ upsertResult: () => ({ error, status }), rpcResult: () => ({ data: null, error, status }) });
+    const p = createRackPersist({ client: m.client, orgId: ORG, log: () => {} });
+    await p.writeRep(rep());
+    await p.endSet(summary());
+    await p.flush();
+    expect(await p.pending()).toEqual({ reps: 1, sets: 1 });
+    expect(await p.deadReps.size()).toBe(0);
+  });
+
+  it('a malformed row is moved to the dead letter, never deleted', async () => {
+    const m = mockClient({ upsertResult: () => ({ error: { code: '23503', message: 'fk' }, status: 409 }) });
+    const p = createRackPersist({ client: m.client, orgId: ORG, log: () => {} });
     await p.writeRep(rep());
     await p.flush();
-    expect(await p.repQueue.size()).toBe(1);
+    expect(await p.repQueue.size()).toBe(0);
+    expect((await p.deadReps.peekAll()).map(r => r.client_rep_id)).toEqual(['rack-3:tyler:1:1']);
+  });
 
-    m.upsert.mockImplementation(async () => ({ error: { code: '23503', message: 'fk' }, status: 409 }));
+  it('backs off after a transient failure; force flushes anyway', async () => {
+    let t = 0;
+    const m = mockClient({ upsertResult: () => ({ error: { code: 'PGRST301', message: 'jwt' }, status: 401 }) });
+    const p = createRackPersist({ client: m.client, orgId: ORG, now: () => t, log: () => {} });
+    await p.writeRep(rep());
+    await p.flush();
+    expect(m.upsert).toHaveBeenCalledTimes(1);
+    t = 1000;
+    await p.flush();
+    expect(m.upsert).toHaveBeenCalledTimes(1);
+    await p.flush({ force: true });
+    expect(m.upsert).toHaveBeenCalledTimes(2);
+    m.upsert.mockImplementation(async () => ({ error: null, status: 201 }));
+    t = 100_000;
     await p.flush();
     expect(await p.repQueue.size()).toBe(0);
   });

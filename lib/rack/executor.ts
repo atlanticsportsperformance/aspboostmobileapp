@@ -7,25 +7,35 @@
 //   - RPC effects are started in order on their own serial chain, once every
 //     effect before them has run, so `rpcEndSet` always goes out after the
 //     preceding `endSet` is on disk. The effect chain does not wait for the
-//     RPC's round trip (reps keep being queued while it is in flight).
+//     RPC's round trip. RPCs time out after 10 s (→ rpcFailed).
 //   - An RPC's returned row is dispatched as `sessionSync` BEFORE
 //     `rpcSettled`; an error dispatches `rpcFailed`. rpcSetActive is never
 //     queued offline — it just fails.
-//   - Seed: on start and whenever the active athlete changes, today's written
-//     sets are fetched and dispatched as `seedHighWater` before any later
-//     event reaches the engine (events are held, in order, up to 3 s; after
-//     that they proceed and the late seed still applies).
+//   - Seed (high-water): whenever the athlete reps would be credited to (the
+//     tile being switched to, else the active athlete) changes — and on start —
+//     today's written sets are fetched and dispatched as `seedHighWater`.
+//     Until that athlete's seed SUCCEEDS, `rep` events are held here (in
+//     order, with their original timestamps); the seed retries every 2 s with
+//     no cap. Nothing else is held: syncs, taps, Done and ticks go straight
+//     to the engine. A Done that arrives while reps are held is applied now
+//     AND replayed after those reps, so the set they start still ends on it.
+//     `isSyncing()` is true meanwhile (UI "Syncing…" pill).
+//     Held reps are in memory only: an app kill while the seed is unavailable
+//     loses exactly those reps (everything already enqueued is on disk).
 //   - `tick` every 1 s; both queues flushed on start, every 15 s (the app has
-//     no NetInfo) and after each enqueue.
+//     no NetInfo), after each enqueue, and on `flush()` (realtime reconnect).
 
 import { reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
-import type { RackSessionRow } from './engine';
-import type { TodayAthlete, WrittenSet } from './api';
-import type { RackPersist } from './persist';
+import type { RackSessionRow, SetSummary, RepWrite } from './engine';
+import { pickLocalExercise, type TodayAthlete, type WrittenSet } from './api';
+import { withTimeout, type RackPersist } from './persist';
 
-export const SEED_TIMEOUT_MS = 3_000;
 export const TICK_MS = 1_000;
 export const FLUSH_MS = 15_000;
+export const SEED_RETRY_MS = 2_000;
+/** A successful seed younger than this is not re-run on a re-activation. */
+export const SEED_FRESH_MS = 60_000;
+export const RPC_TIMEOUT_MS = 10_000;
 
 export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
@@ -34,20 +44,27 @@ export interface ExecutorApi {
   todaysWrittenSets(athleteIds: string[]): Promise<WrittenSet[]>;
 }
 
-export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet' | 'flush'>;
+export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet'> & {
+  flush(opts?: { force?: boolean }): Promise<void>;
+};
 
 export interface ExecutorSensor {
   writeLoad(lb: number): Promise<void>;
 }
 
 export interface RackExecutor {
-  /** Reduce one event (held while a seed is pending; `tick` is skipped then). */
+  /** Reduce one event. `rep` is held while its athlete's seed is pending. */
   dispatch(event: RackEvent, atMs?: number): void;
   getState(): RackEngineState;
-  subscribe(listener: (s: RackEngineState) => void): () => void;
+  /** true while reps are held / the seed for the rep athlete is pending. */
+  isSyncing(): boolean;
+  /** Called on every state or syncing change. */
+  subscribe(listener: (s: RackEngineState, syncing: boolean) => void): () => void;
   /** Today's athletes: dispatches contextMeta for every exercise and the
    *  iPad's localContext pick for the active athlete. */
   setToday(athletes: TodayAthlete[]): void;
+  /** Flush both queues now, ignoring back-off (e.g. realtime reconnect). */
+  flush(): void;
   start(): void;
   stop(): void;
   /** Resolves when every effect and RPC queued so far has run (tests). */
@@ -58,6 +75,15 @@ const RPC_KIND: Record<'rpcStartSet' | 'rpcSetActive' | 'rpcEndSet', RpcKind> = 
   rpcStartSet: 'startSet',
   rpcSetActive: 'setActive',
   rpcEndSet: 'endSet',
+};
+
+type Held = { event: RackEvent; at: number };
+type Seed = {
+  token: number;
+  status: 'pending' | 'done';
+  doneAt: number;
+  inFlight: boolean;
+  retry: ReturnType<typeof setTimeout> | null;
 };
 
 export function createRackExecutor(opts: {
@@ -73,25 +99,43 @@ export function createRackExecutor(opts: {
   const log = opts.log ?? ((...a: unknown[]) => console.warn('[rack]', ...a));
 
   let state = opts.engine;
-  const listeners = new Set<(s: RackEngineState) => void>();
+  const listeners = new Set<(s: RackEngineState, syncing: boolean) => void>();
   let effectChain: Promise<void> = Promise.resolve();
   let rpcChain: Promise<void> = Promise.resolve();
   let today: TodayAthlete[] = [];
   let timers: ReturnType<typeof setInterval>[] = [];
+  let running = false;
 
-  // Seed gate: while set, events are held in arrival order.
-  let gate: { athleteId: string; held: { event: RackEvent; at: number }[] } | null = null;
-  let seedTimer: ReturnType<typeof setTimeout> | null = null;
-  // Last athlete a seed ran for: the sync confirming a tile tap (already
-  // seeded at the tap) doesn't seed again.
-  let lastSeeded: string | null = null;
+  const seeds = new Map<string, Seed>();
+  let seedSeq = 0;
+  const held: Held[] = [];
+  /** Reps whose enqueue failed (storage error) — retried on every flush. */
+  const unsavedReps: RepWrite[] = [];
 
-  const notify = () => listeners.forEach(l => l(state));
+  const repTarget = () => state.switchingTo ?? state.activeAthleteId;
+  const repReady = () => {
+    const t = repTarget();
+    return !t || seeds.get(t)?.status === 'done';
+  };
+  const isSyncing = () => {
+    const t = repTarget();
+    return held.length > 0 || (!!t && seeds.get(t)?.status === 'pending');
+  };
+  const notify = () => {
+    const syncing = isSyncing();
+    listeners.forEach(l => l(state, syncing));
+  };
 
   // ---------------------------------------------------------------- effects
 
-  const flushSoon = () => {
-    persist.flush().catch(e => log('flush failed', e));
+  const flushSoon = (force = false) => {
+    (async () => {
+      while (unsavedReps.length) {
+        await persist.writeRep(unsavedReps[0]);
+        unsavedReps.shift();
+      }
+      await persist.flush(force ? { force } : undefined);
+    })().catch(e => log('flush failed', e));
   };
 
   const runRpc = (effect: Extract<RackEffect, { type: 'rpcStartSet' | 'rpcSetActive' | 'rpcEndSet' }>) => {
@@ -102,12 +146,13 @@ export function createRackExecutor(opts: {
       if (!rackId) return; // solo engines emit no rack RPCs
       let row: RackSessionRow;
       try {
-        row =
+        const call =
           effect.type === 'rpcStartSet'
-            ? await api.startSet(rackId, athleteId, effect.setStartedAt)
+            ? api.startSet(rackId, athleteId, effect.setStartedAt)
             : effect.type === 'rpcSetActive'
-              ? await api.setActive(rackId, athleteId)
-              : await api.endSet(rackId, athleteId);
+              ? api.setActive(rackId, athleteId)
+              : api.endSet(rackId, athleteId);
+        row = await withTimeout(call, RPC_TIMEOUT_MS, kind);
       } catch (e) {
         log(`${kind} failed`, e);
         dispatch({ type: 'rpcFailed', kind, athleteId });
@@ -117,6 +162,26 @@ export function createRackExecutor(opts: {
       dispatch({ type: 'rpcSettled', kind, athleteId });
     });
   };
+
+  const writeRepDurably = async (rep: RepWrite) => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await persist.writeRep(rep);
+        return;
+      } catch (e) {
+        if (attempt === 3) {
+          log('writeRep enqueue failed; kept in memory for the next flush', e, rep.clientRepId);
+          unsavedReps.push(rep);
+        }
+      }
+    }
+  };
+
+  /** Fill a missing exerciseId from the engine's routine-exercise map. */
+  const withExercise = (s: SetSummary): SetSummary =>
+    s.exerciseId || !s.routineExerciseId
+      ? s
+      : { ...s, exerciseId: state.exerciseByRoutineExercise[s.routineExerciseId] ?? null };
 
   const runEffects = async (effects: RackEffect[]) => {
     // A set whose write could not be queued must not be released on the
@@ -128,18 +193,15 @@ export function createRackExecutor(opts: {
           sensor.writeLoad(fx.lb).catch(e => log('writeLoad failed', e));
           break;
         case 'writeRep':
-          try {
-            await persist.writeRep(fx.rep);
-            flushSoon();
-          } catch (e) {
-            log('writeRep enqueue failed', e, fx.rep.clientRepId);
-          }
+          await writeRepDurably(fx.rep);
+          flushSoon();
           break;
         case 'endSet':
         case 'amendSet':
           if (fx.summary.free) break; // free sets: vbt_reps only
           try {
-            await (fx.type === 'endSet' ? persist.endSet(fx.summary) : persist.amendSet(fx.summary));
+            const s = withExercise(fx.summary);
+            await (fx.type === 'endSet' ? persist.endSet(s) : persist.amendSet(s));
             setWriteFailed = false;
             flushSoon();
           } catch (e) {
@@ -165,94 +227,104 @@ export function createRackExecutor(opts: {
     }
   };
 
-  // ---------------------------------------------------------------- reduce
+  // ---------------------------------------------------------------- seed
 
-  const apply = (event: RackEvent, at: number) => {
-    const before = state.activeAthleteId;
-    const res = reduce(state, event, at);
-    state = res.state;
-    notify();
-    if (res.effects.length) {
-      const effects = res.effects;
-      effectChain = effectChain.then(() => runEffects(effects)).catch(e => log('effects failed', e));
-    }
-    if (state.activeAthleteId !== before) {
-      if (state.activeAthleteId !== lastSeeded) lastSeeded = null;
-      pushLocalContext();
-    }
-  };
-
-  /** Athlete this event makes active (→ seed first), if any. */
-  const seedTargetOf = (event: RackEvent): string | null => {
-    if (event.type === 'sessionSync') {
-      const next = event.row.active_athlete_id;
-      return next && next !== state.activeAthleteId && next !== lastSeeded ? next : null;
-    }
-    return null;
-  };
-
-  const openGate = (athleteId: string) => {
-    gate = { athleteId, held: [] };
-    lastSeeded = athleteId;
-    let landed = false;
-    const release = () => {
-      if (!gate || gate.athleteId !== athleteId) return;
-      if (seedTimer) clearTimeout(seedTimer);
-      seedTimer = null;
-      const held = gate.held;
-      gate = null;
-      for (let i = 0; i < held.length; i++) {
-        if (gate) {
-          // A held event opened a new gate: keep the rest behind it.
-          (gate as { held: { event: RackEvent; at: number }[] }).held.push(...held.slice(i));
-          break;
-        }
-        dispatch(held[i].event, held[i].at);
-      }
+  const runSeed = (athleteId: string, token: number) => {
+    const current = () => {
+      const s = seeds.get(athleteId);
+      return s && s.token === token ? s : null;
     };
-    seedTimer = setTimeout(() => {
-      if (!landed) log(`seed for ${athleteId} not back after ${SEED_TIMEOUT_MS} ms; proceeding`);
-      release();
-    }, SEED_TIMEOUT_MS);
-    api
-      .todaysWrittenSets([athleteId])
+    const mine = current();
+    if (!mine || mine.inFlight) return;
+    mine.inFlight = true;
+    withTimeout(api.todaysWrittenSets([athleteId]), RPC_TIMEOUT_MS, 'todaysWrittenSets')
       .then(sets => {
-        landed = true;
-        // Applied directly (bypasses the gate); harmless if late — max().
-        for (const s of sets) {
+        const s = current();
+        if (!s) return; // superseded by a newer seed for this athlete
+        s.inFlight = false;
+        for (const w of sets) {
           apply(
             {
               type: 'seedHighWater',
-              athleteId: s.athleteId,
-              workoutInstanceId: s.workoutInstanceId,
-              routineExerciseId: s.routineExerciseId,
-              setNumber: s.setNumber,
+              athleteId: w.athleteId,
+              workoutInstanceId: w.workoutInstanceId,
+              routineExerciseId: w.routineExerciseId,
+              setNumber: w.setNumber,
             },
             now(),
           );
         }
+        s.status = 'done';
+        s.doneAt = now();
+        releaseReps();
+        notify();
       })
-      .catch(e => log('seed failed', e))
-      .finally(release);
+      .catch(e => {
+        const s = current();
+        if (!s) return;
+        s.inFlight = false;
+        log(`seed for ${athleteId} failed; retrying in ${SEED_RETRY_MS} ms`, e);
+        if (!running) return; // start() resumes pending seeds
+        s.retry = setTimeout(() => {
+          s.retry = null;
+          if (current()) runSeed(athleteId, token);
+        }, SEED_RETRY_MS);
+      });
+  };
+
+  const ensureSeed = (athleteId: string | null) => {
+    if (!athleteId) return;
+    const s = seeds.get(athleteId);
+    if (s?.status === 'pending') return;
+    if (s?.status === 'done' && now() - s.doneAt < SEED_FRESH_MS) return;
+    const token = ++seedSeq;
+    if (s?.retry) clearTimeout(s.retry);
+    seeds.set(athleteId, { token, status: 'pending', doneAt: 0, inFlight: false, retry: null });
+    runSeed(athleteId, token);
+    notify();
+  };
+
+  // ---------------------------------------------------------------- reduce
+
+  const apply = (event: RackEvent, at: number) => {
+    const before = state.activeAthleteId;
+    const targetBefore = repTarget();
+    const res = reduce(state, event, at);
+    state = res.state;
+    if (res.effects.length) {
+      const effects = res.effects;
+      effectChain = effectChain.then(() => runEffects(effects)).catch(e => log('effects failed', e));
+    }
+    if (repTarget() !== targetBefore) ensureSeed(repTarget());
+    if (state.activeAthleteId !== before) pushLocalContext();
+    notify();
+  };
+
+  const releaseReps = () => {
+    while (held.length && repReady()) {
+      const h = held.shift()!;
+      apply(h.event, h.at);
+    }
   };
 
   const dispatch = (event: RackEvent, atMs?: number) => {
     const at = atMs ?? now();
-    if (gate) {
-      if (event.type !== 'tick') gate.held.push({ event, at });
+    if (event.type === 'rep') {
+      if (held.length || !repReady()) {
+        held.push({ event, at });
+        notify();
+        return;
+      }
+      apply(event, at);
       return;
     }
-    const target = seedTargetOf(event);
-    if (target) {
-      openGate(target);
-      gate!.held.push({ event, at });
+    if ((event.type === 'ipadDone' || event.type === 'done') && held.length) {
+      apply(event, at);
+      held.push({ event, at }); // also ends the set the held reps will start
       return;
     }
     apply(event, at);
-    // A tile tap: seed the chosen athlete before the confirming sync lands.
-    if (event.type === 'selectAthlete' && event.athleteId !== state.activeAthleteId && !gate) {
-      openGate(event.athleteId);
-    }
+    releaseReps();
   };
 
   // ---------------------------------------------------------------- today
@@ -262,14 +334,16 @@ export function createRackExecutor(opts: {
     const id = state.activeAthleteId;
     if (!id) return;
     const a = today.find(t => t.athleteId === id);
-    const ex = a?.remaining[0];
-    if (!a || !ex) return;
+    if (!a) return;
+    const row = state.session;
+    const ex = pickLocalExercise(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
+    if (!ex) return;
     // The engine uses it only while the server row has no workout context.
     apply(
       {
         type: 'localContext',
         athleteId: id,
-        workoutInstanceId: a.workoutInstanceId,
+        workoutInstanceId: ex.workoutInstanceId,
         routineExerciseId: ex.routineExerciseId,
         exerciseId: ex.exerciseId,
         setNumber: null,
@@ -307,23 +381,31 @@ export function createRackExecutor(opts: {
   return {
     dispatch,
     getState: () => state,
+    isSyncing,
     subscribe(l) {
       listeners.add(l);
       return () => listeners.delete(l);
     },
     setToday,
+    flush: () => flushSoon(true),
     start() {
-      if (timers.length) return;
+      if (running) return;
+      running = true;
       timers.push(setInterval(() => dispatch({ type: 'tick' }), TICK_MS));
-      timers.push(setInterval(flushSoon, FLUSH_MS));
+      timers.push(setInterval(() => flushSoon(), FLUSH_MS));
       flushSoon();
-      if (state.activeAthleteId && !gate) openGate(state.activeAthleteId);
+      // Resume seeds requested before start (or interrupted by stop).
+      for (const [id, s] of seeds) if (s.status === 'pending' && !s.retry && !s.inFlight) runSeed(id, s.token);
+      ensureSeed(repTarget());
     },
     stop() {
+      running = false;
       timers.forEach(clearInterval);
       timers = [];
-      if (seedTimer) clearTimeout(seedTimer);
-      seedTimer = null;
+      for (const s of seeds.values()) {
+        if (s.retry) clearTimeout(s.retry);
+        s.retry = null;
+      }
     },
     async idle() {
       // Effects can enqueue RPCs and RPCs can dispatch more effects: settle both.
