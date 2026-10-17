@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import type { LogRow } from '../lib/logger/lastWeek';
+import { lastSession, deltaText, type LogRow } from '../lib/logger/lastWeek';
 import {
   View,
   Text,
@@ -10,13 +10,13 @@ import {
   Platform,
   StyleSheet,
   Animated,
-  LayoutChangeEvent,
   Linking,
   PanResponder,
   Modal,
   Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import NumericKeypad from '../components/NumericKeypad';
 import { backoffUpdates, fieldKey, intensityFor, prescribedValue, resolveTarget, type IntensityResult } from '../lib/logger/targets';
@@ -464,6 +464,7 @@ export default function ExerciseDetailView({
   hasNext,
   blockLabel,
   exerciseHistory,
+  lastWeekRows,
   onInputChange,
   onToggleSetComplete,
   rpeValues,
@@ -480,11 +481,9 @@ export default function ExerciseDetailView({
   const [prAlertVisible, setPRAlertVisible] = useState(false);
   const [prAnimation] = useState(new Animated.Value(0));
   const [showHistory, setShowHistory] = useState(false);
-  // Coach notes / exercise description expanded state. Default expanded
-  // for the very first exercise the athlete opens this session, then
-  // collapsed on subsequent exercises so the screen stays tight. Tap the
-  // chip to flip it open or closed.
-  const [notesExpanded, setNotesExpanded] = useState(true);
+  // Coach instructions card: collapsed shows a short preview (the coach's
+  // first cues); "more" opens block notes + the library description too.
+  const [notesExpanded, setNotesExpanded] = useState(false);
   // PR popover visibility — tapping the trophy icon in the header.
   const [prPopoverOpen, setPRPopoverOpen] = useState(false);
   // Set indices the user has explicitly expanded (e.g. tapped a collapsed
@@ -558,33 +557,19 @@ export default function ExerciseDetailView({
     else if (videoUrl) Linking.openURL(videoUrl.trim()).catch(() => {});
   };
 
-  // Scroll refs for auto-scrolling to current set
+  // The current set always renders first (right under the coach card), so
+  // a new current set just scrolls back to the top.
   const scrollViewRef = useRef<ScrollView>(null);
-  const setCardPositions = useRef<Record<number, number>>({});
-
-  // Auto-scroll to current set when it changes
   useEffect(() => {
-    const position = setCardPositions.current[currentSetIndex];
-    if (position !== undefined && scrollViewRef.current) {
-      // Small delay to ensure layout is complete
-      setTimeout(() => {
-        scrollViewRef.current?.scrollTo({
-          y: position,
-          animated: true,
-        });
-      }, 100);
-    }
+    const t = setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 100);
     // Clear any manually-expanded sets when the active set changes —
     // keeps the screen tight as the athlete progresses. They can tap
-    // "edit" on any collapsed row to re-open it.
+    // any collapsed row to re-open it.
     setManuallyExpandedSets(new Set());
-  }, [currentSetIndex]);
-
-  // Handle set card layout to track positions
-  const handleSetCardLayout = (index: number, event: LayoutChangeEvent) => {
-    const { y } = event.nativeEvent.layout;
-    setCardPositions.current[index] = y;
-  };
+    return () => clearTimeout(t);
+  }, [currentSetIndex, exercise.id]);
 
   // Wrap the parent's onInputChange so we can bump the "Saved" indicator
   // tick on every successful save. Keeps the parent prop API unchanged.
@@ -744,6 +729,14 @@ export default function ExerciseDetailView({
       fields = [...nonBallMetrics, ...ballMetrics];
     }
 
+    // Weight before reps (load, then reps) — on screen and in keypad order.
+    const w = fields.indexOf('weight');
+    const r = fields.indexOf('reps');
+    if (w > r && r !== -1) {
+      fields.splice(w, 1);
+      fields.splice(r, 0, 'weight');
+    }
+
     return fields;
   };
 
@@ -790,6 +783,59 @@ export default function ExerciseDetailView({
   // Check if set is completed
   const isSetCompleted = (setIndex: number): boolean => {
     return completedSets[exercise.id]?.[setIndex] === true;
+  };
+
+  // Last completed session of this exercise (history already excludes the
+  // current instance). bySet is keyed by 1-indexed set_number.
+  const lastWeek = useMemo(
+    () => lastSession(lastWeekRows ?? [], exercise.exercise_id, ''),
+    [lastWeekRows, exercise.exercise_id],
+  );
+  const lastWeekFor = (setIndex: number) => lastWeek?.bySet[setIndex + 1] ?? lastWeek?.best ?? null;
+
+  // "N of M" — this exercise's position among the workout's loggable
+  // exercises (sequence order). Rows outside the sequence show nothing.
+  const exercisePosition = useMemo(() => {
+    const ids: string[] = [];
+    sequence.forEach((s) => {
+      if (!ids.includes(s.reId)) ids.push(s.reId);
+    });
+    const index = ids.indexOf(exercise.id);
+    return index === -1 ? null : { index: index + 1, total: ids.length };
+  }, [sequence, exercise.id]);
+
+  // A set other sets are prescribed as a % of ("90% of set 1") — the top set.
+  const isTopSet = (setIndex: number): boolean => {
+    for (let j = setIndex + 1; j < (exercise.sets || 0); j++) {
+      const targets = exercise.set_configurations?.[j]?.intensity_targets || exercise.intensity_targets;
+      if (targets?.some((t) => t.relative_to === 'set' && t.reference_set === setIndex + 1)) return true;
+    }
+    return false;
+  };
+
+  // "220 × 2", "220 lb", "8 reps" — weight × reps when the exercise has them.
+  const formatWeightReps = (weight: unknown, reps: unknown): string | null => {
+    const has = (v: unknown) => v != null && v !== '';
+    if (has(weight) && has(reps)) return `${weight} × ${reps}`;
+    if (has(weight)) return `${weight} lb`;
+    if (has(reps)) return `${reps} reps`;
+    return null;
+  };
+
+  // Muted caption for a set's intensity prescription: "90% of set 1",
+  // "70% of Back Squat max", "80% of max".
+  const intensityCaption = (setIndex: number): string | null => {
+    const t = metricFields.map((m) => getIntensityTarget(setIndex, m)).find((x) => x !== null);
+    if (!t) return null;
+    const src = t.sourceExerciseName || null;
+    if (src && /^Set \d/.test(src)) return `${t.percent}% of ${src.replace(/^Set/, 'set')}`;
+    return src ? `${t.percent}% of ${src} max` : `${t.percent}% of max`;
+  };
+
+  const numeric = (v: unknown): number | null => {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
   };
 
   // Get all placeholder values for a set (for auto-fill when checking)
@@ -986,22 +1032,59 @@ export default function ExerciseDetailView({
     }
 
     const sets = [];
-    for (let i = 0; i < exercise.sets; i++) {
+    // The current set leads (right under the coach card); the rest follow
+    // in set order — done sets as a green result line, upcoming as targets.
+    const setCount = exercise.sets || 0;
+    const order: number[] = [];
+    if (currentSetIndex >= 0 && currentSetIndex < setCount) order.push(currentSetIndex);
+    for (let k = 0; k < setCount; k++) if (k !== currentSetIndex) order.push(k);
+    const hasWeightReps = metricFields.includes('weight') || metricFields.includes('reps');
+    for (const i of order) {
       const setData = exerciseInputs[exercise.id]?.[i] || {};
       const setConfig = getSetConfig(i);
       const isCompleted = isSetCompleted(i);
       const isCurrentSet = i === currentSetIndex;
       const isExpanded = isCurrentSet || manuallyExpandedSets.has(i);
+      const topSet = isTopSet(i);
+      const caption = intensityCaption(i);
+      const last = lastWeekFor(i);
 
-      // Collapsed summary row — used for completed sets the user isn't
-      // editing AND for upcoming sets they haven't reached yet. Athletes
-      // can tap to expand and edit any set.
+      // Collapsed row — done sets show their result, upcoming sets their
+      // target. Tap (or "edit") to expand and change any set.
       if (!isExpanded) {
-        const summary = formatSetSummary(i, setData, isCompleted);
+        let line: string;
+        if (isCompleted) {
+          const parts: string[] = [];
+          const base = hasWeightReps
+            ? formatWeightReps(setData.weight, setData.reps)
+            : formatSetSummary(i, setData, true);
+          if (base) parts.push(base);
+          const rpe = rpeValues?.[`${exercise.id}:${i}`];
+          if (rpe != null) parts.push(`RPE ${rpe}`);
+          const delta = deltaText(numeric(setData.weight), last?.weight ?? null);
+          if (delta) parts.push(delta);
+          line = parts.join(' · ') || 'done';
+        } else {
+          const valueOrTarget = (m: string) => {
+            const v = setData[m];
+            if (v != null && v !== '') return v;
+            if (isAmrapFor(i, m)) return 'AMRAP';
+            return resolveTarget(targetArgs(i, m));
+          };
+          const parts: string[] = [];
+          const base = hasWeightReps
+            ? formatWeightReps(
+                metricFields.includes('weight') ? valueOrTarget('weight') : null,
+                metricFields.includes('reps') ? valueOrTarget('reps') : null,
+              )
+            : formatSetSummary(i, setData, false);
+          if (base) parts.push(base);
+          if (caption) parts.push(caption);
+          line = parts.join(' · ') || '—';
+        }
         sets.push(
           <TouchableOpacity
             key={i}
-            onLayout={(e) => handleSetCardLayout(i, e)}
             onPress={() => {
               setManuallyExpandedSets((prev) => {
                 const next = new Set(prev);
@@ -1023,20 +1106,23 @@ export default function ExerciseDetailView({
             >
               {isCompleted ? <Text style={styles.setRowCheckIcon}>✓</Text> : null}
             </View>
-            <Text style={styles.setRowLabel}>Set {i + 1}</Text>
-            {isCompleted && exercise.ask_rpe && rpeValues?.[`${exercise.id}:${i}`] == null && (
-              <Text style={styles.setRowRpeMissing}>RPE?</Text>
-            )}
-            <Text
-              style={[
-                styles.setRowSummary,
-                !isCompleted && styles.setRowSummaryUpcoming,
-              ]}
-              numberOfLines={1}
-            >
-              {summary || '—'}
-            </Text>
-            <Text style={styles.setRowEdit}>edit</Text>
+            <View style={styles.setRowBody}>
+              <View style={styles.setRowTitleLine}>
+                <Text style={styles.setRowLabel}>
+                  Set {i + 1}{topSet ? ' · top set' : ''}
+                </Text>
+                {isCompleted && exercise.ask_rpe && rpeValues?.[`${exercise.id}:${i}`] == null && (
+                  <Text style={styles.setRowRpeMissing}>RPE?</Text>
+                )}
+              </View>
+              <Text
+                style={isCompleted ? styles.setResultLine : styles.setTargetLine}
+                numberOfLines={1}
+              >
+                {line}
+              </Text>
+            </View>
+            {!isCompleted && <Text style={styles.setRowEdit}>edit</Text>}
           </TouchableOpacity>,
         );
         continue;
@@ -1045,57 +1131,46 @@ export default function ExerciseDetailView({
       sets.push(
         <View
           key={i}
-          onLayout={(e) => handleSetCardLayout(i, e)}
           style={[
             styles.setCard,
             isCompleted && styles.setCardCompleted,
             isCurrentSet && styles.setCardCurrent,
           ]}
         >
-          {/* Set Header */}
+          {/* Set header — "Set 2 of 3 · top set", intensity caption, check */}
           <View style={styles.setHeader}>
-            <Text style={styles.setHeaderText}>
-              Set {i + 1} of {exercise.sets}
+            <Text style={styles.setHeaderText} numberOfLines={1}>
+              Set {i + 1} of {exercise.sets}{topSet ? ' · top set' : ''}
             </Text>
-            <TouchableOpacity
-              style={[
-                styles.completionCheckmark,
-                isCompleted && styles.completionCheckmarkCompleted,
-              ]}
-              onPress={() => handleCheckboxToggle(i)}
-              activeOpacity={0.7}
-            >
-              <Text style={[
-                styles.checkmarkIcon,
-                !isCompleted && styles.checkmarkIconEmpty,
-              ]}>
-                {isCompleted ? '✓' : ''}
-              </Text>
-            </TouchableOpacity>
+            <View style={styles.setHeaderRight}>
+              {!!caption && (
+                <Text style={styles.setHeaderCaption} numberOfLines={1}>{caption}</Text>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.completionCheckmark,
+                  isCompleted && styles.completionCheckmarkCompleted,
+                ]}
+                onPress={() => handleCheckboxToggle(i)}
+                activeOpacity={0.7}
+                hitSlop={8}
+                accessibilityLabel={isCompleted ? 'Mark set not done' : 'Mark set done'}
+              >
+                <Text style={[
+                  styles.checkmarkIcon,
+                  !isCompleted && styles.checkmarkIconEmpty,
+                ]}>
+                  {isCompleted ? '✓' : ''}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* Intensity indicator - only show if there's an intensity target */}
+          {/* Last week's result for this set (Task 7 reference) */}
           {(() => {
-            const intensityTarget = metricFields
-              .map(metricId => getIntensityTarget(i, metricId))
-              .find(t => t !== null);
-            if (!intensityTarget) return null;
-
-            // Build a readable label: "@90% of Set 1" for set-relative,
-            // "@70% of Barbell Bench max" for cross-exercise. Detect set-
-            // relative by the "Set N" pattern we set in sourceExerciseName.
-            const src = intensityTarget.sourceExerciseName || null;
-            const isSetRef = src ? /^Set \d/.test(src) : false;
-            const label = src
-              ? `@${intensityTarget.percent}% of ${src}${isSetRef ? '' : ' max'}`
-              : `@${intensityTarget.percent}%`;
-            return (
-              <View style={styles.intensityTag}>
-                <Text style={styles.intensityTagText}>{label}</Text>
-              </View>
-            );
+            const wr = last ? formatWeightReps(last.weight, last.reps) : null;
+            return wr ? <Text style={styles.lastWeekLine}>{`last week ${wr}`}</Text> : null;
           })()}
-
           {/* Metric Inputs Grid - with grouped ball metrics */}
           <View style={styles.metricsGrid}>
             {(() => {
@@ -1127,10 +1202,24 @@ export default function ExerciseDetailView({
                         const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
                         const justFilled = autoFilledKeys.has(`${i}:${metricId}`);
+                        const isEmpty = currentValue == null || currentValue === '';
+                        const shown = !isEmpty
+                          ? String(currentValue)
+                          : isAmrapFor(i, metricId)
+                            ? 'AMRAP'
+                            : intensityTarget?.percent && !intensityTarget.calculatedValue && !targetValue
+                              // A % was prescribed but there's no max on file — say so.
+                              ? `${intensityTarget.percent}% · no max set`
+                              : placeholderValue ? String(placeholderValue) : `Enter ${label}`;
+                        // Prompts ("Enter Reps", "80% · no max set") sit smaller than numbers.
+                        const isPrompt = isEmpty && !/^-?\d+(\.\d+)?$/.test(shown);
                         return (
-                          <View key={metricId} style={styles.metricInput}>
+                          <View
+                            key={metricId}
+                            style={[styles.metricInput, metricId === 'weight' && styles.metricInputWide]}
+                          >
                             <View style={styles.metricLabelRow}>
-                              <Text style={styles.metricLabel}>{label}</Text>
+                              <Text style={styles.metricLabel} numberOfLines={1}>{label.toUpperCase()}</Text>
                             </View>
                             <TouchableOpacity
                               style={[
@@ -1142,18 +1231,15 @@ export default function ExerciseDetailView({
                               onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
                               activeOpacity={0.7}
                             >
-                              <Text style={[
-                                styles.inputText,
-                                (currentValue == null || currentValue === '') && styles.inputPlaceholder,
-                              ]}>
-                                {currentValue != null && currentValue !== ''
-                                  ? String(currentValue)
-                                  : isAmrapFor(i, metricId)
-                                    ? 'AMRAP'
-                                    : intensityTarget?.percent && !intensityTarget.calculatedValue && !targetValue
-                                      // A % was prescribed but there's no max on file — say so.
-                                      ? `${intensityTarget.percent}% · no max set`
-                                      : placeholderValue ? String(placeholderValue) : `Enter ${label}`}
+                              <Text
+                                style={[
+                                  styles.inputText,
+                                  isEmpty && styles.inputPlaceholder,
+                                  isPrompt && styles.inputPrompt,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {shown}
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -1331,7 +1417,7 @@ export default function ExerciseDetailView({
             onPress={onBackToOverview}
             activeOpacity={0.7}
           >
-            <Text style={styles.backToOverviewIcon}>←</Text>
+            <Ionicons name="arrow-back" size={16} color={LOGGER_COLORS.muted} />
           </TouchableOpacity>
 
           {/* Block Label as a visible pill — was tiny grey text, easy to
@@ -1347,6 +1433,13 @@ export default function ExerciseDetailView({
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exercise.exercises.name}
           </Text>
+
+          {/* Position in the workout — "4 of 7" */}
+          {exercisePosition && (
+            <Text style={styles.exercisePosition}>
+              {`${exercisePosition.index} of ${exercisePosition.total}`}
+            </Text>
+          )}
 
           {/* PR Trophy — now tappable, opens the PR popover. */}
           {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
@@ -1431,92 +1524,6 @@ export default function ExerciseDetailView({
         );
       })()}
 
-      {/* Coach Instructions — prominent, always-visible panel that
-          consolidates everything the athlete needs to read before lifting:
-          block-level notes (routine.notes / text_info), the coach's
-          exercise-level note (parsed with the same bullet logic the
-          overview uses, so "; "-separated cues become a checklist), and
-          the exercise library description in a muted style.
-          Visible by default; tap to collapse if it's in the way. */}
-      {(() => {
-        const trim = (s: string | null | undefined) => (s ?? '').trim();
-        const routineNote = trim((routine as any).notes);
-        const routineTextInfo = trim((routine as any).text_info);
-        const exerciseCoachNote = trim((exercise as any).notes);
-        const exerciseDescription = trim((exercise.exercises as any)?.description);
-        const hasAnything =
-          !!routineNote || !!routineTextInfo || !!exerciseCoachNote || !!exerciseDescription;
-        if (!hasAnything) return null;
-        const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
-        return (
-          <View style={styles.coachPanel}>
-            <TouchableOpacity
-              style={styles.coachPanelHeader}
-              onPress={() => setNotesExpanded((v) => !v)}
-              activeOpacity={0.7}
-              hitSlop={6}
-            >
-              <Text style={styles.coachPanelIcon}>📝</Text>
-              <Text style={styles.coachPanelTitle}>Coach Instructions</Text>
-              <Text style={styles.coachPanelChev}>{notesExpanded ? '▾' : '▸'}</Text>
-            </TouchableOpacity>
-            {notesExpanded && (
-              <View style={styles.coachPanelBody}>
-                {/* Block context — what the coach said for this section */}
-                {!!routineNote && (
-                  <View style={styles.coachSection}>
-                    <Text style={styles.coachSectionLabel}>BLOCK NOTE</Text>
-                    <Text style={styles.coachSectionBody}>{routineNote}</Text>
-                  </View>
-                )}
-                {!!routineTextInfo && (
-                  <View style={styles.coachSection}>
-                    <Text style={styles.coachSectionLabel}>BLOCK INFO</Text>
-                    <Text style={styles.coachSectionBody}>{routineTextInfo}</Text>
-                  </View>
-                )}
-                {/* Exercise-level coach note, bullet-parsed */}
-                {!!parsedNote && (parsedNote.sections.length > 0 || parsedNote.callouts.length > 0) && (
-                  <View style={styles.coachSection}>
-                    <Text style={styles.coachSectionLabel}>COACH NOTE</Text>
-                    {parsedNote.sections.map((section, sIdx) => (
-                      <View key={sIdx} style={sIdx > 0 ? { marginTop: 6 } : undefined}>
-                        {!!section.header && (
-                          <Text style={styles.coachSectionHeader}>{section.header}</Text>
-                        )}
-                        {section.items.map((item, iIdx) => (
-                          <View key={iIdx} style={styles.coachBulletRow}>
-                            <Text style={styles.coachBullet}>•</Text>
-                            <Text style={styles.coachBulletText}>{item}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    ))}
-                    {parsedNote.callouts.length > 0 && (
-                      <View style={{ marginTop: 6 }}>
-                        {parsedNote.callouts.map((c, cIdx) => (
-                          <View key={cIdx} style={styles.coachBulletRow}>
-                            <Text style={styles.coachCalloutIcon}>⚠</Text>
-                            <Text style={styles.coachCalloutText}>{c}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    )}
-                  </View>
-                )}
-                {/* Library description — muted, italic, last */}
-                {!!exerciseDescription && (
-                  <View style={styles.coachSection}>
-                    <Text style={styles.coachSectionLabel}>HOW IT WORKS</Text>
-                    <Text style={styles.coachDescription}>{exerciseDescription}</Text>
-                  </View>
-                )}
-              </View>
-            )}
-          </View>
-        );
-      })()}
-
       {/* Sets Section */}
       <ScrollView
         ref={scrollViewRef}
@@ -1524,6 +1531,124 @@ export default function ExerciseDetailView({
         contentContainerStyle={styles.setsContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Coach Instructions — prominent, always-visible panel that
+            consolidates everything the athlete needs to read before lifting
+            (scrolls with the sets):
+            block-level notes (routine.notes / text_info), the coach's
+            exercise-level note (parsed with the same bullet logic the
+            overview uses, so "; "-separated cues become a checklist), and
+            the exercise library description in a muted style.
+            Collapsed to a short preview by default; "more" opens it all. */}
+        {(() => {
+          const trim = (s: string | null | undefined) => (s ?? '').trim();
+          const routineNote = trim((routine as any).notes);
+          const routineTextInfo = trim((routine as any).text_info);
+          const exerciseCoachNote = trim((exercise as any).notes);
+          const exerciseDescription = trim((exercise.exercises as any)?.description);
+          const hasAnything =
+            !!routineNote || !!routineTextInfo || !!exerciseCoachNote || !!exerciseDescription;
+          if (!hasAnything) return null;
+          const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
+          // Collapsed preview: the coach's first two cues, else the first
+          // note we have. "more" appears only when there is more to read.
+          const allCues = parsedNote ? parsedNote.sections.flatMap((sec) => sec.items) : [];
+          const previewItems = allCues.slice(0, 2);
+          const callouts = parsedNote?.callouts ?? [];
+          const previewText = routineNote || routineTextInfo || exerciseDescription || callouts[0] || '';
+          const hasMore = previewItems.length > 0
+            ? allCues.length > 2 ||
+              callouts.length > 0 ||
+              (parsedNote?.sections.some((sec) => !!sec.header) ?? false) ||
+              !!routineNote || !!routineTextInfo || !!exerciseDescription
+            : [routineNote, routineTextInfo, exerciseDescription, ...callouts].filter(Boolean).length > 1 ||
+              previewText.length > 120;
+          // Nothing more to read → the preview is the whole card.
+          const expanded = notesExpanded && hasMore;
+          return (
+            <View style={styles.coachPanel}>
+              <TouchableOpacity
+                style={styles.coachPanelHeader}
+                onPress={() => hasMore && setNotesExpanded((v) => !v)}
+                activeOpacity={hasMore ? 0.7 : 1}
+                hitSlop={6}
+              >
+                <Text style={styles.coachPanelTitle}>Coach Instructions</Text>
+                {hasMore && (
+                  <Text style={styles.coachPanelChev}>{expanded ? 'less ▴' : 'more ▾'}</Text>
+                )}
+              </TouchableOpacity>
+              {!expanded && (
+                <View style={styles.coachPreview}>
+                  {previewItems.length > 0
+                    ? previewItems.map((item, idx) => (
+                        <View key={idx} style={styles.coachBulletRow}>
+                          <Text style={styles.coachBullet}>•</Text>
+                          <Text style={styles.coachBulletText}>{item}</Text>
+                        </View>
+                      ))
+                    : (
+                        <Text style={styles.coachSectionBody} numberOfLines={3}>
+                          {previewText}
+                        </Text>
+                      )}
+                </View>
+              )}
+              {expanded && (
+                <View style={styles.coachPanelBody}>
+                  {/* Block context — what the coach said for this section */}
+                  {!!routineNote && (
+                    <View style={styles.coachSection}>
+                      <Text style={styles.coachSectionLabel}>BLOCK NOTE</Text>
+                      <Text style={styles.coachSectionBody}>{routineNote}</Text>
+                    </View>
+                  )}
+                  {!!routineTextInfo && (
+                    <View style={styles.coachSection}>
+                      <Text style={styles.coachSectionLabel}>BLOCK INFO</Text>
+                      <Text style={styles.coachSectionBody}>{routineTextInfo}</Text>
+                    </View>
+                  )}
+                  {/* Exercise-level coach note, bullet-parsed */}
+                  {!!parsedNote && (parsedNote.sections.length > 0 || parsedNote.callouts.length > 0) && (
+                    <View style={styles.coachSection}>
+                      <Text style={styles.coachSectionLabel}>COACH NOTE</Text>
+                      {parsedNote.sections.map((section, sIdx) => (
+                        <View key={sIdx} style={sIdx > 0 ? { marginTop: 6 } : undefined}>
+                          {!!section.header && (
+                            <Text style={styles.coachSectionHeader}>{section.header}</Text>
+                          )}
+                          {section.items.map((item, iIdx) => (
+                            <View key={iIdx} style={styles.coachBulletRow}>
+                              <Text style={styles.coachBullet}>•</Text>
+                              <Text style={styles.coachBulletText}>{item}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ))}
+                      {parsedNote.callouts.length > 0 && (
+                        <View style={{ marginTop: 6 }}>
+                          {parsedNote.callouts.map((c, cIdx) => (
+                            <View key={cIdx} style={styles.coachBulletRow}>
+                              <Text style={styles.coachCalloutIcon}>⚠</Text>
+                              <Text style={styles.coachCalloutText}>{c}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  )}
+                  {/* Library description — muted, italic, last */}
+                  {!!exerciseDescription && (
+                    <View style={styles.coachSection}>
+                      <Text style={styles.coachSectionLabel}>HOW IT WORKS</Text>
+                      <Text style={styles.coachDescription}>{exerciseDescription}</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+          );
+        })()}
         {renderSetCards()}
       </ScrollView>
 
@@ -1609,7 +1734,7 @@ export default function ExerciseDetailView({
         style={styles.bottomNav}
         onLayout={(e) => setBottomBarHeight(e.nativeEvent.layout.height)}
       >
-        <View style={styles.bottomNavGradient}>
+        <View style={[styles.bottomNavGradient, { paddingBottom: Math.max(insets.bottom - 8, 16) }]}>
           <View style={styles.bottomNavContainer}>
             {/* History Button — anchors the left edge so the bar reads
                 [utility] [primary CTA centered] [utility]. The previous
@@ -1620,8 +1745,12 @@ export default function ExerciseDetailView({
               onPress={() => setShowHistory(!showHistory)}
               activeOpacity={0.7}
             >
-              <Text style={styles.historyButtonIcon}>📊</Text>
-              <Text style={styles.historyButtonText}>History</Text>
+              <Ionicons
+                name="stats-chart"
+                size={18}
+                color={showHistory ? LOGGER_COLORS.accent : 'rgba(255,255,255,0.7)'}
+                accessibilityLabel="History"
+              />
             </TouchableOpacity>
 
             {/* Next Set / Next Exercise / DONE Button */}
@@ -1718,8 +1847,7 @@ export default function ExerciseDetailView({
               onPress={onBackToOverview}
               activeOpacity={0.7}
             >
-              <Text style={styles.overviewButtonIcon}>☰</Text>
-              <Text style={styles.overviewButtonText}>Overview</Text>
+              <Ionicons name="menu" size={20} color="rgba(255,255,255,0.7)" accessibilityLabel="Overview" />
             </TouchableOpacity>
           </View>
         </View>
@@ -1826,17 +1954,19 @@ export default function ExerciseDetailView({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: LOGGER_COLORS.bg,
   },
   keyboardAvoidingContainer: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: LOGGER_COLORS.bg,
   },
   header: {
-    backgroundColor: '#0A0A0A',
-    padding: 16,
+    backgroundColor: LOGGER_COLORS.bg,
+    paddingHorizontal: 14,
+    paddingTop: 4,
+    paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
   },
   prAlertBanner: {
     marginBottom: 12,
@@ -1865,19 +1995,17 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   backToOverviewButton: {
-    width: 28,
-    height: 28,
-    backgroundColor: 'rgba(115, 115, 115, 0.2)',
-    borderRadius: 6,
+    width: 34,
+    height: 30,
+    backgroundColor: '#111214',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  backToOverviewIcon: {
-    fontSize: 14,
-    color: '#A3A3A3',
   },
   prevButton: {
     width: 32,
@@ -1902,19 +2030,20 @@ const styles = StyleSheet.create({
   // Block pill — replaces the dim "A3" text with a visible cyan-tinted
   // chip so superset grouping is obvious at a glance.
   blockPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
+    minWidth: 30,
+    height: 22,
+    paddingHorizontal: 6,
     borderRadius: 6,
-    backgroundColor: 'rgba(155,221,255,0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.35)',
-    marginRight: 8,
+    borderColor: 'rgba(155,221,255,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   blockPillText: {
-    color: '#9BDDFF',
-    fontSize: 10,
+    color: LOGGER_COLORS.accent,
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 1.2,
+    letterSpacing: 0.4,
   },
   // Variation pill — was tiny text in parens, now a purple-tinted chip
   // on its own row under the exercise name. Same visual language as
@@ -1922,7 +2051,7 @@ const styles = StyleSheet.create({
   variationPillWrap: {
     flexDirection: 'row',
     paddingTop: 6,
-    paddingLeft: 36, // align under the exercise name (past the back btn)
+    paddingLeft: 44, // align under the code chip (past the back btn)
   },
   variationPill: {
     paddingHorizontal: 8,
@@ -2016,11 +2145,16 @@ const styles = StyleSheet.create({
   },
   exerciseName: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: '#FFFFFF',
+    letterSpacing: 1.6,
+    color: LOGGER_COLORS.text,
+  },
+  exercisePosition: {
+    color: LOGGER_COLORS.muted,
+    fontSize: 11,
+    fontVariant: ['tabular-nums'],
   },
   variationText: {
     color: '#C084FC',
@@ -2030,7 +2164,6 @@ const styles = StyleSheet.create({
   },
   headerPrTrophy: {
     fontSize: 18,
-    marginLeft: 4,
   },
   nextButton: {
     width: 32,
@@ -2047,7 +2180,8 @@ const styles = StyleSheet.create({
     color: '#6EE7B7',
   },
   exerciseDetailsInline: {
-    marginTop: 8,
+    marginTop: 6,
+    paddingLeft: 44,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
@@ -2144,7 +2278,7 @@ const styles = StyleSheet.create({
   // "; "-separated cues.
   // Superset progress pills (A1 2/3 · A2 1/3)
   supersetPillsWrap: {
-    marginHorizontal: 16,
+    marginHorizontal: 14,
     marginTop: 10,
   },
   supersetBlockName: {
@@ -2193,45 +2327,43 @@ const styles = StyleSheet.create({
   supersetPillTextDone: { color: '#7ef0a8' },
   supersetPillTextIdle: { color: 'rgba(255,255,255,0.6)' },
   coachPanel: {
-    marginHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 10,
-    backgroundColor: 'rgba(155,221,255,0.05)',
-    borderLeftWidth: 3,
-    borderLeftColor: '#9BDDFF',
-    borderRadius: 10,
+    backgroundColor: '#111214',
     borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.18)',
+    borderColor: LOGGER_COLORS.hairline,
+    borderLeftWidth: 3,
+    borderLeftColor: LOGGER_COLORS.accent,
+    borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 11,
   },
   coachPanelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
   },
-  coachPanelIcon: { fontSize: 14 },
   coachPanelTitle: {
     flex: 1,
-    color: '#e5e7eb',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.4,
+    color: LOGGER_COLORS.text,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.6,
     textTransform: 'uppercase',
   },
-  coachPanelChev: { color: '#9CA3AF', fontSize: 14 },
-  coachPanelBody: { marginTop: 10, gap: 12 },
+  coachPanelChev: { color: LOGGER_COLORS.muted, fontSize: 11 },
+  coachPanelBody: { marginTop: 8, gap: 10 },
+  coachPreview: { marginTop: 6 },
   coachSection: { gap: 4 },
   coachSectionLabel: {
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
     fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1.2,
+    letterSpacing: 1.6,
   },
   coachSectionBody: {
-    color: '#E5E7EB',
-    fontSize: 14,
-    lineHeight: 20,
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    lineHeight: 18,
   },
   coachSectionHeader: {
     color: '#E5E7EB',
@@ -2246,16 +2378,16 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   coachBullet: {
-    color: '#9BDDFF',
-    fontSize: 14,
-    lineHeight: 19,
-    width: 10,
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    lineHeight: 18,
+    width: 8,
   },
   coachBulletText: {
     flex: 1,
-    color: '#E5E7EB',
-    fontSize: 14,
-    lineHeight: 19,
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    lineHeight: 18,
   },
   coachCalloutIcon: {
     color: '#FBBF24',
@@ -2331,9 +2463,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   setsContent: {
-    padding: 16,
-    paddingBottom: 120,
-    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 130,
+    gap: 8,
   },
   historySection: {
     marginBottom: 12,
@@ -2472,10 +2605,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   setCard: {
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    backgroundColor: '#0E1013',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
+    borderColor: LOGGER_COLORS.hairline,
+    borderRadius: 14,
     padding: 12,
   },
   // Collapsed set row — used for completed and upcoming sets so only the
@@ -2483,64 +2616,65 @@ const styles = StyleSheet.create({
   setRowCollapsed: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.02)',
+    gap: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#0E0F11',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: LOGGER_COLORS.hairline,
   },
   setRowCollapsedDone: {
-    borderColor: 'rgba(16,185,129,0.18)',
-    backgroundColor: 'rgba(16,185,129,0.04)',
+    backgroundColor: 'rgba(34,197,94,0.04)',
   },
   setRowCheck: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.18)',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   setRowCheckDone: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: LOGGER_COLORS.green,
+    borderColor: LOGGER_COLORS.green,
   },
   setRowCheckIcon: {
-    color: '#FFFFFF',
+    color: '#04130C',
     fontSize: 11,
     fontWeight: '900',
   },
   setRowLabel: {
-    color: '#e5e7eb',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-    minWidth: 44,
+    color: LOGGER_COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
   },
-  setRowSummary: {
-    flex: 1,
-    color: '#e5e7eb',
+  setRowBody: { flex: 1, minWidth: 0 },
+  setRowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // Done set: "220 × 2 · RPE 8.5 · +5 lb over last week" in green.
+  setResultLine: {
+    marginTop: 2,
+    color: '#6EE7B7',
     fontSize: 12,
-    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
-  setRowSummaryUpcoming: {
-    color: '#6b7280',
+  // Upcoming set: its target, muted.
+  setTargetLine: {
+    marginTop: 2,
+    color: LOGGER_COLORS.muted,
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
   },
   setRowRpeMissing: {
     color: LOGGER_COLORS.rpe,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1,
-    marginRight: 8,
   },
   setRowEdit: {
-    color: '#9BDDFF',
-    fontSize: 11,
+    color: LOGGER_COLORS.accent,
+    fontSize: 12,
     fontWeight: '700',
-    letterSpacing: 0.3,
   },
   // Subtle "Saved" tick under the active set. Briefly visible on each
   // input change so the athlete knows the value landed.
@@ -2556,8 +2690,7 @@ const styles = StyleSheet.create({
   // (either by completing the set checkbox or by the inter-metric
   // auto-fill on Done/Next). Visible for ~600ms.
   inputAutoFilled: {
-    borderColor: '#10B981',
-    borderWidth: 2,
+    borderColor: LOGGER_COLORS.green,
     backgroundColor: 'rgba(16,185,129,0.10)',
   },
   setCardCompleted: {
@@ -2565,56 +2698,54 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16, 185, 129, 0.05)',
   },
   setCardCurrent: {
-    borderColor: 'rgba(155, 221, 255, 0.4)',
-    borderWidth: 2,
+    borderColor: 'rgba(155, 221, 255, 0.45)',
   },
   setHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    gap: 8,
   },
   setHeaderText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: '800',
+    color: LOGGER_COLORS.text,
+  },
+  setHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 },
+  setHeaderCaption: {
+    color: LOGGER_COLORS.muted,
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 1,
+  },
+  // "last week 215 × 2" under the set header.
+  lastWeekLine: {
+    marginTop: 3,
+    color: '#737373',
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
   },
   completionCheckmark: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(115, 115, 115, 0.2)',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
-    borderColor: 'rgba(115, 115, 115, 0.4)',
+    borderColor: 'rgba(255,255,255,0.25)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   completionCheckmarkCompleted: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    borderColor: '#10B981',
+    backgroundColor: LOGGER_COLORS.green,
+    borderColor: LOGGER_COLORS.green,
   },
   checkmarkIcon: {
-    fontSize: 14,
-    color: '#6EE7B7',
-    fontWeight: 'bold',
+    fontSize: 11,
+    color: '#04130C',
+    fontWeight: '900',
   },
   checkmarkIconEmpty: {
     color: 'transparent',
-  },
-  intensityTag: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(96, 165, 250, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(96, 165, 250, 0.3)',
-    borderRadius: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    marginBottom: 8,
-  },
-  intensityTagText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#60A5FA',
   },
   // Unused legacy styles kept for reference
   _targetIcon: {
@@ -2627,53 +2758,62 @@ const styles = StyleSheet.create({
   },
   metricsGrid: {
     flexDirection: 'column',
-    gap: 12,
-    marginBottom: 12,
+    gap: 10,
+    marginTop: 10,
   },
   nonBallMetricsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 8,
   },
   metricInput: {
     flex: 1,
-    minWidth: '45%',
+    minWidth: '40%',
+  },
+  metricInputWide: {
+    flex: 1.4,
   },
   metricLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 5,
     gap: 6,
   },
   metricLabel: {
-    fontSize: 11,
-    color: '#A3A3A3',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+    color: LOGGER_COLORS.muted,
   },
   metricLabelWithIcon: {
     marginLeft: 0,
   },
   input: {
-    height: 44,
-    padding: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    height: 48,
+    paddingHorizontal: 12,
+    backgroundColor: '#000000',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
+    borderColor: LOGGER_COLORS.hairline,
+    borderRadius: 10,
     justifyContent: 'center',
   },
   inputText: {
-    fontSize: 16,
-    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    color: LOGGER_COLORS.text,
+    fontVariant: ['tabular-nums'],
   },
   inputPlaceholder: {
     color: '#737373',
   },
+  inputPrompt: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
   inputActive: {
-    borderColor: '#10B981',
-    borderWidth: 2,
+    borderColor: LOGGER_COLORS.accent,
   },
   inputFilled: {
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
     borderColor: 'rgba(155, 221, 255, 0.3)',
   },
   // Ball metric group styles
@@ -2705,17 +2845,19 @@ const styles = StyleSheet.create({
   },
   ballGroupMetricLabel: {
     fontSize: 10,
-    color: '#737373',
+    fontWeight: '700',
+    letterSpacing: 1,
+    color: LOGGER_COLORS.muted,
     marginBottom: 4,
     textAlign: 'center',
   },
   ballGroupInput: {
-    height: 40,
-    padding: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    height: 44,
+    paddingHorizontal: 8,
+    backgroundColor: '#000000',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    borderRadius: 6,
+    borderColor: LOGGER_COLORS.hairline,
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2724,13 +2866,13 @@ const styles = StyleSheet.create({
   // had drifted out of the global theme.
   setNotesDisplay: {
     width: '100%',
-    backgroundColor: 'rgba(155, 221, 255, 0.08)',
+    backgroundColor: 'rgba(155, 221, 255, 0.06)',
     borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.25)',
-    borderRadius: 6,
+    borderColor: 'rgba(155, 221, 255, 0.2)',
+    borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    marginTop: 4,
+    marginTop: 10,
   },
   setNotesText: {
     fontSize: 13,
@@ -2759,67 +2901,45 @@ const styles = StyleSheet.create({
     zIndex: 40,
   },
   bottomNavGradient: {
-    paddingTop: 12,
+    paddingTop: 10,
     paddingBottom: 16,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: LOGGER_COLORS.bg,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   bottomNavContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     width: '100%',
   },
   // History + Overview are compact icon-only squares so the primary
   // Log Set / Next action can dominate the bottom bar instead of being
   // visually equal to two utility buttons.
   historyButton: {
-    width: 44,
-    height: 44,
-    paddingVertical: 0,
-    paddingHorizontal: 0,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    width: 52,
+    height: 52,
+    backgroundColor: '#111214',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 12,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
   historyButtonActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.15)',
-    borderColor: '#9BDDFF',
-  },
-  historyButtonIcon: {
-    fontSize: 18,
-  },
-  historyButtonText: {
-    // Label removed visually — keep style as zero-height fallback.
-    fontSize: 0,
-    height: 0,
-    color: 'transparent',
+    backgroundColor: 'rgba(155, 221, 255, 0.12)',
+    borderColor: LOGGER_COLORS.accent,
   },
   overviewButton: {
-    width: 44,
-    height: 44,
-    paddingVertical: 0,
-    paddingHorizontal: 0,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    width: 52,
+    height: 52,
+    backgroundColor: '#111214',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 12,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  overviewButtonIcon: {
-    fontSize: 18,
-    color: '#E5E5E5',
-  },
-  overviewButtonText: {
-    fontSize: 0,
-    height: 0,
-    color: 'transparent',
   },
   prevExerciseButton: {
     flex: 1,
@@ -2847,15 +2967,10 @@ const styles = StyleSheet.create({
   // is just a container; the gradient does the painting.
   nextSetButton: {
     flex: 1,
-    height: 48,
+    height: 52,
     borderRadius: 14,
     overflow: 'hidden',
     minWidth: 0,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
   },
   nextSetButtonGradient: {
     width: '100%',
@@ -2867,15 +2982,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   nextSetButtonIcon: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '900',
-    color: '#0A1A2E',
+    color: '#06202E',
   },
   nextSetButtonText: {
-    fontSize: 14,
-    color: '#0A1A2E',
-    fontWeight: '900',
-    letterSpacing: 0.6,
+    fontSize: 16,
+    color: '#06202E',
+    fontWeight: '800',
   },
   emptyButton: {
     flex: 1,
