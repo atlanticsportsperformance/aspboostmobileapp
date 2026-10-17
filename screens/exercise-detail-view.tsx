@@ -21,7 +21,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
-import { backoffFills, intensityFor, prescribedValue, resolveTarget, type IntensityResult, type LoggedSets } from '../lib/logger/targets';
+import { backoffUpdates, fieldKey, intensityFor, prescribedValue, resolveTarget, type IntensityResult } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { getSupersetContext } from '../lib/supersetContext';
 
@@ -512,13 +512,14 @@ export default function ExerciseDetailView({
   // were just auto-filled by the placeholder logic. Inputs with a key
   // here briefly flash green so the athlete sees the auto-fill happened.
   const [autoFilledKeys, setAutoFilledKeys] = useState<Set<string>>(new Set());
-  // Sets the athlete changed by hand (keypad), per routine exercise. A
-  // hand-edited back-off is never overwritten by back-off auto-fill.
-  const editedSetsRef = useRef<Record<string, Set<number>>>({});
-  const markSetEdited = (setIndex: number) => {
-    const sets = editedSetsRef.current[exercise.id] ?? new Set<number>();
-    sets.add(setIndex);
-    editedSetsRef.current[exercise.id] = sets;
+  // Fields ("set:metric") the athlete changed by hand (keypad), per routine
+  // exercise. A hand-edited back-off field is never overwritten by back-off
+  // auto-fill; other fields of that set still follow.
+  const editedFieldsRef = useRef<Record<string, Set<string>>>({});
+  const markFieldEdited = (setIndex: number, metricId: string) => {
+    const fields = editedFieldsRef.current[exercise.id] ?? new Set<string>();
+    fields.add(fieldKey(setIndex, metricId));
+    editedFieldsRef.current[exercise.id] = fields;
   };
   const flashAutoFill = useCallback((setIndex: number, metricId: string) => {
     const key = `${setIndex}:${metricId}`;
@@ -639,7 +640,7 @@ export default function ExerciseDetailView({
     if (key === '.' && currentValue.includes('.')) return;
 
     const newValue = currentValue + key;
-    markSetEdited(setIndex);
+    markFieldEdited(setIndex, metricId);
     onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
@@ -650,7 +651,7 @@ export default function ExerciseDetailView({
     const setData = currentInputs[setIndex] || {};
     const currentValue = setData[metricId]?.toString() || '';
     const newValue = currentValue.slice(0, -1);
-    markSetEdited(setIndex);
+    markFieldEdited(setIndex, metricId);
     onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
@@ -833,34 +834,28 @@ export default function ExerciseDetailView({
   // reference set when it changes (spec §7) — unless the athlete edited the
   // back-off by hand. Sets not logged yet need nothing: their placeholder is
   // computed live from the reference set and auto-fills on completion.
-  // Runs when the keypad closes or moves to another set and when a set is
-  // checked, not per keystroke. A back-off is only moved while it still
-  // holds the value auto-fill gave it last time, so a hand-typed value
-  // survives even after this view remounts (which forgets `edited`).
-  const completedKey = (completedSets[exercise.id] || []).join(',');
-  const prevLoggedRef = useRef<Record<string, LoggedSets>>({});
+  // The decision lives in backoffUpdates (lib/logger/targets.ts); this keeps
+  // its `expected` map between runs. Runs when the keypad closes or moves to
+  // another field, and on exercise change — not per keystroke.
+  const backoffExpectedRef = useRef<Record<string, Record<string, number>>>({});
   useEffect(() => {
-    const logged = exerciseInputs[exercise.id] || [];
-    const prevLogged = prevLoggedRef.current[exercise.id];
-    prevLoggedRef.current[exercise.id] = logged;
-    if (!prevLogged) return; // first look at this exercise — nothing changed yet
-    const edited = editedSetsRef.current[exercise.id] ?? new Set<number>();
-    metricFields.forEach((metricId) => {
-      const base = { re: exercise, metric: metricId, maxes: athleteMaxes, edited, moundVelocity };
-      const before = backoffFills({ ...base, logged: prevLogged });
-      const fills = backoffFills({ ...base, logged });
-      Object.entries(fills).forEach(([key, value]) => {
-        const setIndex = Number(key);
-        if (activeInput?.setIndex === setIndex) return;
-        const current = logged[setIndex]?.[metricId];
-        if (current == null || current === '' || Number(current) === value) return;
-        if (Number(current) !== before[setIndex]) return; // not the old auto-fill → athlete's own value
-        onInputChangeWithTick(setIndex, metricId, value, undefined, true);
-        flashAutoFill(setIndex, metricId);
-      });
+    const { apply, expected } = backoffUpdates({
+      re: exercise,
+      metrics: metricFields,
+      maxes: athleteMaxes,
+      logged: exerciseInputs[exercise.id] || [],
+      moundVelocity,
+      edited: editedFieldsRef.current[exercise.id] ?? new Set<string>(),
+      expected: backoffExpectedRef.current[exercise.id] ?? {},
+      active: activeInput ? { setIndex: activeInput.setIndex, metric: activeInput.metricId } : null,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exercise.id, activeInput?.setIndex, activeInput == null, completedKey]);
+    backoffExpectedRef.current[exercise.id] = expected;
+    apply.forEach(({ setIndex, metric, value }) => {
+      onInputChangeWithTick(setIndex, metric, value, undefined, true);
+      flashAutoFill(setIndex, metric);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately keyed to commit points (keypad field change/close, exercise change), not inputs: running per keystroke would move back-offs off half-typed values. Current props are read from this render's closure.
+  }, [exercise.id, activeInput?.setIndex, activeInput?.metricId, activeInput == null]);
 
   // Handle checkbox toggle - compute auto-fill values if checking
   const handleCheckboxToggle = (setIndex: number) => {

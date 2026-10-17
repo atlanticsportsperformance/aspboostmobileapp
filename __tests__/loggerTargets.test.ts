@@ -1,4 +1,4 @@
-import { roundLoad, resolveTarget, backoffFills, intensityFor } from '../lib/logger/targets';
+import { roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor } from '../lib/logger/targets';
 import type { LoggerRoutineExercise } from '../types/logger';
 
 function re(extra: Partial<LoggerRoutineExercise> = {}): LoggerRoutineExercise {
@@ -108,10 +108,57 @@ describe('exercise screen wiring', () => {
   it('delegates target math to lib/logger/targets', () => {
     expect(src).toMatch(/from '\.\.\/lib\/logger\/targets'/);
     expect(src).not.toMatch(/calculateThrowingTarget/);
-    expect(src).toMatch(/backoffFills\(/);
+    expect(src).toMatch(/backoffUpdates\(/);
   });
 
-  it('marks hand-typed sets as edited (keypad press + backspace)', () => {
-    expect(src.match(/markSetEdited\(setIndex\);\n\s*onInputChangeWithTick\(setIndex, metricId, newValue\)/g)).toHaveLength(2);
+  it('marks hand-typed fields as edited (keypad press + backspace)', () => {
+    expect(src.match(/markFieldEdited\(setIndex, metricId\)/g)).toHaveLength(2);
+  });
+});
+
+describe('backoffUpdates', () => {
+  const base = { re: wave, metrics: ['reps', 'weight'], maxes: {}, edited: new Set<string>() };
+
+  it('a back-off skipped while the keypad is on it still follows set 1 afterwards', () => {
+    // set 1 was 220, set 2 auto-filled to 200 (logged, never typed)
+    const first = backoffUpdates({ ...base, logged: { 0: { weight: 220, reps: 2 }, 1: { weight: 200, reps: 4 } }, expected: {}, active: null });
+    expect(first.apply).toEqual([]);
+    expect(first.expected['1:weight']).toBe(200);
+
+    // athlete edits set 1 to 230 and the keypad jumps straight to set 2's weight
+    const logged = { 0: { weight: 230, reps: 2 }, 1: { weight: 200, reps: 4 } };
+    const during = backoffUpdates({ ...base, logged, expected: first.expected, active: { setIndex: 1, metric: 'weight' } });
+    expect(during.apply).toEqual([]);
+    expect(during.expected['1:weight']).toBe(200);
+
+    // keypad leaves set 2 without typing → 230 × 0.9 = 207 → roundLoad → 205
+    const after = backoffUpdates({ ...base, logged, expected: during.expected, active: null });
+    expect(after.apply).toEqual([{ setIndex: 1, metric: 'weight', value: roundLoad(207) }]);
+    expect(roundLoad(207)).toBe(205);
+    expect(after.expected['1:weight']).toBe(205);
+  });
+
+  it('a hand-edited back-off stays', () => {
+    const logged = { 0: { weight: 230 }, 1: { weight: 200 } };
+    const r = backoffUpdates({ ...base, logged, expected: { '1:weight': 200 }, active: null, edited: new Set(['1:weight']) });
+    expect(r.apply).toEqual([]);
+  });
+
+  it('editing reps does not freeze the weight', () => {
+    const logged = { 0: { weight: 230 }, 1: { weight: 200, reps: 5 } };
+    const r = backoffUpdates({ ...base, logged, expected: { '1:weight': 200 }, active: null, edited: new Set(['1:reps']) });
+    expect(r.apply).toEqual([{ setIndex: 1, metric: 'weight', value: 205 }]);
+  });
+
+  it('a value that is not the previous auto value is kept (edited lost to a remount)', () => {
+    const logged = { 0: { weight: 230 }, 1: { weight: 210 } };
+    expect(backoffUpdates({ ...base, logged, expected: { '1:weight': 200 }, active: null }).apply).toEqual([]);
+    expect(backoffUpdates({ ...base, logged, expected: {}, active: null }).apply).toEqual([]);
+  });
+
+  it('empty back-offs are never written but their expected value is recorded', () => {
+    const r = backoffUpdates({ ...base, logged: { 0: { weight: 220 } }, expected: {}, active: null });
+    expect(r.apply).toEqual([]);
+    expect(r.expected).toEqual({ '1:weight': 200, '2:weight': 200 });
   });
 });

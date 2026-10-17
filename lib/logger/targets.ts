@@ -139,3 +139,63 @@ export function backoffFills(args: Omit<TargetArgs, 'setIndex'> & { edited: Set<
   }
   return fills;
 }
+
+// "set:metric" — the key for one input field of one set.
+export const fieldKey = (setIndex: number, metric: string) => `${setIndex}:${metric}`;
+
+export interface BackoffUpdateArgs extends Omit<TargetArgs, 'setIndex' | 'metric'> {
+  metrics: string[];
+  // Fields ("set:metric") the athlete changed by hand this session.
+  edited: Set<string>;
+  // Per field, the value back-off auto-fill last gave it (or would have, for
+  // an empty field). From the previous call; {} on first look.
+  expected: Record<string, number>;
+  // The field the keypad is on — never changed underneath the athlete.
+  active: { setIndex: number; metric: string } | null;
+}
+
+// Which already-logged back-off fields to move now that their reference set
+// changed (spec §7), plus the `expected` map to pass next time. A field is
+// moved only while it still holds its previous auto value (so a hand-typed
+// value survives even when `edited` was lost to a remount) and is not hand-
+// edited. A field skipped because the keypad is on it keeps its previous
+// expected value, so it still follows its reference set on the next call.
+// Empty fields are never written (their placeholder shows the target and is
+// filled on completion) but their expected value is recorded. Kept fields
+// anchor later sets on their actual value.
+export function backoffUpdates(args: BackoffUpdateArgs): {
+  apply: Array<{ setIndex: number; metric: string; value: number }>;
+  expected: Record<string, number>;
+} {
+  const { re, metrics, edited, expected: prevExpected, active } = args;
+  const setCount = Math.max(re.sets || 0, re.set_configurations?.length ?? 0);
+  const apply: Array<{ setIndex: number; metric: string; value: number }> = [];
+  const expected: Record<string, number> = {};
+
+  for (const metric of metrics) {
+    const working: LoggedSets = { ...args.logged };
+    for (let i = 0; i < setCount; i++) {
+      const key = fieldKey(i, metric);
+      if (edited.has(key)) continue;
+      const target = intensityTargetFor(re, i, metric);
+      if (!target || referenceIndex(target, i) == null) continue;
+      const value = intensityFor({ ...args, setIndex: i, metric, logged: working })?.calculatedValue;
+      if (value == null) continue;
+
+      const current = toNumber(working[i]?.[metric]);
+      if (current == null || current === value) {
+        expected[key] = value;
+        continue;
+      }
+      if (current !== prevExpected[key]) continue; // the athlete's own value
+      if (active && active.setIndex === i && active.metric === metric) {
+        expected[key] = prevExpected[key]; // reconcile once the keypad leaves
+        continue;
+      }
+      apply.push({ setIndex: i, metric, value });
+      expected[key] = value;
+      working[i] = { ...working[i], [metric]: value };
+    }
+  }
+  return { apply, expected };
+}
