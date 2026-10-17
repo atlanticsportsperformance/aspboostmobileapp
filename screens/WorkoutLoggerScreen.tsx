@@ -38,6 +38,8 @@ import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
 import { loggerOutbox } from '../lib/logger/outbox';
+import { sendCompletion, queueCompletion } from '../lib/logger/pendingComplete';
+import SessionRpeSheet from '../components/logger/SessionRpeSheet';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
 
@@ -568,33 +570,64 @@ export default function WorkoutLoggerScreen() {
     [athleteId],
   );
 
-  const handleCompleteWorkout = async () => {
-    const { error } = await supabase
-      .from('workout_instances')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', workoutInstanceId);
-
-    if (error) {
-      console.error('[WorkoutLogger] complete failed', error);
-      Alert.alert(
-        'Could not save workout',
-        error.message || 'Please try again.',
-      );
+  // Finish / Complete Anyway (spec §4.5): ask session RPE first when the
+  // workout wants it, then finalize. Skip finalizes without session_rpe.
+  const [showSessionRpe, setShowSessionRpe] = useState(false);
+  const finishingRef = useRef(false);
+  const handleCompleteWorkout = () => {
+    if (finishingRef.current) return;
+    if (workout?.ask_session_rpe) {
+      setShowSessionRpe(true);
       return;
     }
+    void finalizeWorkout();
+  };
+  const handleSessionRpe = (value: number) => {
+    setShowSessionRpe(false);
+    void finalizeWorkout(value);
+  };
+  const handleSkipSessionRpe = () => {
+    setShowSessionRpe(false);
+    void finalizeWorkout();
+  };
 
-    // Signal the dashboard that its workout list is stale so the next
-    // focus bypasses the 30s refetch throttle and we see `status: completed`.
-    markWorkoutListDirty();
+  // Flush the set outbox, then mark the workout complete. Never blocks on
+  // being offline: an unsent completion is queued and replayed by the
+  // foreground sync (lib/logger/pendingComplete.ts).
+  const finalizeWorkout = async (sessionRpe?: number) => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    try {
+      try {
+        await loggerOutbox.flush({ foreground: true });
+      } catch (e) {
+        console.error('[WorkoutLogger] outbox flush before finish failed', e);
+      }
+      const intent = {
+        workoutInstanceId,
+        completedAt: new Date().toISOString(),
+        ...(sessionRpe != null ? { sessionRpe } : {}),
+      };
+      const { error } = await sendCompletion(intent);
+      if (error) {
+        console.error('[WorkoutLogger] complete failed, queued for retry', error);
+        await queueCompletion(intent);
+      }
 
-    Alert.alert(
-      'Workout Complete!',
-      'Great job! Your workout has been saved.',
-      [{ text: 'OK', onPress: () => navigation.goBack() }]
-    );
+      // Signal the dashboard that its workout list is stale so the next
+      // focus bypasses the 30s refetch throttle and we see `status: completed`.
+      markWorkoutListDirty();
+
+      Alert.alert(
+        'Workout Complete!',
+        error
+          ? 'Saved on this device. It will sync when you are back online.'
+          : 'Great job! Your workout has been saved.',
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
+      );
+    } finally {
+      finishingRef.current = false;
+    }
   };
 
   const handleExitWorkout = () => {
@@ -1153,6 +1186,14 @@ export default function WorkoutLoggerScreen() {
       />
     ) : null;
 
+  const sessionRpeSheet = workout?.ask_session_rpe ? (
+    <SessionRpeSheet
+      visible={showSessionRpe}
+      onSelect={handleSessionRpe}
+      onSkip={handleSkipSessionRpe}
+    />
+  ) : null;
+
   // Wrap throwing workouts in the PulseProvider so the Monitor can read BLE
   // state from context and the wizard modal has somewhere to live. Non-throwing
   // workouts don't mount the Monitor, so they skip the provider entirely.
@@ -1164,6 +1205,7 @@ export default function WorkoutLoggerScreen() {
       <PulseProvider athleteId={athleteId} orgId={orgId}>
         <PulseLiveBar />
         {body}
+        {sessionRpeSheet}
         <PulseWizardModal scheduledDate={scheduledDate} />
         {/* PulseAutoOpener removed — the wizard is no longer forced on
             mount. Athletes open the connect flow explicitly via the
@@ -1173,7 +1215,12 @@ export default function WorkoutLoggerScreen() {
     );
   }
 
-  return body;
+  return (
+    <>
+      {body}
+      {sessionRpeSheet}
+    </>
+  );
 }
 
 const styles = StyleSheet.create({

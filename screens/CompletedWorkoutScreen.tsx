@@ -24,6 +24,7 @@ interface ExerciseLog {
   actual_weight: number | null;
   actual_duration_seconds: number | null;
   actual_distance: number | null;
+  rpe?: number | null;
   metric_data: Record<string, any> | null;
   exercises: {
     id: string;
@@ -58,6 +59,7 @@ interface WorkoutInstance {
   status: string;
   scheduled_date: string;
   completed_at: string | null;
+  session_rpe?: number | null;
   workouts: {
     id: string;
     name: string;
@@ -97,6 +99,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           status,
           scheduled_date,
           completed_at,
+          session_rpe,
           workouts (
             id,
             name,
@@ -109,12 +112,14 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
               notes,
               description,
               text_info,
+              rounds,
               rest_between_rounds_seconds,
               superset_block_name,
               routine_exercises (
                 id,
                 exercise_id,
                 sets,
+                ask_rpe,
                 order_index,
                 notes,
                 notes_only,
@@ -156,6 +161,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           actual_weight,
           actual_duration_seconds,
           actual_distance,
+          rpe,
           metric_data,
           exercises (
             id,
@@ -343,6 +349,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
       parts.push(formatted);
     }
     if (log.actual_distance != null) parts.push(`${log.actual_distance} ft`);
+    if (log.rpe != null) parts.push(`RPE ${log.rpe}`);
 
     if (log.metric_data) {
       for (const [key, value] of Object.entries(log.metric_data)) {
@@ -440,6 +447,12 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
               <Text style={styles.summaryLabel}>Sets Logged</Text>
               <Text style={styles.summaryValue}>{totalSetsLogged}</Text>
             </View>
+            {workout.session_rpe != null && (
+              <View style={styles.summaryItem}>
+                <Text style={styles.summaryLabel}>Session RPE</Text>
+                <Text style={[styles.summaryValue, { color: '#D9A441' }]}>{workout.session_rpe}</Text>
+              </View>
+            )}
           </View>
         </LinearGradient>
 
