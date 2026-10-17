@@ -348,6 +348,41 @@ describe('rack layout', () => {
   });
 });
 
+describe('fix round 3: pick prompt, % load note, iPad-owned source', () => {
+  it('no exercise for the active athlete → needsPick (opens the picker with ALL remaining)', () => {
+    const r = rig();
+    r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null, queue: [] });
+    const v = view(r.s);
+    expect(v.needsPick).toBe(true);
+    expect(v.remaining.map(e => e.name)).toEqual(['Back Squat', 'Box Jump']);
+    expect(view(rigWithPhone().s).needsPick).toBe(false);
+  });
+
+  it('BAR reads "Set on phone" for an unresolved % target; a fixed weight shows normally', () => {
+    const pct: TodayExercise = { ...SQUAT, plan: { exercise_id: 'ex-squat', intensity_targets: [{ metric: 'weight', percent: 80 }] } };
+    const today = [athlete('tyler', 'Tyler', 'Reed', [pct])];
+    const r = rig();
+    r.sync({ load_lb: null, queue: [] });
+    const v = buildRackView({ state: r.s, today, rackName: 'Rack 3', nowMs: T0 });
+    expect(v.loadLb).toBeNull();
+    expect(v.loadNote).toBe('Set on phone');
+    expect(view(r.s).loadNote).toBeNull();
+  });
+
+  it('a row holding the iPad\'s published pick reads PICKED ON THE IPAD (not the phone)', () => {
+    const r = rig();
+    r.sync({ queue: [] });
+    expect(view(r.s, T0, { ipadOwned: true }).sourceLine).toBe('PICKED ON THE IPAD');
+    expect(view(r.s, T0, { ipadOwned: false }).sourceLine).toBe("FROM TYLER'S PHONE");
+  });
+});
+
+function rigWithPhone() {
+  const r = rig();
+  r.sync({ queue: [] });
+  return r;
+}
+
 describe('"+ Add" sheet list', () => {
   it('stable name order; filters by first or last name, case-insensitive', () => {
     const list = [TODAY[3], TODAY[0], TODAY[2], TODAY[1]];

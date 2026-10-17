@@ -56,7 +56,7 @@ describe('Rack screen wiring', () => {
     expect(A).toContain('<TextInput');
     expect(A).toContain('autoFocus={false}');
     expect(A).toContain('filterAddable(snapshot, query)');
-    expect(A).toMatch(/if \(visible\) \{\s*setSnapshot\(addable\);/);
+    expect(A).toContain('const snapshot = useMemo(() => (visible ? addable : []), [visible]);');
     for (const h of ['onScrollBeginDrag={startScroll}', 'onMomentumScrollBegin={startScroll}', 'onScrollEndDrag={endScroll}', 'onMomentumScrollEnd={endScroll}']) {
       expect(A).toContain(h);
     }
@@ -240,6 +240,35 @@ describe('PIN-exit drain ends the live set first and counts memory-held writes',
     };
     const res = await d.drainRackQueues(persist, 10_000, () => t);
     expect(res).toEqual({ drained: false, reps: 1, sets: 1 });
+  });
+});
+
+describe('fix round 3 wiring', () => {
+  it('the screen feeds the executor\'s ownership into the view', () => {
+    expect(S).toContain('const ipadOwned = executor.ipadOwnsContext();');
+    expect(S).toContain('buildRackView({ state, today, rackName: rack.rackName, nowMs, phoneContexts, ipadOwned })');
+  });
+  it('the card prompts "Pick an exercise" (picker lists all remaining) and shows the % load note', () => {
+    expect(CARD).toContain('prompt={view.needsPick}');
+    expect(CARD).toContain('view.loadNote');
+    const P = read('components/rack/ExercisePicker.tsx');
+    expect(P).toContain('Pick an exercise');
+    expect(P).toContain('{remaining.map(e => {');
+  });
+  it('summary overlay has the card\'s 20 px inset and a row variant for the portrait card', () => {
+    const sum = CARD.slice(CARD.indexOf('  summary: {'), CARD.indexOf('  summaryRow:'));
+    expect(sum).toContain('padding: 20,');
+    expect(sum).toContain("justifyContent: 'center',");
+    expect(CARD).toContain('<View style={[styles.summary, row && styles.summaryRow]}>');
+  });
+  it('the add sheet avoids the keyboard', () => {
+    const A = read('components/rack/AddAthleteSheet.tsx');
+    expect(A).toContain("<KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>");
+  });
+  it('the executor publishes via rack_set_ipad_context and never echoes the phone', () => {
+    const E = read('lib/rack/executor.ts');
+    expect(E).toContain("if (!ipadOwnsContext() && !coach) return; // the phone's context: never echo it");
+    expect(read('lib/rack/api.ts')).toContain("session('rack_set_ipad_context', {");
   });
 });
 

@@ -45,6 +45,7 @@ export default function AthleteCard({ view, rackName, layout = 'column', compact
             currentRoutineExerciseId={view.routineExerciseId}
             phoneOwnsContext={view.contextSource === 'phone'}
             onPick={onPickExercise}
+            prompt={view.needsPick}
           />
           <Text style={styles.src}>{view.sourceLine}</Text>
         </View>
@@ -53,7 +54,11 @@ export default function AthleteCard({ view, rackName, layout = 'column', compact
       <View style={[styles.kv, row && styles.kvRow]}>
         <View style={[styles.kvb, c && styles.kvbC]}>
           <Text style={styles.k}>{view.contextSource === 'phone' ? 'BAR · SET ON PHONE' : 'BAR'}</Text>
-          <Text style={[styles.x, c && styles.xC]}>{view.loadLb != null ? `${view.loadLb} lb` : '—'}</Text>
+          {view.loadLb == null && view.loadNote ? (
+            <Text style={[styles.x, styles.note, c && styles.xC]}>{view.loadNote}</Text>
+          ) : (
+            <Text style={[styles.x, c && styles.xC]}>{view.loadLb != null ? `${view.loadLb} lb` : '—'}</Text>
+          )}
         </View>
         <View style={[styles.kvb, c && styles.kvbC]}>
           <Text style={styles.k}>REPS</Text>
@@ -74,9 +79,14 @@ export default function AthleteCard({ view, rackName, layout = 'column', compact
       </TouchableOpacity>
 
       {view.summary && (
-        <View style={styles.summary}>
-          <Text style={styles.sumT}>{view.summary.title}</Text>
-          <Text style={styles.sumBig}>{view.summary.big}</Text>
+        // Column (landscape card): title / big / boxes / footer. Row (portrait,
+        // ~190 tall): text block beside the boxes so it fits the card's inset.
+        <View style={[styles.summary, row && styles.summaryRow]}>
+          <View style={[styles.sumText, row && styles.sumTextRow]}>
+            <Text style={styles.sumT}>{view.summary.title}</Text>
+            <Text style={styles.sumBig}>{view.summary.big}</Text>
+            {row && <Text style={styles.sumFoot}>{view.summary.footer}</Text>}
+          </View>
           <View style={styles.sumRow}>
             {(
               [
@@ -91,7 +101,7 @@ export default function AthleteCard({ view, rackName, layout = 'column', compact
               </View>
             ))}
           </View>
-          <Text style={styles.sumFoot}>{view.summary.footer}</Text>
+          {!row && <Text style={styles.sumFoot}>{view.summary.footer}</Text>}
         </View>
       )}
 
@@ -140,20 +150,26 @@ const styles = StyleSheet.create({
   done: { height: 72, alignItems: 'center', justifyContent: 'center' },
   doneRow: { height: undefined, flex: 1 },
   doneTxt: { color: '#06202E', fontSize: 22, fontWeight: '900' },
+  // Same 20 px inset as the card; the content block is centred inside it.
   summary: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(8,9,10,0.94)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 14,
+    gap: 12,
     borderRadius: 18,
+    padding: 20,
   },
+  summaryRow: { flexDirection: 'row', gap: 28 },
+  sumText: { alignItems: 'center', gap: 12 },
+  sumTextRow: { alignItems: 'flex-start', gap: 8 },
   sumT: { fontSize: 12, fontWeight: '900', letterSpacing: 2, color: RACK_COLORS.acc, textAlign: 'center', paddingHorizontal: 12 },
+  note: { fontSize: 18, color: 'rgba(255,255,255,0.55)', marginTop: 6 },
   sumBig: { fontSize: 44, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
   sumRow: { flexDirection: 'row', gap: 12 },
   bx: { borderWidth: 1, borderColor: RACK_COLORS.line, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 16, alignItems: 'center' },
   bxX: { fontSize: 24, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
-  sumFoot: { fontSize: 12, color: 'rgba(255,255,255,0.5)' },
+  sumFoot: { fontSize: 12, color: 'rgba(255,255,255,0.5)', textAlign: 'center' },
   open: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: RACK_COLORS.bg,

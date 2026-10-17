@@ -80,7 +80,7 @@ describe('todaysAthletesForRack', () => {
     const { api } = apiWith(
       [
         instance('wi-a', '2026-10-17T08:00:00Z', [re('mob', 0, { sets: 1 })]),
-        instance('wi-b', '2026-10-17T09:00:00Z', [re('squat', 0)]),
+        instance('wi-b', '2026-10-17T09:00:00Z', [re('squat', 0, { metric_targets: { weight: 185 } })]),
       ],
       [{ workout_instance_id: 'wi-a', routine_exercise_id: 'mob' }],
     );
@@ -139,5 +139,67 @@ describe('realtime topics', () => {
     b.unsubscribe();
     expect(client.removeChannel).toHaveBeenLastCalledWith(channels[1]);
     expect(uniqueTopic('rack_session:r')).not.toBe(uniqueTopic('rack_session:r'));
+  });
+});
+
+describe('Task 9 fix round 3: api', () => {
+  it('todaysWrittenSets counts only is_complete=true sets', async () => {
+    const calls: any[][] = [];
+    const client = {
+      rpc: jest.fn(),
+      from: jest.fn((t: string) => {
+        calls.push(['from', t]);
+        return builder(
+          t === 'workout_instances'
+            ? { data: [{ id: 'wi-1', athlete_id: 'tyler' }], error: null }
+            : { data: [{ athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2 }], error: null },
+          calls,
+        );
+      }),
+    };
+    const out = await createRackApi(client as any).todaysWrittenSets(['tyler'], '2026-10-17');
+    const logsAt = calls.findIndex(c => c[0] === 'from' && c[1] === 'exercise_logs');
+    expect(calls.slice(logsAt)).toContainEqual(['eq', 'is_complete', true]);
+    expect(out).toEqual([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2 }]);
+  });
+
+  it('setIpadContext calls rack_set_ipad_context with every field', async () => {
+    const rpc = jest.fn(async () => ({ data: { rack_id: 'r' }, error: null }));
+    await createRackApi({ rpc, from: jest.fn() } as any).setIpadContext('r', 'tyler', { workoutInstanceId: 'wi', routineExerciseId: 're', setNumber: 2, loadLb: 180 });
+    expect(rpc).toHaveBeenCalledWith('rack_set_ipad_context', {
+      p_rack: 'r', p_athlete: 'tyler', p_workout_instance: 'wi', p_routine_exercise: 're', p_set_number: 2, p_load_lb: 180,
+    });
+  });
+
+  it('isRackLift: weight-tracked or zoned only; percentWeightTarget follows logger precedence', () => {
+    const { isRackLift, percentWeightTarget } = require('../lib/rack/api') as typeof import('../lib/rack/api');
+    const base = { workoutInstanceId: 'wi', routineExerciseId: 're', exerciseId: 'ex', name: 'x', sets: 3, completedSets: 0, zoneMin: null, zoneMax: null, dropStopPct: null };
+    expect(isRackLift({ ...base, plan: { exercise_id: 'ex', enabled_measurements: ['reps'] } })).toBe(false); // jump / reps-only
+    expect(isRackLift({ ...base, plan: { exercise_id: 'ex' } })).toBe(false); // notes / mobility
+    expect(isRackLift({ ...base, plan: { exercise_id: 'ex', enabled_measurements: ['weight'] } })).toBe(true);
+    expect(isRackLift({ ...base, plan: { exercise_id: 'ex', metric_targets: { weight: 135 } } })).toBe(true);
+    expect(isRackLift({ ...base, plan: { exercise_id: 'ex', set_configurations: [{ intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 1 }] }] } })).toBe(true);
+    expect(isRackLift({ ...base, zoneMin: 0.5, zoneMax: 0.7, plan: { exercise_id: 'ex' } })).toBe(true);
+    const pct = { ...base, plan: { exercise_id: 'ex', intensity_targets: [{ metric: 'weight', percent: 80 }], set_configurations: [{}, { intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set' as const, reference_set: 1 }] }] } };
+    expect(percentWeightTarget(pct, 1)).toMatchObject({ percent: 80 });
+    expect(percentWeightTarget(pct, 2)).toMatchObject({ percent: 90, reference_set: 1 });
+    expect(percentWeightTarget({ ...base }, 1)).toBeNull();
+  });
+
+  it('todaysAthletesForRack carries the plan (logger shape) and selects intensity_targets', async () => {
+    const calls: any[][] = [];
+    const inst = instance('wi-x', '2026-10-17T09:00:00Z', [re('sq', 0, { metric_targets: { weight: 185 }, intensity_targets: [{ metric: 'weight', percent: 80 }], enabled_measurements: ['weight'] })]);
+    const client = {
+      rpc: jest.fn(),
+      from: jest.fn((t: string) => {
+        calls.push(['from', t]);
+        return builder(t === 'workout_instances' ? { data: [inst], error: null } : { data: [], error: null }, calls);
+      }),
+    };
+    const [a] = await createRackApi(client as any).todaysAthletesForRack('org-1', '2026-10-17');
+    expect(a.exercises[0].plan).toMatchObject({ exercise_id: 'ex-sq', metric_targets: { weight: 185 }, intensity_targets: [{ metric: 'weight', percent: 80 }], enabled_measurements: ['weight'] });
+    const sel = calls.find(c => c[0] === 'select')![1] as string;
+    expect(sel).toContain('intensity_targets');
+    expect(sel).toContain('enabled_measurements');
   });
 });

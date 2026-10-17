@@ -7,7 +7,7 @@
 import type { Zone } from '../ovr/protocol';
 import type { OvrConnState } from '../ovr/ovr-device';
 import { nextContext, nextSetNumber, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
-import { pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
+import { percentWeightTarget, pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
 
 // ---------------------------------------------------------------- colours
 
@@ -246,6 +246,10 @@ export interface RackView {
   /** "FROM TYLER'S PHONE" / "PICKED ON THE IPAD" / "FREE LIFT". */
   sourceLine: string;
   contextSource: 'phone' | 'ipad' | 'none';
+  /** BAR caption when the load can't be shown: "Set on phone" (an unresolved % target). */
+  loadNote: string | null;
+  /** No exercise for the active athlete (no rack lift left): prompt "Pick an exercise". */
+  needsPick: boolean;
   /** Routine exercise the card is showing (picker highlight). */
   routineExerciseId: string | null;
   loadLb: number | null;
@@ -341,9 +345,11 @@ export interface RackViewInput {
   nowMs: number;
   /** Last phone context seen per athlete (from session rows while they were active). */
   phoneContexts?: Record<string, RackContext>;
+  /** executor.ipadOwnsContext(): the row's exercise is the iPad's published pick. */
+  ipadOwned?: boolean;
 }
 
-export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts = {} }: RackViewInput): RackView {
+export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts = {}, ipadOwned }: RackViewInput): RackView {
   const activeId = s.activeAthleteId;
   const active = findAthlete(today, activeId);
   const firstName = active?.firstName ?? 'Athlete';
@@ -382,8 +388,10 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   let contextSource: RackView['contextSource'];
   if (ctx.workoutInstanceId == null) contextSource = 'none';
   else if (shownSet) {
-    contextSource =
-      local && sameEx(local, shownSet.rawContext) && (row == null || row.workout_instance_id == null) ? 'ipad' : 'phone';
+    const fromIpad = !!local && sameEx(local, shownSet.rawContext) && (!!ipadOwned || row == null || row.workout_instance_id == null);
+    contextSource = fromIpad ? 'ipad' : 'phone';
+  } else if (ipadOwned !== undefined) {
+    contextSource = ipadOwned ? 'ipad' : 'phone';
   } else {
     const serverHasWorkout = row != null && (row.workout_instance_id != null || row.pending_workout_instance_id != null);
     contextSource = serverHasWorkout ? 'phone' : 'ipad';
@@ -529,6 +537,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     contextSource,
     routineExerciseId: ctx.routineExerciseId,
     loadLb,
+    loadNote: loadLb == null && ex && percentWeightTarget(ex, setNumber) ? 'Set on phone' : null,
+    needsPick: !!activeId && !lifting && ctx.workoutInstanceId == null && (active?.remaining.length ?? 0) > 0,
     zone,
     dropStopPct,
     bars: repBars(reps, setKey),

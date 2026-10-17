@@ -2,12 +2,14 @@
  * Rack mode — the rack iPad's live screen. Landscape per the approved mock
  * docs/superpowers/mockups/rack-vbt/rack-live.html, portrait per
  * rack-portrait.html (web repo); the layout follows the window and re-flows
- * when the iPad rotates (the iPad is never orientation-forced).
+ * when the iPad rotates (lib/rack/orientation unlocks the rack routes on an
+ * iPad; every other screen stays portrait).
  *
  * Wiring: useOvrDevice (real BLE, or the fake in the simulator / dev) →
  * useRackSession (sensor.onRep → executor `rep`; realtime rows → `sessionSync`;
- * executor runs persist + RPCs + sensor.writeLoad, derives the load, applies
- * the exercise override) → buildRackView → components. Today's athletes
+ * executor runs persist + RPCs + sensor.writeLoad, derives the load (incl.
+ * % targets), auto-picks a rack lift / applies the coach's pick and publishes
+ * it via rack_set_ipad_context so the phone follows) → buildRackView → components. Today's athletes
  * refresh every 60 s into executor.setToday. The executor's flush / end-live /
  * unsaved count are registered for the PIN-exit drain.
  *
@@ -216,9 +218,11 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.session]);
 
+  // Whose exercise the row holds (the iPad's published pick vs the phone's).
+  const ipadOwned = executor.ipadOwnsContext();
   const view = useMemo(
-    () => buildRackView({ state, today, rackName: rack.rackName, nowMs, phoneContexts }),
-    [state, today, rack.rackName, nowMs, phoneContexts],
+    () => buildRackView({ state, today, rackName: rack.rackName, nowMs, phoneContexts, ipadOwned }),
+    [state, today, rack.rackName, nowMs, phoneContexts, ipadOwned],
   );
   const expiresAt = view.summary?.expiresAtMs ?? null;
   useEffect(() => {

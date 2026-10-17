@@ -9,6 +9,7 @@
 import { supabase } from '../supabase';
 import { toLocalDateKey } from '../coachDates';
 import type { RackSessionRow } from './engine';
+import type { IntensityTarget } from '../../types/logger';
 
 // Minimal structural slice of SupabaseClient the rack code uses (mockable).
 export type RackClient = {
@@ -64,6 +65,67 @@ export interface TodayExercise {
   prescribedWeights?: (number | null)[];
   /** Exercise-level prescribed weight (metric_targets.weight). */
   prescribedWeight?: number | null;
+  /** The routine exercise's prescription, shaped like the logger's
+   *  LoggerRoutineExercise so lib/logger/targets resolves % loads the same way. */
+  plan?: RackPlan;
+}
+
+/** Prescription subset (logger v2 shape) — fixed and % weight targets. */
+export interface RackPlan {
+  exercise_id: string;
+  metric_targets?: Record<string, number> | null;
+  set_configurations?: { metric_values?: Record<string, any> | null; intensity_targets?: IntensityTarget[] | null }[] | null;
+  intensity_targets?: IntensityTarget[] | null;
+  enabled_measurements?: string[] | null;
+}
+
+/**
+ * A "rack lift": the coach tracks weight on it (a weight target / % target /
+ * the weight measurement), or gave it a velocity zone. Jumps, mobility,
+ * reps-only and notes are not — the iPad never auto-picks them.
+ */
+export function isRackLift(ex: TodayExercise): boolean {
+  if (ex.zoneMin != null || ex.zoneMax != null) return true;
+  const p = ex.plan;
+  if (!p) return ex.prescribedWeight != null || (ex.prescribedWeights ?? []).some(w => w != null);
+  const isWeight = (t: IntensityTarget | null | undefined) => !!t && t.metric === 'weight';
+  if (p.metric_targets && p.metric_targets.weight != null) return true;
+  if ((p.enabled_measurements ?? []).includes('weight')) return true;
+  if ((p.intensity_targets ?? []).some(isWeight)) return true;
+  return (p.set_configurations ?? []).some(
+    c => c?.metric_values?.weight != null || (c?.intensity_targets ?? []).some(isWeight),
+  );
+}
+
+/**
+ * The % weight target for a 1-based set ("90% of set 1", "80% of max"),
+ * picked exactly like logger v2's intensityTargetFor: the set's own
+ * intensity_targets, else the exercise's.
+ */
+export function percentWeightTarget(ex: TodayExercise, setNumber: number | null): IntensityTarget | null {
+  const p = ex.plan;
+  if (!p) return null;
+  const i = (setNumber ?? 1) - 1;
+  const list = p.set_configurations?.[i]?.intensity_targets || p.intensity_targets || [];
+  return list.find(t => t?.metric === 'weight') ?? null;
+}
+
+/** First remaining RACK LIFT (instance in context first, then earliest). */
+export function pickRackLift(
+  athlete: TodayAthlete,
+  contextInstanceIds: (string | null | undefined)[] = [],
+): TodayExercise | null {
+  for (const id of contextInstanceIds) {
+    if (!id) continue;
+    const inst = athlete.instances.find(i => i.workoutInstanceId === id);
+    const hit = inst?.remaining.find(isRackLift);
+    if (hit) return hit;
+  }
+  for (const inst of athlete.instances) {
+    const hit = inst.remaining.find(isRackLift);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** The plan's weight for a 1-based set: per-set value, else the exercise's. */
@@ -126,7 +188,7 @@ export interface WrittenSet {
   athleteId: string;
   workoutInstanceId: string;
   routineExerciseId: string;
-  /** Highest set_number already written today for this (athlete, wi, re). */
+  /** Highest COMPLETE set_number written today for this (athlete, wi, re). */
   setNumber: number;
 }
 
@@ -181,6 +243,21 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       session('rack_set_active', { p_rack: rackId, p_athlete: athleteId }),
     endSet: (rackId: string, athleteId: string) =>
       session('rack_end_set', { p_rack: rackId, p_athlete: athleteId }),
+    /** Staff: publish the iPad's pick (no-op unless the athlete is active;
+     *  mid-set it lands in pending_*). Returns the row (→ sessionSync). */
+    setIpadContext: (
+      rackId: string,
+      athleteId: string,
+      ctx: { workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null; loadLb: number | null },
+    ) =>
+      session('rack_set_ipad_context', {
+        p_rack: rackId,
+        p_athlete: athleteId,
+        p_workout_instance: ctx.workoutInstanceId,
+        p_routine_exercise: ctx.routineExerciseId,
+        p_set_number: ctx.setNumber,
+        p_load_lb: ctx.loadLb,
+      }),
     startSet: (rackId: string, athleteId: string, startedAt: string) =>
       session('rack_start_set', { p_rack: rackId, p_athlete: athleteId, p_started_at: startedAt }),
     setPin: async (pin: string) => {
@@ -228,7 +305,7 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
            athletes!inner ( id, org_id, first_name, last_name ),
            workouts ( id, name, routines ( id, order_index, routine_exercises (
              id, order_index, sets, exercise_id, is_placeholder, notes_only,
-             metric_targets, set_configurations,
+             metric_targets, set_configurations, intensity_targets, enabled_measurements,
              velocity_min_mps, velocity_max_mps, speed_drop_stop_pct,
              exercises ( id, name, is_placeholder ) ) ) )`,
         )
@@ -269,6 +346,13 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
               repsTarget: num(cfg[0]?.metric_values?.reps) ?? num(re.metric_targets?.reps),
               prescribedWeights: cfg.map(c => num(c?.metric_values?.weight)),
               prescribedWeight: num(re.metric_targets?.weight),
+              plan: {
+                exercise_id: re.exercise_id,
+                metric_targets: re.metric_targets ?? null,
+                set_configurations: cfg,
+                intensity_targets: Array.isArray(re.intensity_targets) ? re.intensity_targets : null,
+                enabled_measurements: Array.isArray(re.enabled_measurements) ? re.enabled_measurements : null,
+              },
             });
           });
         });
@@ -301,6 +385,42 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       );
     },
 
+    /** Today's logged weight per set number for one routine exercise ({setNumber: lb}). */
+    async loggedWeights(workoutInstanceId: string, routineExerciseId: string): Promise<Record<number, number>> {
+      const { data, error } = await client
+        .from('exercise_logs')
+        .select('set_number, actual_weight')
+        .eq('workout_instance_id', workoutInstanceId)
+        .eq('routine_exercise_id', routineExerciseId);
+      if (error) throw new RackRpcError('exercise_logs', error);
+      const out: Record<number, number> = {};
+      for (const r of (data as any[]) ?? []) {
+        const w = num(r.actual_weight);
+        if (typeof r.set_number === 'number' && w != null && w > 0) out[r.set_number] = w;
+      }
+      return out;
+    },
+
+    /** The athlete's maxes, exercise_id → metric_id → value (most recent wins). */
+    async athleteMaxes(athleteId: string, exerciseIds: string[]): Promise<Record<string, Record<string, number>>> {
+      if (exerciseIds.length === 0) return {};
+      const { data, error } = await client
+        .from('athlete_maxes')
+        .select('exercise_id, metric_id, max_value, achieved_on')
+        .eq('athlete_id', athleteId)
+        .in('exercise_id', exerciseIds)
+        .order('achieved_on', { ascending: false });
+      if (error) throw new RackRpcError('athlete_maxes', error);
+      const out: Record<string, Record<string, number>> = {};
+      for (const m of (data as any[]) ?? []) {
+        const v = num(m.max_value);
+        if (v == null) continue;
+        out[m.exercise_id] ??= {};
+        if (out[m.exercise_id][m.metric_id] === undefined) out[m.exercise_id][m.metric_id] = v;
+      }
+      return out;
+    },
+
     /** The athlete's most recent logged weight (lb) for an exercise, or null. */
     async lastLoggedWeight(athleteId: string, exerciseId: string): Promise<number | null> {
       const { data, error } = await client
@@ -318,8 +438,8 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
     },
 
     /**
-     * Per (athlete, workout instance, routine exercise): the highest set_number
-     * already written today (any row, complete or draft) — for `seedHighWater`.
+     * Per (athlete, workout instance, routine exercise): the highest COMPLETE
+     * set_number written today (is_complete = true) — for `seedHighWater`.
      */
     async todaysWrittenSets(athleteIds: string[], today: string = todayKey()): Promise<WrittenSet[]> {
       if (athleteIds.length === 0) return [];
@@ -334,7 +454,10 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       const { data: logs, error: logErr } = await client
         .from('exercise_logs')
         .select('athlete_id, workout_instance_id, routine_exercise_id, set_number')
-        .in('workout_instance_id', ids);
+        .in('workout_instance_id', ids)
+        // Only finished sets raise the high-water (a draft row is a set the
+        // phone opened, not one that was done).
+        .eq('is_complete', true);
       if (logErr) throw new RackRpcError('exercise_logs', logErr);
       const max = new Map<string, WrittenSet>();
       for (const l of (logs as any[]) ?? []) {

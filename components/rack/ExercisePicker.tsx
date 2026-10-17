@@ -18,27 +18,36 @@ export interface ExercisePickerProps {
   /** True when the phone set the exercise (an iPad pick then waits). */
   phoneOwnsContext: boolean;
   onPick: (ex: TodayExercise) => void;
+  /** No exercise yet (no rack lift left): show a "Pick an exercise" button. */
+  prompt?: boolean;
 }
 
 const zoneText = (e: TodayExercise) =>
   e.zoneMin != null && e.zoneMax != null ? `${e.zoneMin.toFixed(2)}–${e.zoneMax.toFixed(2)} m/s` : 'No speed target';
 
-export default function ExercisePicker({ label, remaining, currentRoutineExerciseId, phoneOwnsContext, onPick }: ExercisePickerProps) {
+export default function ExercisePicker({ label, remaining, currentRoutineExerciseId, phoneOwnsContext, onPick, prompt = false }: ExercisePickerProps) {
   const [open, setOpen] = useState(false);
   const can = remaining.length > 0;
   return (
     <>
-      <TouchableOpacity disabled={!can} onPress={() => setOpen(true)} style={styles.trigger} activeOpacity={0.7}>
-        <Text style={styles.label} numberOfLines={1}>
-          {label}
-        </Text>
-        {can && <Text style={styles.chev}>▾</Text>}
-      </TouchableOpacity>
+      {prompt && can ? (
+        <TouchableOpacity onPress={() => setOpen(true)} style={styles.promptBtn} activeOpacity={0.8}>
+          <Text style={styles.promptTxt}>Pick an exercise ▾</Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity disabled={!can} onPress={() => setOpen(true)} style={styles.trigger} activeOpacity={0.7}>
+          <Text style={styles.label} numberOfLines={1}>
+            {label}
+          </Text>
+          {can && <Text style={styles.chev}>▾</Text>}
+        </TouchableOpacity>
+      )}
       <Modal visible={open} transparent animationType="fade" supportedOrientations={[...ALL_MODAL_ORIENTATIONS]} onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.scrim} onPress={() => setOpen(false)}>
           <Pressable style={styles.sheet} onPress={() => {}}>
             <Text style={styles.k}>EXERCISE ON THIS RACK</Text>
-            {phoneOwnsContext && <Text style={styles.note}>The phone picked the exercise; it wins over a pick here.</Text>}
+            {phoneOwnsContext && <Text style={styles.note}>The phone picked this exercise. A pick here moves the phone to it.</Text>}
+            <Text style={styles.note}>All remaining exercises — reps before a pick save as a free set.</Text>
             <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 8 }}>
               {remaining.map(e => {
                 const on = e.routineExerciseId === currentRoutineExerciseId;
@@ -71,6 +80,17 @@ export default function ExercisePicker({ label, remaining, currentRoutineExercis
 }
 
 const styles = StyleSheet.create({
+  promptBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: RACK_COLORS.acc,
+    backgroundColor: 'rgba(155,221,255,0.08)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  promptTxt: { fontSize: 13, fontWeight: '800', color: RACK_COLORS.acc },
   trigger: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   label: { fontSize: 13, color: 'rgba(255,255,255,0.65)', flexShrink: 1 },
   chev: { fontSize: 12, color: RACK_COLORS.acc },

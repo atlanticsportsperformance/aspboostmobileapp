@@ -10,7 +10,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import type { TodayAthlete } from '../../lib/rack/api';
 import { filterAddable, initialsOf, RACK_COLORS } from '../../lib/rack/viewModel';
 import { ALL_MODAL_ORIENTATIONS } from '../../lib/rack/orientation';
@@ -26,20 +26,20 @@ export interface AddAthleteSheetProps {
 const SETTLE_MS = 150;
 
 export default function AddAthleteSheet({ visible, addable, onClose, onAdd }: AddAthleteSheetProps) {
-  const [snapshot, setSnapshot] = useState<TodayAthlete[]>([]);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const scrolling = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Snapshot on open; stable while open.
+  // Snapshot taken in the same render the sheet opens (no empty-state flash);
+  // stable while open.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const snapshot = useMemo(() => (visible ? addable : []), [visible]);
   useEffect(() => {
     if (visible) {
-      setSnapshot(addable);
       setQuery('');
       setSelected(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   const list = useMemo(() => filterAddable(snapshot, query), [snapshot, query]);
@@ -72,6 +72,8 @@ export default function AddAthleteSheet({ visible, addable, onClose, onAdd }: Ad
 
   return (
     <Modal visible={visible} transparent animationType="fade" supportedOrientations={[...ALL_MODAL_ORIENTATIONS]} onRequestClose={onClose}>
+      {/* The keyboard (search) must never cover "Put X up" — landscape especially. */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Pressable style={styles.scrim} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={() => {}}>
           <Text style={styles.k}>ADD TO THE RACK</Text>
@@ -90,7 +92,7 @@ export default function AddAthleteSheet({ visible, addable, onClose, onAdd }: Ad
             clearButtonMode="while-editing"
           />
           <ScrollView
-            style={{ maxHeight: 360 }}
+            style={{ flexShrink: 1, maxHeight: 360 }}
             contentContainerStyle={{ gap: 8 }}
             keyboardShouldPersistTaps="handled"
             onScrollBeginDrag={startScroll}
@@ -132,6 +134,7 @@ export default function AddAthleteSheet({ visible, addable, onClose, onAdd }: Ad
           </View>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -141,6 +144,7 @@ const styles = StyleSheet.create({
   sheet: {
     width: '100%',
     maxWidth: 520,
+    maxHeight: '100%',
     borderRadius: 18,
     backgroundColor: RACK_COLORS.card,
     borderWidth: 1,

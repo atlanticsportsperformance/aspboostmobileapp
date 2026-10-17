@@ -358,6 +358,8 @@ const tEx = (over: Partial<TodayExercise>): TodayExercise => ({
   zoneMin: null,
   zoneMax: null,
   dropStopPct: null,
+  // A rack lift (tracks weight) unless a test says otherwise.
+  plan: { exercise_id: over.exerciseId ?? 'ex-a', enabled_measurements: ['weight'] },
   ...over,
 });
 const todayOf = (athleteId: string, exs: TodayExercise[]): TodayAthlete => ({
@@ -498,5 +500,139 @@ describe('PIN-exit helpers', () => {
     await r.ex.idle();
     expect(r.ex.unsavedCount()).toEqual({ reps: 1, sets: 0 });
     await expect(r.ex.flush()).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------- Task 9 fix round 3: unison, rack lifts, % loads
+
+const boxJump = () => tEx({ routineExerciseId: 're-box', exerciseId: 'ex-box', name: 'Box Jump', plan: { exercise_id: 'ex-box', enabled_measurements: ['reps'] } });
+const squat = (over: Partial<TodayExercise> = {}) =>
+  tEx({ routineExerciseId: 're-sq', exerciseId: 'ex-sq', name: 'Back Squat', plan: { exercise_id: 'ex-sq', enabled_measurements: ['weight', 'reps'] }, ...over });
+const ipadRow = (ctx: { wi: string | null; re: string | null; set: number | null; load: number | null }, at = T0 + 5) =>
+  row({ workout_instance_id: ctx.wi, routine_exercise_id: ctx.re, exercise_id: null, set_number: ctx.set, load_lb: ctx.load, queue: [], updated_at: iso(at) });
+
+function unisonRig(extra: Partial<ExecutorApi> = {}) {
+  const setIpadContext = jest.fn(async (_r: string, _a: string, c: any) =>
+    ipadRow({ wi: c.workoutInstanceId, re: c.routineExerciseId, set: c.setNumber, load: c.loadLb }),
+  );
+  const r = rig({ api: { setIpadContext, ...extra } });
+  return { r, setIpadContext };
+}
+
+describe('unison: the iPad publishes its context (rack_set_ipad_context)', () => {
+  it('auto-pick with no phone context → publishes athlete, instance, routine exercise, set, load; row fed back', async () => {
+    const { r, setIpadContext } = unisonRig();
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.setToday([todayOf('tyler', [boxJump(), squat({ prescribedWeight: 185 })])]);
+    await flushMicro();
+    expect(setIpadContext).toHaveBeenCalledTimes(1);
+    expect(setIpadContext).toHaveBeenCalledWith(RACK, 'tyler', { workoutInstanceId: 'wi-9', routineExerciseId: 're-sq', setNumber: 1, loadLb: 185 });
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 're-sq', load_lb: 185 });
+    expect(r.ex.ipadOwnsContext()).toBe(true);
+    // Settled: no republish on later events.
+    r.ex.dispatch({ type: 'tick' });
+    r.ex.setToday([todayOf('tyler', [boxJump(), squat({ prescribedWeight: 185 })])]);
+    await flushMicro();
+    expect(setIpadContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("never echoes the phone's context", async () => {
+    const { r, setIpadContext } = unisonRig();
+    r.ex.setToday([todayOf('tyler', [squat({ workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat', prescribedWeight: 185 })])]);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ load_lb: null }) }); // phone: wi-1 / re-squat, no load
+    await flushMicro();
+    expect(setIpadContext).not.toHaveBeenCalled();
+    expect(r.ex.ipadOwnsContext()).toBe(false);
+  });
+
+  it('a coach override over the phone publishes; a later phone change wins and is not overwritten', async () => {
+    const { r, setIpadContext } = unisonRig();
+    const sq = squat({ workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat' });
+    const bench = squat({ workoutInstanceId: 'wi-1', routineExerciseId: 're-bench', exerciseId: 'ex-bench', name: 'Bench' });
+    r.ex.setToday([todayOf('tyler', [sq, bench])]);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ queue: [] }) }); // phone on squat
+    r.ex.setOverride('tyler', bench);
+    await flushMicro();
+    expect(setIpadContext).toHaveBeenCalledTimes(1);
+    expect(setIpadContext.mock.calls[0][2]).toMatchObject({ routineExerciseId: 're-bench' });
+    // The phone moves to squat again.
+    r.ex.dispatch({ type: 'sessionSync', row: row({ queue: [], updated_at: iso(T0 + 100) }) });
+    await flushMicro();
+    expect(setIpadContext).toHaveBeenCalledTimes(1);
+    expect(r.ex.ipadOwnsContext()).toBe(false);
+  });
+
+  it('auto-pick skips non-rack lifts; none left → no pick, no publish, reps go in as a free set', async () => {
+    const { r, setIpadContext } = unisonRig();
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.setToday([todayOf('tyler', [boxJump()])]);
+    await flushMicro();
+    expect(r.ex.getState().localContext).toBeNull();
+    expect(setIpadContext).not.toHaveBeenCalled();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.idle();
+    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0]).toMatchObject({ workoutInstanceId: null, routineExerciseId: null });
+  });
+
+  it('an earlier pick is cleared when no rack lift remains', () => {
+    const { r } = unisonRig();
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.setToday([todayOf('tyler', [squat()])]);
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 're-sq' });
+    const done = squat({ completedSets: 3 });
+    const a = todayOf('tyler', [done]);
+    r.ex.setToday([{ ...a, instances: [{ ...a.instances[0], remaining: [] }], remaining: [] }]);
+    expect(r.ex.getState().localContext).toMatchObject({ workoutInstanceId: null });
+  });
+});
+
+describe('% loads (logger v2 targets)', () => {
+  const pct90S1 = () =>
+    squat({
+      plan: {
+        exercise_id: 'ex-sq',
+        enabled_measurements: ['weight'],
+        set_configurations: [
+          { metric_values: { weight: 200 } },
+          { intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 1 }] },
+        ],
+      },
+    });
+
+  it('"90% S1" for set 2 resolves from today\'s logged set-1 weight and is published', async () => {
+    const loggedWeights = jest.fn(async () => ({ 1: 200 }));
+    const { r, setIpadContext } = unisonRig({ loggedWeights });
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.dispatch({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-9', routineExerciseId: 're-sq', setNumber: 1 });
+    r.ex.setToday([todayOf('tyler', [pct90S1()])]);
+    await flushMicro();
+    await flushMicro();
+    expect(loggedWeights).toHaveBeenCalledWith('wi-9', 're-sq');
+    expect(r.ex.getState().loadOverrideLb).toBe(180);
+    expect(setIpadContext).toHaveBeenLastCalledWith(RACK, 'tyler', expect.objectContaining({ setNumber: 2, loadLb: 180 }));
+  });
+
+  it('unresolvable % (set 1 not logged) → no load, no last-weight fallback', async () => {
+    const lastLoggedWeight = jest.fn(async () => 225);
+    const { r } = unisonRig({ loggedWeights: jest.fn(async () => ({})), lastLoggedWeight });
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.dispatch({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-9', routineExerciseId: 're-sq', setNumber: 1 });
+    r.ex.setToday([todayOf('tyler', [pct90S1()])]);
+    await flushMicro();
+    expect(r.ex.getState().loadOverrideLb).toBeNull();
+    expect(lastLoggedWeight).not.toHaveBeenCalled();
+  });
+
+  it('"80% of max" resolves from the athlete\'s max', async () => {
+    const athleteMaxes = jest.fn(async () => ({ 'ex-sq': { weight: 250 } }));
+    const { r } = unisonRig({ athleteMaxes });
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
+    r.ex.setToday([
+      todayOf('tyler', [squat({ plan: { exercise_id: 'ex-sq', intensity_targets: [{ metric: 'weight', percent: 80 }] } })]),
+    ]);
+    await flushMicro();
+    await flushMicro();
+    expect(athleteMaxes).toHaveBeenCalledWith('tyler', ['ex-sq']);
+    expect(r.ex.getState().loadOverrideLb).toBe(200);
   });
 });

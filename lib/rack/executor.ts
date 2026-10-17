@@ -25,9 +25,10 @@
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
 
-import { nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
+import { nextContext, nextSetNumber, nextSetNumberFor, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
-import { pickLocalExercise, prescribedWeightFor, type TodayAthlete, type TodayExercise, type WrittenSet } from './api';
+import { pickRackLift, prescribedWeightFor, percentWeightTarget, type TodayAthlete, type TodayExercise, type WrittenSet } from './api';
+import { intensityFor, type LoggedSets } from '../logger/targets';
 import { withTimeout, type RackPersist } from './persist';
 
 export const TICK_MS = 1_000;
@@ -46,7 +47,20 @@ export interface ExecutorApi {
   /** Last logged weight for (athlete, exercise) — the load fallback when
    *  neither the phone nor the plan gives one. Optional (tests). */
   lastLoggedWeight?(athleteId: string, exerciseId: string): Promise<number | null>;
+  /** Today's logged weight per set number (resolves "% of set N"). Optional (tests). */
+  loggedWeights?(workoutInstanceId: string, routineExerciseId: string): Promise<Record<number, number>>;
+  /** Athlete maxes exercise → metric → value (resolves "% of max"). Optional (tests). */
+  athleteMaxes?(athleteId: string, exerciseIds: string[]): Promise<Record<string, Record<string, number>>>;
+  /** Publish the iPad's pick to rack_sessions (unison with the phone). Optional (tests). */
+  setIpadContext?(
+    rackId: string,
+    athleteId: string,
+    ctx: { workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null; loadLb: number | null },
+  ): Promise<RackSessionRow>;
 }
+
+/** A failed rack_set_ipad_context is retried after this long. */
+export const PUBLISH_RETRY_MS = 10_000;
 
 export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet'> & {
   flush(opts?: { force?: boolean }): Promise<void>;
@@ -78,6 +92,9 @@ export interface RackExecutor {
   endLive(): Promise<void>;
   /** Writes held in memory because their enqueue failed. */
   unsavedCount(): { reps: number; sets: number };
+  /** The active athlete's context is the iPad's (its pick / a coach
+   *  override, published to rack_sessions) — not the phone's. */
+  ipadOwnsContext(): boolean;
   start(): void;
   stop(): void;
   /** Resolves when every effect and RPC queued so far has run (tests). */
@@ -243,6 +260,11 @@ export function createRackExecutor(opts: {
           if (fx.summary.loadLb != null && fx.summary.exerciseId) {
             lastWeight.set(`${fx.summary.athleteId}:${fx.summary.exerciseId}`, fx.summary.loadLb);
           }
+          if (fx.summary.loadLb != null && fx.summary.setNumber != null && fx.summary.workoutInstanceId && fx.summary.routineExerciseId) {
+            const lk = `${fx.summary.workoutInstanceId}:${fx.summary.routineExerciseId}`;
+            const prev = logged.get(lk);
+            if (prev) logged.set(lk, { ...prev, [fx.summary.setNumber]: fx.summary.loadLb });
+          }
           if (fx.summary.free) break; // free sets: vbt_reps only
           const s = withExercise(fx.summary);
           const kind = fx.type;
@@ -342,10 +364,115 @@ export function createRackExecutor(opts: {
     }
     if (state.activeAthleteId !== before) {
       if (override && override.athleteId !== state.activeAthleteId) override = null;
+      published = null;
+      lastAttemptKey = null;
       pushLocalContext();
+    } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow()) {
+      // The phone moved the athlete on: its pick wins over an older coach override.
+      override = null;
     }
-    if (event.type !== 'loadChanged' && (event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore)) deriveLoad();
+    const changed = event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore;
+    if (event.type !== 'loadChanged' && changed) deriveLoad();
+    if (event.type !== 'loadChanged' && (changed || (publishFailedAt != null && now() - publishFailedAt >= PUBLISH_RETRY_MS))) {
+      publishIfNeeded();
+    }
     notify();
+  };
+
+  // ---------------------------------------------------------------- unison: publish the iPad's context
+
+  type Pub = { athleteId: string; workoutInstanceId: string; routineExerciseId: string; setNumber: number | null; loadLb: number | null };
+  /** What the iPad last published for the active athlete (null = nothing / phone-owned). */
+  let published: Pub | null = null;
+  let lastAttemptKey: string | null = null;
+  let publishInFlight = false;
+  let publishFailedAt: number | null = null;
+
+  /** The row's context for the NEXT set (pending wins — same rule as the engine). */
+  const rowNext = () => {
+    const r = state.session;
+    if (!r) return null;
+    const pending =
+      r.pending_workout_instance_id != null || r.pending_routine_exercise_id != null || r.pending_set_number != null || r.pending_load_lb != null;
+    return pending
+      ? { wi: r.pending_workout_instance_id, re: r.pending_routine_exercise_id, set: r.pending_set_number, load: r.pending_load_lb }
+      : { wi: r.workout_instance_id, re: r.routine_exercise_id, set: r.set_number, load: r.load_lb };
+  };
+
+  /** The row's exercise is the iPad's (empty, or what the iPad last published). */
+  const ipadOwnsContext = (): boolean => {
+    const id = state.activeAthleteId;
+    const r = state.session;
+    if (!id || !r || r.active_athlete_id !== id) return false;
+    const n = rowNext();
+    if (!n || n.wi == null) return true;
+    return !!published && published.athleteId === id && published.workoutInstanceId === n.wi && published.routineExerciseId === n.re;
+  };
+  const phoneOwnsRow = () => {
+    const n = rowNext();
+    return !!n && n.wi != null && !ipadOwnsContext();
+  };
+
+  /**
+   * Publish the iPad's context (its rack-lift pick or a coach override) with
+   * the set number and load, via rack_set_ipad_context — so the phone follows.
+   * Never echoes the phone's context: when the row's exercise came from the
+   * phone (not what the iPad published), nothing is sent. Per field, a value
+   * the phone changed since the iPad's publish (set number, load) is kept.
+   */
+  const publishIfNeeded = () => {
+    if (state.mode !== 'rack' || !state.rackId || !api.setIpadContext || publishInFlight) return;
+    const id = state.activeAthleteId;
+    const local = state.localContext;
+    if (!id || !local || local.athleteId !== id || local.workoutInstanceId == null || local.routineExerciseId == null) return;
+    const r = state.session;
+    if (!r || r.active_athlete_id !== id) return;
+    const coach = !!override && override.athleteId === id && override.ex.workoutInstanceId === local.workoutInstanceId && override.ex.routineExerciseId === local.routineExerciseId;
+    if (!ipadOwnsContext() && !coach) return; // the phone's context: never echo it
+    const n = rowNext();
+    const sameEx = !!n && n.wi === local.workoutInstanceId && n.re === local.routineExerciseId;
+    const mine = published && published.athleteId === id ? published : null;
+    // Fields the phone changed after the iPad's publish stay the phone's.
+    const phoneSet = sameEx && n!.set != null && mine && n!.set !== mine.setNumber ? n!.set : null;
+    const phoneLoad = sameEx && n!.load != null && mine && n!.load !== mine.loadLb ? Number(n!.load) : null;
+    const want: Pub = {
+      athleteId: id,
+      workoutInstanceId: local.workoutInstanceId,
+      routineExerciseId: local.routineExerciseId,
+      setNumber: phoneSet ?? nextSetNumberFor(state, id, { ...local, setNumber: sameEx ? n!.set : null, loadLb: null }),
+      loadLb: phoneLoad ?? derivedLb,
+    };
+    if (sameEx && n!.set === want.setNumber && (n!.load == null ? null : Number(n!.load)) === want.loadLb) {
+      published = want;
+      return;
+    }
+    const key = `${id}:${want.workoutInstanceId}:${want.routineExerciseId}:${want.setNumber}:${want.loadLb}`;
+    if (key === lastAttemptKey && publishFailedAt == null) return; // sent; the DB may have declined (not active)
+    if (publishFailedAt != null && key === lastAttemptKey && now() - publishFailedAt < PUBLISH_RETRY_MS) return;
+    lastAttemptKey = key;
+    publishInFlight = true;
+    published = want;
+    const rackId = state.rackId;
+    withTimeout(
+      api.setIpadContext(rackId, id, {
+        workoutInstanceId: want.workoutInstanceId,
+        routineExerciseId: want.routineExerciseId,
+        setNumber: want.setNumber,
+        loadLb: want.loadLb,
+      }),
+      RPC_TIMEOUT_MS,
+      'setIpadContext',
+    )
+      .then(row => {
+        publishFailedAt = null;
+        publishInFlight = false;
+        if (row) dispatch({ type: 'sessionSync', row });
+      })
+      .catch(e => {
+        log('setIpadContext failed', e);
+        publishFailedAt = now();
+        publishInFlight = false;
+      });
   };
 
   // ---------------------------------------------------------------- derived load
@@ -397,19 +524,92 @@ export function createRackExecutor(opts: {
    * exercise. Dispatched as `loadChanged` (sensor + the set row's weight). A
    * phone load always wins (the engine prefers the context's load).
    */
+  /** Load the iPad derived for the next set (published with its context). */
+  let derivedLb: number | null = null;
+
+  /** Today's logged weights per `${wi}:${re}` ({setNumber: lb}). */
+  const logged = new Map<string, Record<number, number>>();
+  /** Athlete maxes per athlete. */
+  const maxes = new Map<string, Record<string, Record<string, number>>>();
+  const cacheInFlight = new Set<string>();
+  const cacheFailedAt = new Map<string, number>();
+
+  /** One cached read per key; re-derives when it lands. */
+  function cachedRead<T>(map: Map<string, T>, key: string, read: (() => Promise<T>) | null): T | undefined {
+    if (map.has(key)) return map.get(key);
+    const ck = `${map === (logged as unknown) ? 'l' : 'm'}:${key}`;
+    const failed = cacheFailedAt.get(ck);
+    if (!read || cacheInFlight.has(ck) || (failed != null && now() - failed < WEIGHT_RETRY_MS)) return undefined;
+    cacheInFlight.add(ck);
+    withTimeout(read(), RPC_TIMEOUT_MS, ck)
+      .then(v => {
+        map.set(key, v);
+        cacheFailedAt.delete(ck);
+      })
+      .catch(e => {
+        cacheFailedAt.set(ck, now());
+        log('rack load lookup failed', ck, e);
+      })
+      .finally(() => {
+        cacheInFlight.delete(ck);
+        deriveLoad();
+        publishIfNeeded();
+        notify();
+      });
+    return undefined;
+  }
+
+  /**
+   * Weight for set `setNumber` of `ex`: a % target ("90% of set 1", "% of
+   * max") resolved like logger v2 (lib/logger/targets) from today's logged
+   * weights / the athlete's maxes; else the plan's fixed weight. `percent`
+   * true = a % target that can't be resolved yet (no fallback: the phone sets it).
+   */
+  const planWeight = (athleteId: string, ex: TodayExercise, setNumber: number | null): { lb: number | null; percent: boolean } => {
+    const setIndex = (setNumber ?? 1) - 1;
+    const target = percentWeightTarget(ex, setNumber);
+    if (target && ex.plan) {
+      const lk = `${ex.workoutInstanceId}:${ex.routineExerciseId}`;
+      const bySet = cachedRead(logged, lk, api.loggedWeights ? () => api.loggedWeights!(ex.workoutInstanceId, ex.routineExerciseId) : null);
+      const loggedSets: LoggedSets = {};
+      for (const [n, w] of Object.entries(bySet ?? {})) loggedSets[Number(n) - 1] = { weight: w };
+      // Maxes for every exercise the athlete has today (+ cross-exercise sources), one read per athlete.
+      const athleteMaxes = cachedRead(maxes, athleteId, api.athleteMaxes ? () => api.athleteMaxes!(athleteId, maxExerciseIds(athleteId)) : null);
+      const r = intensityFor({ re: ex.plan as any, setIndex, metric: 'weight', maxes: athleteMaxes ?? {}, logged: loggedSets });
+      return { lb: r?.calculatedValue ?? null, percent: true };
+    }
+    return { lb: prescribedWeightFor(ex, setNumber), percent: false };
+  };
+
+  const maxExerciseIds = (athleteId: string): string[] => {
+    const ids = new Set<string>();
+    for (const e of today.find(t => t.athleteId === athleteId)?.exercises ?? []) {
+      ids.add(e.exerciseId);
+      const p = e.plan;
+      for (const t of [...(p?.intensity_targets ?? []), ...(p?.set_configurations ?? []).flatMap(c => c?.intensity_targets ?? [])]) {
+        if (t?.source_exercise_id) ids.add(t.source_exercise_id);
+      }
+    }
+    return [...ids];
+  };
+
   const deriveLoad = () => {
     if (state.mode !== 'rack' || state.setState === 'lifting') return;
     const id = state.activeAthleteId;
     let lb: number | null = null;
     if (id) {
       const c = nextContext(state);
-      if (c.loadLb == null && (c.routineExerciseId || c.exerciseId)) {
+      // A phone load wins; a load the iPad itself published is re-derived.
+      const phoneLoad = c.loadLb != null && !ipadOwnsContext();
+      if (!phoneLoad && (c.routineExerciseId || c.exerciseId)) {
         const ex = findExercise(id, c);
-        lb = ex ? prescribedWeightFor(ex, nextSetNumber(state, id)) : null;
+        const plan = ex ? planWeight(id, ex, nextSetNumber(state, id)) : { lb: null, percent: false };
+        lb = plan.lb;
         const exerciseId = c.exerciseId ?? ex?.exerciseId ?? null;
-        if (lb == null && exerciseId) lb = cachedLastWeight(id, exerciseId);
+        if (lb == null && !plan.percent && exerciseId) lb = cachedLastWeight(id, exerciseId);
       }
     }
+    derivedLb = lb;
     if (lb !== state.loadOverrideLb) apply({ type: 'loadChanged', lb }, now());
   };
 
@@ -426,9 +626,21 @@ export function createRackExecutor(opts: {
     const row = state.session;
     const picked =
       override && override.athleteId === id && a.remaining.some(r => sameExercise(r, override!.ex)) ? override.ex : null;
-    const ex = picked ?? pickLocalExercise(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
-    if (!ex) return;
-    // The engine uses it only while the server row has no workout context.
+    // Auto-pick only RACK LIFTS (weight-tracked or zoned); a coach can pick anything.
+    const ex = picked ?? pickRackLift(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
+    if (!ex) {
+      // Nothing to auto-pick: clear any older pick (reps go in as a free set;
+      // the card prompts "Pick an exercise").
+      if (state.localContext && state.localContext.athleteId === id && state.localContext.workoutInstanceId != null) {
+        apply(
+          { type: 'localContext', athleteId: id, workoutInstanceId: null, routineExerciseId: null, exerciseId: null, setNumber: null, loadLb: null, zoneMin: null, zoneMax: null, dropStopPct: null },
+          now(),
+        );
+      }
+      return;
+    }
+    // The engine uses it only while the server row has no workout context;
+    // publishIfNeeded puts it in the row (unison with the phone).
     apply(
       {
         type: 'localContext',
@@ -458,6 +670,9 @@ export function createRackExecutor(opts: {
 
   const setToday = (athletes: TodayAthlete[]) => {
     today = athletes;
+    // Fresh reads for % loads (the phone may have logged / edited sets).
+    logged.clear();
+    maxes.clear();
     for (const a of athletes) {
       for (const ex of a.exercises) {
         apply(
@@ -501,6 +716,7 @@ export function createRackExecutor(opts: {
       }
     },
     unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length }),
+    ipadOwnsContext,
     start() {
       if (running) return;
       running = true;

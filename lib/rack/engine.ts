@@ -591,6 +591,11 @@ export function nextSetNumber(s: RackEngineState, athleteId: string): number | n
   return numberFor(s, athleteId, nextContext(s)).setNumber;
 }
 
+/** Same rule for a given raw context (e.g. the iPad's pick before the row has it). */
+export function nextSetNumberFor(s: RackEngineState, athleteId: string, raw: RackContext): number | null {
+  return numberFor(s, athleteId, raw).setNumber;
+}
+
 function numberFor(
   s: RackEngineState,
   athleteId: string,
