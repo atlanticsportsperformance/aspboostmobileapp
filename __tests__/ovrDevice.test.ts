@@ -154,6 +154,31 @@ describe('OvrBleDevice', () => {
     expect(dev.state).toBe('connected');
   });
 
+  it('exclude: never connects to an excluded sensor (e.g. a rack’s), first scan or reconnect', async () => {
+    const rack = makeDevice('OVR_Velocity-RACK');
+    const mine = makeDevice('OVR_Velocity-MINE');
+    mgr.advertised = [rack, mine];
+    const dev = new OvrBleDevice();
+    await dev.connect(undefined, { exclude: ['OVR_Velocity-RACK'] });
+    expect(rack.connect).not.toHaveBeenCalled();
+    expect(dev.deviceName).toBe('OVR_Velocity-MINE');
+    expect(matchesOvrName('OVR_Velocity-RACK', undefined, ['OVR_Velocity-RACK'])).toBe(false);
+  });
+
+  it('giveUpOnScanTimeout: one scan timeout ends in error (no back-off retries)', async () => {
+    mgr.advertised = [makeDevice('OVR_Velocity-RACK')];
+    const dev = new OvrBleDevice({ scanTimeoutMs: 1000 });
+    const { states } = track(dev);
+    void dev.connect(undefined, { exclude: ['OVR_Velocity-RACK'], giveUpOnScanTimeout: true });
+    await settle(1000);
+    expect(dev.state).toBe('error');
+    expect(dev.error).toMatch(/No OVR sensor found/);
+    const scans = mgr.startDeviceScan.mock.calls.length;
+    await settle(60_000);
+    expect(mgr.startDeviceScan.mock.calls.length).toBe(scans);
+    expect(states).not.toContain('reconnecting');
+  });
+
   it('reconnects after an unexpected disconnect and resets the attempt counter', async () => {
     const s = makeDevice('OVR_Velocity-6C8E');
     mgr.advertised = [s];

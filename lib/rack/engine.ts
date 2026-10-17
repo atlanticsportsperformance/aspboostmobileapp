@@ -530,13 +530,9 @@ function serverNextContext(
 const sameExercise = (a: RackContext, b: RackContext) =>
   a.workoutInstanceId === b.workoutInstanceId && a.routineExerciseId === b.routineExerciseId;
 const sameCtx = (a: RackContext, b: RackContext) => sameExercise(a, b) && a.setNumber === b.setNumber;
-/**
- * Idle hold: same exercise when the context is resolveRackSet's (rack: a
- * resolved localContext; solo: the phone always resolves its set) — its set
- * number advances with the log write — else the same context.
- */
+/** Idle hold: same exercise (resolved — its set number advances with the log write), else same context. */
 const holdMatches = (s: RackEngineState, athleteId: string, held: RackContext, next: RackContext) =>
-  s.mode === 'solo' || resolvedFor(s, athleteId) ? sameExercise(held, next) : sameCtx(held, next);
+  resolvedFor(s, athleteId) ? sameExercise(held, next) : sameCtx(held, next);
 
 /** Summary of an ENDED set (throws if the set has no end reason). */
 export function summarize(
@@ -932,7 +928,19 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       if (ctx.exerciseId) {
         s = applyMeta(s, { exerciseId: ctx.exerciseId, routineExerciseId: ctx.routineExerciseId, zoneMin, zoneMax, dropStopPct });
       }
-      // Mid-set: the live set is frozen; this context applies to the next set.
+      // Mid-set: the live set is frozen; this context applies to the next set —
+      // except the load of the SAME set: in solo the phone is the only device,
+      // so an LB typed while (or right after) lifting is that set's load.
+      if (s.setState === 'lifting' && s.live && sameCtx(s.live.rawContext, ctx) && s.live.context.loadLb !== ctx.loadLb) {
+        s = {
+          ...s,
+          live: {
+            ...s.live,
+            rawContext: { ...s.live.rawContext, loadLb: ctx.loadLb },
+            context: { ...s.live.context, loadLb: ctx.loadLb },
+          },
+        };
+      }
       s = releaseHoldOnNewContext(s);
       s = syncSensorLoad(s, fx);
       break;

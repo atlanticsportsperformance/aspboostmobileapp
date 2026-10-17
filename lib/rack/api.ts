@@ -38,6 +38,10 @@ export interface RackListItem {
   state: string;
   /** 1-based; null when the caller is not queued. */
   queuePositionOfCaller: number | null;
+  /** The rack's paired sensor (phone-direct mode never connects to it). */
+  ovrDeviceName?: string | null;
+  /** The caller is the rack's active lifter (undefined from an older RPC). */
+  callerIsActive?: boolean;
 }
 
 export interface Rack {
@@ -226,6 +230,8 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         nextAthleteFirstName: r.next_athlete_first_name ?? null,
         state: r.state,
         queuePositionOfCaller: r.queue_position_of_caller ?? null,
+        ovrDeviceName: r.ovr_device_name ?? null,
+        ...(typeof r.caller_is_active === 'boolean' ? { callerIsActive: r.caller_is_active } : {}),
       }));
     },
 

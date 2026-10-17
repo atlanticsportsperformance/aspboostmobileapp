@@ -557,6 +557,36 @@ describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "
     expect(v.exerciseLine).toBe('DB Bulgarian · Set 1 of 3');
   });
 
+  it('simulator bug: coach picks RDL set 3 on the iPad → the phone strip == the iPad card (Set 3 of 3), also once the phone echoes it', async () => {
+    const { coachSetChoice } = require('../lib/rack/phoneView');
+    // ---- iPad: squat done, RDL set 1 done; the coach picks RDL set 3.
+    const r = rig([...logRows('squat', 1, 2, 3), ...logRows('rdl', 1)]);
+    r.ex.setToday([today()]);
+    r.sync({});
+    await settle();
+    r.ex.setOverride('tyler', today().exercises.find((e: TodayExercise) => e.routineExerciseId === 'rdl')!, 3);
+    await settle();
+    const card = () => buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(card().exerciseLine).toBe('Romanian Deadlift · Set 3 of 3');
+
+    // ---- phone: the row carries the coach's rdl:3 → chosen → it opens RDL set 3.
+    const instance = rackInstanceFromLogger('wi', routines);
+    const logs = rackLogsFromCompleted('wi', { squat: [true, true, true], rdl: [true, false, false] });
+    const ctx = { workoutInstanceId: 'wi', routineExerciseId: 'rdl', setNumber: 3, loadLb: null };
+    const chosen = coachSetChoice({ ctx, prev: { exercise: 'rdl', set: 2 }, workoutInstanceId: 'wi', isEcho: () => false, autoPick: { routineExerciseId: 'rdl', setNumber: 2 } });
+    expect(chosen).toEqual({ routineExerciseId: 'rdl', setNumber: 3 });
+    const session = row({ workout_instance_id: 'wi', routine_exercise_id: 'rdl', set_number: 3 });
+    for (const isEcho of [() => false, (c: any) => c.routineExerciseId === 'rdl' && c.setNumber === 3]) {
+      const now = phoneRackNow({ instance, logs, session, athleteId: 'tyler', workoutInstanceId: 'wi', openExerciseId: 'rdl', isEcho, chosen });
+      expect(now).toMatchObject({ routineExerciseId: 'rdl', setNumber: 3 });
+      expect(rackStripLine('Rack 1', 'Romanian Deadlift', now.setNumber, 3)).toBe(`Rack 1 · ${card().exerciseLine}`);
+    }
+    // the phone sends rdl:3 back (its open set) → the iPad still captures set 3
+    r.sync({ routine_exercise_id: 'rdl', set_number: 3 }, r.advance(500));
+    await settle();
+    expect(card().exerciseLine).toBe('Romanian Deadlift · Set 3 of 3');
+  });
+
   it('truthful source: a coach pick reads PICKED ON IPAD', async () => {
     const r = rig();
     r.ex.setToday([today()]);

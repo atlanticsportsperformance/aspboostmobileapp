@@ -97,6 +97,8 @@ export interface ExerciseRackProps extends RackScreenProps {
   /** Real pull-to-refresh: rack state + pending set rows. */
   onPullRefresh: () => void;
   refreshing: boolean;
+  /** Pull-to-refresh only when the org has racks (not for the phone sensor alone). */
+  canRefresh?: boolean;
   /** Extra rack sets past the prescription (set N+1…), read-only; live while being lifted. */
   extraSets?: ExtraRackSet[];
   /**
@@ -1148,7 +1150,7 @@ export default function ExerciseDetailView({
           {rack?.hasRacks && rack.idleSaved.includes(i) && !isOpen && (
             <Text style={styles.caption}>Saved · tap to edit</Text>
           )}
-          {rack?.hasRacks && isCompleted && !isLiveRow(i) && rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt) && (
+          {isCompleted && !isLiveRow(i) && rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt) && (
             <Text style={styles.rackSummary}>{`${exerciseInputs[exercise.id]?.[i]?.vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt)}`}</Text>
           )}
           {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
@@ -1416,7 +1418,7 @@ export default function ExerciseDetailView({
           contentContainerStyle={[styles.setsContent, { paddingBottom: bottomBarHeight + 80 }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            rack?.hasRacks ? (
+            rack?.hasRacks && rack.canRefresh !== false ? (
               <RefreshControl refreshing={rack.refreshing} onRefresh={rack.onPullRefresh} tintColor={LOGGER_COLORS.accent} />
             ) : undefined
           }

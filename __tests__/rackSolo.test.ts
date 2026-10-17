@@ -21,7 +21,14 @@ import {
   SENSOR_BUSY_TEXT,
   SOLO_OVR_NAME_KEY,
   SOLO_PERSIST_KEYS,
+  SOLO_RACK_SENSORS_KEY,
   createSoloSession,
+  onAnyRack,
+  rackSensorNames,
+  readRackSensors,
+  saveRackSensors,
+  soloPersistKeys,
+  soloScanTarget,
   isSensorBusy,
   mustDropSensor,
   readSoloOvrName,
@@ -141,42 +148,137 @@ describe('solo session (phone-direct sensor)', () => {
     expect(r.m.upsert.mock.calls[0][1]).toEqual({ onConflict: 'client_rep_id', ignoreDuplicates: true });
   });
 
-  it('the solo queues use their own keys, never the rack iPad’s', async () => {
-    const keys = Object.values(SOLO_PERSIST_KEYS);
+  it('the solo queues use their own keys (per athlete), never the rack iPad’s', async () => {
+    const keys = Object.values(soloPersistKeys('tyler'));
     for (const k of Object.values(RACK_PERSIST_KEYS)) expect(keys).not.toContain(k);
-    expect(SOLO_PERSIST_KEYS.reps).toBe('solo_vbt_reps_v1');
+    expect(soloPersistKeys('tyler').reps).toBe('solo_vbt_reps_v1:tyler');
+    expect(soloPersistKeys('jake').reps).not.toBe(soloPersistKeys('tyler').reps); // M1
 
     const m = mockClient();
     m.upsert.mockImplementation(async () => ({ error: { message: 'offline' }, status: 503 } as any));
-    const persist = createRackPersist({ client: m.client, orgId: ORG, keys: SOLO_PERSIST_KEYS, log: () => {} });
+    const persist = createRackPersist({ client: m.client, orgId: ORG, keys: soloPersistKeys('tyler'), log: () => {} });
     const r = createSoloSession({ athleteId: 'tyler', persist, sensor: { writeLoad: async () => {} }, log: () => {} });
     r.dispatch(ctx(), T0);
     r.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
     await r.idle();
-    expect(store[SOLO_PERSIST_KEYS.reps]).toBeDefined();
-    expect(JSON.parse(store[SOLO_PERSIST_KEYS.reps])).toHaveLength(1);
+    expect(store[soloPersistKeys('tyler').reps]).toBeDefined();
+    expect(JSON.parse(store[soloPersistKeys('tyler').reps])).toHaveLength(1);
+    expect(store[SOLO_PERSIST_KEYS.reps]).toBeUndefined();
     expect(store[RACK_PERSIST_KEYS.reps]).toBeUndefined();
   });
 
-  it('set end: 60 s idle, and the 30 s reopen window even after the phone advanced its set', async () => {
+  it('I4: 60 s idle end; the phone moving to the next set releases the hold (as rack-with-phone)', async () => {
     const r = rig();
     r.session.dispatch(ctx(), T0);
     r.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0);
     r.session.dispatch({ type: 'tick' }, T0 + 60_000);
     await r.session.idle();
     expect(r.saved[0]).toMatchObject({ endedBy: 'idle', setNumber: 1, fullReps: 1 });
-    // the phone fills set 1 in and opens set 2 (same exercise)
+    // the phone fills set 1 in and opens set 2 → no reopen, even 20 s later
     r.session.dispatch(ctx({ setNumber: 2 }), T0 + 61_000);
-    // a rep 20 s after the idle end reopens set 1 with its reps
     r.session.dispatch({ type: 'rep', rep: ovr(0.68) }, T0 + 80_000);
     r.session.dispatch({ type: 'done' }, T0 + 82_000);
     await r.session.idle();
-    expect(r.saved[1]).toMatchObject({ setNumber: 1, fullReps: 2, endedBy: 'phone' });
-    // past the window → the phone's set 2
-    r.session.dispatch({ type: 'rep', rep: ovr(0.6) }, T0 + 82_000 + 40_000);
-    r.session.dispatch({ type: 'done' }, T0 + 82_000 + 41_000);
+    expect(r.saved[1]).toMatchObject({ setNumber: 2, fullReps: 1 });
+  });
+
+  it('I4: the 30 s reopen window while the phone stays on the set; past it → a new set', async () => {
+    const r = rig();
+    r.session.dispatch(ctx(), T0);
+    r.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0);
+    r.session.dispatch({ type: 'tick' }, T0 + 60_000);
+    r.session.dispatch({ type: 'rep', rep: ovr(0.68) }, T0 + 80_000); // 20 s after the idle end
+    r.session.dispatch({ type: 'done' }, T0 + 82_000);
     await r.session.idle();
-    expect(r.saved[2]).toMatchObject({ setNumber: 2, fullReps: 1 });
+    expect(r.saved[1]).toMatchObject({ setNumber: 1, fullReps: 2 });
+    const r2 = rig();
+    r2.session.dispatch(ctx(), T0);
+    r2.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0);
+    r2.session.dispatch({ type: 'tick' }, T0 + 60_000);
+    r2.session.dispatch({ type: 'rep', rep: ovr(0.68) }, T0 + 60_000 + 31_000);
+    r2.session.dispatch({ type: 'done' }, T0 + 95_000);
+    await r2.session.idle();
+    expect(r2.saved[1]).toMatchObject({ setNumber: 2, fullReps: 1 });
+  });
+
+  it('I2: a same-set LB change while lifting is that set’s load (row + sensor); another set’s is not', async () => {
+    const r = rig();
+    r.session.dispatch(ctx({ loadLb: null }), T0);
+    r.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
+    r.session.dispatch(ctx({ loadLb: 225 }), T0 + 5000); // typed after racking the bar
+    r.session.dispatch({ type: 'done' }, T0 + 6000);
+    await r.session.idle();
+    expect(r.saved[0]).toMatchObject({ setNumber: 1, loadLb: 225 });
+    expect(r.writeLoad).toHaveBeenCalledWith(225);
+    // set 2 is lifted; a context for set 3 mid-set does not change set 2's load
+    r.session.dispatch(ctx({ setNumber: 2, loadLb: 225 }), T0 + 20_000);
+    r.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 21_000);
+    r.session.dispatch(ctx({ setNumber: 3, loadLb: 245 }), T0 + 22_000);
+    r.session.dispatch({ type: 'done' }, T0 + 23_000);
+    await r.session.idle();
+    expect(r.saved[1]).toMatchObject({ setNumber: 2, loadLb: 225 });
+  });
+
+  it('I1: no own LB → no actual_weight and load_lb null (the prescription never becomes the load)', async () => {
+    const r = rig();
+    r.session.dispatch(ctx({ loadLb: null }), T0);
+    r.session.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
+    r.session.dispatch({ type: 'done' }, T0 + 1000);
+    await r.session.idle();
+    await r.persist.flush({ force: true });
+    expect(r.m.rpc.mock.calls[0][1].p_row).not.toHaveProperty('actual_weight');
+    expect(r.m.upsert.mock.calls[0][0][0].load_lb).toBeNull();
+    expect(r.writeLoad).not.toHaveBeenCalled();
+  });
+
+  it('C1: at a set start the rack check runs; on a rack → no set, reps dropped, onRack (disconnect)', async () => {
+    let answer!: (v: boolean) => void;
+    const onRack = jest.fn();
+    const persist = { writeRep: jest.fn(async () => {}), endSet: jest.fn(async () => {}), amendSet: jest.fn(async () => {}), flush: jest.fn(async () => {}) };
+    const s = createSoloSession({
+      athleteId: 'tyler', persist, sensor: { writeLoad: async () => {} }, log: () => {},
+      checkRack: () => new Promise<boolean>(res => (answer = res)), onRack,
+    });
+    s.dispatch(ctx(), T0);
+    s.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
+    s.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 1100);
+    expect(s.checking()).toBe(true);
+    expect(s.getState().setState).not.toBe('lifting');
+    answer(true);
+    await new Promise(res => setTimeout(res, 0));
+    await s.idle();
+    expect(onRack).toHaveBeenCalledTimes(1);
+    expect(s.getState().setState).not.toBe('lifting');
+    expect(persist.writeRep).not.toHaveBeenCalled();
+  });
+
+  it('C1: not on a rack → the held reps start the set in order, with their own times; a timeout lets it start', async () => {
+    const persist = { writeRep: jest.fn(async () => {}), endSet: jest.fn(async () => {}), amendSet: jest.fn(async () => {}), flush: jest.fn(async () => {}) };
+    const s = createSoloSession({
+      athleteId: 'tyler', persist, sensor: { writeLoad: async () => {} }, log: () => {},
+      checkRack: async () => false,
+    });
+    s.dispatch(ctx(), T0);
+    s.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
+    s.dispatch({ type: 'rep', rep: ovr(0.6) }, T0 + 1100);
+    await new Promise(res => setTimeout(res, 0));
+    await s.idle();
+    expect(s.getState().live?.reps.map(x => [x.v, x.receivedAtMs])).toEqual([[0.7, T0 + 100], [0.6, T0 + 1100]]);
+    // a check that never answers: the set starts after the cap
+    jest.useFakeTimers();
+    try {
+      const s2 = createSoloSession({
+        athleteId: 'tyler', persist, sensor: { writeLoad: async () => {} }, log: () => {},
+        checkRack: () => new Promise<boolean>(() => {}), checkTimeoutMs: 2000,
+      });
+      s2.dispatch(ctx(), T0);
+      s2.dispatch({ type: 'rep', rep: ovr(0.7) }, T0 + 100);
+      expect(s2.getState().setState).not.toBe('lifting');
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(s2.getState().setState).toBe('lifting');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('live view: chips + live set for this workout only', () => {
@@ -231,6 +333,24 @@ describe('solo view rules', () => {
     expect(SENSOR_BUSY_TEXT).toBe('Sensor busy (on a rack?)');
   });
 
+  it('C1: the solo scan never targets a rack sensor; the remembered one only if it is not a rack’s', async () => {
+    const list = [
+      { ovrDeviceName: 'OVR_Velocity-RACK1', callerIsActive: false, queuePositionOfCaller: null },
+      { ovrDeviceName: null, callerIsActive: false, queuePositionOfCaller: null },
+    ];
+    const racks = rackSensorNames(list);
+    expect(racks).toEqual(['OVR_Velocity-RACK1']);
+    expect(soloScanTarget(null, racks)).toEqual({ target: 'OVR_Velocity', exclude: ['OVR_Velocity-RACK1'] });
+    expect(soloScanTarget('OVR_Velocity-MINE', racks)).toEqual({ target: 'OVR_Velocity-MINE', exclude: ['OVR_Velocity-RACK1'] });
+    expect(soloScanTarget('OVR_Velocity-RACK1', racks).target).toBe('OVR_Velocity');
+    expect(onAnyRack(list)).toBe(false);
+    expect(onAnyRack([{ callerIsActive: true, queuePositionOfCaller: null }])).toBe(true);
+    expect(onAnyRack([{ callerIsActive: false, queuePositionOfCaller: 2 }])).toBe(true);
+    await saveRackSensors(racks);
+    expect(JSON.parse(store[SOLO_RACK_SENSORS_KEY])).toEqual(racks);
+    expect(await readRackSensors()).toEqual(racks);
+  });
+
   it('remembers the sensor name per phone', async () => {
     expect(await readSoloOvrName()).toBeNull();
     await saveSoloOvrName('OVR_Velocity-6C8E');
@@ -264,7 +384,24 @@ describe('solo wiring', () => {
   it('solo Done ends the set on the phone engine, never the rack RPC', () => {
     expect(L).toMatch(/if \(soloLive && !rackLive\) \{\s*solo\.dispatch\(\{ type: 'done' \}\);\s*return;/);
     expect(L).toContain("source: 'sensor',");
-    expect(H).toContain('keys: SOLO_PERSIST_KEYS');
+    expect(H).toContain('keys: soloPersistKeys(athleteId)');
+  });
+
+  it('C1: connect excludes rack sensors and gives up after one scan timeout; set starts check the rack', () => {
+    expect(H).toContain('void ovr.connect(target, { exclude, giveUpOnScanTimeout: true });');
+    expect(H).toContain('return !!list && onAnyRack(list);');
+    expect(B).toContain('onPress={() => p.onConnect(true)}'); // Retry = a user tap (still excludes)
+  });
+
+  it('I3: unmount mid-set ends the set, then flushes', () => {
+    expect(H).toMatch(/session\.dispatch\(\{ type: 'done' \}\);\s*void session\.idle\(\)\.then\(\(\) => session\.flush\(\)\);\s*session\.stop\(\);/);
+  });
+
+  it('I1: the set load is the own LB only; the prescription is the sensor display only', () => {
+    expect(L).toContain('? loadFromInput(exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight)\n    : null;');
+    expect(L).toContain('loadLb: soloWeight,');
+    expect(L).toContain('solo.setDisplayLoad(soloDisplayLoad);');
+    expect(L).toContain('if (!opts?.solo) cancelDraft(reId, res.setIndex);');
   });
 
   it('without connecting, nothing runs: no engine, no scan', () => {

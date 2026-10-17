@@ -631,6 +631,10 @@ export function phoneRackNow(i: {
   if (!s || s.active_athlete_id !== i.athleteId) return null;
   const live = liveRackSet(s, i.athleteId, i.workoutInstanceId);
   if (live) return { ...live, source: 'live' };
+  // A coach's explicit set (iPad picker, carried by the row): the strip shows
+  // exactly the set the rack will capture — the phone-open exercise must not
+  // re-resolve it to its own first open set.
+  if (i.chosen) return { routineExerciseId: i.chosen.routineExerciseId, setNumber: i.chosen.setNumber, source: 'ipad' };
   if (!i.instance) return null;
   const base = { instances: [i.instance], logs: i.logs };
   const auto = resolveRackSet(base);
@@ -648,9 +652,7 @@ export function phoneRackNow(i: {
       : lastSent
         ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: lastSent.routineExerciseId, setNumber: lastSent.setNumber }
         : null,
-    override: i.chosen
-      ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.chosen.routineExerciseId, setNumber: i.chosen.setNumber }
-      : coach
+    override: coach
         ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: row.routineExerciseId }
         : null,
   });

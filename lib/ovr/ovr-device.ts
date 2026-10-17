@@ -52,7 +52,7 @@ export interface OvrDevice {
   /** Exact name (e.g. `OVR_Velocity-6C8E`) matches only that sensor; no
    *  argument matches the first name starting with `OVR_Velocity`. Keeps
    *  retrying with backoff (state `reconnecting`) until `disconnect()`. */
-  connect(namePrefixOrExactName?: string): Promise<void>;
+  connect(namePrefixOrExactName?: string, opts?: OvrConnectOptions): Promise<void>;
   /** User disconnect: stops any reconnecting. */
   disconnect(): void;
   /** Write with response to slot 1. While disconnected the load is kept
@@ -60,6 +60,15 @@ export interface OvrDevice {
   writeLoad(lb: number): Promise<void>;
   onRep(cb: OvrRepListener): () => void;
   onState(cb: OvrStateListener): () => void;
+}
+
+export interface OvrConnectOptions {
+  /** Sensor names never to connect to (e.g. every rack's sensor, for the
+   *  phone-direct mode). Applies to the first scan and every reconnect. */
+  exclude?: readonly string[];
+  /** A scan that times out ends the attempt (state 'error') instead of
+   *  backing off and scanning again; the user retries. */
+  giveUpOnScanTimeout?: boolean;
 }
 
 export interface OvrDeviceOptions {
@@ -70,9 +79,14 @@ export interface OvrDeviceOptions {
 
 const DEFAULT_SCAN_TIMEOUT_MS = 15_000;
 
-/** True when `name` is the sensor we are looking for. */
-export function matchesOvrName(name: string | null | undefined, target?: string): boolean {
+/** True when `name` is the sensor we are looking for (and not excluded). */
+export function matchesOvrName(
+  name: string | null | undefined,
+  target?: string,
+  exclude: readonly string[] = [],
+): boolean {
   if (!name) return false;
+  if (exclude.includes(name)) return false;
   if (!target || target === OVR.NAME_PREFIX) return name.startsWith(OVR.NAME_PREFIX);
   return name === target;
 }
@@ -81,6 +95,8 @@ export function matchesOvrName(name: string | null | undefined, target?: string)
 
 /** A failure retrying can't fix (no BLE hardware, ble-plx not linked). */
 class OvrTerminalError extends Error {}
+/** The scan ended without finding the sensor. */
+class OvrScanTimeoutError extends Error {}
 
 const BT_READY_TIMEOUT_MS = 10_000;
 const LOAD_RETRY_MS = 500;
@@ -100,6 +116,8 @@ export class OvrBleDevice implements OvrDevice {
   private gen = 0;
   private wanted = false;
   private target?: string;
+  private exclude: readonly string[] = [];
+  private giveUpOnScanTimeout = false;
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private loadRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -121,11 +139,13 @@ export class OvrBleDevice implements OvrDevice {
   }
 
   /** Connects, and keeps retrying with backoff until `disconnect()`. */
-  async connect(namePrefixOrExactName?: string): Promise<void> {
+  async connect(namePrefixOrExactName?: string, opts: OvrConnectOptions = {}): Promise<void> {
     this.teardown();
     const gen = ++this.gen;
     this.wanted = true;
     this.target = namePrefixOrExactName;
+    this.exclude = opts.exclude ?? [];
+    this.giveUpOnScanTimeout = !!opts.giveUpOnScanTimeout;
     this.attempt = 0;
     this.deviceName = undefined;
     this.error = undefined;
@@ -306,7 +326,7 @@ export class OvrBleDevice implements OvrDevice {
       const cancel = () => finish(() => resolve(null));
       this.cancelScan = cancel;
       const timer = setTimeout(
-        () => finish(() => reject(new Error('No OVR sensor found — make sure it is on and not connected to another device.'))),
+        () => finish(() => reject(new OvrScanTimeoutError('No OVR sensor found — make sure it is on and not connected to another device.'))),
         this.scanTimeoutMs,
       );
       // The sensor's service UUID isn't known to be advertised; match by name.
@@ -316,7 +336,7 @@ export class OvrBleDevice implements OvrDevice {
           if (gen !== this.gen) return finish(() => resolve(null));
           if (err) return finish(() => reject(err));
           if (!d) return;
-          if (matchesOvrName(d.name ?? d.localName, this.target)) finish(() => resolve(d));
+          if (matchesOvrName(d.name ?? d.localName, this.target, this.exclude)) finish(() => resolve(d));
         }),
       ).catch((err) => finish(() => reject(err)));
     });
@@ -361,7 +381,7 @@ export class OvrBleDevice implements OvrDevice {
     this.removeSubs();
     if (this.device) this.device.cancelConnection().catch(() => {});
     this.device = null;
-    if (err instanceof OvrTerminalError) {
+    if (err instanceof OvrTerminalError || (err instanceof OvrScanTimeoutError && this.giveUpOnScanTimeout)) {
       this.wanted = false;
       this.teardown();
       this.setState('error', msg);

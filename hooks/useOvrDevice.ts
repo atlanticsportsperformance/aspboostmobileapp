@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OvrRep } from '../lib/ovr/protocol';
 import {
   createOvrDevice,
+  type OvrConnectOptions,
   type OvrDevice,
   type OvrStatus,
 } from '../lib/ovr/ovr-device';
@@ -42,7 +43,7 @@ export function useOvrDevice(opts: { fake?: boolean } = {}) {
     };
   }, [device]);
 
-  const connect = useCallback((name?: string) => device.connect(name), [device]);
+  const connect = useCallback((name?: string, o?: OvrConnectOptions) => device.connect(name, o), [device]);
   const disconnect = useCallback(() => device.disconnect(), [device]);
   const writeLoad = useCallback((lb: number) => device.writeLoad(lb), [device]);
 

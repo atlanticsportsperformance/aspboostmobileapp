@@ -19,7 +19,7 @@ describe('rack phone wiring', () => {
     }
     expect(L).toContain('rack={rackScreen}');
     expect(L).toContain('rack={rackExerciseProps}');
-    expect(L).toContain('if ((!rack.hasRacks && !solo.on) || !currentExercise) return null;');
+    expect(L).toContain('if (!currentExercise || (!rack.hasRacks && !solo.on && !rackExtra[currentExercise.id])) return null;');
   });
 
   it('I2: realtime + 10 s poll only while on a rack, filtered per rack; browse = focus / foreground / pull only', () => {

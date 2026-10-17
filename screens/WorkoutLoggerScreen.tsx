@@ -1198,6 +1198,7 @@ export default function WorkoutLoggerScreen() {
       const log = soloSavedLog(summary);
       if (log && log.workout_instance_id === workoutInstanceId) soloAppliedRef.current(log);
     },
+    onRackDetected: () => void rack.refresh(),
   });
   const soloLive = soloLiveSet(solo.engine, workoutInstanceId);
   /** The set being lifted now — on the rack, or on this phone's sensor. */
@@ -1220,7 +1221,7 @@ export default function WorkoutLoggerScreen() {
   }, []);
 
   // A rack-written row landed: fill the set in, check it off, open the next set.
-  const applyRackWrittenLog = useCallback((log: Record<string, any>) => {
+  const applyRackWrittenLog = useCallback((log: Record<string, any>, opts?: { solo?: boolean }) => {
     const reId = log.routine_exercise_id as string;
     const ex = allExercises.find(e => e.id === reId);
     if (!ex) return;
@@ -1237,6 +1238,15 @@ export default function WorkoutLoggerScreen() {
       });
       setRackExtra(prev => ({ ...prev, [reId]: { ...(prev[reId] ?? {}), [n]: log } }));
       return;
+    }
+    // Solo: the phone wrote this row itself — a weight typed in the cell stays
+    // (its draft goes out as typed), never replaced by the set's load.
+    if (opts?.solo) {
+      const idx = Number(log.set_number) - 1;
+      if (loadFromInput(inputsRef.current[reId]?.[idx]?.weight) != null) {
+        const { actual_weight: _w, ...rest } = log;
+        log = rest;
+      }
     }
     const res = applyRackLog({
       inputs: inputsRef.current[reId],
@@ -1257,7 +1267,8 @@ export default function WorkoutLoggerScreen() {
     });
     // The rack's row is the truth for this set: drop any pending phone draft
     // (e.g. a prefilled reps value) so it can't overwrite the rack's reps.
-    cancelDraft(reId, res.setIndex);
+    // Solo keeps it: the phone's own typed values (LB) still go out.
+    if (!opts?.solo) cancelDraft(reId, res.setIndex);
     if (log.actual_weight != null) rackLoggedWeightRef.current[key] = true;
     commitInputs({ ...inputsRef.current, [reId]: res.inputs });
     commitCompleted(reId, () => res.completed, ex.sets);
@@ -1276,7 +1287,7 @@ export default function WorkoutLoggerScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- commit* read refs
   }, [allExercises, startRestAfter]);
   // Solo: the phone's own just-queued set row fills the set in the same way.
-  soloAppliedRef.current = applyRackWrittenLog;
+  soloAppliedRef.current = log => applyRackWrittenLog(log, { solo: true });
 
   // Re-read every pending rack write once; past 10 s the copy switches to
   // "pull to refresh" but the 10 s tick keeps re-reading until the row lands.
@@ -1474,13 +1485,21 @@ export default function WorkoutLoggerScreen() {
   // which writes the load to the sensor. A finished exercise → prescribed + 1
   // (an extra set). The overview keeps the last context. The phone's complete
   // sets are the engine's never-overwrite guard.
+  // I1: the set's load is ONLY the athlete's own LB (typed / stepped / logged);
+  // an empty cell never becomes actual_weight or vbt_reps.load_lb. The
+  // prescribed number goes to the sensor's display only.
   const soloWeight = ctxExercise && ctxSetIndex != null
-    ? loadFromInput(exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight) ??
-      (() => {
+    ? loadFromInput(exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight)
+    : null;
+  const soloDisplayLoad = soloWeight ?? (ctxExercise && ctxSetIndex != null
+    ? (() => {
         const p = prescribedValue(ctxExercise, ctxSetIndex, 'weight');
         return typeof p === 'number' && Number.isFinite(p) ? p : null;
       })()
-    : null;
+    : null);
+  useEffect(() => {
+    solo.setDisplayLoad(soloDisplayLoad);
+  }, [solo.setDisplayLoad, soloDisplayLoad]);
   useEffect(() => {
     if (!solo.on || !ctxExercise || !ctxExercise.exercise_id) return;
     solo.dispatch({
@@ -1848,7 +1867,8 @@ export default function WorkoutLoggerScreen() {
     });
   };
   const rackExerciseProps: ExerciseRackProps | null = (() => {
-    if ((!rack.hasRacks && !solo.on) || !currentExercise) return null;
+    // Racks, the phone sensor, or extra sets already logged (shown after Disconnect too).
+    if (!currentExercise || (!rack.hasRacks && !solo.on && !rackExtra[currentExercise.id])) return null;
     const reId = currentExercise.id;
     const s = rack.activeSession;
     // I1: the live set comes from rack_sessions (exercise + set_number), never
@@ -1895,7 +1915,8 @@ export default function WorkoutLoggerScreen() {
     return {
       ...rackScreen,
       // Solo with no racks: the live / saved-row pieces render (no banner).
-      hasRacks: rack.hasRacks || solo.on,
+      hasRacks: rack.hasRacks || solo.on || !!rackExtra[reId],
+      canRefresh: rack.hasRacks,
       live,
       saving,
       idleSaved,
