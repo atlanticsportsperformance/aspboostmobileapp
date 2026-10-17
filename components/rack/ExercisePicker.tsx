@@ -101,7 +101,7 @@ export default function ExercisePicker({ label, exercises, rows, currentRoutineE
                 return (
                   <View key={k} style={[styles.row, on && styles.rowOn, row?.finished && !on && styles.rowDone]}>
                     <TouchableOpacity style={styles.rowHead} onPress={() => setExpanded(isOpen ? null : k)} activeOpacity={0.7}>
-                      <Text style={styles.name} numberOfLines={1}>
+                      <Text style={[styles.name, row?.finished && !on && styles.nameDone]} numberOfLines={1}>
                         {e.code ? `${e.code} · ` : ''}
                         {e.name}
                       </Text>
@@ -181,7 +181,8 @@ const styles = StyleSheet.create({
   note: { fontSize: 12, color: RACK_COLORS.mut },
   row: { borderRadius: 14, borderWidth: 1, borderColor: RACK_COLORS.line, paddingVertical: 12, paddingHorizontal: 14, gap: 10 },
   rowOn: { borderColor: RACK_COLORS.acc, backgroundColor: 'rgba(155,221,255,0.05)' },
-  rowDone: { opacity: 0.5 },
+  rowDone: { borderColor: 'rgba(255,255,255,0.06)' },
+  nameDone: { color: 'rgba(255,255,255,0.6)' },
   rowHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   name: { flex: 1, fontSize: 16, fontWeight: '700', color: '#fff' },
   prog: { fontSize: 13, fontWeight: '700', color: RACK_COLORS.mut },
