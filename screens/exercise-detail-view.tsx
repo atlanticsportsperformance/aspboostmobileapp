@@ -46,6 +46,9 @@ import VideoModal from '../components/logger/VideoModal';
 import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
+import RackBanner, { type RackScreenProps } from '../components/logger/RackBanner';
+import LiveRepRow from '../components/logger/LiveRepRow';
+import { RACK_COLORS, liveDoneLabel, type ChipView, type LiveSource } from '../lib/rack/phoneView';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -60,6 +63,33 @@ interface ExerciseHistory {
   id: string;
   date: string;
   sets: ExerciseHistorySet[];
+}
+
+/** The live set on this exercise (rack VBT; Task 10b reuses it with source 'sensor'). */
+export interface ExerciseLiveSet {
+  /** 0-based row that is live (always the current open set). */
+  setIndex: number;
+  source: LiveSource;
+  rackName: string | null;
+  chips: ChipView[];
+  /** REPS cell = full reps only. */
+  fullReps: number;
+  /** A set is being lifted now (Done ends it on the rack). */
+  lifting: boolean;
+  /** "Speed dropped N% — rack it" threshold crossed (zone exercises only). */
+  dropCue: number | null;
+}
+
+export interface ExerciseRackProps extends RackScreenProps {
+  live: ExerciseLiveSet | null;
+  /** Rack writes this phone is waiting for, by 0-based set of THIS exercise. */
+  saving: Record<number, 'saving' | 'timeout'>;
+  /** Sets the rack saved after 60 s with no rep. */
+  idleSaved: number[];
+  /** Done (or the circle) on the live row while lifting. */
+  onLiveDone: () => void;
+  /** Keypad open/closed — the phone never follows the rack while typing. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 interface ExerciseDetailViewProps {
@@ -103,6 +133,8 @@ interface ExerciseDetailViewProps {
   onBackToOverview: () => void;
   /** Tap a set row → it becomes the current set (parent's currentSetIndex). */
   onSelectSet: (setIndex: number) => void;
+  /** Rack VBT (banner + live row); absent / !hasRacks = the logger as before. */
+  rack?: ExerciseRackProps | null;
 }
 
 // Helper: Get relative time string
@@ -220,7 +252,12 @@ export default function ExerciseDetailView({
   onNextExercise,
   onBackToOverview,
   onSelectSet,
+  rack,
 }: ExerciseDetailViewProps) {
+  // Rack VBT — every piece below is guarded by hasRacks + an active live set.
+  const rackLive = rack?.hasRacks ? rack.live : null;
+  const isLiveRow = (setIndex: number) => !!rackLive && rackLive.setIndex === setIndex;
+  const rackSaving = (setIndex: number) => (rack?.hasRacks ? rack.saving[setIndex] ?? null : null);
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   // Text blocks have no joined exercise (navigation skips them; guard anyway).
@@ -304,6 +341,12 @@ export default function ExerciseDetailView({
     }, 100);
     return () => clearTimeout(t);
   }, [currentSetIndex, exercise.id]);
+
+  // Rack VBT: tell the parent when a field is being typed in (follow waits for blur).
+  const rackOnEditingChange = rack?.hasRacks ? rack.onEditingChange : undefined;
+  useEffect(() => {
+    rackOnEditingChange?.(activeInput != null);
+  }, [activeInput != null, rackOnEditingChange]);
 
   // Done → advance, a tapped row, or a new exercise closes the keypad, so
   // keystrokes never land in a collapsed set or the next exercise.
@@ -615,6 +658,13 @@ export default function ExerciseDetailView({
   // Handle checkbox toggle - compute auto-fill values if checking
   const handleCheckboxToggle = (setIndex: number) => {
     const isCompleted = isSetCompleted(setIndex);
+    // Rack VBT: the live row's circle ends the set on the rack (no phone
+    // save); a set the rack is writing can't be ticked meanwhile.
+    if (!isCompleted && rack && rackLive?.lifting && isLiveRow(setIndex)) {
+      rack.onLiveDone();
+      return;
+    }
+    if (!isCompleted && rackSaving(setIndex) === 'saving') return;
     const setData = exerciseInputs[exercise.id]?.[setIndex] || {};
 
     if (!isCompleted) {
@@ -644,6 +694,7 @@ export default function ExerciseDetailView({
     const currentSetCompleted = isSetCompleted(currentSetIndex);
 
     if (!currentSetCompleted) {
+      // Live rack set → handleCheckboxToggle hands Done to the rack.
       handleCheckboxToggle(currentSetIndex);
     } else {
       onNextSet();
@@ -824,6 +875,10 @@ export default function ExerciseDetailView({
       }
       const target = targetCell(setIndex, metricId);
       return renderCell(target?.text ?? '—', unit, 'dim', !!target?.amrap, metricId);
+    }
+    // Live rack row: REPS = full reps from the rack (read-only, never written here).
+    if (rackLive && isLiveRow(setIndex) && metricId === 'reps') {
+      return renderCell(String(rackLive.fullReps), unit, 'plain', false, metricId);
     }
     const empty = isEmptyValue(value);
     const target = empty ? targetCell(setIndex, metricId) : null;
@@ -1036,6 +1091,14 @@ export default function ExerciseDetailView({
         <>
           {isCurrentSet && <View style={styles.rail} />}
           {lines}
+          {rackLive && isLiveRow(i) && (
+            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} />
+          )}
+          {rackSaving(i) === 'saving' && <Text style={styles.caption}>Saving…</Text>}
+          {rackSaving(i) === 'timeout' && <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>}
+          {rack?.hasRacks && rack.idleSaved.includes(i) && !isOpen && (
+            <Text style={styles.caption}>Saved · tap to edit</Text>
+          )}
           {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
           {!!caption && <Text style={styles.caption}>{caption}</Text>}
           {isOpen && exercise.ask_rpe && onRpeChange && (
@@ -1081,6 +1144,12 @@ export default function ExerciseDetailView({
             {body}
           </TouchableOpacity>
         ),
+      );
+    }
+
+    if (rackLive?.dropCue != null) {
+      sets.push(
+        <Text key="drop" style={styles.rackDrop}>{`Speed dropped ${rackLive.dropCue}% — rack it`}</Text>,
       );
     }
 
@@ -1277,6 +1346,16 @@ export default function ExerciseDetailView({
           contentContainerStyle={[styles.setsContent, { paddingBottom: bottomBarHeight + 80 }]}
           showsVerticalScrollIndicator={false}
         >
+          {rack?.hasRacks && rack.banner && (
+            <RackBanner
+              banner={rack.banner}
+              error={rack.error}
+              busy={rack.busy}
+              onJoin={rack.onJoin}
+              onImUp={rack.onImUp}
+              onLeave={rack.onLeave}
+            />
+          )}
           {!!rx && <Text style={styles.rx}>{rx}</Text>}
           {/* Demo video inline at the top (muted, looping; "▶ DEMO" strip
               collapses it; hidden + paused while the keypad is open). */}
@@ -1419,11 +1498,20 @@ export default function ExerciseDetailView({
 
               const nextText = getNextButtonText();
               const isDone = nextText === 'DONE' && currentSetCompleted;
+              const rackLabel = currentSetCompleted
+                ? null
+                : rackSaving(currentSetIndex) === 'saving'
+                  ? 'Saving…'
+                  : rackLive?.lifting && isLiveRow(currentSetIndex)
+                    ? liveDoneLabel(rackLive.fullReps)
+                    : null;
               const label = isDone
                 ? '✓ DONE'
-                : !currentSetCompleted
-                  ? `✓ ${doneLabel()}`
-                  : nextText;
+                : rackLabel
+                  ? rackLabel
+                  : !currentSetCompleted
+                    ? `✓ ${doneLabel()}`
+                    : nextText;
               return (
                 <TouchableOpacity
                   style={styles.lb}
@@ -1882,6 +1970,13 @@ const styles = StyleSheet.create({
     color: LOGGER_COLORS.rpe,
     fontSize: 11,
     fontWeight: '800',
+  },
+  rackDrop: {
+    color: RACK_COLORS.slow,
+    fontSize: 12,
+    fontWeight: '700',
+    paddingHorizontal: 16,
+    paddingTop: 10,
   },
   foot: {
     flexDirection: 'row',

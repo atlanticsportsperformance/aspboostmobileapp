@@ -7,7 +7,7 @@ const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'u
 
 describe('after-Start overview v2 wiring', () => {
   it('Continue uses nextStep', () => {
-    expect(B).toContain('const next = nextStep(sequence, completedSets);');
+    expect(B).toContain('const next = rackStep ?? nextStep(sequence, completedSets);');
     expect(B).toContain('onPress={() => onContinue(next.reId, next.setIndex)}');
     expect(B).toContain('`Continue · ${codeById[next.reId]');
     // all done → today's COMPLETE WORKOUT button, no Continue

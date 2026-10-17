@@ -22,6 +22,8 @@ import { needsWeightEntry, prescribedValue, resolveTarget } from '../lib/logger/
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { youTubeId } from '../lib/video';
 import VideoModal from '../components/logger/VideoModal';
+import RackBanner, { type RackScreenProps } from '../components/logger/RackBanner';
+import type { SeqStep } from '../lib/logger/sequence';
 
 // Types
 import type {
@@ -66,6 +68,10 @@ interface BlockOverviewProps {
    *  and body; selecting Throws swaps the exercise list out for this
    *  content so a long throws log can't push the workout off-screen. */
   throwsTabContent?: React.ReactNode;
+  /** Rack VBT banner; absent / !hasRacks = no banner. */
+  rack?: RackScreenProps | null;
+  /** The rack switched this athlete to an exercise: highlight it + Continue to it. */
+  rackFocus?: { reId: string; setIndex: number } | null;
 }
 
 // Helper: Get exercise code badge (A1, A2, B1, etc.)
@@ -151,6 +157,8 @@ export default function BlockOverview({
   footerSlot,
   topRightSlot,
   throwsTabContent,
+  rack,
+  rackFocus,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
@@ -184,7 +192,14 @@ export default function BlockOverview({
   const { doneSets: completedSetsCount, totalSets } = progress;
   // The current exercise = the exercise of the next set to log. Continue
   // opens it on that set (a row tap keeps the exercise's own set index).
-  const next = nextStep(sequence, completedSets);
+  // Rack VBT: when the rack switched the athlete to another exercise, that
+  // exercise is the current one (highlight + "Continue · <exercise>").
+  const rackStep: SeqStep | null = rackFocus
+    ? sequence.find(s => s.reId === rackFocus.reId && s.setIndex === rackFocus.setIndex)
+      ?? sequence.find(s => s.reId === rackFocus.reId && completedSets[s.reId]?.[s.setIndex] !== true)
+      ?? null
+    : null;
+  const next = rackStep ?? nextStep(sequence, completedSets);
 
   // A1, A2, B1… per visible row — the list and the Continue label share it.
   // Also an id → row map for the Continue name lookup.
@@ -324,6 +339,18 @@ export default function BlockOverview({
       >
         {/* Optional top slot — throwing workload monitor mounts here */}
         {headerSlot}
+
+        {rack?.hasRacks && rack.banner && (
+          <RackBanner
+            banner={rack.banner}
+            error={rack.error}
+            busy={rack.busy}
+            onJoin={rack.onJoin}
+            onImUp={rack.onImUp}
+            onLeave={rack.onLeave}
+            flush
+          />
+        )}
 
         {/* Throwing-only tab bar — splits the body between the workout
             (exercises) and the throws feed so a long throws log doesn't

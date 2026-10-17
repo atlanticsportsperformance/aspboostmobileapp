@@ -1,0 +1,344 @@
+import {
+  CONTEXT_DEBOUNCE_MS,
+  ECHO_WINDOW_MS,
+  LOAD_EDIT_GUARD_MS,
+  RACK_COLORS,
+  applyRackLog,
+  bannerState,
+  chipTone,
+  chipViews,
+  createContextSender,
+  endedByIdle,
+  endedSets,
+  firstIncompleteSet,
+  followTarget,
+  fullRepCount,
+  isRackWrittenLog,
+  liveDoneLabel,
+  liveSetNumber,
+  liveTag,
+  loadSyncValue,
+  pressDone,
+  rackErrorText,
+  speedDropCue,
+  zoneOf,
+  type PhoneContext,
+} from '../lib/rack/phoneView';
+import { addRepRow, type ChipSet, type RepChip } from '../lib/rack/phone';
+import type { RackListItem } from '../lib/rack/api';
+import type { RackSessionRow } from '../lib/rack/engine';
+import { logToSetInputs } from '../lib/loggerResume';
+
+const chip = (i: number, v: number, partial = false): RepChip => ({
+  clientRepId: `r${i}`,
+  repIndex: i,
+  v,
+  pv: v + 0.2,
+  rom: 20,
+  partial,
+  loadLb: 205,
+  receivedAt: '2026-10-17T15:00:00Z',
+});
+
+const session = (over: Partial<RackSessionRow> = {}): RackSessionRow => ({
+  rack_id: 'rack3',
+  active_athlete_id: 'me',
+  workout_instance_id: 'wi',
+  routine_exercise_id: 'squat',
+  exercise_id: 'ex-squat',
+  set_number: 2,
+  load_lb: 205,
+  state: 'idle',
+  queue: [],
+  set_started_at: null,
+  pending_workout_instance_id: null,
+  pending_routine_exercise_id: null,
+  pending_set_number: null,
+  pending_load_lb: null,
+  leave_requested: false,
+  pending_end: false,
+  updated_at: '2026-10-17T15:00:00Z',
+  ...over,
+});
+
+describe('vbt_reps → chips', () => {
+  const zone = zoneOf(0.7, 0.9);
+
+  it('zone colours: in zone blue, slow red, fast faint white; partial = dashed "part"', () => {
+    const views = chipViews([chip(1, 0.8), chip(2, 0.6), chip(3, 1.1), chip(4, 0.5, true)], zone);
+    expect(views.map(v => v.tone)).toEqual(['in', 'slow', 'fast', 'part']);
+    expect(views[0]).toMatchObject({ label: '0.80', color: '#9BDDFF', backgroundColor: 'rgba(155,221,255,0.12)', dashedBorder: null });
+    expect(views[1]).toMatchObject({ color: '#E5534B' });
+    expect(views[2]).toMatchObject({ backgroundColor: 'rgba(255,255,255,0.08)' });
+    expect(views[3]).toMatchObject({ label: 'part', dashedBorder: RACK_COLORS.partBorder });
+  });
+
+  it('no zone → every full rep is plain faint white', () => {
+    expect(zoneOf(null, undefined)).toBeNull();
+    expect(chipTone(chip(1, 0.2), null)).toBe('plain');
+    expect(chipViews([chip(1, 1.5)], null)[0].backgroundColor).toBe(RACK_COLORS.fastBg);
+  });
+
+  it('one bound is still a zone', () => {
+    expect(chipTone(chip(1, 0.6), zoneOf(0.7, null))).toBe('slow');
+    expect(chipTone(chip(1, 2), zoneOf(0.7, null))).toBe('in');
+  });
+
+  it('REPS = full reps only; Done label', () => {
+    const chips = [chip(1, 0.8), chip(2, 0.5, true), chip(3, 0.79)];
+    expect(fullRepCount(chips)).toBe(2);
+    expect(liveDoneLabel(2)).toBe('✓ Done · 2 reps');
+    expect(liveDoneLabel(1)).toBe('✓ Done · 1 rep');
+  });
+
+  it('rows → chips through the realtime reducer (dedupe + order) → views', () => {
+    const sets = new Map<string, ChipSet>();
+    const row = (i: number, v: number, partial = false) => ({
+      client_rep_id: `c${i}`, rack_id: 'rack3', workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2,
+      rep_index: i, load_lb: 205, mean_velocity: v, peak_velocity: v, rom_in: 20, is_partial: partial, received_at: 't',
+    });
+    addRepRow(sets, row(2, 0.6));
+    addRepRow(sets, row(1, 0.8));
+    addRepRow(sets, row(1, 0.8)); // duplicate delivery
+    addRepRow(sets, row(3, 0.4, true));
+    const chips = sets.get('wi:squat:2')!.chips;
+    expect(chips.map(c => c.repIndex)).toEqual([1, 2, 3]);
+    expect(fullRepCount(chips)).toBe(2);
+    expect(chipViews(chips, zone).map(v => v.tone)).toEqual(['in', 'slow', 'part']);
+  });
+
+  it('speed-drop cue only with a zone, at the threshold (default 20%)', () => {
+    const chips = [chip(1, 1.0), chip(2, 0.9), chip(3, 0.79)];
+    expect(speedDropCue(chips, null, 20)).toBeNull();
+    expect(speedDropCue(chips, zone, null)).toBe(20);
+    expect(speedDropCue(chips, zone, 25)).toBeNull();
+    expect(speedDropCue([chip(1, 1.0), chip(2, 0.5, true)], zone, 20)).toBeNull(); // partials don't count
+  });
+
+  it('live tag is source-agnostic (Task 10b sensor)', () => {
+    expect(liveTag('rack', 'Rack 3')).toBe('RACK 3 · LIVE');
+    expect(liveTag('sensor', null)).toBe('SENSOR · LIVE');
+  });
+});
+
+describe('banner state from rack_list_for_me', () => {
+  const list: RackListItem[] = [
+    { rackId: 'rack1', name: 'Rack 1', activeAthleteFirstName: 'Jake', state: 'lifting', queuePositionOfCaller: null },
+    { rackId: 'rack3', name: 'Rack 3', activeAthleteFirstName: 'Tyler', state: 'idle', queuePositionOfCaller: 2 },
+  ];
+
+  it('no racks → no banner', () => {
+    expect(bannerState([], [], 'me')).toBeNull();
+  });
+
+  it('not on a rack → browse list with each rack’s state', () => {
+    const b = bannerState(list.map(r => ({ ...r, queuePositionOfCaller: null })), [], 'me')!;
+    expect(b.mode).toBe('browse');
+    expect(b.racks).toEqual([
+      { rackId: 'rack1', name: 'Rack 1', status: 'Jake lifting' },
+      { rackId: 'rack3', name: 'Rack 3', status: 'Tyler lifting' },
+    ]);
+    const open = bannerState([{ ...list[0], activeAthleteFirstName: null }], [], 'me')!;
+    expect(open.racks[0].status).toBe('open');
+  });
+
+  it('queued → "Rack 3 · Tyler is lifting / You’re #2 in line"', () => {
+    const b = bannerState(list, [session({ active_athlete_id: 'tyler', queue: ['jake', 'me'] })], 'me')!;
+    expect(b).toMatchObject({ mode: 'queued', rackId: 'rack3', title: 'Rack 3 · Tyler is lifting', subtitle: 'You’re #2 in line' });
+  });
+
+  it('active → "Rack 3 · you’re up" + who is waiting', () => {
+    const b = bannerState(list, [session({ queue: ['jake'] })], 'me')!;
+    expect(b).toMatchObject({ mode: 'active', rackId: 'rack3', title: 'Rack 3 · you’re up', subtitle: '1 waiting' });
+    expect(bannerState(list, [session()], 'me')!.subtitle).toBe('Nobody waiting');
+  });
+
+  it('55000 "already on Rack X" shows inline; other errors are generic', () => {
+    expect(rackErrorText({ code: '55000', message: 'rack_join: already on Rack 1' })).toBe('Already on Rack 1');
+    expect(rackErrorText({ code: '42501', message: 'nope' })).toBe('Couldn’t reach the rack — try again');
+  });
+});
+
+describe('phone context sender (debounced 300 ms, active only)', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const ctx = (setNumber: number, loadLb: number | null = 205): PhoneContext => ({
+    workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber, loadLb,
+  });
+
+  it('a burst of changes sends once, the last value, after 300 ms', () => {
+    const send = jest.fn();
+    const s = createContextSender(send);
+    s.update('rack3', ctx(1));
+    jest.advanceTimersByTime(100);
+    s.update('rack3', ctx(1, 210));
+    jest.advanceTimersByTime(100);
+    s.update('rack3', ctx(2, 215));
+    jest.advanceTimersByTime(CONTEXT_DEBOUNCE_MS - 1);
+    expect(send).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('rack3', ctx(2, 215));
+  });
+
+  it('never sends while not active; going inactive cancels a pending send', () => {
+    const send = jest.fn();
+    const s = createContextSender(send);
+    s.update(null, ctx(1));
+    s.update('rack3', ctx(1));
+    s.update(null, null);
+    jest.advanceTimersByTime(1000);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged context is not resent; re-activation resends', () => {
+    const send = jest.fn();
+    const s = createContextSender(send);
+    s.update('rack3', ctx(1));
+    jest.advanceTimersByTime(300);
+    s.update('rack3', ctx(1));
+    jest.advanceTimersByTime(300);
+    expect(send).toHaveBeenCalledTimes(1);
+    s.update(null, null);
+    s.update('rack3', ctx(1));
+    jest.advanceTimersByTime(300);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Done while live', () => {
+  it('calls rack_request_end_set and waits for the rack’s row — never the set save', () => {
+    const deps = { requestEndSet: jest.fn(() => Promise.resolve()), saveSet: jest.fn(), awaitRackWrite: jest.fn() };
+    expect(pressDone({ rackId: 'rack3', lifting: true }, deps)).toBe('rack');
+    expect(deps.requestEndSet).toHaveBeenCalledWith('rack3');
+    expect(deps.awaitRackWrite).toHaveBeenCalledTimes(1);
+    expect(deps.saveSet).not.toHaveBeenCalled();
+  });
+
+  it('not lifting / no rack → the phone’s normal save', () => {
+    const deps = { requestEndSet: jest.fn(() => Promise.resolve()), saveSet: jest.fn(), awaitRackWrite: jest.fn() };
+    expect(pressDone({ rackId: 'rack3', lifting: false }, deps)).toBe('save');
+    expect(pressDone(null, deps)).toBe('save');
+    expect(deps.requestEndSet).not.toHaveBeenCalled();
+    expect(deps.saveSet).toHaveBeenCalledTimes(2);
+  });
+
+  it('a refused end request never throws out of Done', async () => {
+    const deps = { requestEndSet: jest.fn(() => Promise.reject(new Error('x'))), saveSet: jest.fn(), awaitRackWrite: jest.fn() };
+    expect(() => pressDone({ rackId: 'rack3', lifting: true }, deps)).not.toThrow();
+    await Promise.resolve();
+  });
+});
+
+describe('live row placement', () => {
+  const base = { athleteId: 'me', workoutInstanceId: 'wi', routineExerciseId: 'squat', currentSetIndex: 1 };
+  it('only while active, on the rack’s exercise (or the phone’s own when unset), on the current row', () => {
+    expect(liveSetNumber({ ...base, session: session() })).toBe(2);
+    expect(liveSetNumber({ ...base, session: session({ routine_exercise_id: null }) })).toBe(2);
+    expect(liveSetNumber({ ...base, session: session({ routine_exercise_id: 'bench' }) })).toBeNull();
+    expect(liveSetNumber({ ...base, session: session({ active_athlete_id: 'tyler', queue: ['me'] }) })).toBeNull();
+    expect(liveSetNumber({ ...base, session: session({ workout_instance_id: 'other' }) })).toBeNull();
+    expect(liveSetNumber({ ...base, session: null })).toBeNull();
+  });
+});
+
+describe('phone ↔ iPad in unison', () => {
+  const T = 1_000_000;
+  const follow = (over: Partial<Parameters<typeof followTarget>[0]> = {}) =>
+    followTarget({
+      session: session({ routine_exercise_id: 'bench' }),
+      prevRackExercise: 'squat',
+      athleteId: 'me',
+      workoutInstanceId: 'wi',
+      openExerciseId: 'squat',
+      lastSentExerciseId: 'squat',
+      lastSentAt: T - 5000,
+      now: T,
+      ...over,
+    });
+
+  it('iPad override → the phone follows', () => {
+    expect(follow()).toBe('bench');
+    expect(follow({ openExerciseId: null })).toBe('bench'); // overview: highlight + Continue
+  });
+
+  it('no echo loop: the phone’s own write, or anything within 1 s of a send, is ignored', () => {
+    // phone moved to bench and sent it; the echo comes back
+    expect(follow({ openExerciseId: 'deadlift', lastSentExerciseId: 'bench' })).toBeNull();
+    // A then B quickly: the late echo of A arrives right after B was sent
+    expect(follow({ session: session({ routine_exercise_id: 'squat' }), prevRackExercise: 'bench', openExerciseId: 'bench', lastSentExerciseId: 'bench', lastSentAt: T - (ECHO_WINDOW_MS - 1) })).toBeNull();
+    expect(follow({ lastSentAt: T - ECHO_WINDOW_MS + 1 })).toBeNull();
+    expect(follow({ lastSentAt: T - ECHO_WINDOW_MS })).toBe('bench');
+  });
+
+  it('only on a change, only while active, only for this workout', () => {
+    expect(follow({ prevRackExercise: undefined })).toBeNull(); // first read
+    expect(follow({ prevRackExercise: 'bench' })).toBeNull(); // unchanged
+    expect(follow({ openExerciseId: 'bench' })).toBeNull(); // already there
+    expect(follow({ session: session({ routine_exercise_id: 'bench', active_athlete_id: 'tyler' }) })).toBeNull();
+    expect(follow({ session: session({ routine_exercise_id: 'bench', workout_instance_id: 'other' }) })).toBeNull();
+  });
+
+  it('mid-set the pending exercise is the rack’s next exercise', () => {
+    const s = session({ state: 'lifting', routine_exercise_id: 'squat', pending_routine_exercise_id: 'bench' });
+    expect(follow({ session: s })).toBe('bench');
+  });
+
+  it('load sync respects the 3 s edit guard; a phone edit wins', () => {
+    const at = (over: Partial<Parameters<typeof loadSyncValue>[0]>) =>
+      loadSyncValue({ rackLoad: 225, prevRackLoad: 205, phoneLoad: 205, lastEditAt: 0, now: T, ...over });
+    expect(at({})).toBe(225);
+    expect(at({ lastEditAt: T - (LOAD_EDIT_GUARD_MS - 1) })).toBeNull();
+    expect(at({ lastEditAt: T - LOAD_EDIT_GUARD_MS })).toBe(225);
+    expect(at({ phoneLoad: 225 })).toBeNull(); // echo of the phone's own LB
+    expect(at({ prevRackLoad: 225 })).toBeNull(); // not a change
+    expect(at({ prevRackLoad: undefined })).toBeNull(); // first read
+    expect(at({ rackLoad: null })).toBeNull();
+  });
+
+  it('a rack-written log marks the row complete without a reopen, fills reps + LB, opens the next set', () => {
+    const log = {
+      workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2, is_complete: true,
+      actual_reps: 3, actual_weight: 225,
+      metric_data: { vbt: { source: 'rack', rack: 'rack3', ended_by: 'phone', reps: [], avg_v: 0.8, best_v: 0.85 } },
+    };
+    expect(isRackWrittenLog(log)).toBe(true);
+    expect(isRackWrittenLog({ metric_data: {} })).toBe(false);
+    const res = applyRackLog({
+      inputs: [{ reps: '3', weight: '205' }, { reps: '3', weight: '215' }, {}],
+      completed: [true, false, false],
+      sets: 3,
+      log,
+      toInputs: logToSetInputs,
+    })!;
+    expect(res.completed).toEqual([true, true, false]);
+    expect(res.inputs[1]).toMatchObject({ reps: 3, weight: 225 });
+    expect(res.setIndex).toBe(1);
+    expect(res.nextIndex).toBe(2);
+    expect(res.wasDone).toBe(false);
+    expect(res.idle).toBe(false);
+  });
+
+  it('idle-ended set is flagged ("Saved · tap to edit"); out-of-range rows are ignored', () => {
+    const log = { set_number: 1, is_complete: true, metric_data: { vbt: { source: 'rack', ended_by: 'idle' } } };
+    expect(endedByIdle(log)).toBe(true);
+    expect(applyRackLog({ inputs: [], completed: [], sets: 2, log, toInputs: logToSetInputs })!.idle).toBe(true);
+    expect(applyRackLog({ inputs: [], completed: [], sets: 2, log: { ...log, set_number: 3 }, toInputs: logToSetInputs })).toBeNull();
+  });
+
+  it('current set = first incomplete set (the context’s set_number)', () => {
+    expect(firstIncompleteSet([true, false, false], 3)).toBe(1);
+    expect(firstIncompleteSet(undefined, 3)).toBe(0);
+    expect(firstIncompleteSet([true, true], 2)).toBeNull();
+  });
+
+  it('a set stopping being lifted is reported once (then the phone refetches its row)', () => {
+    const lifting = session({ state: 'lifting', set_started_at: 't1' });
+    expect(endedSets([lifting], [session({ state: 'summary' })], 'me')).toEqual([
+      { rackId: 'rack3', workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 2 },
+    ]);
+    expect(endedSets([lifting], [lifting], 'me')).toEqual([]);
+    expect(endedSets([lifting], [], 'me')).toHaveLength(1); // left the rack mid-set
+    expect(endedSets([session()], [session({ state: 'lifting' })], 'me')).toEqual([]);
+  });
+});
