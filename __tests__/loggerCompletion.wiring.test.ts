@@ -12,6 +12,9 @@ describe('workout logger — set completion survives leaving and resuming', () =
   it('checking/unchecking a set persists completion', () => {
     const fn = body('const handleToggleSetComplete', '// Get current exercise and routine');
     expect(fn).toContain('saveSetData(activeExerciseId, setIndex, null, null, !currentlyCompleted)');
+    // double-tap while saving is ignored, cleared when the save settles
+    expect(fn).toContain('if (completionInFlightRef.current.has(inFlightKey)) return;');
+    expect(fn).toContain('.finally(() => completionInFlightRef.current.delete(inFlightKey))');
   });
   it('Next / Log Set persists the current set as complete', () => {
     const fn = body('const handleNextSet', '// Navigation handlers');
@@ -26,5 +29,6 @@ describe('workout logger — set completion survives leaving and resuming', () =
     expect(fn).toContain('if (field === null && !exercise.exercise_id) return;');
     expect(fn).toContain('if (!existingLog) return;');
     expect(fn).toContain('.update({ is_complete: false })');
+    expect(fn).toContain('if (field === null && !isValidSetIndex(setIndex, exercise.sets)) return;');
   });
 });

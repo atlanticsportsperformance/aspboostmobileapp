@@ -18,3 +18,8 @@ export function isSetDoneFromLog(log: Record<string, any> | null | undefined): b
     key => key !== 'notes' && values[key] != null && values[key] !== '',
   );
 }
+
+/** A 0-based set index is within the exercise's prescribed sets. */
+export function isValidSetIndex(setIndex: number, sets: number | null | undefined): boolean {
+  return Number.isInteger(setIndex) && setIndex >= 0 && setIndex < (sets ?? 0);
+}

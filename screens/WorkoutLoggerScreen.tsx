@@ -21,7 +21,7 @@ import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
-import { isSetDoneFromLog } from '../lib/loggerResume';
+import { isSetDoneFromLog, isValidSetIndex } from '../lib/loggerResume';
 
 // Types
 type RootStackParamList = {
@@ -163,6 +163,9 @@ export default function WorkoutLoggerScreen() {
   // meant typing reps then weight inside 500 ms cancelled the reps write —
   // the value survived in local state and vanished on reload.
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Sets whose completion toggle is still saving — a fast double-tap on Log
+  // Set is ignored instead of flipping the set back locally.
+  const completionInFlightRef = useRef<Set<string>>(new Set());
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
@@ -672,6 +675,9 @@ export default function WorkoutLoggerScreen() {
       if (!exercise) return;
       // Notes-only rows have no exercise_id (NOT NULL) — nothing to persist.
       if (field === null && !exercise.exercise_id) return;
+      // A finished superset exercise leaves its set index at `sets`; never
+      // persist a phantom set_number past the prescribed sets.
+      if (field === null && !isValidSetIndex(setIndex, exercise.sets)) return;
 
       // exercise_logs schema:
       //   actual_reps INT, actual_weight NUMERIC, actual_duration_seconds INT,
@@ -1058,6 +1064,9 @@ export default function WorkoutLoggerScreen() {
     const exercise = allExercises.find(ex => ex.id === activeExerciseId);
     if (!exercise) return;
 
+    const inFlightKey = `${activeExerciseId}:${setIndex}`;
+    if (completionInFlightRef.current.has(inFlightKey)) return;
+
     const currentlyCompleted = completedSets[activeExerciseId]?.[setIndex] === true;
 
     // If checking (not unchecking) and we have auto-fill values, apply them
@@ -1076,7 +1085,9 @@ export default function WorkoutLoggerScreen() {
 
     // Persist the check/uncheck — with nothing typed and no auto-fill this
     // was local-only and lost on exit.
-    saveSetData(activeExerciseId, setIndex, null, null, !currentlyCompleted);
+    completionInFlightRef.current.add(inFlightKey);
+    saveSetData(activeExerciseId, setIndex, null, null, !currentlyCompleted)
+      .finally(() => completionInFlightRef.current.delete(inFlightKey));
   }, [activeExerciseId, allExercises, completedSets, handleInputChange]);
 
   // Get current exercise and routine
