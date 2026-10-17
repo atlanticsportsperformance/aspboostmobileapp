@@ -40,6 +40,7 @@ import { nextSetPrefill } from '../lib/logger/targets';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
 import { loggerOutbox } from '../lib/logger/outbox';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
+import { flushWithCap, syncAll } from '../lib/logger/syncAll';
 import SessionRpeSheet from '../components/logger/SessionRpeSheet';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
@@ -576,6 +577,8 @@ export default function WorkoutLoggerScreen() {
   // workout wants it, then finalize. Skip finalizes without session_rpe.
   const [showSessionRpe, setShowSessionRpe] = useState(false);
   const finishingRef = useRef(false);
+  // Drives the "Saving…" state on the finish buttons.
+  const [finishing, setFinishing] = useState(false);
   const handleCompleteWorkout = () => {
     if (finishingRef.current) return;
     if (workout?.ask_session_rpe) {
@@ -595,24 +598,29 @@ export default function WorkoutLoggerScreen() {
     void finalizeWorkout();
   };
 
-  // Flush the set outbox, then mark the workout complete. Never blocks on
-  // being offline: an unsent completion is queued and replayed by the
-  // foreground sync (lib/logger/pendingComplete.ts).
+  // Flush the set outbox (at most FINISH_FLUSH_CAP_MS), then mark the
+  // workout complete. Never blocks on a bad network: if this workout's sets
+  // are still queued after the cap, the completion is queued too and syncAll
+  // replays it after the sets (sets-before-completion ordering). An offline
+  // completion is queued the same way (lib/logger/pendingComplete.ts).
   const finalizeWorkout = async (sessionRpe?: number) => {
     if (finishingRef.current) return;
     finishingRef.current = true;
+    setFinishing(true);
     try {
-      try {
-        await loggerOutbox.flush({ foreground: true });
-      } catch (e) {
-        console.error('[WorkoutLogger] outbox flush before finish failed', e);
-      }
+      const inTime = await flushWithCap(() => loggerOutbox.flush({ foreground: true }));
+      if (!inTime) console.warn('[WorkoutLogger] set flush still running at finish — completing behind it');
+      const setsQueued = (await loggerOutbox.pending().catch(() => []))
+        .some(r => r.workout_instance_id === workoutInstanceId);
       const intent = {
         workoutInstanceId,
         completedAt: new Date().toISOString(),
         ...(sessionRpe != null ? { sessionRpe } : {}),
       };
-      const outcome = await pendingCompletions.complete(intent);
+      const outcome = setsQueued
+        ? await pendingCompletions.queue(intent)
+        : await pendingCompletions.complete(intent);
+      if (setsQueued) void syncAll();
       if (outcome.status === 'rejected') {
         // Server said no — don't queue, keep the athlete here.
         console.error('[WorkoutLogger] complete failed', outcome.message);
@@ -627,12 +635,13 @@ export default function WorkoutLoggerScreen() {
       Alert.alert(
         'Workout Complete!',
         outcome.status === 'queued'
-          ? 'Saved on this device. It will sync when you are back online.'
+          ? 'Saved on this device. It will finish syncing automatically.'
           : 'Great job! Your workout has been saved.',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } finally {
       finishingRef.current = false;
+      setFinishing(false);
     }
   };
 
@@ -1178,6 +1187,7 @@ export default function WorkoutLoggerScreen() {
         onExercisePress={handleExercisePress}
         onContinue={handleContinue}
         onCompleteWorkout={handleCompleteWorkout}
+        finishing={finishing}
         onToggleExerciseComplete={handleToggleExerciseComplete}
         onBack={handleExitWorkout}
         headerSlot={throwingHeaderSlot}

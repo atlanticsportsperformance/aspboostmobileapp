@@ -15,3 +15,19 @@ export function createSyncAll(outbox: Pick<Outbox, 'flush'> = loggerOutbox, pend
 }
 
 export const syncAll = createSyncAll();
+
+// Pre-finish flush with a cap (final review I3): on captive / flaky Wi-Fi a
+// flush can stall for minutes, so Finish waits at most `capMs`. Resolves true
+// if the flush settled in time (success or failure), false on the cap. The
+// flush itself keeps running.
+export const FINISH_FLUSH_CAP_MS = 3000;
+export function flushWithCap(flush: () => Promise<unknown>, capMs: number = FINISH_FLUSH_CAP_MS): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), capMs);
+  });
+  const settled = Promise.resolve()
+    .then(flush)
+    .then(() => true, () => true);
+  return Promise.race([settled, cap]).finally(() => clearTimeout(timer));
+}

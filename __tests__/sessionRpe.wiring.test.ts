@@ -5,7 +5,7 @@ jest.mock('../lib/supabase', () => ({ supabase: {} }));
 jest.mock('../lib/workoutRefreshSignal', () => ({ markWorkoutListDirty: jest.fn() }));
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn() }));
 
-import { createSyncAll } from '../lib/logger/syncAll';
+import { createSyncAll, flushWithCap, FINISH_FLUSH_CAP_MS } from '../lib/logger/syncAll';
 import { isRetryableError, completionPatch, createPendingCompletions, PENDING_COMPLETE_KEY, type CompleteSend } from '../lib/logger/pendingComplete';
 
 const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf8');
@@ -143,5 +143,49 @@ describe('pending completions', () => {
     const pending = { flush: async () => { order.push('status'); return 0; } };
     await createSyncAll(outbox as any, pending)();
     expect(order).toEqual(['sets', 'status']);
+  });
+});
+
+describe('finish never hangs on the set flush (final review I3)', () => {
+  it('flushWithCap: a never-resolving flush gives up after the cap', async () => {
+    jest.useFakeTimers();
+    try {
+      const p = flushWithCap(() => new Promise(() => {}), FINISH_FLUSH_CAP_MS);
+      jest.advanceTimersByTime(FINISH_FLUSH_CAP_MS);
+      await expect(p).resolves.toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(FINISH_FLUSH_CAP_MS).toBeLessThanOrEqual(3000);
+  });
+  it('flushWithCap: a flush that settles (even failing) resolves true', async () => {
+    await expect(flushWithCap(async () => 1, 50)).resolves.toBe(true);
+    await expect(flushWithCap(async () => { throw new Error('offline'); }, 50)).resolves.toBe(true);
+  });
+  it('queue() stores the completion without sending; replay sends it', async () => {
+    const send = jest.fn<ReturnType<CompleteSend>, Parameters<CompleteSend>>(async () => ({ ok: true }));
+    const pc = createPendingCompletions(mem(), send, async () => 'u1');
+    await expect(pc.queue(I('w1', 7))).resolves.toEqual({ status: 'queued' });
+    expect(send).not.toHaveBeenCalled();
+    expect(await pc.pending()).toEqual([expect.objectContaining({ workoutInstanceId: 'w1', sessionRpe: 7, userId: 'u1' })]);
+    expect(await pc.flush()).toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('queue() with no signed-in user sends instead', async () => {
+    const send = jest.fn<ReturnType<CompleteSend>, Parameters<CompleteSend>>(async () => ({ ok: true }));
+    const pc = createPendingCompletions(mem(), send, async () => null);
+    await expect(pc.queue(I('w1'))).resolves.toEqual({ status: 'sent' });
+  });
+  it('finalizeWorkout caps the flush, queues the completion behind still-queued sets, shows Saving…', () => {
+    const fin = logger.slice(logger.indexOf('const finalizeWorkout'), logger.indexOf('const handleExitWorkout'));
+    expect(fin).toContain('await flushWithCap(() => loggerOutbox.flush({ foreground: true }))');
+    expect(fin).toContain('? await pendingCompletions.queue(intent)');
+    expect(fin).toContain('if (setsQueued) void syncAll();');
+    expect(fin).toContain('setFinishing(true)');
+    expect(fin).toContain('setFinishing(false)');
+    expect(logger).toContain('finishing={finishing}');
+    const overview = read('screens/block-overview.tsx');
+    expect(overview).toContain("{finishing ? 'SAVING…' : 'COMPLETE WORKOUT'}");
+    expect(overview).toContain("{finishing ? 'Saving…' : 'Finish early'}");
   });
 });

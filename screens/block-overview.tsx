@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Modal,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -47,6 +48,8 @@ interface BlockOverviewProps {
   /** Continue: open the next set's exercise ON that set (nextStep). */
   onContinue: (exerciseId: string, setIndex: number) => void;
   onCompleteWorkout: () => void;
+  /** Finish is saving (pre-finish flush + completion): buttons show "Saving…". */
+  finishing?: boolean;
   onToggleExerciseComplete: (exerciseId: string, sets: number) => void;
   onBack: () => void;
   /** Optional slot rendered at the TOP of the scroll content (above notes + routines). */
@@ -151,6 +154,7 @@ export default function BlockOverview({
   onExercisePress,
   onContinue,
   onCompleteWorkout,
+  finishing = false,
   onToggleExerciseComplete,
   onBack,
   headerSlot,
@@ -690,6 +694,7 @@ export default function BlockOverview({
             <TouchableOpacity
               style={styles.completeButton}
               onPress={onCompleteWorkout}
+              disabled={finishing}
               activeOpacity={0.8}
             >
               <LinearGradient
@@ -698,8 +703,12 @@ export default function BlockOverview({
                 end={{ x: 1, y: 0 }}
                 style={styles.completeButtonActive}
               >
-                <Text style={styles.completeButtonIcon}>✓</Text>
-                <Text style={styles.completeButtonText}>COMPLETE WORKOUT</Text>
+                {finishing ? (
+                  <ActivityIndicator color="#FFFFFF" style={styles.completeButtonSpinner} />
+                ) : (
+                  <Text style={styles.completeButtonIcon}>✓</Text>
+                )}
+                <Text style={styles.completeButtonText}>{finishing ? 'SAVING…' : 'COMPLETE WORKOUT'}</Text>
               </LinearGradient>
             </TouchableOpacity>
           ) : next ? (
@@ -708,9 +717,10 @@ export default function BlockOverview({
               <TouchableOpacity
                 style={styles.finishEarlyButton}
                 onPress={() => setShowIncompleteModal(true)}
+                disabled={finishing}
                 activeOpacity={0.7}
               >
-                <Text style={styles.finishEarlyText}>Finish early</Text>
+                <Text style={styles.finishEarlyText}>{finishing ? 'Saving…' : 'Finish early'}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.continueButton}
@@ -733,10 +743,11 @@ export default function BlockOverview({
             <TouchableOpacity
               style={styles.finishEarlyPill}
               onPress={() => setShowIncompleteModal(true)}
+              disabled={finishing}
               activeOpacity={0.7}
               hitSlop={6}
             >
-              <Text style={styles.finishEarlyText}>Finish early</Text>
+              <Text style={styles.finishEarlyText}>{finishing ? 'Saving…' : 'Finish early'}</Text>
             </TouchableOpacity>
           )}
         </LinearGradient>
@@ -1327,6 +1338,9 @@ const styles = StyleSheet.create({
   completeButtonIcon: {
     fontSize: 24,
     color: '#FFFFFF',
+  },
+  completeButtonSpinner: {
+    marginRight: 2,
   },
   completeButtonText: {
     fontSize: 16,

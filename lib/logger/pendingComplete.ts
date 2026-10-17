@@ -134,6 +134,19 @@ export function createPendingCompletions(
     return { status: 'rejected', message: res.message || 'Please try again.' };
   };
 
+  // Queue without sending (Finish while sets are still unsynced): the
+  // foreground sync replays it AFTER the set outbox flush, keeping sets-
+  // before-completion ordering. No signed-in user → try sending now.
+  const queue = async (p: PendingComplete): Promise<CompleteOutcome> => {
+    const userId = await getUserId();
+    if (!userId) return complete(p);
+    await locked(async () => {
+      const q = (await read()).filter(x => x.workoutInstanceId !== p.workoutInstanceId);
+      await write([...q, { ...p, userId }]);
+    });
+    return { status: 'queued' };
+  };
+
   // Replays the CURRENT user's queued completions; others stay queued.
   const flush = async (): Promise<number> => {
     const userId = await getUserId();
@@ -159,7 +172,7 @@ export function createPendingCompletions(
     return done.size;
   };
 
-  return { complete, flush, clear, pending: read };
+  return { complete, queue, flush, clear, pending: read };
 }
 
 export const pendingCompletions = createPendingCompletions();
