@@ -23,6 +23,7 @@ import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 import { isSetDoneFromLog, isValidSetIndex, logToSetInputs, mergeLogsWithPending } from '../lib/loggerResume';
+import { createDraftWriter, type DraftWriter } from '../lib/logger/draftWriter';
 
 // Types
 import type {
@@ -121,13 +122,25 @@ export default function WorkoutLoggerScreen() {
   const [athleteMaxes, setAthleteMaxes] = useState<Record<string, Record<string, number>>>({});
   // Mound velocity for throwing velocity fallback (5oz baseball PR)
   const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
-  // Draft-save debounce, one timer PER SET (`reId:setIndex`). The timer
-  // writes every field edited since the last save (draftFieldsRef), with the
+  // Draft-save debounce, one timer PER SET (`reId:setIndex`), in draftWriter.
+  // The timer writes every field really changed since the last save, with the
   // values read from inputsRef when it fires, so typing reps then weight
   // inside 500 ms still saves both. useRef (not useState) so a rapid second
   // edit cancels the first timer synchronously.
-  const draftTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const draftFieldsRef = useRef<Record<string, Set<string>>>({});
+  // Drafts fire ONLY for a real change from what the set holds on the server
+  // (lib/logger/draftWriter): opening / selecting / tapping rows, scrolling,
+  // keypad open-close, a same-value auto-fill and the rack follow never write.
+  const draftPersistRef = useRef<(re: string, idx: number, w: { fields: string[] }) => void>(() => undefined);
+  const draftWriterRef = useRef<DraftWriter | null>(null);
+  if (!draftWriterRef.current) {
+    draftWriterRef.current = createDraftWriter({
+      persist: (key, fields) => {
+        const i = key.lastIndexOf(':');
+        draftPersistRef.current(key.slice(0, i), Number(key.slice(i + 1)), { fields });
+      },
+    });
+  }
+  const draftWriter = draftWriterRef.current;
   // Synchronous mirrors of exerciseInputs / completedSets. Saves build rows
   // from these so a write never uses a value from a stale render closure.
   const inputsRef = useRef<Record<string, any[]>>({});
@@ -423,6 +436,7 @@ export default function WorkoutLoggerScreen() {
           const setIndex = log.set_number - 1; // Convert to 0-indexed
           if (setIndex >= 0 && setIndex < ex.sets) {
             setsData[setIndex] = logToSetInputs(log);
+            draftWriter.setSaved(`${ex.id}:${setIndex}`, setsData[setIndex]);
             if (log.actual_weight != null) rackLoggedWeightRef.current[`${ex.id}:${setIndex}`] = true;
 
             // Done only if is_complete — drafts resume not-done with values.
@@ -721,15 +735,7 @@ export default function WorkoutLoggerScreen() {
   // Cancels a set's pending draft save and returns the fields it would have
   // written — the caller's write carries them instead, so nothing typed in
   // the last 500 ms is lost.
-  const cancelDraft = (exerciseId: string, setIndex: number): string[] => {
-    const k = `${exerciseId}:${setIndex}`;
-    const pending = draftTimersRef.current[k];
-    if (pending) clearTimeout(pending);
-    delete draftTimersRef.current[k];
-    const fields = draftFieldsRef.current[k];
-    delete draftFieldsRef.current[k];
-    return fields ? [...fields] : [];
-  };
+  const cancelDraft = (exerciseId: string, setIndex: number): string[] => draftWriter.take(`${exerciseId}:${setIndex}`);
 
   // Save one set (spec §7 / §11.2 / final review I4): build a row with ONLY
   // what this write means to change, put it in the device outbox (merged per
@@ -767,6 +773,10 @@ export default function WorkoutLoggerScreen() {
         rpe: write.rpe ? rpeRef.current[`${exerciseId}:${setIndex}`] ?? null : undefined,
       },
     );
+    // The server will hold these values (the real-edit guard compares against them).
+    if ((write.fields ?? []).length) {
+      draftWriter.markSaved(`${exerciseId}:${setIndex}`, write.fields ?? [], inputsRef.current[exerciseId]?.[setIndex] || {});
+    }
     try {
       await loggerOutbox.enqueue(row);
     } catch (error) {
@@ -777,6 +787,7 @@ export default function WorkoutLoggerScreen() {
     void loggerOutbox.flush();
     return true;
   }, [allExercises, athleteId, orgId, workoutInstanceId]);
+  draftPersistRef.current = (re, idx, w) => void persistSet(re, idx, w);
 
   // Rest after a logged set (spec §11.6); the overview shows the countdown.
   const startRestAfter = useCallback((exerciseId: string, setIndex: number) => {
@@ -934,16 +945,8 @@ export default function WorkoutLoggerScreen() {
     const timerKey = `${targetExerciseId}:${setIndex}`;
     // Rack VBT: a typed LB edit wins over the rack's load for 3 s (load sync).
     if (field === 'weight' && !_isAutoFill) rackWeightEditAtRef.current[timerKey] = Date.now();
-    const pending = draftTimersRef.current[timerKey];
-    if (pending) clearTimeout(pending);
-    if (!draftFieldsRef.current[timerKey]) draftFieldsRef.current[timerKey] = new Set();
-    draftFieldsRef.current[timerKey].add(field);
-    draftTimersRef.current[timerKey] = setTimeout(() => {
-      delete draftTimersRef.current[timerKey];
-      const fields = [...(draftFieldsRef.current[timerKey] ?? [])];
-      delete draftFieldsRef.current[timerKey];
-      persistSet(targetExerciseId, setIndex, { fields });
-    }, 500);
+    // Only a real change from the server's value schedules a draft (500 ms).
+    draftWriter.edit(timerKey, field, value);
 
     // PRs are not checked on edits — only when the set is logged (below).
   }, [activeExerciseId, allExercises, persistSet]);
@@ -1269,6 +1272,7 @@ export default function WorkoutLoggerScreen() {
     // (e.g. a prefilled reps value) so it can't overwrite the rack's reps.
     // Solo keeps it: the phone's own typed values (LB) still go out.
     if (!opts?.solo) cancelDraft(reId, res.setIndex);
+    draftWriter.setSaved(key, res.inputs[res.setIndex] ?? {});
     if (log.actual_weight != null) rackLoggedWeightRef.current[key] = true;
     commitInputs({ ...inputsRef.current, [reId]: res.inputs });
     commitCompleted(reId, () => res.completed, ex.sets);

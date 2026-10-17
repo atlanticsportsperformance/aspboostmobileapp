@@ -48,9 +48,10 @@ describe('workout logger — set completion survives leaving and resuming', () =
     const fn = body('const handleInputChange', '// Handle next set / done');
     expect(fn).not.toContain('isAutoFill ||');
     // drafts send only the edited fields and never is_complete
-    expect(fn).toContain('persistSet(targetExerciseId, setIndex, { fields })');
+    // a draft only for a REAL change (lib/logger/draftWriter; 500 ms debounce there)
+    expect(fn).toContain('draftWriter.edit(timerKey, field, value);');
     expect(fn).not.toContain('complete:');
-    expect(fn).toContain('}, 500);');
+    expect(S).toContain("draftPersistRef.current(key.slice(0, i), Number(key.slice(i + 1)), { fields });");
     expect(fn).not.toContain('commitCompleted');
     expect(fn).not.toContain('setCompletedSets');
   });

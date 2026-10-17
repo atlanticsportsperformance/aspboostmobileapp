@@ -524,9 +524,12 @@ export default function ExerciseDetailView({
     const setData = currentInputs[setIndex] || {};
 
     // When user enters a value, auto-fill any empty fields with their placeholder values
-    // This ensures reps get filled when weight is entered, etc.
+    // This ensures reps get filled when weight is entered, etc. Only after a
+    // real edit in this keypad (typed / backspaced): opening the keypad on a
+    // row and closing it untouched never writes.
     const currentValue = setData[metricId];
-    if (currentValue != null && currentValue !== '') {
+    const typedHere = editedFieldsRef.current[exercise.id]?.has(fieldKey(setIndex, metricId)) ?? false;
+    if (typedHere && currentValue != null && currentValue !== '') {
       const placeholders = getPlaceholderValuesForSet(setIndex);
       metricFields.forEach(field => {
         const fieldValue = setData[field];
