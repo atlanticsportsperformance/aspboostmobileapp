@@ -46,7 +46,16 @@ export interface VbtRepRow {
 
 export interface SetWriteItem {
   key: string;
+  /** Without exercise_id when `resolveExerciseFor` is set. */
   row: LogRow;
+  /** routine_exercise id whose exercise_id is looked up at send time. */
+  resolveExerciseFor?: string;
+}
+
+/** Read-only view of a dead-letter queue (it is never flushed). */
+export interface DeadLetter<T> {
+  peekAll(): Promise<T[]>;
+  size(): Promise<number>;
 }
 
 export function vbtRepRow(rep: RepWrite, orgId: string): VbtRepRow {
@@ -84,7 +93,13 @@ export function setKeyOf(s: Pick<SetSummary, 'workoutInstanceId' | 'routineExerc
  * row would fail with 23502; the caller resolves it first or downgrades).
  */
 export function setWriteRow(summary: SetSummary, orgId: string | null): LogRow | null {
-  if (!setKeyOf(summary) || !summary.exerciseId) return null;
+  if (!summary.exerciseId) return null;
+  return buildSetRow(summary, orgId);
+}
+
+/** As setWriteRow, but a null exerciseId leaves exercise_id out (resolved later). */
+function buildSetRow(summary: SetSummary, orgId: string | null): LogRow | null {
+  if (!setKeyOf(summary)) return null;
   const row = buildLogRow(
     {
       workoutInstanceId: summary.workoutInstanceId!,
@@ -94,13 +109,14 @@ export function setWriteRow(summary: SetSummary, orgId: string | null): LogRow |
     { reps: summary.fullReps, weight: summary.loadLb },
     {
       athleteId: summary.athleteId,
-      exerciseId: summary.exerciseId,
+      exerciseId: summary.exerciseId as string,
       orgId,
       complete: true,
       // Unknown load: leave the phone's weight alone (a null key would clear it).
       fields: summary.loadLb == null ? ['reps'] : ['reps', 'weight'],
     },
   );
+  if (!summary.exerciseId) delete row.exercise_id;
   // fields ['reps','weight'] never builds metric_data; kept as a guard so a
   // future buildLogRow change can't make the rack replace the phone's metrics.
   delete row.metric_data;
@@ -173,8 +189,9 @@ export interface RackPersist {
   writeRep(rep: RepWrite): Promise<void>;
   /**
    * Durably queue an ended set's write. No-op for a free set. A set with no
-   * exerciseId is resolved from routine_exercises first; if that fails it is
-   * downgraded to a free set (vbt_reps only) and logged.
+   * exerciseId is queued anyway and its exercise_id is looked up from
+   * routine_exercises at send time (a lookup failure retries with the queue);
+   * a definite null downgrades it to a free set (dead-lettered + logged).
    */
   endSet(summary: SetSummary): Promise<void>;
   /** Same as endSet: re-writes the whole set, replacing any queued write. */
@@ -185,9 +202,8 @@ export interface RackPersist {
   pending(): Promise<{ reps: number; sets: number }>;
   readonly repQueue: Queue<VbtRepRow>;
   readonly setQueue: Queue<SetWriteItem>;
-  /** Items the server rejected as malformed (kept, never deleted). */
-  readonly deadReps: Queue<VbtRepRow>;
-  readonly deadSets: Queue<SetWriteItem>;
+  /** Items the server rejected as malformed (kept, never flushed or deleted). */
+  readonly dead: { reps: DeadLetter<VbtRepRow>; sets: DeadLetter<SetWriteItem> };
 }
 
 export function createRackPersist(opts: {
@@ -203,8 +219,21 @@ export function createRackPersist(opts: {
   const now = opts.now ?? (() => Date.now());
   const timeoutMs = opts.sendTimeoutMs ?? SEND_TIMEOUT_MS;
 
-  const deadReps = createQueue<VbtRepRow>(REP_DEAD_KEY, async () => {}, { idOf: r => r.client_rep_id });
-  const deadSets = createQueue<SetWriteItem>(SET_DEAD_KEY, async () => {});
+  // Dead letters: a flush would "send" (= delete) them, so their send always
+  // fails transiently and they are only exposed read-only.
+  const never = async () => {
+    throw new Error('dead letter: never flushed');
+  };
+  const deadReps = createQueue<VbtRepRow>(REP_DEAD_KEY, never, { idOf: r => r.client_rep_id });
+  const deadSets = createQueue<SetWriteItem>(SET_DEAD_KEY, never);
+
+  // Set by any transient send failure during a flush (drives back-off; a
+  // dead-lettered permanent failure alone does not).
+  let sawTransient = false;
+  const raise = (err: Error & { permanent?: boolean }): never => {
+    if (!err.permanent) sawTransient = true;
+    throw err;
+  };
 
   const sendReps = async (rows: VbtRepRow[]) => {
     let res: { error: PgError; status?: number };
@@ -215,10 +244,10 @@ export function createRackPersist(opts: {
         'vbt_reps',
       );
     } catch (error) {
-      throw failure('vbt_reps unreachable', { message: String((error as Error)?.message ?? error) });
+      return raise(failure('vbt_reps unreachable', { message: String((error as Error)?.message ?? error) }));
     }
     if (!res.error || isUniqueViolation(res.error)) return;
-    throw failure('vbt_reps', res.error, res.status);
+    raise(failure('vbt_reps', res.error, res.status));
   };
 
   const repQueue = createQueue<VbtRepRow>(
@@ -240,56 +269,67 @@ export function createRackPersist(opts: {
   const setQueue = createQueue<SetWriteItem>(
     SET_QUEUE_KEY,
     async item => {
+      let row = item.row;
+      if (item.resolveExerciseFor && !row.exercise_id) {
+        const exerciseId = await resolveExerciseId(item.resolveExerciseFor); // throws transient
+        if (!exerciseId) {
+          // exercise_logs.exercise_id is NOT NULL: no row is possible.
+          log('set has no exercise_id; downgraded to a free set (vbt_reps only), dead-lettered', item.key);
+          await deadSets.enqueue(item);
+          return;
+        }
+        row = { ...row, exercise_id: exerciseId };
+      }
       let res: { data: unknown; error: any; status?: number };
       try {
-        res = await withTimeout(client.rpc('upsert_exercise_log', { p_row: item.row }), timeoutMs, 'upsert_exercise_log');
+        res = await withTimeout(client.rpc('upsert_exercise_log', { p_row: row }), timeoutMs, 'upsert_exercise_log');
       } catch (error) {
-        throw failure('upsert_exercise_log unreachable', { message: String((error as Error)?.message ?? error) });
+        return raise(failure('upsert_exercise_log unreachable', { message: String((error as Error)?.message ?? error) }));
       }
       if (res.error) {
         const err = failure('upsert_exercise_log', res.error, res.status);
         log('upsert_exercise_log failed', res.error, item.key);
-        if (err.permanent) await deadSets.enqueue(item);
-        throw err;
+        if (err.permanent) await deadSets.enqueue({ ...item, row });
+        raise(err);
       }
     },
     { idOf: i => i.key, replace: true },
   );
 
   const exerciseCache = new Map<string, string>();
+  /** exercise_id of a routine exercise; null = definitely none. Any lookup
+   *  failure throws a TRANSIENT error so the queue keeps the set and retries. */
   const resolveExerciseId = async (routineExerciseId: string): Promise<string | null> => {
     const hit = exerciseCache.get(routineExerciseId);
     if (hit) return hit;
+    let res: { data: { exercise_id?: string | null } | null; error: PgError };
     try {
-      const { data, error } = await withTimeout(
+      res = (await withTimeout(
         client.from('routine_exercises').select('exercise_id').eq('id', routineExerciseId).maybeSingle(),
         timeoutMs,
         'routine_exercises',
-      ) as { data: { exercise_id?: string | null } | null; error: PgError };
-      if (error) throw error;
-      const id = data?.exercise_id ?? null;
-      if (id) exerciseCache.set(routineExerciseId, id);
-      return id;
+      )) as typeof res;
     } catch (e) {
-      log('exercise_id lookup failed', e, routineExerciseId);
-      return null;
+      log('exercise_id lookup unreachable; will retry', e, routineExerciseId);
+      return raise(new Error(`routine_exercises unreachable: ${(e as Error)?.message ?? e}`));
     }
+    if (res.error) {
+      log('exercise_id lookup failed; will retry', res.error, routineExerciseId);
+      return raise(new Error(`routine_exercises: ${res.error.message ?? 'failed'}`));
+    }
+    const id = res.data?.exercise_id ?? null;
+    if (id) exerciseCache.set(routineExerciseId, id);
+    return id;
   };
 
   const writeSet = async (summary: SetSummary) => {
     const key = setKeyOf(summary);
     if (!key) return; // free set: vbt_reps only
-    let s = summary;
-    if (!s.exerciseId) {
-      const exerciseId = await resolveExerciseId(s.routineExerciseId!);
-      if (!exerciseId) {
-        log('set has no exercise_id; written as a free set (vbt_reps only)', key);
-        return;
-      }
-      s = { ...s, exerciseId };
-    }
-    const row = setWriteRow(s, orgId);
-    if (row) await setQueue.enqueue({ key, row });
+    const row = buildSetRow(summary, orgId);
+    if (!row) return;
+    await setQueue.enqueue(
+      summary.exerciseId ? { key, row } : { key, row, resolveExerciseFor: summary.routineExerciseId! },
+    );
   };
 
   // Back-off after a transient failure, so per-rep flushes don't hammer a
@@ -303,22 +343,20 @@ export function createRackPersist(opts: {
     amendSet: writeSet,
     async flush(o) {
       if (!o?.force && now() < retryAt) return;
-      let stuck = false;
+      sawTransient = false;
       try {
-        const r = await repQueue.flush();
-        if (r.failed > 0 && (await repQueue.size()) > 0) stuck = true;
+        await repQueue.flush();
       } catch (e) {
-        stuck = true;
+        sawTransient = true;
         log('rep flush failed', e);
       }
       try {
-        const r = await setQueue.flush();
-        if (r.failed > 0 && (await setQueue.size()) > 0) stuck = true;
+        await setQueue.flush();
       } catch (e) {
-        stuck = true;
+        sawTransient = true;
         log('set flush failed', e);
       }
-      if (stuck) {
+      if (sawTransient) {
         backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
         retryAt = now() + backoffMs;
       } else {
@@ -331,7 +369,9 @@ export function createRackPersist(opts: {
     },
     repQueue,
     setQueue,
-    deadReps,
-    deadSets,
+    dead: {
+      reps: { peekAll: () => deadReps.peekAll(), size: () => deadReps.size() },
+      sets: { peekAll: () => deadSets.peekAll(), size: () => deadSets.size() },
+    },
   };
 }

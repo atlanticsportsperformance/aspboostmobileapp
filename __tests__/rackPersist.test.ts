@@ -144,30 +144,49 @@ describe('set row shape', () => {
 });
 
 describe('missing exercise_id', () => {
-  it('is resolved from routine_exercises before enqueuing', async () => {
+  it('is queued and resolved from routine_exercises at send time', async () => {
     const m = mockClient({ exerciseOf: () => ({ data: { exercise_id: 'ex-from-re' }, error: null }) });
     const p = createRackPersist({ client: m.client, orgId: ORG });
     await p.endSet(summary({ exerciseId: null }));
-    expect(m.lookup).toHaveBeenCalledWith('re-squat');
     const [item] = await p.setQueue.peekAll();
-    expect(item.row.exercise_id).toBe('ex-from-re');
+    expect(item.row).not.toHaveProperty('exercise_id');
+    expect(item.resolveExerciseFor).toBe('re-squat');
+    await p.flush();
+    expect(m.lookup).toHaveBeenCalledWith('re-squat');
+    expect(m.rpc.mock.calls[0][1].p_row.exercise_id).toBe('ex-from-re');
+    expect(await p.setQueue.size()).toBe(0);
   });
 
-  it('still null → downgraded to a free set (vbt_reps only), logged, nothing that would hit 23502', async () => {
+  it('a transient lookup failure keeps the set write queued and retries', async () => {
+    let offline = true;
+    const m = mockClient({
+      exerciseOf: () => {
+        if (offline) throw new TypeError('Network request failed');
+        return { data: { exercise_id: 'ex-from-re' }, error: null };
+      },
+    });
+    const p = createRackPersist({ client: m.client, orgId: ORG, log: () => {} });
+    await p.endSet(summary({ exerciseId: null }));
+    await p.flush();
+    expect(await p.setQueue.size()).toBe(1);
+    expect(m.rpc).not.toHaveBeenCalled();
+    offline = false;
+    await p.flush({ force: true });
+    expect(await p.setQueue.size()).toBe(0);
+    expect(m.rpc.mock.calls[0][1].p_row.exercise_id).toBe('ex-from-re');
+  });
+
+  it('a definite null → downgraded to free (dead-lettered, logged), never a 23502 row', async () => {
     const log = jest.fn();
     const m = mockClient({ exerciseOf: () => ({ data: { exercise_id: null }, error: null }) });
     const p = createRackPersist({ client: m.client, orgId: ORG, log });
     await p.endSet(summary({ exerciseId: null }));
+    await p.flush();
+    expect(m.rpc).not.toHaveBeenCalled();
     expect(await p.setQueue.size()).toBe(0);
+    expect(await p.dead.sets.size()).toBe(1);
     expect(setWriteRow(summary({ exerciseId: null }), ORG)).toBeNull();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('free set'), 'wi-1:re-squat:2');
-  });
-
-  it('lookup failing (offline) also downgrades, never enqueues a null exercise_id', async () => {
-    const m = mockClient({ exerciseOf: () => { throw new TypeError('Network request failed'); } });
-    const p = createRackPersist({ client: m.client, orgId: ORG, log: () => {} });
-    await p.endSet(summary({ exerciseId: null }));
-    expect(await p.setQueue.size()).toBe(0);
   });
 });
 
@@ -284,7 +303,7 @@ describe('vbt_reps queue', () => {
     await p.endSet(summary());
     await p.flush();
     expect(await p.pending()).toEqual({ reps: 1, sets: 1 });
-    expect(await p.deadReps.size()).toBe(0);
+    expect(await p.dead.reps.size()).toBe(0);
   });
 
   it('a malformed row is moved to the dead letter, never deleted', async () => {
@@ -293,7 +312,14 @@ describe('vbt_reps queue', () => {
     await p.writeRep(rep());
     await p.flush();
     expect(await p.repQueue.size()).toBe(0);
-    expect((await p.deadReps.peekAll()).map(r => r.client_rep_id)).toEqual(['rack-3:tyler:1:1']);
+    expect((await p.dead.reps.peekAll()).map(r => r.client_rep_id)).toEqual(['rack-3:tyler:1:1']);
+    // A dead-lettered permanent failure alone does not start back-off.
+    m.upsert.mockImplementation(async () => ({ error: null, status: 201 }));
+    await p.writeRep(rep({ clientRepId: 'next' }));
+    await p.flush();
+    expect(await p.repQueue.size()).toBe(0);
+    // Dead letters are not exposed as a flushable queue.
+    expect((p.dead.reps as any).flush).toBeUndefined();
   });
 
   it('backs off after a transient failure; force flushes anyway', async () => {

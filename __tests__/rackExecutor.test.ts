@@ -1,6 +1,7 @@
 import * as engineModule from '../lib/rack/engine';
 import { createRackEngine, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
-import { createRackExecutor, SEED_RETRY_MS, type ExecutorApi } from '../lib/rack/executor';
+import { createRackExecutor, SEED_RETRY_MS, SEED_REFRESH_MS, type ExecutorApi } from '../lib/rack/executor';
+import type { TodayAthlete } from '../lib/rack/api';
 import type { WrittenSet } from '../lib/rack/api';
 import type { OvrRep } from '../lib/ovr/protocol';
 
@@ -185,76 +186,88 @@ describe('executor ordering', () => {
   });
 });
 
-describe('seed high-water', () => {
-  it("seedHighWater lands before the athlete's reps reach the engine; syncs are not held", async () => {
-    const seed = deferred<WrittenSet[]>();
-    const r = rig({ api: { todaysWrittenSets: jest.fn(() => seed.promise) } });
-    r.ex.dispatch({ type: 'sessionSync', row: row() });
-    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
-    await flushMicro();
-    expect(r.ex.getState().activeAthleteId).toBe('tyler'); // sync applied at once
-    expect(events.some(e => e.type === 'rep')).toBe(false);
-    expect(r.ex.isSyncing()).toBe(true);
-    expect(r.persist.writeRep).not.toHaveBeenCalled();
+const tile = (athleteId: string): TodayAthlete => ({ athleteId, firstName: athleteId, lastName: '', instances: [], exercises: [], remaining: [] });
 
-    seed.resolve([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]);
-    await flushMicro();
-    await r.ex.idle();
-    const types = events.map(e => e.type);
-    expect(types.indexOf('seedHighWater')).toBeLessThan(types.indexOf('rep'));
-    expect(r.api.todaysWrittenSets).toHaveBeenCalledWith(['tyler']);
-    expect(r.ex.isSyncing()).toBe(false);
-    // Phone said set 1, today already has set 3 → the rack writes set 4.
-    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0].setNumber).toBe(4);
-  });
-
-  it('seed fails twice then succeeds: reps wait (no cap) and land above the high-water', async () => {
+describe('seed preload', () => {
+  it("preloads seeds for all of today's athletes at start, then every 60 s", async () => {
     jest.useFakeTimers();
-    const seedFn = jest
-      .fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]);
-    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    const r = rig();
+    r.ex.setToday([tile('tyler'), tile('jake'), tile('cole')]);
     r.ex.start();
-    r.ex.dispatch({ type: 'sessionSync', row: row() });
-    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
-    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
-    await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
-    expect(seedFn).toHaveBeenCalledTimes(2);
-    expect(r.persist.writeRep).not.toHaveBeenCalled();
-    expect(r.ex.isSyncing()).toBe(true);
-    await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
-    expect(seedFn).toHaveBeenCalledTimes(3);
-    await r.ex.idle();
-    const written = (r.persist.writeRep as jest.Mock).mock.calls.map(c => c[0]);
-    expect(written).toHaveLength(2);
-    expect(written.every(w => w.setNumber === 4)).toBe(true);
-    expect(r.ex.isSyncing()).toBe(false);
+    await jest.advanceTimersByTimeAsync(0);
+    const calls = (r.api.todaysWrittenSets as jest.Mock).mock.calls.map(c => [...c[0]].sort());
+    expect(calls[0]).toEqual(['cole', 'jake', 'tyler']);
+    const n = calls.length;
+    await jest.advanceTimersByTimeAsync(SEED_REFRESH_MS);
+    expect((r.api.todaysWrittenSets as jest.Mock).mock.calls.length).toBeGreaterThan(n);
     r.ex.stop();
   });
 
-  it('a Done during the hold is applied and replayed after the held reps (the set still ends)', async () => {
-    const seed = deferred<WrittenSet[]>();
-    const r = rig({ api: { todaysWrittenSets: jest.fn(() => seed.promise) } });
-    r.ex.dispatch({ type: 'sessionSync', row: row() });
+  it('a seed landing before the first rep puts the set above the high-water', async () => {
+    const r = rig({
+      api: { todaysWrittenSets: jest.fn(async () => [{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]) },
+    });
+    r.ex.setToday([tile('tyler')]);
+    await flushMicro();
+    expect(events.some(e => e.type === 'seedHighWater')).toBe(true);
+    r.ex.dispatch({ type: 'sessionSync', row: row() }); // phone says set 1
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.idle();
+    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0].setNumber).toBe(4);
+  });
+
+  it('reps are never buffered in the executor (seed pending or failing)', async () => {
+    jest.useFakeTimers();
+    const seedFn = jest.fn(() => Promise.reject(new Error('offline')));
+    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    r.ex.start();
+    r.ex.dispatch({ type: 'sessionSync', row: row() });
+    expect(r.ex.isSyncing()).toBe(true);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    expect(events.filter(e => e.type === 'rep')).toHaveLength(1); // reached the engine synchronously
     r.ex.dispatch({ type: 'ipadDone' });
+    expect(events.filter(e => e.type === 'ipadDone')).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
+    await r.ex.idle();
+    expect(seedFn.mock.calls.length).toBeGreaterThanOrEqual(2); // retried every 5 s
+    expect(r.persist.writeRep).toHaveBeenCalledTimes(1);
+    expect(r.persist.endSet).toHaveBeenCalledTimes(1);
+    expect(events.filter(e => e.type === 'ipadDone')).toHaveLength(1); // no replay
+    r.ex.stop();
+  });
+
+  it("N-1 regression: Jake's reps stay Jake's when Tyler becomes active again", async () => {
+    const seed = deferred<WrittenSet[]>();
+    const seedFn = jest.fn().mockResolvedValueOnce([]).mockImplementation(() => seed.promise);
+    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    await activeTyler(r); // Tyler active + seeded
+    r.ex.dispatch({ type: 'sessionSync', row: row({ active_athlete_id: 'jake', queue: ['tyler'], updated_at: iso(r.advance(1000)) }) });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) }, r.advance(1000));
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(2000));
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(1000));
+    await r.ex.idle();
+    r.ex.dispatch({ type: 'sessionSync', row: row({ active_athlete_id: 'tyler', queue: [], updated_at: iso(r.advance(1000)) }) });
     seed.resolve([]);
     await flushMicro();
     await r.ex.idle();
-    expect(r.persist.endSet).toHaveBeenCalledTimes(1);
-    expect(r.api.endSet).toHaveBeenCalledWith(RACK, 'tyler');
+    const reps = (r.persist.writeRep as jest.Mock).mock.calls.map(c => c[0].athleteId);
+    expect(reps).toEqual(['jake', 'jake']);
+    const sets = (r.persist.endSet as jest.Mock).mock.calls.map(c => c[0]);
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toMatchObject({ athleteId: 'jake', fullReps: 2 });
+    expect((r.api.endSet as jest.Mock).mock.calls).toEqual([[RACK, 'jake']]);
   });
 
-  it("a tile tap seeds the chosen athlete once (not again on the confirming sync)", async () => {
+  it("a tile tap refreshes seeds right away (non-blocking)", async () => {
     const r = rig();
     await activeTyler(r);
+    const before = (r.api.todaysWrittenSets as jest.Mock).mock.calls.length;
     r.ex.dispatch({ type: 'selectAthlete', athleteId: 'jake' });
     await flushMicro();
     await r.ex.idle();
-    expect(r.api.setActive).toHaveBeenCalledWith(RACK, 'jake');
-    expect((r.api.todaysWrittenSets as jest.Mock).mock.calls).toEqual([[['tyler']], [['jake']]]);
+    const calls = (r.api.todaysWrittenSets as jest.Mock).mock.calls;
+    expect(calls.length).toBeGreaterThan(before);
+    expect(calls.some(c => c[0].includes('jake'))).toBe(true);
     expect(r.ex.getState().activeAthleteId).toBe('jake');
   });
 
@@ -268,6 +281,28 @@ describe('seed high-water', () => {
     r.ex.dispatch({ type: 'ipadDone' });
     await r.ex.idle();
     expect((r.persist.endSet as jest.Mock).mock.calls[0][0].exerciseId).toBe('ex-squat');
+  });
+
+  it('a failed set enqueue is kept and re-enqueued on the next flush', async () => {
+    let fail = true;
+    const endSet = jest.fn(async () => {
+      if (fail) throw new Error('disk');
+    });
+    const r = rig({ persist: { endSet } });
+    await activeTyler(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    await new Promise(res => setTimeout(res, 5));
+    const tries = endSet.mock.calls.length;
+    expect(tries).toBeGreaterThanOrEqual(3); // 3 tries, then kept (and retried by flushes)
+    fail = false;
+    r.ex.flush();
+    await new Promise(res => setTimeout(res, 5));
+    expect(endSet.mock.calls.length).toBe(tries + 1); // re-enqueued once it works
+    r.ex.flush();
+    await new Promise(res => setTimeout(res, 5));
+    expect(endSet.mock.calls.length).toBe(tries + 1); // and is gone from memory
   });
 });
 
