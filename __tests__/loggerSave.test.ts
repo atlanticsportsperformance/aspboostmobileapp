@@ -1,4 +1,4 @@
-import { buildLogRow, completeForEdit, upsertSet, type SetKey } from '../lib/logger/saveSet';
+import { buildLogRow, completeForEdit, upsertSet, IDENTITY_KEYS, type SetKey } from '../lib/logger/saveSet';
 import { createOutbox, OUTBOX_KEY, MAX_FAILURES, type OutboxStorage } from '../lib/logger/outbox';
 
 const KEY: SetKey = { workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2 };
@@ -74,6 +74,30 @@ describe('buildLogRow', () => {
     expect(buildLogRow(KEY, {}, { ...OPTS, complete: true, rpe: null }).rpe).toBeNull();
   });
 
+  it('completion-only write (overview circle / check) sends just is_complete + identity keys', () => {
+    const r = buildLogRow(KEY, { reps: '5', weight: '135', velo: 80, notes: 'x' }, { ...OPTS, complete: true, fields: [] });
+    expect(r).toEqual({
+      workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2,
+      athlete_id: 'ath-1', exercise_id: 'ex-1', org_id: 'org-1', is_complete: true,
+    });
+  });
+
+  it('rpe-only write sends just rpe + identity keys (no is_complete, no values)', () => {
+    const r = buildLogRow(KEY, { reps: '5' }, { ...OPTS, rpe: 7.5, fields: [] });
+    expect(Object.keys(r).sort()).toEqual([...IDENTITY_KEYS, 'rpe'].sort());
+    expect(r.rpe).toBe(7.5);
+  });
+
+  it('field edit sends only the edited fields; a custom metric sends the set\'s whole metric_data', () => {
+    const fields = { reps: '5', weight: '', velo: 80, spin: '' };
+    const w = buildLogRow(KEY, fields, { ...OPTS, fields: ['weight'] });
+    expect(w).toMatchObject({ actual_weight: null });
+    expect('actual_reps' in w || 'metric_data' in w || 'is_complete' in w || 'notes' in w).toBe(false);
+    const m = buildLogRow(KEY, fields, { ...OPTS, fields: ['spin'] });
+    expect(m.metric_data).toEqual({ velo: 80 });
+    expect('actual_reps' in m).toBe(false);
+  });
+
   it('omits org_id when unknown', () => {
     expect('org_id' in buildLogRow(KEY, {}, { athleteId: 'a', exerciseId: 'e', complete: false })).toBe(false);
   });
@@ -116,14 +140,27 @@ describe('outbox', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('latest full row wins for the same set (no merge of stale values)', async () => {
+  it('writes for the same set merge per key (later value of a key wins)', async () => {
     const send = jest.fn(async (_r: Record<string, unknown>) => ({ ok: true }));
     const ob = createOutbox(memoryStorage(), send);
-    await ob.enqueue(row({ reps: 5, velo: 80 }, false));
-    await ob.enqueue(row({ reps: 6 }, true));
+    await ob.enqueue(buildLogRow(KEY, { reps: 5, weight: 135 }, { ...OPTS, fields: ['reps', 'weight'] }));
+    await ob.enqueue(buildLogRow(KEY, {}, { ...OPTS, complete: true, fields: [] }));
+    await ob.enqueue(buildLogRow(KEY, { reps: 6 }, { ...OPTS, fields: ['reps'] }));
+    await ob.enqueue(buildLogRow(KEY, {}, { ...OPTS, rpe: 8, fields: [] }));
     await ob.flush();
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0][0]).toMatchObject({ actual_reps: 6, is_complete: true, metric_data: {} });
+    const sent = send.mock.calls[0][0];
+    expect(sent).toMatchObject({ actual_reps: 6, actual_weight: 135, is_complete: true, rpe: 8 });
+    expect('metric_data' in sent).toBe(false);
+    expect('notes' in sent).toBe(false);
+  });
+
+  it('drop() removes only that workout\'s queued rows', async () => {
+    const ob = createOutbox(memoryStorage(), async () => ({ ok: false }));
+    await ob.enqueue(row({ reps: 5 }, true));
+    await ob.enqueue(row({ reps: 5 }, true, { ...KEY, workoutInstanceId: 'wi-2' }));
+    await ob.drop('wi-1');
+    expect(await ob.pending()).toEqual([expect.objectContaining({ workout_instance_id: 'wi-2' })]);
   });
 
   it('different sets are kept separately', async () => {

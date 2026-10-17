@@ -91,18 +91,19 @@ export default function WorkoutLoggerScreen() {
   // Mound velocity for throwing velocity fallback (5oz baseball PR)
   const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
   const [prAlert, setPRAlert] = useState<PRAlert | null>(null);
-  // Draft-save debounce, one timer PER SET (`reId:setIndex`). Every write
-  // carries the set's full current state (read from inputsRef when the timer
-  // fires), so typing reps then weight inside 500 ms still saves both.
-  // useRef (not useState) so a rapid second edit cancels the first timer
-  // synchronously.
+  // Draft-save debounce, one timer PER SET (`reId:setIndex`). The timer
+  // writes every field edited since the last save (draftFieldsRef), with the
+  // values read from inputsRef when it fires, so typing reps then weight
+  // inside 500 ms still saves both. useRef (not useState) so a rapid second
+  // edit cancels the first timer synchronously.
   const draftTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const draftFieldsRef = useRef<Record<string, Set<string>>>({});
   // Synchronous mirrors of exerciseInputs / completedSets. Saves build rows
   // from these so a write never uses a value from a stale render closure.
   const inputsRef = useRef<Record<string, any[]>>({});
   const completedRef = useRef<Record<string, boolean[]>>({});
-  // rpe per `reId:setIndex` as loaded — the upsert RPC writes the whole row,
-  // so a known rpe must be sent back or it would be cleared.
+  // rpe per `reId:setIndex` (loaded + tapped). Only an RPE tap sends it —
+  // the upsert RPC leaves columns a write doesn't name untouched.
   const rpeRef = useRef<Record<string, number | null>>({});
   // Render mirror of rpeRef (the RPE row reads it).
   const [rpeValues, setRpeValues] = useState<Record<string, number | null>>({});
@@ -661,21 +662,29 @@ export default function WorkoutLoggerScreen() {
     completedRef.current = next;
     setCompletedSets(next);
   };
-  const cancelDraft = (exerciseId: string, setIndex: number) => {
+  // Cancels a set's pending draft save and returns the fields it would have
+  // written — the caller's write carries them instead, so nothing typed in
+  // the last 500 ms is lost.
+  const cancelDraft = (exerciseId: string, setIndex: number): string[] => {
     const k = `${exerciseId}:${setIndex}`;
     const pending = draftTimersRef.current[k];
     if (pending) clearTimeout(pending);
     delete draftTimersRef.current[k];
+    const fields = draftFieldsRef.current[k];
+    delete draftFieldsRef.current[k];
+    return fields ? [...fields] : [];
   };
 
-  // Save one set (spec §7 / §11.2): build the set's FULL current row, put it
-  // in the device outbox, then sync. complete=false is a draft (field edits),
-  // true is a logged set (Log Set / check / quick-complete); un-checking
-  // writes false. Resolves true once the row is safely queued (or sent).
+  // Save one set (spec §7 / §11.2 / final review I4): build a row with ONLY
+  // what this write means to change, put it in the device outbox (merged per
+  // set), then sync. `complete` (Log Set / check / circle / un-check) sends
+  // is_complete; `fields` sends those fields' current values (drafts don't
+  // touch is_complete); `rpe` sends the set's rpe. Resolves true once the row
+  // is safely queued (or sent).
   const persistSet = useCallback(async (
     exerciseId: string,
     setIndex: number,
-    complete: boolean,
+    write: { complete?: boolean; fields?: string[]; rpe?: boolean },
   ): Promise<boolean> => {
     const exercise = allExercises.find(ex => ex.id === exerciseId);
     if (!exercise) return false;
@@ -689,13 +698,14 @@ export default function WorkoutLoggerScreen() {
       { workoutInstanceId, routineExerciseId: exerciseId, setNumber: setIndex + 1 },
       inputsRef.current[exerciseId]?.[setIndex] || {},
       {
-        complete,
+        complete: write.complete,
+        fields: write.fields ?? [],
         athleteId,
         exerciseId: exercise.exercise_id,
         // org_id was never written from mobile before — web writes it; any
         // org-scoped RLS/report misses mobile logs without it.
         orgId,
-        rpe: rpeRef.current[`${exerciseId}:${setIndex}`],
+        rpe: write.rpe ? rpeRef.current[`${exerciseId}:${setIndex}`] ?? null : undefined,
       },
     );
     try {
@@ -731,11 +741,13 @@ export default function WorkoutLoggerScreen() {
     // Update local state immediately for responsiveness
     commitCompleted(exerciseId, () => Array(totalSets).fill(newStatus), totalSets);
 
-    // Persist each set's completion. Un-completing must write
-    // is_complete:false too — resume trusts is_complete.
+    // Persist each set's completion ONLY (plus any draft still pending) — the
+    // circle never re-sends values, so it can't overwrite sets a coach or
+    // another device entered. Un-completing writes is_complete:false too —
+    // resume trusts is_complete.
     for (let setIndex = 0; setIndex < totalSets; setIndex++) {
-      cancelDraft(exerciseId, setIndex);
-      await persistSet(exerciseId, setIndex, newStatus);
+      const fields = cancelDraft(exerciseId, setIndex);
+      await persistSet(exerciseId, setIndex, { complete: newStatus, fields });
     }
   };
 
@@ -857,16 +869,19 @@ export default function WorkoutLoggerScreen() {
     // latest values and completion when it fires, and targetExerciseId is
     // captured here, so navigating away inside 500 ms still saves the
     // right row.
+    // The draft sends only the edited fields — never is_complete, so editing
+    // a logged set keeps it logged and a draft can't un-log a set another
+    // device logged.
     const timerKey = `${targetExerciseId}:${setIndex}`;
     const pending = draftTimersRef.current[timerKey];
     if (pending) clearTimeout(pending);
+    if (!draftFieldsRef.current[timerKey]) draftFieldsRef.current[timerKey] = new Set();
+    draftFieldsRef.current[timerKey].add(field);
     draftTimersRef.current[timerKey] = setTimeout(() => {
       delete draftTimersRef.current[timerKey];
-      persistSet(
-        targetExerciseId,
-        setIndex,
-        completeForEdit(completedRef.current[targetExerciseId], setIndex),
-      );
+      const fields = [...(draftFieldsRef.current[timerKey] ?? [])];
+      delete draftFieldsRef.current[timerKey];
+      persistSet(targetExerciseId, setIndex, { fields });
     }, 500);
 
     // 5. Check for PR (if tracked metric). Carry the reps from the same set
@@ -907,8 +922,8 @@ export default function WorkoutLoggerScreen() {
       return updatedSets;
     };
     commitCompleted(activeExerciseId, markDone, exercise.sets);
-    cancelDraft(activeExerciseId, currentSetIndex);
-    persistSet(activeExerciseId, currentSetIndex, true).then(ok => {
+    const draftFields = cancelDraft(activeExerciseId, currentSetIndex);
+    persistSet(activeExerciseId, currentSetIndex, { complete: true, fields: draftFields }).then(ok => {
       if (ok && !wasDone) startRestAfter(activeExerciseId, currentSetIndex);
     });
 
@@ -1026,8 +1041,9 @@ export default function WorkoutLoggerScreen() {
     // Log Set / check → complete:true; uncheck → complete:false. The row
     // carries the set's full values (incl. the auto-fill just applied).
     completionInFlightRef.current.add(inFlightKey);
-    cancelDraft(activeExerciseId, setIndex);
-    persistSet(activeExerciseId, setIndex, !currentlyCompleted)
+    // Sends is_complete plus any fields edited/auto-filled since the last save.
+    const draftFields = cancelDraft(activeExerciseId, setIndex);
+    persistSet(activeExerciseId, setIndex, { complete: !currentlyCompleted, fields: draftFields })
       .then(ok => {
         if (ok && !currentlyCompleted) startRestAfter(activeExerciseId, setIndex);
       })
@@ -1036,15 +1052,15 @@ export default function WorkoutLoggerScreen() {
       });
   }, [activeExerciseId, allExercises, handleInputChange, persistSet, startRestAfter]);
 
-  // RPE tap: update the set's rpe (the value every later save carries) and
-  // save at once — as a draft, or as complete if the set is already logged.
+  // RPE tap: update the set's rpe and save at once — rpe only (plus any
+  // pending draft fields); completion is left alone.
   const handleRpeChange = useCallback((setIndex: number, value: number) => {
     if (!activeExerciseId) return;
     const next = { ...rpeRef.current, [`${activeExerciseId}:${setIndex}`]: value };
     rpeRef.current = next;
     setRpeValues(next);
-    cancelDraft(activeExerciseId, setIndex);
-    persistSet(activeExerciseId, setIndex, completedRef.current[activeExerciseId]?.[setIndex] === true);
+    const draftFields = cancelDraft(activeExerciseId, setIndex);
+    persistSet(activeExerciseId, setIndex, { rpe: true, fields: draftFields });
   }, [activeExerciseId, persistSet]);
 
   // Get current exercise and routine

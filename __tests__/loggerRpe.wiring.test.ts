@@ -21,11 +21,12 @@ describe('RPE row wiring', () => {
     expect(D).toContain('RPE?');
     expect(D).toMatch(/isCompleted && exercise\.ask_rpe && rpeValues/);
   });
-  it('the chosen rpe feeds buildLogRow and saves immediately', () => {
-    expect(L).toContain('rpe: rpeRef.current[`${exerciseId}:${setIndex}`]');
+  it('the chosen rpe feeds buildLogRow and saves immediately (rpe only, completion untouched)', () => {
+    expect(L).toContain('rpe: write.rpe ? rpeRef.current[`${exerciseId}:${setIndex}`] ?? null : undefined');
     const fn = L.slice(L.indexOf('const handleRpeChange'), L.indexOf('// Get current exercise and routine'));
     expect(fn).toContain('rpeRef.current');
-    expect(fn).toContain('persistSet(activeExerciseId, setIndex, completedRef.current[activeExerciseId]?.[setIndex] === true)');
+    expect(fn).toContain('persistSet(activeExerciseId, setIndex, { rpe: true, fields: draftFields })');
+    expect(fn).not.toContain('complete:');
     expect(L).toContain('onRpeChange={handleRpeChange}');
   });
   it('a missing RPE never disables Log Set', () => {

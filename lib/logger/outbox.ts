@@ -1,7 +1,8 @@
 // Offline outbox for logger set writes (spec §7): every set is saved to device
-// storage first, then synced. Rows are coalesced per set (latest full row
-// wins — rows are full state, so nothing is merged) and removed only once the
-// server accepted that exact row.
+// storage first, then synced. Rows are partial (only the keys a write means to
+// change — see saveSet.ts), so writes for the same set are MERGED per key
+// (the later value of a key wins), and a row is removed only once the server
+// accepted that exact merged row.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../supabase';
@@ -29,6 +30,9 @@ export type Outbox = {
   size: () => Promise<number>;
   // Queued (unsynced) rows — overlaid on server logs when a workout reopens.
   pending: () => Promise<LogRow[]>;
+  // Removes every queued row of one workout (Reset) — they must not re-insert
+  // sets into the reset workout.
+  drop: (workoutInstanceId: string) => Promise<void>;
 };
 
 type Queue = Record<string, LogRow>;
@@ -75,8 +79,9 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
       const q = await read();
       const k = setKeyOf(row);
       failures.delete(k); // a new edit / Log Set gets a fresh try
+      const merged = { ...q[k], ...row };
       delete q[k]; // re-insert so queue order follows the latest edit
-      q[k] = row;
+      q[k] = merged;
       await write(q);
     });
 
@@ -155,5 +160,18 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
   const size = async () => Object.keys(await withLock(storage, read)).length;
   const pending = async () => Object.values(await withLock(storage, read));
 
-  return { enqueue, flush, size, pending };
+  const drop = (workoutInstanceId: string) =>
+    withLock(storage, async () => {
+      const q = await read();
+      let changed = false;
+      for (const [k, row] of Object.entries(q)) {
+        if (row.workout_instance_id !== workoutInstanceId) continue;
+        delete q[k];
+        failures.delete(k);
+        changed = true;
+      }
+      if (changed) await write(q);
+    });
+
+  return { enqueue, flush, size, pending, drop };
 }

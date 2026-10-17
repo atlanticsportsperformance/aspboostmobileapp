@@ -11,7 +11,7 @@ describe('workout logger — set completion survives leaving and resuming', () =
   });
   it('checking/unchecking a set persists completion (Log Set → complete, uncheck → draft)', () => {
     const fn = body('const handleToggleSetComplete', '// Get current exercise and routine');
-    expect(fn).toContain('persistSet(activeExerciseId, setIndex, !currentlyCompleted)');
+    expect(fn).toContain('persistSet(activeExerciseId, setIndex, { complete: !currentlyCompleted, fields: draftFields })');
     // double-tap while saving is ignored, cleared when the save settles
     expect(fn).toContain('if (completionInFlightRef.current.has(inFlightKey)) return;');
     expect(fn).toContain('setTimeout(() => completionInFlightRef.current.delete(inFlightKey), COMPLETION_GUARD_MS)');
@@ -20,22 +20,25 @@ describe('workout logger — set completion survives leaving and resuming', () =
   });
   it('Next / Log Set persists the current set as complete', () => {
     const fn = body('const handleNextSet', '// Navigation handlers');
-    expect(fn).toContain('persistSet(activeExerciseId, currentSetIndex, true)');
+    expect(fn).toContain('persistSet(activeExerciseId, currentSetIndex, { complete: true, fields: draftFields })');
   });
   it('Next Set pre-fills through nextSetPrefill, never a raw copy of every field', () => {
     const fn = body('const handleNextSet', '// Navigation handlers');
     expect(fn).toContain('nextSetPrefill({');
     expect(fn).not.toContain('Object.keys(currentSetData).forEach');
   });
-  it('quick-complete persists both completing and un-completing', () => {
+  it('quick-complete (overview circle) persists only completion, both ways', () => {
     const fn = body('const handleToggleExerciseComplete', '// Helper to get max value');
-    expect(fn).toContain('await persistSet(exerciseId, setIndex, newStatus)');
+    expect(fn).toContain('await persistSet(exerciseId, setIndex, { complete: newStatus, fields })');
+    expect(fn).toContain('const fields = cancelDraft(exerciseId, setIndex);');
   });
-  it('saves skip notes-only rows and out-of-range sets, and go through the outbox as full rows', () => {
+  it('saves skip notes-only rows and out-of-range sets, and go through the outbox as partial rows', () => {
     const fn = body('const persistSet', '// Rest after a logged set');
     expect(fn).toContain('if (!exercise.exercise_id) return false;');
     expect(fn).toContain('if (!isValidSetIndex(setIndex, exercise.sets)) return false;');
     expect(fn).toContain('buildLogRow(');
+    expect(fn).toContain('fields: write.fields ?? []');
+    expect(fn).toContain('complete: write.complete');
     expect(fn).toContain('inputsRef.current[exerciseId]?.[setIndex]');
     expect(fn).toContain('await loggerOutbox.enqueue(row)');
     expect(fn).toContain('void loggerOutbox.flush()');
@@ -44,7 +47,9 @@ describe('workout logger — set completion survives leaving and resuming', () =
   it('field edits (typed or auto-filled) save drafts; an edit never marks a set done, editing a done set keeps it done', () => {
     const fn = body('const handleInputChange', '// Handle next set / done');
     expect(fn).not.toContain('isAutoFill ||');
-    expect(fn).toContain('completeForEdit(completedRef.current[targetExerciseId], setIndex)');
+    // drafts send only the edited fields and never is_complete
+    expect(fn).toContain('persistSet(targetExerciseId, setIndex, { fields })');
+    expect(fn).not.toContain('complete:');
     expect(fn).toContain('}, 500);');
     expect(fn).not.toContain('commitCompleted');
     expect(fn).not.toContain('setCompletedSets');
