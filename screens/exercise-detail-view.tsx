@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
-  Linking,
   PanResponder,
   Modal,
   Pressable,
@@ -40,9 +39,7 @@ import type {
 } from '../types/logger';
 import { neighborExercise, nextStep, type SeqStep } from '../lib/logger/sequence';
 import RpeRow from '../components/logger/RpeRow';
-import FloatingVideoButton from '../components/logger/FloatingVideoButton';
-import FloatingVideoWindow from '../components/logger/FloatingVideoWindow';
-import VideoModal from '../components/logger/VideoModal';
+import InlineDemoVideo from '../components/logger/InlineDemoVideo';
 import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
@@ -259,10 +256,7 @@ export default function ExerciseDetailView({
       });
     }, 600);
   }, []);
-  // Floating demo video: closed by default; ⤢ hands off to the full modal.
-  const [floatingVideoOpen, setFloatingVideoOpen] = useState(false);
-  const [fullVideoId, setFullVideoId] = useState<string | null>(null);
-  // Measured bottom-bar height so the ▶ / window sit just above it.
+  // Measured bottom-bar height (scroll padding under the last set).
   const [bottomBarHeight, setBottomBarHeight] = useState(80);
 
   // Custom keypad state
@@ -271,18 +265,6 @@ export default function ExerciseDetailView({
     metricId: string;
     isDecimal: boolean;
   } | null>(null);
-
-  // A new exercise starts with its video closed.
-  useEffect(() => {
-    setFloatingVideoOpen(false);
-    setFullVideoId(null);
-  }, [exercise.id]);
-
-  // YouTube → floating window; any other link opens full screen outside.
-  const openVideo = () => {
-    if (videoId) setFloatingVideoOpen(true);
-    else if (videoUrl) Linking.openURL(videoUrl.trim()).catch(() => {});
-  };
 
   // Sets render in set order and the current one opens in place, so a new
   // current set is scrolled into view: set 1 → top (coach note visible), a
@@ -1269,6 +1251,16 @@ export default function ExerciseDetailView({
           showsVerticalScrollIndicator={false}
         >
           {!!rx && <Text style={styles.rx}>{rx}</Text>}
+          {/* Demo video inline at the top (muted, looping; "▶ DEMO" strip
+              collapses it; hidden + paused while the keypad is open). */}
+          {hasVideo(videoUrl) && (
+            <InlineDemoVideo
+              key={exercise.id}
+              videoId={videoId}
+              url={videoUrl!}
+              keypadOpen={!!activeInput}
+            />
+          )}
           {renderCoachNote()}
           {renderSets()}
         </ScrollView>
@@ -1435,27 +1427,6 @@ export default function ExerciseDetailView({
           </View>
         </View>
       </KeyboardAvoidingView>
-
-      {/* Floating demo video — overlays the screen without blocking logging;
-          while the numeric keypad is open the ▶ hides and an open window
-          collapses (paused), coming back when the keypad closes. */}
-      {hasVideo(videoUrl) && !activeInput && !floatingVideoOpen && (
-        <FloatingVideoButton url={videoUrl} bottom={bottomBarHeight + 14} onPress={openVideo} />
-      )}
-      {floatingVideoOpen && videoId && (
-        <FloatingVideoWindow
-          videoId={videoId}
-          title={exerciseName}
-          bottom={bottomBarHeight + 12}
-          keypadOpen={!!activeInput}
-          onClose={() => setFloatingVideoOpen(false)}
-          onExpand={() => {
-            setFloatingVideoOpen(false);
-            setFullVideoId(videoId);
-          }}
-        />
-      )}
-      <VideoModal videoId={fullVideoId} onClose={() => setFullVideoId(null)} />
 
       {/* Custom Numeric Keypad */}
       {activeInput && (
