@@ -10,9 +10,11 @@ import { BackHandler, StyleSheet, Text, TouchableOpacity, View } from 'react-nat
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { readRackDevice, type RackDevice } from '../../lib/rack/device';
+import { useRackStaffGuard } from '../../hooks/useRackStaffGuard';
 
 export default function RackModeScreen() {
   const navigation = useNavigation<any>();
+  useRackStaffGuard();
   const [rack, setRack] = useState<RackDevice | null>(null);
 
   useEffect(() => {

@@ -20,10 +20,10 @@ export interface RackDevice {
   rackName: string;
 }
 
-/** iPad (or Android tablet). Rack mode is offered only here. */
+/** An iPad. Rack mode is offered only here (the Android rack is out of scope). */
 export function isTabletDevice(): boolean {
-  if (Platform.OS === 'ios' && (Platform as { isPad?: boolean }).isPad) return true;
-  return Device.deviceType === Device.DeviceType.TABLET;
+  if (Platform.OS !== 'ios') return false;
+  return !!(Platform as { isPad?: boolean }).isPad || Device.deviceType === Device.DeviceType.TABLET;
 }
 
 // ---- stored rack id (with a tiny store so App.tsx sees setup / exit)

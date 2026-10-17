@@ -17,11 +17,13 @@ import { createRackApi, type RackClient } from '../../lib/rack/api';
 import { createRackPersist } from '../../lib/rack/persist';
 import { clearRackDevice, drainRackQueues, type DrainResult } from '../../lib/rack/device';
 import { lockPortrait } from '../../lib/rack/orientation';
+import { useRackStaffGuard } from '../../hooks/useRackStaffGuard';
 
 type Phase = 'pin' | 'checking' | 'draining' | 'leftover';
 
 export default function RackPinExit() {
   const navigation = useNavigation<any>();
+  useRackStaffGuard();
   const { staffOrgId } = useAuth();
   const client = supabase as unknown as RackClient;
   const api = useMemo(() => createRackApi(client), [client]);

@@ -89,6 +89,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (e) {
         console.log('[Auth] checkStaffStatus error:', e);
+        // Never keep a previous user's staff flag (it gates Rack mode).
+        if (mountedRef.current) {
+          setIsStaff(false);
+          setStaffRole(null);
+          setStaffOrgId(null);
+        }
       }
     };
 

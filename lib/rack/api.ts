@@ -169,6 +169,8 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       await call<null>('rack_set_pin', { p_pin: pin });
     },
     verifyPin: async (pin: string) => (await call<boolean>('rack_verify_pin', { p_pin: pin })) === true,
+    /** Whether the caller's org already has a rack PIN (staff only). */
+    pinIsSet: async () => (await call<boolean>('rack_pin_is_set', {})) === true,
 
     // ---- reads
     async getSession(rackId: string): Promise<RackSessionRow | null> {

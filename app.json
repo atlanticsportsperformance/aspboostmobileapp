@@ -101,7 +101,8 @@
         {
           "initialOrientation": "PORTRAIT_UP"
         }
-      ]
+      ],
+      "./plugins/withAndroidPortrait"
     ],
     "runtimeVersion": {
       "policy": "appVersion"

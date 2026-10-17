@@ -114,6 +114,9 @@ function AppContent() {
     // Rack mode is locked down: notification taps never navigate out of it.
     if (isRackRoute(nav.getCurrentRoute?.()?.name)) return;
 
+    // ...and never navigate into it (Rack mode is reached only by staff setup / boot).
+    if (data.screen && isRackRoute(data.screen)) return;
+
     if (data.screen) {
       nav.navigate(data.screen, data.id ? { id: data.id } : undefined);
     } else if (data.type) {

@@ -17,11 +17,14 @@ export function isRackRoute(name: string | undefined | null): boolean {
 
 let last: 'portrait' | 'landscape' | null = null;
 
+// `last` is recorded only after a lock succeeds, so a failed lock is retried
+// on the next navigation change.
 export async function lockPortrait(): Promise<void> {
-  last = 'portrait';
   try {
     await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    last = 'portrait';
   } catch (e) {
+    last = null;
     console.warn('[orientation] portrait lock failed', e);
   }
 }
@@ -29,10 +32,11 @@ export async function lockPortrait(): Promise<void> {
 /** Landscape on a tablet; a phone stays portrait. */
 export async function lockRackLandscape(): Promise<void> {
   if (!isTabletDevice()) return lockPortrait();
-  last = 'landscape';
   try {
     await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    last = 'landscape';
   } catch (e) {
+    last = null;
     console.warn('[orientation] landscape lock failed', e);
   }
 }

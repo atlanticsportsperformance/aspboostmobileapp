@@ -10,10 +10,19 @@ describe('Rack mode entry is staff + tablet only', () => {
     expect(S).toMatch(/\{showRackSetup && \(\s*<TouchableOpacity[^\n]*navigate\('RackSetup'\)/);
     expect(S).toContain('Set up this iPad as a rack');
   });
-  it('the tablet check uses Platform.isPad / expo-device TABLET', () => {
+  it('the tablet check is iOS-only (iPad), via Platform.isPad / expo-device TABLET', () => {
     const D = read('lib/rack/device.ts');
-    expect(D).toContain('isPad');
-    expect(D).toContain('Device.DeviceType.TABLET');
+    const fn = D.slice(D.indexOf('export function isTabletDevice'), D.indexOf('// ---- stored rack id'));
+    expect(fn).toContain("if (Platform.OS !== 'ios') return false;");
+    expect(fn.indexOf("Platform.OS !== 'ios'")).toBeLessThan(fn.indexOf('isPad'));
+    expect(fn).toContain('Device.DeviceType.TABLET');
+  });
+  it('push payloads can never navigate into a rack route; rack screens guard staff', () => {
+    expect(read('App.tsx')).toContain('if (data.screen && isRackRoute(data.screen)) return;');
+    for (const f of ['screens/rack/RackModeScreen.tsx', 'screens/rack/RackPinExit.tsx']) {
+      expect(read(f)).toContain('useRackStaffGuard();');
+    }
+    expect(read('hooks/useRackStaffGuard.ts')).toContain('if (session && rolesResolved && !isStaff)');
   });
   it('the setup screen re-checks staff + tablet', () => {
     expect(read('screens/rack/RackSetupScreen.tsx')).toContain('const allowed = isStaff && !!staffOrgId && isTabletDevice();');
@@ -32,11 +41,38 @@ describe('Rack setup', () => {
     expect(S).toContain(".from('racks')\n      .insert(");
     expect(S).toContain("update({ ovr_device_name: deviceName })");
     expect(S).toContain('Skip — pair later');
-    expect(S).toContain('api.setPin(pin)');
+    expect(S).toContain('isSet = await api.pinIsSet();');
     const save = S.indexOf('await saveRackDevice({ rackId: r.id, rackName: r.name });');
     const enter = S.indexOf("routes: [{ name: 'RackMode' }]");
     expect(save).toBeGreaterThan(-1);
     expect(enter).toBeGreaterThan(save);
+  });
+});
+
+describe('Rack setup PIN step', () => {
+  const S = read('screens/rack/RackSetupScreen.tsx');
+  const step = S.slice(S.indexOf('function PinStep'), S.indexOf('const styles = StyleSheet.create('));
+  it('pinIsSet wraps rack_pin_is_set', () => {
+    expect(read('lib/rack/api.ts')).toContain("pinIsSet: async () => (await call<boolean>('rack_pin_is_set', {})) === true,");
+  });
+  it('a set PIN skips the step; an error blocks with Retry (never sets)', () => {
+    const load = step.slice(step.indexOf('const load = useCallback'), step.indexOf('useEffect('));
+    expect(load).toMatch(/catch \(e\) \{[\s\S]*setStatus\('error'\);\s*return;/);
+    expect(load).toMatch(/if \(isSet\) \{\s*await onDone\(\);\s*return;\s*\}\s*setStatus\('unset'\);/);
+    expect(load).not.toContain('setPin');
+    expect(step).toContain('Retry');
+  });
+  it('setPin is reachable only from the unset (enter + confirm) form', () => {
+    expect((step.match(/api\.setPin\(/g) || []).length).toBe(1);
+    const setNew = step.slice(step.indexOf('const setNew'), step.indexOf("if (status === 'checking')"));
+    expect(setNew).toContain('if (confirm !== pin)');
+    expect(setNew.indexOf('confirm !== pin')).toBeLessThan(setNew.indexOf('api.setPin(pin)'));
+    // setNew's button renders only after the checking / error branches returned.
+    expect(step.indexOf('onPress={setNew}')).toBeGreaterThan(step.indexOf("if (status === 'error')"));
+  });
+  it('no verify-then-replace path', () => {
+    expect(step).not.toContain('verifyPin');
+    expect(S).not.toMatch(/replaces the PIN/);
   });
 });
 
@@ -98,6 +134,12 @@ describe('app config', () => {
     expect(app.ios.requireFullScreen).toBe(true);
     expect(app.orientation).toBe('default');
     expect(app.plugins).toContainEqual(['expo-screen-orientation', { initialOrientation: 'PORTRAIT_UP' }]);
+  });
+  it('Android keeps its native portrait lock via the local plugin', () => {
+    expect(app.plugins).toContain('./plugins/withAndroidPortrait');
+    const P = read('plugins/withAndroidPortrait.js');
+    expect(P).toContain('withAndroidManifest');
+    expect(P).toContain("main.$['android:screenOrientation'] = 'portrait';");
   });
   it('BLE permission text mentions Pulse and the OVR', () => {
     const ble = app.plugins.find((p: any) => Array.isArray(p) && p[0] === '@config-plugins/react-native-ble-plx');

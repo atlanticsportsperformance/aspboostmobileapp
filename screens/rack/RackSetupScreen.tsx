@@ -3,7 +3,8 @@
  *   1. pick a rack or create one by name (staff insert through RLS; the
  *      rack_sessions row is created by a DB trigger)
  *   2. pair the OVR sensor → racks.ovr_device_name (or skip, pair later)
- *   3. the rack PIN (exits Rack mode) — see PinStep
+ *   3. the rack PIN (exits Rack mode): skipped when the org has one,
+ *      otherwise set + confirm — see PinStep
  *   4. save { rackId, rackName } to rack_device_v1, enter Rack mode.
  */
 
@@ -260,41 +261,48 @@ function PairStep({ rack, onDone }: { rack: Rack; onDone: (r: Rack) => void }) {
 // ---------------------------------------------------------------- 3. PIN
 
 /**
- * There is no "is a PIN set?" read (org_rack_settings has no client policy),
- * so the step asks for the rack PIN: a match with the org's PIN goes straight
- * through. Otherwise (no PIN yet, or a typo) staff can confirm the same digits
- * to make them the rack PIN via rack_set_pin — the warning says it replaces
- * the PIN on every rack iPad.
+ * rack_pin_is_set() decides the step:
+ *   true  → skip (nothing to do; Exit verifies the PIN later)
+ *   false → enter + confirm, then rack_set_pin
+ *   error → block with Retry; never fall through to setting a PIN.
+ * Changing an existing PIN is out of scope.
  */
 function PinStep({ api, onDone }: { api: ReturnType<typeof createRackApi>; onDone: () => Promise<void> }) {
+  const [status, setStatus] = useState<'checking' | 'unset' | 'error'>('checking');
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [mode, setMode] = useState<'enter' | 'set'>('enter');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const check = async () => {
+  const load = useCallback(async () => {
+    setStatus('checking');
+    setError(null);
+    let isSet: boolean;
+    try {
+      isSet = await api.pinIsSet();
+    } catch (e) {
+      console.warn('[rack setup] rack_pin_is_set failed', e);
+      setStatus('error');
+      return;
+    }
+    if (isSet) {
+      await onDone();
+      return;
+    }
+    setStatus('unset');
+  }, [api, onDone]);
+
+  useEffect(() => {
+    load();
+    // Run once per mount of this step.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setNew = async () => {
     if (!PIN_RE.test(pin)) {
       setError('The PIN is 4–12 digits.');
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      if (await api.verifyPin(pin)) {
-        await onDone();
-        return;
-      }
-      setMode('set');
-    } catch (e) {
-      console.warn('[rack setup] verify PIN failed', e);
-      setError("Couldn't check the PIN. Check the connection.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const setNew = async () => {
     if (confirm !== pin) {
       setError("The PINs don't match.");
       return;
@@ -312,49 +320,54 @@ function PinStep({ api, onDone }: { api: ReturnType<typeof createRackApi>; onDon
     }
   };
 
+  if (status === 'checking') {
+    return (
+      <View style={{ gap: 12, alignItems: 'center' }}>
+        <ActivityIndicator color="#9BDDFF" />
+        <Text style={styles.muted}>Checking the rack PIN…</Text>
+      </View>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <View style={{ gap: 12 }}>
+        <Text style={styles.h}>Rack PIN</Text>
+        <Text style={styles.err}>Couldn't check the rack PIN. Check the connection.</Text>
+        <TouchableOpacity style={styles.btn} onPress={load}>
+          <Text style={styles.btnText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <View style={{ gap: 12 }}>
-      <Text style={styles.h}>Rack PIN</Text>
+      <Text style={styles.h}>Set the rack PIN</Text>
       <Text style={styles.muted}>Staff enter it to exit Rack mode. Every rack iPad uses the same PIN.</Text>
       <TextInput
         style={styles.input}
         value={pin}
-        onChangeText={(t) => {
-          setPin(t.replace(/[^0-9]/g, ''));
-          if (mode === 'set') setMode('enter');
-          setConfirm('');
-        }}
+        onChangeText={(t) => setPin(t.replace(/[^0-9]/g, ''))}
         placeholder="PIN (4–12 digits)"
         placeholderTextColor="rgba(255,255,255,0.3)"
         keyboardType="number-pad"
         secureTextEntry
         maxLength={12}
       />
-      {mode === 'enter' ? (
-        <TouchableOpacity style={[styles.btn, busy && styles.btnOff]} disabled={busy} onPress={check}>
-          <Text style={styles.btnText}>{busy ? 'Checking…' : 'Continue'}</Text>
-        </TouchableOpacity>
-      ) : (
-        <>
-          <Text style={styles.warn}>
-            That isn't the current rack PIN. If no PIN has been set yet, enter it again to make it the rack PIN.
-            This replaces the PIN on every rack iPad.
-          </Text>
-          <TextInput
-            style={styles.input}
-            value={confirm}
-            onChangeText={(t) => setConfirm(t.replace(/[^0-9]/g, ''))}
-            placeholder="Confirm PIN"
-            placeholderTextColor="rgba(255,255,255,0.3)"
-            keyboardType="number-pad"
-            secureTextEntry
-            maxLength={12}
-          />
-          <TouchableOpacity style={[styles.btn, busy && styles.btnOff]} disabled={busy} onPress={setNew}>
-            <Text style={styles.btnText}>{busy ? 'Saving…' : 'Set rack PIN'}</Text>
-          </TouchableOpacity>
-        </>
-      )}
+      <TextInput
+        style={styles.input}
+        value={confirm}
+        onChangeText={(t) => setConfirm(t.replace(/[^0-9]/g, ''))}
+        placeholder="Confirm PIN"
+        placeholderTextColor="rgba(255,255,255,0.3)"
+        keyboardType="number-pad"
+        secureTextEntry
+        maxLength={12}
+      />
+      <TouchableOpacity style={[styles.btn, busy && styles.btnOff]} disabled={busy} onPress={setNew}>
+        <Text style={styles.btnText}>{busy ? 'Saving…' : 'Set rack PIN'}</Text>
+      </TouchableOpacity>
       {error && <Text style={styles.err}>{error}</Text>}
     </View>
   );
@@ -368,7 +381,6 @@ const styles = StyleSheet.create({
   body: { padding: 24, gap: 12, maxWidth: 560, width: '100%', alignSelf: 'center' },
   h: { fontSize: 16, fontWeight: '700', color: 'rgba(255,255,255,0.9)' },
   muted: { fontSize: 13, color: 'rgba(255,255,255,0.5)' },
-  warn: { fontSize: 13, color: 'rgba(255,255,255,0.7)' },
   err: { fontSize: 13, color: '#E5534B' },
   row: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#131317',
