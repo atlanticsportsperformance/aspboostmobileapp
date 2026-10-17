@@ -171,6 +171,9 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
           )
         `)
         .eq('workout_instance_id', workoutInstanceId)
+        // Only logged sets: drafts (typed, not logged) and un-checked sets are
+        // is_complete=false rows and must not show or count as logged.
+        .eq('is_complete', true)
         .order('set_number');
 
       if (logsError) throw logsError;
