@@ -17,10 +17,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer, { type YoutubeIframeRef } from 'react-native-youtube-iframe';
 import { LOGGER_COLORS } from '../../lib/logger/theme';
 
-const WIN_W = 230;
-const VIDEO_H = Math.round(WIN_W * (9 / 16));
-const HANDLE_H = 14;
-const WIN_H = VIDEO_H + HANDLE_H;
+// Full-width window: screen width minus a 16 px margin each side, 16:9 video.
+const SIDE = 16;
+const HANDLE_H = 18;
 const MARGIN = 8;
 // Origin for the local player HTML (YouTube rejects embeds with no referrer).
 const PLAYER_BASE_URL = 'https://aspboostapp.vercel.app';
@@ -51,6 +50,9 @@ export default function FloatingVideoWindow({
   onExpand: () => void;
 }) {
   const win = useWindowDimensions();
+  const WIN_W = Math.max(0, win.width - SIDE * 2);
+  const VIDEO_H = Math.round(WIN_W * (9 / 16));
+  const WIN_H = VIDEO_H + HANDLE_H;
   const insets = useSafeAreaInsets();
   // Real bounds of the overlay once laid out; window dimensions until then.
   const [bounds, setBounds] = useState({ w: win.width, h: win.height });
@@ -63,16 +65,16 @@ export default function FloatingVideoWindow({
   // (zero when the overlay already starts below the top inset).
   const topInset = Math.max(0, insets.top - (win.height - bounds.h));
   const limits = useMemo(() => ({
-    minX: MARGIN,
-    maxX: bounds.w - WIN_W - MARGIN,
+    minX: SIDE,
+    maxX: SIDE,
     minY: MARGIN + topInset,
     maxY: bounds.h - WIN_H - MARGIN - insets.bottom,
-  }), [bounds.w, bounds.h, insets.bottom, topInset]);
+  }), [bounds.h, insets.bottom, topInset, WIN_H]);
   const hidden = keypadOpen;
   const limitsRef = useRef(limits);
   limitsRef.current = limits;
 
-  const pos = useRef({ x: bounds.w - WIN_W - 12, y: bounds.h - bottom - WIN_H });
+  const pos = useRef({ x: SIDE, y: bounds.h - bottom - WIN_H });
   const pan = useRef(new Animated.ValueXY(pos.current)).current;
   const start = useRef(pos.current);
   const moved = useRef(false);
@@ -89,7 +91,7 @@ export default function FloatingVideoWindow({
   // Keep the window on screen when the bounds change (layout, rotation).
   useEffect(() => {
     if (!dragged.current) {
-      const x = bounds.w - WIN_W - 12;
+      const x = SIDE;
       const y = bounds.h - bottom - WIN_H;
       const l = limits;
       pos.current = { x: clamp(x, l.minX, l.maxX), y: clamp(y, l.minY, l.maxY) };
@@ -98,7 +100,7 @@ export default function FloatingVideoWindow({
       pos.current = { x: clamp(pos.current.x, l.minX, l.maxX), y: clamp(pos.current.y, l.minY, l.maxY) };
     }
     pan.setValue(pos.current);
-  }, [limits, pan, bounds.w, bounds.h, bottom]);
+  }, [limits, pan, bounds.w, bounds.h, bottom, WIN_H]);
 
   const [videoError, setVideoError] = useState(false);
   // Gym audio: demos start muted; the header toggle unmutes.
@@ -120,8 +122,8 @@ export default function FloatingVideoWindow({
       moved.current = false;
     },
     onPanResponderMove: (_e, g) => {
-      if (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3) moved.current = dragged.current = true;
-      place(start.current.x + g.dx, start.current.y + g.dy);
+      if (Math.abs(g.dy) > 3 || Math.abs(g.dx) > 3) moved.current = dragged.current = true;
+      place(start.current.x, start.current.y + g.dy);
     },
     onPanResponderRelease: () => {
       // A tap (no drag) on the failed-player poster opens YouTube.
@@ -178,10 +180,10 @@ export default function FloatingVideoWindow({
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none" onLayout={onLayout}>
       <Animated.View
-        style={[styles.window, { opacity: hidden ? 0 : 1, transform: pan.getTranslateTransform() }]}
+        style={[styles.window, { width: WIN_W, opacity: hidden ? 0 : 1, transform: pan.getTranslateTransform() }]}
         pointerEvents={hidden ? 'none' : 'auto'}
       >
-        <View style={styles.video}>
+        <View style={[styles.video, { width: WIN_W, height: VIDEO_H }]}>
           {videoError ? (
             <Image
               source={{ uri: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` }}
@@ -251,7 +253,7 @@ export default function FloatingVideoWindow({
               hitSlop={6}
               accessibilityLabel={muted ? 'Unmute video' : 'Mute video'}
             >
-              <Ionicons name={muted ? 'volume-mute' : 'volume-high'} size={12} color="#FFFFFF" />
+              <Ionicons name={muted ? 'volume-mute' : 'volume-high'} size={18} color="#FFFFFF" />
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.actionBtn}
@@ -276,7 +278,7 @@ export default function FloatingVideoWindow({
             </View>
           )}
         </View>
-        <View style={styles.handleRow} {...responder.panHandlers}>
+        <View style={[styles.handleRow, { height: HANDLE_H }]} {...responder.panHandlers}>
           <View style={styles.handle} />
         </View>
       </Animated.View>
@@ -289,8 +291,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: 0,
-    width: WIN_W,
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: 'hidden',
     backgroundColor: '#111111',
     borderWidth: 1,
@@ -302,8 +303,6 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   video: {
-    width: WIN_W,
-    height: VIDEO_H,
     backgroundColor: '#000000',
   },
   loading: {
@@ -314,14 +313,14 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: '#737373',
-    fontSize: 11,
+    fontSize: 14,
   },
   topShade: {
     position: 'absolute',
     left: 0,
     right: 0,
     top: 0,
-    height: 44,
+    height: 64,
   },
   surface: {
     ...StyleSheet.absoluteFillObject,
@@ -331,43 +330,43 @@ const styles = StyleSheet.create({
   },
   watchText: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 15,
     fontWeight: '600',
   },
   title: {
     position: 'absolute',
-    top: 7,
-    left: 8,
-    right: 88,
+    top: 14,
+    left: 12,
+    right: 128,
     color: '#FFFFFF',
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.5,
   },
   actions: {
     position: 'absolute',
-    top: 4,
-    right: 6,
+    top: 6,
+    right: 8,
     flexDirection: 'row',
-    gap: 4,
+    gap: 6,
   },
   actionBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 34,
+    height: 34,
+    borderRadius: 9,
     backgroundColor: 'rgba(0,0,0,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionText: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 16,
   },
   track: {
     position: 'absolute',
-    left: 8,
-    right: 8,
-    bottom: 8,
+    left: 12,
+    right: 12,
+    bottom: 10,
     height: 3,
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.2)',
@@ -379,13 +378,12 @@ const styles = StyleSheet.create({
     backgroundColor: LOGGER_COLORS.accent,
   },
   handleRow: {
-    height: HANDLE_H,
     alignItems: 'center',
     justifyContent: 'center',
   },
   handle: {
-    width: 28,
-    height: 4,
+    width: 40,
+    height: 5,
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.25)',
   },
