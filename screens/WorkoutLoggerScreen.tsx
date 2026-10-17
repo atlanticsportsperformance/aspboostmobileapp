@@ -923,6 +923,14 @@ export default function WorkoutLoggerScreen() {
     setViewMode('exercise');
   };
 
+  // Overview Continue: open nextStep's exercise on nextStep's set, so a
+  // superset A1 → A2 → A1 lands on the right round.
+  const handleContinue = (exerciseId: string, setIndex: number) => {
+    setCurrentSetIndexes(prev => ({ ...prev, [exerciseId]: setIndex }));
+    setActiveExerciseId(exerciseId);
+    setViewMode('exercise');
+  };
+
   const handleBackToOverview = () => {
     setViewMode('overview');
     setActiveExerciseId(null);
@@ -1105,6 +1113,7 @@ export default function WorkoutLoggerScreen() {
         restSecondsLeft={restTimer.secondsLeft}
         timer={timer}
         onExercisePress={handleExercisePress}
+        onContinue={handleContinue}
         onCompleteWorkout={handleCompleteWorkout}
         onToggleExerciseComplete={handleToggleExerciseComplete}
         onBack={handleExitWorkout}

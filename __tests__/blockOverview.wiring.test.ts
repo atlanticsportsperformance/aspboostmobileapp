@@ -8,13 +8,32 @@ const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'u
 describe('after-Start overview v2 wiring', () => {
   it('Continue uses nextStep', () => {
     expect(B).toContain('const next = nextStep(sequence, completedSets);');
-    expect(B).toContain('onPress={() => onExercisePress(next.reId)}');
+    expect(B).toContain('onPress={() => onContinue(next.reId, next.setIndex)}');
     expect(B).toContain('`Continue · ${codeById[next.reId]');
     // all done → today's COMPLETE WORKOUT button, no Continue
     const bar = B.slice(B.indexOf('{allSetsCompleted ? ('), B.indexOf('{/* Incomplete Workout Warning Modal */}'));
     expect(bar.indexOf('COMPLETE WORKOUT')).toBeLessThan(bar.indexOf('continueLabel'));
     expect(bar).toContain(') : next ? (');
     expect(bar).toContain('Finish early');
+  });
+
+  it('Continue sets the set index from nextStep; a row tap does not', () => {
+    const fn = L.slice(L.indexOf('const handleContinue'), L.indexOf('const handleBackToOverview'));
+    expect(fn).toContain('setCurrentSetIndexes(prev => ({ ...prev, [exerciseId]: setIndex }));');
+    expect(fn).toContain('setActiveExerciseId(exerciseId);');
+    expect(fn).toContain("setViewMode('exercise');");
+    expect(L).toContain('onContinue={handleContinue}');
+    expect(L).toContain('onExercisePress={handleExercisePress}');
+    const tap = L.slice(L.indexOf('const handleExercisePress'), L.indexOf('// Overview Continue'));
+    expect(tap).not.toContain('setCurrentSetIndexes');
+    expect(B).toContain("onPress={isNotesOnlyRow ? undefined : () => onExercisePress(exercise.id)}");
+  });
+
+  it('done block dims header + rows but not the green result line', () => {
+    expect(B).toContain('const dim = blockDone ? styles.dimmed : null;');
+    expect(B).toContain('style={[styles.blockHeader, dim]}');
+    expect(B).toContain('<Text style={styles.doneLine}>{doneSummary(exercise)}</Text>');
+    expect(B).not.toContain('blockSectionDone');
   });
 
   it('RPE tag gated on ask_rpe', () => {
@@ -51,7 +70,6 @@ describe('after-Start overview v2 wiring', () => {
     expect(B).toContain('isCurrent && styles.exerciseCardCurrent');
     expect(B).toContain('exerciseDashes(exercise.id, sequence, completedSets, next ?? undefined)');
     expect(B).toContain('next${target ? `: ${target}` : \'\'}');
-    expect(B).toContain('blockDone && styles.blockSectionDone');
     const st = B.slice(B.indexOf('  doneLine: {'));
     expect(st.slice(0, 80)).toContain('LOGGER_COLORS.green');
   });

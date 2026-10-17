@@ -44,6 +44,8 @@ interface BlockOverviewProps {
   restSecondsLeft: number | null;
   timer: number; // seconds elapsed
   onExercisePress: (exerciseId: string) => void;
+  /** Continue: open the next set's exercise ON that set (nextStep). */
+  onContinue: (exerciseId: string, setIndex: number) => void;
   onCompleteWorkout: () => void;
   onToggleExerciseComplete: (exerciseId: string, sets: number) => void;
   onBack: () => void;
@@ -147,6 +149,7 @@ export default function BlockOverview({
   restSecondsLeft,
   timer,
   onExercisePress,
+  onContinue,
   onCompleteWorkout,
   onToggleExerciseComplete,
   onBack,
@@ -187,7 +190,7 @@ export default function BlockOverview({
   const progress = workoutProgress(sequence, completedSets);
   const { doneSets: completedSetsCount, totalSets } = progress;
   // The current exercise = the exercise of the next set to log. Continue
-  // opens it (same handler as tapping its row).
+  // opens it on that set (a row tap keeps the exercise's own set index).
   const next = nextStep(sequence, completedSets);
 
   // A1, A2, B1… per visible row — the list and the Continue label share it.
@@ -353,12 +356,15 @@ export default function BlockOverview({
         const blockDone =
           rows.length > 0 &&
           rows.every(ex => (completedSets[ex.id]?.length ?? 0) > 0 && isExerciseCompleted(ex.id, completedSets));
+        // Dim per element (RN opacity cascades to children) so the green
+        // "all done" result line stays at full strength.
+        const dim = blockDone ? styles.dimmed : null;
 
         return (
-          <View key={routine.id} style={[styles.blockSection, blockDone && styles.blockSectionDone]}>
+          <View key={routine.id} style={styles.blockSection}>
             {/* Block Header */}
             <TouchableOpacity
-              style={styles.blockHeader}
+              style={[styles.blockHeader, dim]}
               onPress={() => toggleBlock(routine.id)}
               activeOpacity={0.7}
             >
@@ -380,7 +386,7 @@ export default function BlockOverview({
 
             {/* Notes Section */}
             {isExpanded && routine.notes && (
-              <View style={styles.blockNotesContainer}>
+              <View style={[styles.blockNotesContainer, dim]}>
                 <Text style={styles.blockNotes}>{routine.notes}</Text>
               </View>
             )}
@@ -389,7 +395,7 @@ export default function BlockOverview({
                 circuits/EMOMs. Previously the value was on the routine row
                 but never surfaced to the athlete. */}
             {isExpanded && (routine as any).rest_between_rounds_seconds ? (
-              <View style={styles.restBetweenRoundsRow}>
+              <View style={[styles.restBetweenRoundsRow, dim]}>
                 <Text style={styles.restBetweenRoundsLabel}>
                   ⏱ Rest between rounds: {(routine as any).rest_between_rounds_seconds}s
                 </Text>
@@ -460,7 +466,7 @@ export default function BlockOverview({
                       activeOpacity={isNotesOnlyRow ? 1 : 0.7}
                     >
                       {/* Left Section */}
-                      <View style={styles.exerciseLeft}>
+                      <View style={[styles.exerciseLeft, dim]}>
                         {/* Exercise Code - Simple text */}
                         <Text style={[styles.exerciseCodeText, isCurrent && styles.exerciseCodeTextCurrent]}>
                           {exerciseCode}
@@ -499,7 +505,7 @@ export default function BlockOverview({
                       {/* Center Section */}
                       <View style={styles.exerciseCenter}>
                         {/* Exercise Name Row */}
-                        <View style={styles.exerciseNameRow}>
+                        <View style={[styles.exerciseNameRow, dim]}>
                           <Text style={styles.exerciseName} numberOfLines={2}>
                             {exercise.exercises?.name || (exercise as any).placeholder_name || 'Exercise'}
                           </Text>
@@ -524,18 +530,18 @@ export default function BlockOverview({
                         {showDoneLine ? (
                           <Text style={styles.doneLine}>{doneSummary(exercise)}</Text>
                         ) : current ? (
-                          <Text style={styles.currentLine} numberOfLines={2}>
+                          <Text style={[styles.currentLine, dim]} numberOfLines={2}>
                             {current.logged ? `${current.logged} · ` : ''}
                             <Text style={styles.currentNext}>{current.next}</Text>
                           </Text>
                         ) : metrics ? (
-                          <Text style={styles.metricsDisplay} numberOfLines={6}>
+                          <Text style={[styles.metricsDisplay, dim]} numberOfLines={6}>
                             {metrics}
                           </Text>
                         ) : null}
 
                         {showDashes && (
-                          <View style={styles.dashRow}>
+                          <View style={[styles.dashRow, dim]}>
                             {dashes.map((d, i) => (
                               <View
                                 key={i}
@@ -560,7 +566,7 @@ export default function BlockOverview({
                           (() => {
                             const parsed = parseInstructionBlock(exercise.notes);
                             return (
-                              <View style={styles.instructionBlock}>
+                              <View style={[styles.instructionBlock, dim]}>
                                 {parsed.sections.map((section, sIdx) => (
                                   <View
                                     key={sIdx}
@@ -593,14 +599,14 @@ export default function BlockOverview({
                             );
                           })()
                         ) : exercise.notes && !showDoneLine && !isCurrent ? (
-                          <Text style={styles.exerciseNotes} numberOfLines={2}>
+                          <Text style={[styles.exerciseNotes, dim]} numberOfLines={2}>
                             {exercise.notes}
                           </Text>
                         ) : null}
 
                         {/* Tempo */}
                         {exercise.tempo && !showDoneLine && !isCurrent && (
-                          <Text style={styles.tempo}>Tempo: {exercise.tempo}</Text>
+                          <Text style={[styles.tempo, dim]}>Tempo: {exercise.tempo}</Text>
                         )}
                       </View>
 
@@ -612,7 +618,7 @@ export default function BlockOverview({
                           // Notes-only exercises show a simple complete checkbox
                           return (
                             <TouchableOpacity
-                              style={styles.exerciseRight}
+                              style={[styles.exerciseRight, dim]}
                               onPress={(e) => {
                                 e.stopPropagation();
                                 onToggleExerciseComplete(exercise.id, 1);
@@ -634,7 +640,7 @@ export default function BlockOverview({
                         // All exercises with metrics get a quick-complete checkbox
                         return (
                           <TouchableOpacity
-                            style={styles.exerciseRight}
+                            style={[styles.exerciseRight, dim]}
                             onPress={(e) => {
                               e.stopPropagation();
                               onToggleExerciseComplete(exercise.id, exercise.sets);
@@ -707,7 +713,7 @@ export default function BlockOverview({
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.continueButton}
-                onPress={() => onExercisePress(next.reId)}
+                onPress={() => onContinue(next.reId, next.setIndex)}
                 activeOpacity={0.85}
               >
                 <LinearGradient
@@ -860,7 +866,8 @@ const styles = StyleSheet.create({
   blockSection: {
     marginBottom: 20,
   },
-  blockSectionDone: {
+  // Done block: header + rows dim; the green result line does not.
+  dimmed: {
     opacity: 0.55,
   },
   blockDoneIcon: {
