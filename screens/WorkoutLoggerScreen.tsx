@@ -66,11 +66,6 @@ interface WorkoutInstance {
   completed_at?: string;
 }
 
-interface PRAlert {
-  metric: string;
-  value: number;
-}
-
 export default function WorkoutLoggerScreen() {
   const route = useRoute<WorkoutLoggerRouteProp>();
   const navigation = useNavigation<WorkoutLoggerNavigationProp>();
@@ -91,7 +86,6 @@ export default function WorkoutLoggerScreen() {
   const [athleteMaxes, setAthleteMaxes] = useState<Record<string, Record<string, number>>>({});
   // Mound velocity for throwing velocity fallback (5oz baseball PR)
   const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
-  const [prAlert, setPRAlert] = useState<PRAlert | null>(null);
   // Draft-save debounce, one timer PER SET (`reId:setIndex`). The timer
   // writes every field edited since the last save (draftFieldsRef), with the
   // values read from inputsRef when it fires, so typing reps then weight
@@ -841,10 +835,6 @@ export default function WorkoutLoggerScreen() {
           [metric]: value,
         },
       }));
-
-      // Show PR alert
-      setPRAlert({ metric, value });
-      setTimeout(() => setPRAlert(null), 4000);
     } catch (error) {
       console.error('Error checking PR:', error);
     }
@@ -1217,7 +1207,7 @@ export default function WorkoutLoggerScreen() {
         onPrevExercise={handlePrevExercise}
         onNextExercise={handleNextExercise}
         onBackToOverview={handleBackToOverview}
-        prAlert={prAlert}
+        restSecondsLeft={restTimer.secondsLeft}
       />
     ) : null;
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { lastSession, deltaText, type LogRow } from '../lib/logger/lastWeek';
+import { lastSession, type LogRow, type SetResult } from '../lib/logger/lastWeek';
 import {
   View,
   Text,
@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
-  Animated,
   Linking,
   PanResponder,
   Modal,
@@ -21,15 +20,15 @@ import NumericKeypad from '../components/NumericKeypad';
 import {
   backoffUpdates,
   fieldKey,
+  intensityCaptionText,
   intensityFor,
-  intensityText,
-  pendingTargetText,
   prescribedValue,
   resolveTarget,
   type IntensityResult,
 } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
-import { getSupersetContext } from '../lib/supersetContext';
+import { formatRest } from '../lib/logger/rest';
+import { normalizeScheme } from '../lib/logger/scheme';
 
 // Types
 import type {
@@ -45,19 +44,7 @@ import FloatingVideoWindow from '../components/logger/FloatingVideoWindow';
 import VideoModal from '../components/logger/VideoModal';
 import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
-import {
-  ballWeightOrder,
-  formatSetMetrics as formatSetLine,
-  formatWeightReps,
-  getMeasurementName,
-  getMetricLabel,
-  isBallMetric,
-  metricFieldsFor,
-} from '../lib/logger/setLine';
-interface PRAlert {
-  metric: string;
-  value: number;
-}
+import { getMeasurementName, getMetricLabel, metricFieldsFor } from '../lib/logger/setLine';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -92,10 +79,12 @@ interface ExerciseDetailViewProps {
   hasNext: boolean;
   blockLabel?: string;
   exerciseHistory?: ExerciseHistory[];
-  /** Raw completed logs for lastSession() — the "last week" line. */
+  /** Raw completed logs for lastSession() — the LAST column. */
   lastWeekRows?: LogRow[];
   /** Today's workout instance — excluded from "last week". */
   workoutInstanceId?: string;
+  /** Live rest countdown (useRestTimer); null when no rest is running. */
+  restSecondsLeft?: number | null;
   onInputChange: (
     setIndex: number,
     field: string,
@@ -111,7 +100,6 @@ interface ExerciseDetailViewProps {
   onPrevExercise: () => void;
   onNextExercise: () => void;
   onBackToOverview: () => void;
-  prAlert?: PRAlert | null;
 }
 
 // Helper: Get relative time string
@@ -157,219 +145,41 @@ function computeSessionStats(sets: ExerciseHistorySet[]): {
   };
 }
 
-// Helper: Get keyboard type for metric
-function getKeyboardType(metricType?: string): 'default' | 'number-pad' | 'decimal-pad' {
-  if (!metricType) return 'number-pad';
-  if (metricType === 'integer') return 'number-pad';
-  if (metricType === 'decimal') return 'decimal-pad';
-  return 'number-pad';
+// Dot color for a ball measurement (by name: plyo colors, then oz weights).
+// "4 oz" is checked before 5 oz / baseball so it never reads as a 5 oz ball.
+function ballColor(name: string): string {
+  const t = name.toLowerCase();
+  const oz = /\d\s*oz|\d_oz/.test(t);
+  if (t.includes('blue')) return '#3B82F6';
+  if (t.includes('red') && !oz) return '#E5534B';
+  if (t.includes('yellow')) return '#E8C547';
+  if (t.includes('gray') || t.includes('grey')) return '#6B7280';
+  if (t.includes('green') && !oz) return '#22C55E';
+  if (/\b7\s*oz\b|7_oz/.test(t)) return '#EA580C';
+  if (/\b6\s*oz\b|6_oz/.test(t)) return '#7C3AED';
+  if (/\b4\s*oz\b|4_oz/.test(t)) return '#2563EB';
+  if (/\b3\s*oz\b|3_oz/.test(t)) return '#16A34A';
+  if (/\b5\s*oz\b|5_oz/.test(t) || t.includes('baseball')) return '#F5F5F5';
+  return 'rgba(255,255,255,0.4)';
 }
 
-// Helper: Get ball type from metric ID for grouping
-// Uses regex for more precise matching to avoid "4 oz" matching "5oz" patterns
-function getBallType(metricId: string, customMeasurements: Measurement[]): string | null {
-  // Get the measurement name to check (not the UUID)
-  const measurementName = getMeasurementName(metricId, customMeasurements);
-  const textToCheck = measurementName || metricId;
-  const lowerText = textToCheck.toLowerCase();
-
-  // Check for specific oz patterns with word boundaries or common formats
-  // "7oz", "7 oz", "7_oz" patterns
-  if (/\b7\s*oz\b|7_oz/i.test(textToCheck)) return '7oz';
-  if (/\b6\s*oz\b|6_oz/i.test(textToCheck)) return '6oz';
-  // Check 4oz BEFORE 5oz/baseball since "4 oz" should not match "5oz"
-  if (/\b4\s*oz\b|4_oz/i.test(textToCheck)) return '4oz';
-  if (/\b3\s*oz\b|3_oz/i.test(textToCheck)) return '3oz';
-  // 5oz and baseball - check both patterns
-  if (/\b5\s*oz\b|5_oz/i.test(textToCheck)) return '5oz';
-  // Baseball without explicit oz - treat as its own type
-  if (lowerText.includes('baseball')) return 'baseball';
-
-  // Plyo balls
-  if (lowerText.includes('blue')) return 'blue';
-  if (lowerText.includes('red') && !/\d\s*oz/i.test(textToCheck)) return 'red';
-  if (lowerText.includes('yellow')) return 'yellow';
-  if (lowerText.includes('gray') || lowerText.includes('grey')) return 'gray';
-  if (lowerText.includes('green') && !/\d\s*oz/i.test(textToCheck)) return 'green';
-  return null;
+// "Red Ball" → "Red"; anything else as written.
+function shortBallName(name: string): string {
+  return name.replace(/\s+ball$/i, '').trim() || name;
 }
 
-// Helper: Group metrics into paired ball groups
-interface MetricGroup {
-  ballType: string | null;
-  metrics: string[];
+const isNumberText = (s: string) => /^-?\d+(\.\d+)?$/.test(s);
+const isEmptyValue = (v: unknown) => v == null || v === '';
+
+// One paired measurement (ball × reps × mph) — a line inside every set.
+interface PairedLine {
+  id: string;
+  name: string;
+  color: string;
+  repsId: string | null;
+  mphId: string | null;
+  tracked: boolean;
 }
-
-function groupMetricsForDisplay(metricFields: string[], customMeasurements: Measurement[]): MetricGroup[] {
-  const groups: MetricGroup[] = [];
-  const processedMetrics = new Set<string>();
-
-  // First, handle non-ball metrics
-  metricFields.forEach(metricId => {
-    if (!isBallMetric(metricId, customMeasurements)) {
-      groups.push({ ballType: null, metrics: [metricId] });
-      processedMetrics.add(metricId);
-    }
-  });
-
-  // Group ball metrics by ball type
-  const ballMetrics = metricFields.filter(m => isBallMetric(m, customMeasurements) && !processedMetrics.has(m));
-  const ballGroups = new Map<string, string[]>();
-
-  ballMetrics.forEach(metricId => {
-    const ballType = getBallType(metricId, customMeasurements);
-    if (ballType) {
-      if (!ballGroups.has(ballType)) {
-        ballGroups.set(ballType, []);
-      }
-      ballGroups.get(ballType)!.push(metricId);
-    }
-  });
-
-  // Convert map to groups, maintaining sort order
-  const sortedBallTypes = Array.from(ballGroups.keys()).sort((a, b) => {
-    const weightA = ballWeightOrder[a] || 999;
-    const weightB = ballWeightOrder[b] || 999;
-    return weightA - weightB;
-  });
-
-  sortedBallTypes.forEach(ballType => {
-    const metrics = ballGroups.get(ballType)!;
-    // Sort within group: primary (reps) first, then secondary (velo)
-    metrics.sort((a, b) => {
-      const aIsPrimary = a.toLowerCase().includes('reps');
-      const bIsPrimary = b.toLowerCase().includes('reps');
-      if (aIsPrimary && !bIsPrimary) return -1;
-      if (!aIsPrimary && bIsPrimary) return 1;
-      return 0;
-    });
-    groups.push({ ballType, metrics });
-  });
-
-  return groups;
-}
-
-// Ball icon component for plyo balls and weighted balls
-interface BallIconProps {
-  metricId: string;
-  customMeasurements: Measurement[];
-}
-
-function BallIcon({ metricId, customMeasurements }: BallIconProps): React.ReactElement | null {
-  // Get measurement name to check (not the UUID)
-  const measurementName = getMeasurementName(metricId, customMeasurements);
-  const textToCheck = measurementName || metricId;
-  const lowerText = textToCheck.toLowerCase();
-
-  // Plyo balls - colored circles
-  if (lowerText.includes('blue')) {
-    return (
-      <View style={ballIconStyles.plyoBall}>
-        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#3B82F6', borderColor: '#2563EB' }]} />
-      </View>
-    );
-  }
-  if (lowerText.includes('red') && !/\d\s*oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.plyoBall}>
-        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EF4444', borderColor: '#DC2626' }]} />
-      </View>
-    );
-  }
-  if (lowerText.includes('yellow')) {
-    return (
-      <View style={ballIconStyles.plyoBall}>
-        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#EAB308', borderColor: '#CA8A04' }]} />
-      </View>
-    );
-  }
-  if (lowerText.includes('gray') || lowerText.includes('grey')) {
-    return (
-      <View style={ballIconStyles.plyoBall}>
-        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#6B7280', borderColor: '#4B5563' }]} />
-      </View>
-    );
-  }
-  if (lowerText.includes('green') && !/\d\s*oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.plyoBall}>
-        <View style={[ballIconStyles.plyoBallInner, { backgroundColor: '#22C55E', borderColor: '#16A34A' }]} />
-      </View>
-    );
-  }
-
-  // Weighted balls - white circles with number
-  // Use regex for patterns like "7oz", "7 oz", "7_oz"
-  if (/\b7\s*oz\b|7_oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#EA580C' }]}>7</Text>
-      </View>
-    );
-  }
-  if (/\b6\s*oz\b|6_oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#7C3AED' }]}>6</Text>
-      </View>
-    );
-  }
-  // Check 4oz BEFORE 5oz/baseball
-  if (/\b4\s*oz\b|4_oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#2563EB' }]}>4</Text>
-      </View>
-    );
-  }
-  if (/\b3\s*oz\b|3_oz/i.test(textToCheck)) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#16A34A' }]}>3</Text>
-      </View>
-    );
-  }
-  // 5oz or baseball (standard 5oz ball)
-  if (/\b5\s*oz\b|5_oz/i.test(textToCheck) || lowerText.includes('baseball')) {
-    return (
-      <View style={ballIconStyles.weightedBall}>
-        <Text style={[ballIconStyles.weightedBallText, { color: '#DC2626' }]}>5</Text>
-      </View>
-    );
-  }
-
-  return null;
-}
-
-// Ball icon styles
-const ballIconStyles = StyleSheet.create({
-  plyoBall: {
-    width: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  plyoBallInner: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 2,
-  },
-  weightedBall: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  weightedBallText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-});
 
 export default function ExerciseDetailView({
   exercise,
@@ -388,6 +198,7 @@ export default function ExerciseDetailView({
   exerciseHistory,
   lastWeekRows,
   workoutInstanceId,
+  restSecondsLeft,
   onInputChange,
   onToggleSetComplete,
   rpeValues,
@@ -396,39 +207,23 @@ export default function ExerciseDetailView({
   onPrevExercise,
   onNextExercise,
   onBackToOverview,
-  prAlert,
 }: ExerciseDetailViewProps) {
   const insets = useSafeAreaInsets();
   // Text blocks have no joined exercise (navigation skips them; guard anyway).
   const exerciseName = exercise.exercises?.name ?? exercise.placeholder_name ?? '';
   const videoUrl = exercise.exercises?.video_url || null;
   const videoId = youTubeId(videoUrl);
-  const [prAlertVisible, setPRAlertVisible] = useState(false);
-  const [prAnimation] = useState(new Animated.Value(0));
   const [showHistory, setShowHistory] = useState(false);
-  // Coach instructions card: collapsed shows a short preview (the coach's
-  // first cues); "more" opens block notes + the library description too.
+  // Coach note: one line by default; "more" opens block notes + the library
+  // description too.
   const [notesExpanded, setNotesExpanded] = useState(false);
-  // PR popover visibility — tapping the trophy icon in the header.
+  // PR popover — tapping the 🏆 pill in the header.
   const [prPopoverOpen, setPRPopoverOpen] = useState(false);
-  // Set indices the user has explicitly expanded (e.g. tapped a collapsed
-  // completed set to re-edit it). The current set is always expanded; all
-  // other sets default to a one-line summary.
+  // Sets the athlete tapped open (e.g. to re-edit a done set). The current
+  // set is always open; the rest are read-only rows.
   const [manuallyExpandedSets, setManuallyExpandedSets] = useState<Set<number>>(new Set());
-  // Tiny "Saved" indicator timestamp — bumped on every onInputChange.
-  // Used to fade a small confirmation under the active set so the
-  // athlete knows the keystroke landed.
-  const [lastSavedTick, setLastSavedTick] = useState<number>(0);
-  const [savedVisible, setSavedVisible] = useState(false);
-  useEffect(() => {
-    if (!lastSavedTick) return;
-    setSavedVisible(true);
-    const t = setTimeout(() => setSavedVisible(false), 900);
-    return () => clearTimeout(t);
-  }, [lastSavedTick]);
-  // Auto-fill pulse tracker — set of "setIndex:metricId" keys that
-  // were just auto-filled by the placeholder logic. Inputs with a key
-  // here briefly flash green so the athlete sees the auto-fill happened.
+  // Auto-fill pulse tracker — "setIndex:metricId" keys just auto-filled;
+  // those inputs briefly flash green so the athlete sees it happen.
   const [autoFilledKeys, setAutoFilledKeys] = useState<Set<string>>(new Set());
   // Fields ("set:metric") the athlete changed by hand (keypad), per routine
   // exercise. A hand-edited back-off field is never overwritten by back-off
@@ -480,7 +275,7 @@ export default function ExerciseDetailView({
   };
 
   // Sets render in set order and the current one opens in place, so a new
-  // current set is scrolled into view: set 1 → top (coach card visible), a
+  // current set is scrolled into view: set 1 → top (coach note visible), a
   // later set → its row with the set before it still showing above.
   // setYRef holds each set's y in the scroll content (from onLayout); the
   // scroll runs once that layout is known — on the timer or, if the layout
@@ -509,33 +304,99 @@ export default function ExerciseDetailView({
     const t = setTimeout(() => {
       if (scrollPendingRef.current && scrollToCurrentSet()) scrollPendingRef.current = false;
     }, 100);
-    // Clear any manually-expanded sets when the active set changes —
-    // keeps the screen tight as the athlete progresses. They can tap
-    // any collapsed row to re-open it.
+    // A new current set closes any sets the athlete tapped open.
     setManuallyExpandedSets(new Set());
     return () => clearTimeout(t);
   }, [currentSetIndex, exercise.id]);
-
-  // Wrap the parent's onInputChange so we can bump the "Saved" indicator
-  // tick on every successful save. Keeps the parent prop API unchanged.
-  const onInputChangeWithTick = useCallback(
-    (
-      setIndex: number,
-      metricId: string,
-      value: string | number,
-      targetExerciseId?: string,
-      autoComplete?: boolean,
-    ) => {
-      onInputChange(setIndex, metricId, value, targetExerciseId, autoComplete);
-      setLastSavedTick(Date.now());
-    },
-    [onInputChange],
-  );
 
   // A custom measurement's metric type ('integer' | 'decimal' | …).
   const metricTypeOf = (metricId: string): string | undefined => {
     const m = customMeasurements.find((x) => x.primary_metric_id === metricId || x.secondary_metric_id === metricId);
     return m?.primary_metric_id === metricId ? m?.primary_metric_type : m?.secondary_metric_type;
+  };
+  const measurementOf = (metricId: string): Measurement | undefined =>
+    customMeasurements.find((x) => x.primary_metric_id === metricId || x.secondary_metric_id === metricId);
+
+  // Metric fields to log (ball metrics heaviest → lightest, weight before reps).
+  const metricFields = metricFieldsFor(exercise, customMeasurements);
+  const trackedMetrics = exercise.tracked_max_metrics ?? [];
+
+  // Table layout: every non-paired metric is its own column; paired
+  // measurements (custom_measurements category 'paired', e.g. red_ball →
+  // red_ball_reps / red_ball_velo) become one line per ball inside each set,
+  // under shared BALL · REPS · MPH columns.
+  const { singleMetrics, pairedLines } = useMemo(() => {
+    const singles: string[] = [];
+    const lines: PairedLine[] = [];
+    const seen = new Set<string>();
+    for (const metricId of metricFields) {
+      const m = measurementOf(metricId);
+      if (m?.category !== 'paired') {
+        singles.push(metricId);
+        continue;
+      }
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      const repsId = m.primary_metric_id && metricFields.includes(m.primary_metric_id) ? m.primary_metric_id : null;
+      const mphId = m.secondary_metric_id && metricFields.includes(m.secondary_metric_id) ? m.secondary_metric_id : null;
+      lines.push({
+        id: m.id,
+        name: shortBallName(m.name),
+        color: ballColor(m.name),
+        repsId,
+        mphId,
+        tracked: (!!repsId && trackedMetrics.includes(repsId)) || (!!mphId && trackedMetrics.includes(mphId)),
+      });
+    }
+    return { singleMetrics: singles, pairedLines: lines };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- derived from the exercise + measurements only
+  }, [exercise, customMeasurements]);
+
+  // Keypad order = screen order: single columns, then each ball's reps → mph.
+  const inputOrder = useMemo(
+    () => [
+      ...singleMetrics,
+      ...pairedLines.flatMap((l) => [l.repsId, l.mphId].filter((x): x is string => !!x)),
+    ],
+    [singleMetrics, pairedLines],
+  );
+
+  // Header for a column: "LB", "REPS", "TIME", "DISTANCE", custom name.
+  const columnLabel = (metricId: string): string => {
+    if (metricId === 'weight') return 'LB';
+    if (metricId === 'reps') return 'REPS';
+    if (metricId === 'time_seconds') return 'TIME';
+    if (metricId === 'distance') return 'DISTANCE';
+    return (getMeasurementName(metricId, customMeasurements) ?? getMetricLabel(metricId, customMeasurements)).toUpperCase();
+  };
+  // Unit after a number in a cell.
+  const unitFor = (metricId: string): string | null => {
+    if (metricId === 'weight') return 'lb';
+    if (metricId === 'distance') return 'ft';
+    if (metricId === 'time_seconds') return 's';
+    return null;
+  };
+  const isVeloName = (name?: string) => /velo|mph|speed/i.test(name ?? '');
+  // Paired column headers from the first measurement ("REPS" · "MPH").
+  const pairedMeasurement = pairedLines.length ? customMeasurements.find((m) => m.id === pairedLines[0].id) : undefined;
+  const pairedRepsLabel = (pairedMeasurement?.primary_metric_name || 'Reps').toUpperCase();
+  const pairedMphLabel = !pairedMeasurement?.secondary_metric_name || isVeloName(pairedMeasurement.secondary_metric_name)
+    ? 'MPH'
+    : pairedMeasurement.secondary_metric_name.toUpperCase();
+  const pairedIsBall = pairedLines.some((l) => /ball|oz|red|blue|yellow|gray|grey|green/i.test(l.name));
+  // Grey hint inside an empty input with no target.
+  const hintFor = (metricId: string): string => {
+    if (metricId === 'weight') return 'lb';
+    if (metricId === 'reps') return 'reps';
+    if (metricId === 'time_seconds') return 'sec';
+    if (metricId === 'distance') return 'ft';
+    const m = measurementOf(metricId);
+    if (m?.category === 'paired') {
+      return m.secondary_metric_id === metricId
+        ? pairedMphLabel.toLowerCase()
+        : (m.primary_metric_name || 'reps').toLowerCase();
+    }
+    return '—';
   };
 
   // Custom keypad handlers
@@ -551,7 +412,7 @@ export default function ExerciseDetailView({
 
     const newValue = currentValue + key;
     markFieldEdited(setIndex, metricId);
-    onInputChangeWithTick(setIndex, metricId, newValue);
+    onInputChange(setIndex, metricId, newValue);
   };
 
   const handleKeypadBackspace = () => {
@@ -562,7 +423,7 @@ export default function ExerciseDetailView({
     const currentValue = setData[metricId]?.toString() || '';
     const newValue = currentValue.slice(0, -1);
     markFieldEdited(setIndex, metricId);
-    onInputChangeWithTick(setIndex, metricId, newValue);
+    onInputChange(setIndex, metricId, newValue);
   };
 
   const handleKeypadDone = () => {
@@ -572,7 +433,7 @@ export default function ExerciseDetailView({
     }
 
     const { setIndex, metricId } = activeInput;
-    const currentMetricIndex = metricFields.indexOf(metricId);
+    const currentMetricIndex = inputOrder.indexOf(metricId);
     const currentInputs = exerciseInputs[exercise.id] || [];
     const setData = currentInputs[setIndex] || {};
 
@@ -585,52 +446,22 @@ export default function ExerciseDetailView({
         const fieldValue = setData[field];
         // If this field is empty and has a placeholder, auto-fill it
         if ((fieldValue === undefined || fieldValue === null || fieldValue === '') && placeholders[field] !== undefined) {
-          onInputChangeWithTick(setIndex, field, placeholders[field], undefined, true);
+          onInputChange(setIndex, field, placeholders[field], undefined, true);
           flashAutoFill(setIndex, field);
         }
       });
     }
 
-    // Check if there's a next metric in the current set
-    if (currentMetricIndex < metricFields.length - 1) {
-      // Move to next metric in same set
-      const nextMetricId = metricFields[currentMetricIndex + 1];
+    // Next field of the same set, else close the keypad.
+    if (currentMetricIndex < inputOrder.length - 1) {
+      const nextMetricId = inputOrder[currentMetricIndex + 1];
       setActiveInput({ setIndex, metricId: nextMetricId, isDecimal: metricTypeOf(nextMetricId) === 'decimal' });
     } else {
-      // All metrics filled, close keypad
       setActiveInput(null);
     }
   };
 
-  // Show PR alert animation
-  useEffect(() => {
-    if (prAlert) {
-      setPRAlertVisible(true);
-      Animated.sequence([
-        Animated.spring(prAnimation, {
-          toValue: 1,
-          useNativeDriver: true,
-          tension: 50,
-          friction: 7,
-        }),
-        Animated.delay(3000),
-        Animated.timing(prAnimation, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        setPRAlertVisible(false);
-      });
-    }
-  }, [prAlert]);
-
-  // Get metric fields to display (sorted by ball weight for throwing exercises)
-  const getMetricFields = (): string[] => metricFieldsFor(exercise, customMeasurements);
-
-  const metricFields = getMetricFields();
-
-  // Get set configuration for current set
+  // Get set configuration for a set
   const getSetConfig = (setIndex: number): SetConfiguration | null => {
     if (exercise.set_configurations && exercise.set_configurations[setIndex]) {
       return exercise.set_configurations[setIndex];
@@ -649,22 +480,17 @@ export default function ExerciseDetailView({
     moundVelocity,
   });
 
-  // Get target value for a metric in a specific set (per-set metric_values,
-  // else exercise metric_targets).
-  const getTargetValue = (setIndex: number, metricId: string): number | undefined =>
-    prescribedValue(exercise, setIndex, metricId);
-
   // Reps-type metric flagged AMRAP for this set (per-set flag OR the
-  // exercise-level flag). Per-set is_amrap was typed but never rendered.
+  // exercise-level flag).
   const isAmrapFor = (setIndex: number, metricId: string): boolean => {
     const repsLike = metricId === 'reps' || metricId.toLowerCase().endsWith('_reps');
     if (!repsLike) return false;
     return !!(getSetConfig(setIndex)?.is_amrap || exercise.is_amrap);
   };
 
-  // Get intensity target for a metric in a specific set — "% of set K"
-  // from what was logged for set K, % of max (cross-exercise aware), or the
-  // mound-velocity fallback for throwing velocity.
+  // Intensity target for a metric in a set — "% of set K" from what was
+  // logged for set K, % of max (cross-exercise aware), or the mound-velocity
+  // fallback for throwing velocity.
   const getIntensityTarget = (setIndex: number, metricId: string): IntensityResult | null =>
     intensityFor(targetArgs(setIndex, metricId));
 
@@ -696,47 +522,35 @@ export default function ExerciseDetailView({
     );
   }
 
-  // A set other sets are prescribed as a % of ("90% of set 1") — the top set.
-  const isTopSet = (setIndex: number): boolean => {
-    for (let j = setIndex + 1; j < (exercise.sets || 0); j++) {
-      const targets = exercise.set_configurations?.[j]?.intensity_targets || exercise.intensity_targets;
-      if (targets?.some((t) => t.relative_to === 'set' && t.reference_set === setIndex + 1)) return true;
-    }
-    return false;
+  // LAST column — weight-tracked exercises that have a previous session.
+  const showLast = metricFields.includes('weight') && lastWeek != null;
+  const lastText = (r: SetResult | null): string => {
+    if (!r) return '—';
+    if (r.weight != null && r.reps != null) return `${r.weight}×${r.reps}`;
+    if (r.weight != null) return String(r.weight);
+    if (r.reps != null) return `×${r.reps}`;
+    return '—';
   };
 
-  // Muted caption for a set's intensity prescription: "90% of set 1",
-  // "70% of Back Squat max", "80% of max".
+  // Caption under the open set: "90% of set 2 · 279 → 280".
   const intensityCaption = (setIndex: number): string | null => {
-    const t = metricFields.map((m) => getIntensityTarget(setIndex, m)).find((x) => x !== null);
-    return t ? intensityText(t) : null;
+    for (const m of metricFields) {
+      const t = intensityCaptionText(targetArgs(setIndex, m));
+      if (t) return t;
+    }
+    return null;
   };
 
-  // What an empty input shows in place of a number: "AMRAP", the pending %
-  // ("90% of set 1" until set 1 is logged; "80% · no max set"), the target,
-  // else "Enter Reps". Shared by the input and the open card's header so the
-  // header caption is dropped when the input already says the same thing.
-  const emptyInputText = (setIndex: number, metricId: string): string => {
-    if (isAmrapFor(setIndex, metricId)) return 'AMRAP';
-    const target = getTargetValue(setIndex, metricId);
-    const intensity = getIntensityTarget(setIndex, metricId);
-    const pending = !target ? pendingTargetText(intensity) : null;
-    if (pending) return pending;
-    const value = intensity?.calculatedValue ?? target;
-    return value ? String(value) : `Enter ${getMetricLabel(metricId, customMeasurements)}`;
-  };
-  const showsPendingTarget = (setIndex: number, setData: Record<string, any>): boolean =>
-    metricFields.some((m) => {
-      const v = setData[m];
-      if ((v != null && v !== '') || isBallMetric(m, customMeasurements)) return false;
-      return !isAmrapFor(setIndex, m) && !getTargetValue(setIndex, m) &&
-        pendingTargetText(getIntensityTarget(setIndex, m)) != null;
-    });
-
-  const numeric = (v: unknown): number | null => {
-    if (v == null || v === '') return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
+  // What a set's cell shows before anything is typed: "max" (AMRAP), the
+  // target as the coach wrote it (280, "5 LB DB", "10 yards"), "90%" while a
+  // % target has no number yet, else null.
+  const targetCell = (setIndex: number, metricId: string): { text: string; amrap?: boolean } | null => {
+    if (isAmrapFor(setIndex, metricId)) return { text: 'max', amrap: true };
+    const target: unknown = resolveTarget(targetArgs(setIndex, metricId));
+    if (!isEmptyValue(target)) return { text: String(target) };
+    const t = getIntensityTarget(setIndex, metricId);
+    if (t && t.calculatedValue == null) return { text: `${t.percent}%` };
+    return null;
   };
 
   // Get all placeholder values for a set (for auto-fill when checking)
@@ -772,7 +586,7 @@ export default function ExerciseDetailView({
     });
     backoffExpectedRef.current[exercise.id] = expected;
     apply.forEach(({ setIndex, metric, value }) => {
-      onInputChangeWithTick(setIndex, metric, value, undefined, true);
+      onInputChange(setIndex, metric, value, undefined, true);
       flashAutoFill(setIndex, metric);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately keyed to commit points (keypad field change/close, exercise change), not inputs: running per keystroke would move back-offs off half-typed values. Current props are read from this render's closure.
@@ -797,8 +611,7 @@ export default function ExerciseDetailView({
       });
 
       onToggleSetComplete(setIndex, Object.keys(autoFillValues).length > 0 ? autoFillValues : undefined);
-      // Flash any field we just auto-filled so the athlete sees what
-      // changed (was previously silent — values just appeared).
+      // Flash any field we just auto-filled so the athlete sees what changed.
       Object.keys(autoFillValues).forEach((metricId) => flashAutoFill(setIndex, metricId));
     } else {
       // Unchecking - no auto-fill needed
@@ -806,30 +619,26 @@ export default function ExerciseDetailView({
     }
   };
 
-  // Handle Next button press - two-phase: first tap checks set, second tap advances
+  // Done button — two-phase: first tap logs the set, second tap advances.
   const handleNextButtonPress = () => {
     const currentSetCompleted = isSetCompleted(currentSetIndex);
 
     if (!currentSetCompleted) {
-      // First tap: mark the current set as complete (don't advance)
       handleCheckboxToggle(currentSetIndex);
     } else {
-      // Second tap: set is already complete, advance to next
       onNextSet();
     }
   };
 
   // Swipe gesture handler for exercise navigation
-  const SWIPE_THRESHOLD = 120; // bumped up so accidental swipes mid-input
-                               // don't kick the user to another exercise
+  const SWIPE_THRESHOLD = 120; // high so accidental swipes mid-input don't
+                               // kick the user to another exercise
   const SWIPE_VELOCITY_THRESHOLD = 0.5; // require a clear flick
 
   const panResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_, gestureState) => {
-      // Disable swipe-between-exercises while the numeric keypad is open —
-      // users were swiping to reach number keys and accidentally
-      // jumping to the next/prev exercise.
+      // No swipe-between-exercises while the numeric keypad is open.
       if (activeInput) return false;
       // Only capture horizontal swipes that are more horizontal than vertical
       const { dx, dy } = gestureState;
@@ -837,49 +646,236 @@ export default function ExerciseDetailView({
     },
     onPanResponderRelease: (_, gestureState) => {
       const { dx, vx } = gestureState;
-
-      // Check for a hard swipe (either by distance or velocity)
       const isHardSwipe = Math.abs(dx) > SWIPE_THRESHOLD || Math.abs(vx) > SWIPE_VELOCITY_THRESHOLD;
-
       if (isHardSwipe) {
         if (dx > 0 && hasPrev) {
-          // Swipe right → previous exercise
           onPrevExercise();
         } else if (dx < 0 && hasNext) {
-          // Swipe left → next exercise
           onNextExercise();
         }
       }
     },
   }), [hasPrev, hasNext, onPrevExercise, onNextExercise, activeInput]);
 
-  // One compact line for a collapsed set (lib/logger/setLine).
-  const formatSetMetrics = (valueOf: (metricId: string) => unknown): string =>
-    formatSetLine(metricFields, valueOf, customMeasurements);
+  // ── Superset / circuit context ────────────────────────────────────────
+  const isGrouped = normalizeScheme(routine.scheme) === 'grouped';
+  // "A2" for a row of this routine — same visibility rule as the parent's
+  // blockLabel, so codes match the overview.
+  const codeFor = (reId: string): string => {
+    const letter = (blockLabel || 'A').charAt(0).toUpperCase();
+    const idx = (routine.routine_exercises || [])
+      .filter(ex => !(ex.is_placeholder || ex.exercises?.is_placeholder) || ex.notes_only)
+      .findIndex(ex => ex.id === reId);
+    return idx >= 0 ? `${letter}${idx + 1}` : letter;
+  };
+  const nameOf = (reId: string): string => {
+    const re = allExercises.find(ex => ex.id === reId);
+    return re ? re.exercises?.name ?? re.placeholder_name ?? '' : '';
+  };
+  // The next step as if the current set were done (sequence engine).
+  const nextAfterCurrent = (): SeqStep | null => {
+    const done = { ...completedSets };
+    const updatedSets = [...(done[exercise.id] || Array(exercise.sets).fill(false))];
+    updatedSets[currentSetIndex] = true;
+    done[exercise.id] = updatedSets;
+    return nextStep(sequence, done, { reId: exercise.id, setIndex: currentSetIndex });
+  };
+  const routineSteps = sequence.filter(s => s.routineId === routine.id);
+  const currentRound = currentSetIndex + 1;
+  const totalRounds = routineSteps.reduce((n, s) => Math.max(n, s.round), 0) || exercise.sets || 0;
+  // Next exercise in this round of the block, if there is one.
+  const nextInRound = (): SeqStep | null => {
+    if (!isGrouped) return null;
+    const next = nextAfterCurrent();
+    return next && next.routineId === routine.id && next.round === currentRound && next.reId !== exercise.id
+      ? next
+      : null;
+  };
+  const schemeName = (() => {
+    switch (routine.scheme) {
+      case 'circuit': return 'Circuit';
+      case 'emom': return 'EMOM';
+      case 'amrap': return 'AMRAP';
+      case 'giant_set': return 'Giant set';
+      default: return 'Superset';
+    }
+  })();
 
-  // The completion circle — same size and spot (right edge) on a collapsed
-  // row and on the open card. Toggles done; never opens/closes the set.
+  // ── The one rx line under the header ──────────────────────────────────
+  const rxLine = (): string => {
+    const parts: string[] = [];
+    const sets = exercise.sets || 0;
+    if (isGrouped) {
+      parts.push(schemeName);
+      if (totalRounds) parts.push(`round ${currentRound} of ${totalRounds}`);
+      const next = nextInRound();
+      if (next) parts.push(`next ${codeFor(next.reId)} ${nameOf(next.reId)}`);
+      const rest = routine.rest_between_rounds_seconds;
+      if (rest) {
+        const last = routineSteps.find(s => s.round === currentRound && s.endsRound);
+        parts.push(last ? `rest ${formatRest(rest)} after ${codeFor(last.reId)}` : `rest ${formatRest(rest)}`);
+      }
+    } else if (pairedLines.length > 0) {
+      parts.push(`${sets} ${sets === 1 ? 'round' : 'rounds'}`);
+      pairedLines.forEach((l) => {
+        const reps: unknown = l.repsId ? prescribedValue(exercise, 0, l.repsId) : undefined;
+        parts.push(isEmptyValue(reps) ? l.name : `${l.name} ${reps}`);
+      });
+    } else if (metricFields.includes('reps')) {
+      const values = Array.from({ length: sets }, (_, i) => prescribedValue(exercise, i, 'reps'))
+        .filter((v) => !isEmptyValue(v))
+        .map(String);
+      const unique = Array.from(new Set(values));
+      if (unique.length === 1) parts.push(`${sets} × ${unique[0]}`);
+      else if (unique.length > 1) parts.push(`${sets} × ${values.join('/')}`);
+      else parts.push(`${sets} ${sets === 1 ? 'set' : 'sets'}`);
+    } else if (sets > 0) {
+      parts.push(`${sets} ${sets === 1 ? 'set' : 'sets'}`);
+    }
+    if (!isGrouped) {
+      if (exercise.is_amrap) parts.push('AMRAP');
+      else {
+        const amrapSets = Array.from({ length: sets }, (_, i) => i).filter((i) => getSetConfig(i)?.is_amrap);
+        if (amrapSets.length === 1 && amrapSets[0] === sets - 1 && sets > 1) parts.push('last set AMRAP');
+        else if (amrapSets.length > 0) parts.push(`set ${amrapSets.map((i) => i + 1).join(', ')} AMRAP`);
+      }
+      const rest = exercise.rest_seconds ?? getSetConfig(0)?.rest_seconds ?? null;
+      if (rest) parts.push(`rest ${formatRest(rest)}`);
+    }
+    if (exercise.tempo) parts.push(`tempo ${exercise.tempo}`);
+    if (exercise.selected_variation) parts.push(exercise.selected_variation);
+    return parts.join(' · ');
+  };
+
+  // Footer: prescribed rest + the live countdown.
+  const footerRest = isGrouped
+    ? routine.rest_between_rounds_seconds
+      ? `Rest ${formatRest(routine.rest_between_rounds_seconds)} between rounds`
+      : null
+    : (() => {
+        const rest = getSetConfig(currentSetIndex)?.rest_seconds ?? exercise.rest_seconds ?? null;
+        return rest ? `Rest ${formatRest(rest)} between sets` : null;
+      })();
+
+  // ── PR pill: "🏆 max 315" / "🏆 Red max 61.2" ─────────────────────────
+  const prPillText = (() => {
+    if (trackedMetrics.length === 0) return null;
+    const maxes = athleteMaxes[exercise.exercise_id] ?? {};
+    const metric = trackedMetrics.find((m) => maxes[m] != null) ?? trackedMetrics[0];
+    const value = maxes[metric];
+    const line = pairedLines.find((l) => l.repsId === metric || l.mphId === metric);
+    return `🏆 ${line ? `${line.name} ` : ''}max ${value != null ? value : '—'}`;
+  })();
+
+  // ── Cells ─────────────────────────────────────────────────────────────
+  type Tone = 'done' | 'dim' | 'plain';
+  const renderCell = (text: string, unit: string | null, tone: Tone, amrap = false, key?: string) => (
+    <View key={key} style={styles.cell}>
+      <Text
+        style={[styles.v, tone === 'done' && styles.vDone, tone === 'dim' && styles.vDim]}
+        numberOfLines={1}
+      >
+        {text}
+        {unit && isNumberText(text) ? <Text style={styles.u}>{` ${unit}`}</Text> : null}
+      </Text>
+      {amrap && (
+        <View style={styles.amrapTag}>
+          <Text style={styles.amrapTagText}>AMRAP</Text>
+        </View>
+      )}
+    </View>
+  );
+
+  // One metric of one set: read-only value (done = green, upcoming = grey
+  // prescription) or, on an open set, the keypad input.
+  const renderMetric = (setIndex: number, metricId: string, open: boolean, done: boolean) => {
+    const setData = exerciseInputs[exercise.id]?.[setIndex] || {};
+    const value = setData[metricId];
+    const unit = unitFor(metricId);
+    if (!open) {
+      if (!isEmptyValue(value)) return renderCell(String(value), unit, done ? 'done' : 'dim', false, metricId);
+      if (done) return renderCell('—', null, 'dim', false, metricId);
+      const target = targetCell(setIndex, metricId);
+      return renderCell(target?.text ?? '—', unit, 'dim', !!target?.amrap, metricId);
+    }
+    const empty = isEmptyValue(value);
+    const target = empty ? targetCell(setIndex, metricId) : null;
+    const text = empty ? target?.text ?? hintFor(metricId) : String(value);
+    const isActive = activeInput?.setIndex === setIndex && activeInput?.metricId === metricId;
+    const justFilled = autoFilledKeys.has(`${setIndex}:${metricId}`);
+    return (
+      <View key={metricId} style={styles.cell}>
+        <TouchableOpacity
+          style={[styles.in, isActive && styles.inFocus, justFilled && styles.inAutoFilled]}
+          onPress={() => setActiveInput({ setIndex, metricId, isDecimal: metricTypeOf(metricId) === 'decimal' })}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Set ${setIndex + 1} ${getMetricLabel(metricId, customMeasurements)}`}
+        >
+          <Text style={[styles.inText, empty && styles.ph]} numberOfLines={1}>
+            {text}
+            {unit && isNumberText(text) ? <Text style={styles.u}>{` ${unit}`}</Text> : null}
+          </Text>
+          {target?.amrap && (
+            <View style={styles.amrapTag}>
+              <Text style={styles.amrapTagText}>AMRAP</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  // The completion circle — right edge of every set. Toggles done; never
+  // opens/closes the set.
   const renderSetCheck = (setIndex: number, isCompleted: boolean) => (
     <TouchableOpacity
-      style={[styles.setCheck, isCompleted && styles.setCheckDone]}
+      style={[styles.ck, isCompleted && styles.ckOn]}
       onPress={() => handleCheckboxToggle(setIndex)}
       activeOpacity={0.7}
       hitSlop={10}
       accessibilityRole="button"
       accessibilityLabel={isCompleted ? `Mark set ${setIndex + 1} not done` : `Mark set ${setIndex + 1} done`}
     >
-      {isCompleted ? <Text style={styles.setCheckIcon}>✓</Text> : null}
+      {isCompleted ? <Text style={styles.ckIcon}>✓</Text> : null}
     </TouchableOpacity>
   );
 
-  const renderSetCards = () => {
+  // Header 🏆 on PR-tracked columns.
+  const trophy = <Text style={styles.thTrophy}> 🏆</Text>;
+  const pairedRepsTracked = pairedLines.some((l) => !!l.repsId && trackedMetrics.includes(l.repsId));
+  const pairedMphTracked = pairedLines.some((l) => !!l.mphId && trackedMetrics.includes(l.mphId));
+
+  const renderTableHeader = () => (
+    <View key="th" style={styles.th}>
+      <Text style={[styles.thText, styles.colSet]}>SET</Text>
+      {showLast && <Text style={[styles.thText, styles.colLast]}>LAST</Text>}
+      {singleMetrics.map((m) => (
+        <Text key={m} style={[styles.thText, styles.colMetric]} numberOfLines={1}>
+          {columnLabel(m)}
+          {trackedMetrics.includes(m) ? trophy : null}
+        </Text>
+      ))}
+      {pairedLines.length > 0 && (
+        <>
+          <Text style={[styles.thText, styles.colBall]}>{pairedIsBall ? 'BALL' : 'TYPE'}</Text>
+          <Text style={[styles.thText, styles.colPairReps]} numberOfLines={1}>
+            {pairedRepsLabel}
+            {pairedRepsTracked ? trophy : null}
+          </Text>
+          <Text style={[styles.thText, styles.colPairMph]} numberOfLines={1}>
+            {pairedMphLabel}
+            {pairedMphTracked ? trophy : null}
+          </Text>
+        </>
+      )}
+      <View style={styles.colCheck} />
+    </View>
+  );
+
+  const renderSets = () => {
     // Notes-only exercises (no measurement fields and/or notes_only=true)
-    // are instruction cards, not loggable sets. Render the parsed
-    // structured notes (sections + bullets + callouts) instead of looping
-    // exercise.sets-many fake set cards (which would either be 0 — null
-    // coerces to 0 in the for-loop — OR if some upstream caller fell back
-    // to 3, three "No metrics configured" placeholders that demand input
-    // and never complete).
+    // are instruction cards, not loggable sets: render the parsed notes.
     const isNotesOnly = metricFields.length === 0 || (exercise as any).notes_only;
     if (isNotesOnly) {
       const notesText: string | null | undefined = (exercise as any).notes;
@@ -923,49 +919,97 @@ export default function ExerciseDetailView({
       );
     }
 
-    const sets = [];
-    // Always set order (1, 2, 3…). The current set opens in place; the rest
-    // are one-line rows — done sets as a green result line, upcoming as
-    // targets.
+    const sets: React.ReactNode[] = [renderTableHeader()];
+    // Always set order (1, 2, 3…). The current set is open in place (inline
+    // inputs); done sets show their values in green, upcoming ones their
+    // prescription in grey. Tap a row to open it; the circle toggles done.
     const setCount = exercise.sets || 0;
     for (let i = 0; i < setCount; i++) {
-      const setData = exerciseInputs[exercise.id]?.[i] || {};
       const setConfig = getSetConfig(i);
       const isCompleted = isSetCompleted(i);
       const isCurrentSet = i === currentSetIndex;
-      const isExpanded = isCurrentSet || manuallyExpandedSets.has(i);
-      const topSet = isTopSet(i);
-      const caption = intensityCaption(i);
-      const last = lastWeekFor(i);
+      const isOpen = isCurrentSet || manuallyExpandedSets.has(i);
+      const rpe = rpeValues?.[`${exercise.id}:${i}`] ?? null;
 
-      // Collapsed row — done sets show their result, upcoming sets their
-      // target. Tap the row to open it in place; the circle (right, same
-      // spot as on the open card) toggles done without opening.
-      if (!isExpanded) {
-        let line: string;
-        if (isCompleted) {
-          const parts: string[] = [];
-          const base = formatSetMetrics((m) => setData[m]);
-          if (base) parts.push(base);
-          const rpe = rpeValues?.[`${exercise.id}:${i}`];
-          if (rpe != null) parts.push(`RPE ${rpe}`);
-          const delta = deltaText(numeric(setData.weight), last?.weight ?? null);
-          if (delta) parts.push(delta);
-          line = parts.join(' · ') || 'done';
-        } else {
-          const valueOrTarget = (m: string) => {
-            const v = setData[m];
-            if (v != null && v !== '') return v;
-            if (isAmrapFor(i, m)) return 'AMRAP';
-            return resolveTarget(targetArgs(i, m));
-          };
-          const parts: string[] = [];
-          const base = formatSetMetrics(valueOrTarget);
-          if (base) parts.push(base);
-          if (caption) parts.push(caption);
-          line = parts.join(' · ') || '—';
-        }
-        sets.push(
+      // Lines of the set: one for plain metrics, or one per ball (the first
+      // also carries SET, LAST, the single columns and the circle).
+      const lineCount = Math.max(1, pairedLines.length);
+      const lines: React.ReactNode[] = [];
+      for (let k = 0; k < lineCount; k++) {
+        const first = k === 0;
+        const ball = pairedLines[k];
+        lines.push(
+          <View key={k} style={[styles.tr, !first && styles.trSub]}>
+            <Text style={[styles.n, styles.colSet, isCurrentSet && styles.nCur]}>{first ? i + 1 : ''}</Text>
+            {showLast && (
+              <Text style={[styles.last, styles.colLast]} numberOfLines={1}>
+                {first ? lastText(lastWeekFor(i)) : ''}
+              </Text>
+            )}
+            {singleMetrics.map((m) =>
+              first ? (
+                <View key={m} style={styles.colMetric}>{renderMetric(i, m, isOpen, isCompleted)}</View>
+              ) : (
+                <View key={m} style={styles.colMetric} />
+              ),
+            )}
+            {ball && (
+              <>
+                <View style={[styles.ball, styles.colBall]}>
+                  <View style={[styles.dot, { backgroundColor: ball.color }]} />
+                  <Text style={styles.ballName} numberOfLines={1}>
+                    {ball.name}
+                    {ball.tracked ? <Text style={styles.ballTrophy}> 🏆</Text> : null}
+                  </Text>
+                </View>
+                <View style={styles.colPairReps}>
+                  {ball.repsId ? renderMetric(i, ball.repsId, isOpen, isCompleted) : renderCell('—', null, 'dim')}
+                </View>
+                <View style={styles.colPairMph}>
+                  {ball.mphId ? renderMetric(i, ball.mphId, isOpen, isCompleted) : renderCell('—', null, 'dim')}
+                </View>
+              </>
+            )}
+            <View style={styles.colCheck}>{first ? renderSetCheck(i, isCompleted) : null}</View>
+          </View>,
+        );
+      }
+
+      const caption = isOpen ? intensityCaption(i) : null;
+      const body = (
+        <>
+          {isCurrentSet && <View style={styles.rail} />}
+          {lines}
+          {!!setConfig?.notes && <Text style={styles.cn}>{setConfig.notes}</Text>}
+          {!!caption && <Text style={styles.caption}>{caption}</Text>}
+          {isOpen && exercise.ask_rpe && onRpeChange && (
+            <View style={styles.rpeStrip}>
+              <RpeRow
+                compact
+                target={setConfig?.rpe ?? exercise.rpe_target ?? null}
+                value={rpe}
+                onChange={(v) => onRpeChange(i, v)}
+              />
+            </View>
+          )}
+          {!isOpen && isCompleted && exercise.ask_rpe && rpeValues && (
+            rpe != null
+              ? <Text style={styles.rpeDone}>{`RPE ${rpe}`}</Text>
+              : <Text style={styles.rpeMissing}>RPE?</Text>
+          )}
+        </>
+      );
+
+      sets.push(
+        isOpen ? (
+          <View
+            key={i}
+            onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
+            style={[styles.set, isCurrentSet ? styles.setCur : styles.setOpen]}
+          >
+            {body}
+          </View>
+        ) : (
           <TouchableOpacity
             key={i}
             onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
@@ -979,196 +1023,22 @@ export default function ExerciseDetailView({
             activeOpacity={0.7}
             accessibilityRole="button"
             accessibilityLabel={`Open set ${i + 1}`}
-            style={[
-              styles.setRow,
-              styles.setRowCollapsed,
-              isCompleted && styles.setRowDone,
-            ]}
+            style={styles.set}
           >
-            <View style={styles.setRowBody}>
-              <View style={styles.setRowTitleLine}>
-                <Text style={styles.setRowLabel}>
-                  Set {i + 1}{topSet ? ' · top set' : ''}
-                </Text>
-                {isCompleted && exercise.ask_rpe && rpeValues?.[`${exercise.id}:${i}`] == null && (
-                  <Text style={styles.setRowRpeMissing}>RPE?</Text>
-                )}
-              </View>
-              <Text
-                style={isCompleted ? styles.setResultLine : styles.setTargetLine}
-                numberOfLines={1}
-              >
-                {line}
-              </Text>
-            </View>
-            {renderSetCheck(i, isCompleted)}
-          </TouchableOpacity>,
-        );
-        continue;
-      }
+            {body}
+          </TouchableOpacity>
+        ),
+      );
+    }
 
-      // The header caption is dropped when an input already shows the same
-      // pending % ("90% of set 1" until set 1 is logged).
-      const headerCaption = caption && !showsPendingTarget(i, setData) ? caption : null;
+    if (footerRest || restSecondsLeft != null) {
       sets.push(
-        <View
-          key={i}
-          onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
-          style={[
-            styles.setRow,
-            isCompleted && styles.setRowDone,
-            isCompleted && styles.setCardDone,
-            isCurrentSet && styles.setCardCurrent,
-          ]}
-        >
-          {/* Set header — "Set 2 of 3 · top set", intensity caption, check */}
-          <View style={styles.setHeader}>
-            <Text style={styles.setHeaderText} numberOfLines={1}>
-              Set {i + 1} of {exercise.sets}{topSet ? ' · top set' : ''}
-            </Text>
-            {!!headerCaption && (
-              <Text style={styles.setHeaderCaption} numberOfLines={1}>{headerCaption}</Text>
-            )}
-            {renderSetCheck(i, isCompleted)}
-          </View>
-
-          {/* Last week's result for this set */}
-          {(() => {
-            const wr = last ? formatWeightReps(last.weight, last.reps) : null;
-            return wr ? <Text style={styles.lastWeekLine}>{`last week ${wr}`}</Text> : null;
-          })()}
-          {/* Metric Inputs Grid - with grouped ball metrics */}
-          <View style={styles.metricsGrid}>
-            {(() => {
-              const metricGroups = groupMetricsForDisplay(metricFields, customMeasurements);
-
-              // Separate ball groups from non-ball metrics
-              const ballGroups = metricGroups.filter(g => g.ballType);
-              const nonBallMetrics = metricGroups.filter(g => !g.ballType).flatMap(g => g.metrics);
-
-              return (
-                <>
-                  {/* Non-ball metrics in a row */}
-                  {nonBallMetrics.length > 0 && (
-                    <View style={styles.nonBallMetricsRow}>
-                      {nonBallMetrics.map(metricId => {
-                        const label = getMetricLabel(metricId, customMeasurements);
-                        const currentValue = setData[metricId];
-                        const isDecimal = metricTypeOf(metricId) === 'decimal';
-                        const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
-
-                        const justFilled = autoFilledKeys.has(`${i}:${metricId}`);
-                        const isEmpty = currentValue == null || currentValue === '';
-                        const shown = !isEmpty ? String(currentValue) : emptyInputText(i, metricId);
-                        // Prompts ("Enter Reps", "90% of set 1") sit smaller than numbers.
-                        const isPrompt = isEmpty && !/^-?\d+(\.\d+)?$/.test(shown);
-                        return (
-                          <View
-                            key={metricId}
-                            style={[styles.metricInput, metricId === 'weight' && styles.metricInputWide]}
-                          >
-                            <View style={styles.metricLabelRow}>
-                              <Text style={styles.metricLabel} numberOfLines={1}>{label.toUpperCase()}</Text>
-                            </View>
-                            <TouchableOpacity
-                              style={[
-                                styles.input,
-                                currentValue != null && currentValue !== '' && styles.inputFilled,
-                                isActive && styles.inputActive,
-                                justFilled && styles.inputAutoFilled,
-                              ]}
-                              onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
-                              activeOpacity={0.7}
-                            >
-                              <Text
-                                style={[
-                                  styles.inputText,
-                                  isEmpty && styles.inputPlaceholder,
-                                  isPrompt && styles.inputPrompt,
-                                ]}
-                                numberOfLines={1}
-                              >
-                                {shown}
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  {/* Ball metric groups - each takes full width, 2 columns for reps/velo */}
-                  {ballGroups.map((group) => (
-                    <View key={`group-${group.ballType}`} style={styles.ballMetricGroup}>
-                      {/* Ball icon header for the group */}
-                      <View style={styles.ballGroupHeader}>
-                        <BallIcon metricId={group.metrics[0]} customMeasurements={customMeasurements} />
-                      </View>
-                      {/* Individual metrics in the group - always 2 columns */}
-                      <View style={styles.ballGroupInputs}>
-                        {group.metrics.map(metricId => {
-                          const label = getMetricLabel(metricId, customMeasurements);
-                          const currentValue = setData[metricId];
-                          const placeholderValue =
-                            getIntensityTarget(i, metricId)?.calculatedValue ?? getTargetValue(i, metricId);
-                          const isDecimal = metricTypeOf(metricId) === 'decimal';
-                          const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
-
-                          const justFilledBall = autoFilledKeys.has(`${i}:${metricId}`);
-                          return (
-                            <View key={metricId} style={styles.ballGroupMetricInput}>
-                              <Text style={styles.ballGroupMetricLabel}>{label}</Text>
-                              <TouchableOpacity
-                                style={[
-                                  styles.ballGroupInput,
-                                  currentValue != null && currentValue !== '' && styles.inputFilled,
-                                  isActive && styles.inputActive,
-                                  justFilledBall && styles.inputAutoFilled,
-                                ]}
-                                onPress={() => setActiveInput({ setIndex: i, metricId, isDecimal })}
-                                activeOpacity={0.7}
-                              >
-                                <Text style={[
-                                  styles.inputText,
-                                  (currentValue == null || currentValue === '') && styles.inputPlaceholder,
-                                ]}>
-                                  {currentValue != null && currentValue !== ''
-                                    ? String(currentValue)
-                                    : placeholderValue ? String(placeholderValue) : '-'}
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ))}
-                </>
-              );
-            })()}
-          </View>
-
-          {exercise.ask_rpe && onRpeChange && (
-            <RpeRow
-              target={setConfig?.rpe ?? exercise.rpe_target ?? null}
-              value={rpeValues?.[`${exercise.id}:${i}`] ?? null}
-              onChange={(v) => onRpeChange(i, v)}
-            />
+        <View key="foot" style={styles.foot}>
+          <Text style={styles.footText}>{footerRest ?? ''}</Text>
+          {restSecondsLeft != null && (
+            <Text style={styles.footTimer}>{`Rest ${formatRest(restSecondsLeft)}`}</Text>
           )}
-
-          {/* Per-set notes from coach (read-only display) */}
-          {setConfig?.notes && (
-            <View style={styles.setNotesDisplay}>
-              <Text style={styles.setNotesText}>{setConfig.notes}</Text>
-            </View>
-          )}
-          {/* Subtle "Saved" affordance under the active set so the
-              athlete sees their input landed (the actual DB write is
-              debounced in the parent — this fires on every state push). */}
-          {isCurrentSet && savedVisible && (
-            <Text style={styles.savedTick}>· Saved</Text>
-          )}
-        </View>
+        </View>,
       );
     }
     return sets;
@@ -1180,9 +1050,8 @@ export default function ExerciseDetailView({
     return name.substring(0, maxLength - 1) + '…';
   };
 
-  // Dynamic button text based on workout type and progress
-  // Shows "Next Set" when staying on same exercise, or the actual exercise name when switching.
-  // The next step comes from the sequence engine, as if the current set were done.
+  // After the set is logged: where the next tap goes — "Next Set →", the
+  // next exercise's name, or DONE. Comes from the sequence engine.
   const getNextButtonText = () => {
     // Rows outside the sequence (notes-only, text blocks) step to the next row
     // in the list — same as the parent's handleNextSet.
@@ -1204,6 +1073,110 @@ export default function ExerciseDetailView({
     return nextExercise ? truncateName(nextExercise.exercises?.name ?? nextExercise.placeholder_name ?? '') + ' →' : 'DONE';
   };
 
+  // Before the set is logged: "Done · set 3", "Done → A2 Box Jump" (next in
+  // the round), "Done · round 2" (round ends here).
+  const doneLabel = (): string => {
+    if (!isGrouped) return `Done · set ${currentSetIndex + 1}`;
+    const next = nextInRound();
+    if (next) return `Done → ${codeFor(next.reId)} ${truncateName(nameOf(next.reId), 16)}`;
+    return `Done · round ${currentRound}`;
+  };
+
+  // ── Coach note (one line; "more" expands) ─────────────────────────────
+  const renderCoachNote = () => {
+    const trim = (s: string | null | undefined) => (s ?? '').trim();
+    const routineNote = trim((routine as any).notes);
+    const routineTextInfo = trim((routine as any).text_info);
+    const exerciseCoachNote = trim((exercise as any).notes);
+    const exerciseDescription = trim((exercise.exercises as any)?.description);
+    const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
+    // A coach note counts only if it parses to cues or callouts.
+    const noteHasContent =
+      !!parsedNote &&
+      (parsedNote.sections.some((sec) => sec.items.length > 0) || parsedNote.callouts.length > 0);
+    const hasAnything =
+      !!routineNote || !!routineTextInfo || noteHasContent || !!exerciseDescription;
+    if (!hasAnything) return null;
+    const allCues = parsedNote ? parsedNote.sections.flatMap((sec) => sec.items) : [];
+    const callouts = parsedNote?.callouts ?? [];
+    const previewText = allCues.length > 0
+      ? allCues.slice(0, 2).join(' ')
+      : routineNote || routineTextInfo || exerciseDescription || callouts[0] || '';
+    const hasMore = allCues.length > 0
+      ? allCues.length > 2 ||
+        callouts.length > 0 ||
+        (parsedNote?.sections.some((sec) => !!sec.header) ?? false) ||
+        !!routineNote || !!routineTextInfo || !!exerciseDescription
+      : [routineNote, routineTextInfo, exerciseDescription, ...callouts].filter(Boolean).length > 1 ||
+        previewText.length > 90;
+    const expanded = notesExpanded && hasMore;
+    return (
+      <TouchableOpacity
+        style={styles.note}
+        onPress={() => hasMore && setNotesExpanded((v) => !v)}
+        activeOpacity={hasMore ? 0.7 : 1}
+        accessibilityRole={hasMore ? 'button' : undefined}
+        accessibilityLabel={hasMore ? (expanded ? 'Show less coach notes' : 'Show more coach notes') : undefined}
+      >
+        {!expanded ? (
+          <Text style={styles.noteText} numberOfLines={2}>
+            <Text style={styles.noteLabel}>COACH  </Text>
+            {previewText}
+            {hasMore ? <Text style={styles.noteMore}>  more</Text> : null}
+          </Text>
+        ) : (
+          <View style={styles.noteBody}>
+            {!!routineNote && (
+              <View style={styles.noteSection}>
+                <Text style={styles.noteLabel}>BLOCK NOTE</Text>
+                <Text style={styles.noteText}>{routineNote}</Text>
+              </View>
+            )}
+            {!!routineTextInfo && (
+              <View style={styles.noteSection}>
+                <Text style={styles.noteLabel}>BLOCK INFO</Text>
+                <Text style={styles.noteText}>{routineTextInfo}</Text>
+              </View>
+            )}
+            {!!parsedNote && (parsedNote.sections.length > 0 || parsedNote.callouts.length > 0) && (
+              <View style={styles.noteSection}>
+                <Text style={styles.noteLabel}>COACH</Text>
+                {parsedNote.sections.map((section, sIdx) => (
+                  <View key={sIdx} style={sIdx > 0 ? { marginTop: 6 } : undefined}>
+                    {!!section.header && (
+                      <Text style={styles.noteHeader}>{section.header}</Text>
+                    )}
+                    {section.items.map((item, iIdx) => (
+                      <View key={iIdx} style={styles.noteBulletRow}>
+                        <Text style={styles.noteBullet}>•</Text>
+                        <Text style={[styles.noteText, styles.noteBulletText]}>{item}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ))}
+                {parsedNote.callouts.map((c, cIdx) => (
+                  <View key={cIdx} style={styles.noteBulletRow}>
+                    <Text style={styles.noteCalloutIcon}>⚠</Text>
+                    <Text style={[styles.noteCalloutText, styles.noteBulletText]}>{c}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            {!!exerciseDescription && (
+              <View style={styles.noteSection}>
+                <Text style={styles.noteLabel}>HOW IT WORKS</Text>
+                <Text style={styles.noteDescription}>{exerciseDescription}</Text>
+              </View>
+            )}
+            <Text style={styles.noteMore}>less</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const rx = rxLine();
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
@@ -1212,374 +1185,133 @@ export default function ExerciseDetailView({
         keyboardVerticalOffset={0}
         {...panResponder.panHandlers}
       >
-        {/* Header Section */}
-        <View style={styles.header}>
-        {/* PR Alert Banner */}
-        {prAlertVisible && prAlert && (
-          <Animated.View
-            style={[
-              styles.prAlertBanner,
-              {
-                transform: [
-                  {
-                    translateY: prAnimation.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [-100, 0],
-                    }),
-                  },
-                ],
-                opacity: prAnimation,
-              },
-            ]}
-          >
-            <LinearGradient
-              colors={['#FBBF24', '#F59E0B']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.prAlertGradient}
-            >
-              <Text style={styles.prAlertTrophy}>🏆</Text>
-              <View>
-                <Text style={styles.prAlertTitle}>NEW PERSONAL RECORD!</Text>
-                <Text style={styles.prAlertMetric}>
-                  {getMetricLabel(prAlert.metric, customMeasurements)}: {prAlert.value}
-                </Text>
-              </View>
-            </LinearGradient>
-          </Animated.View>
-        )}
-
-        {/* Exercise Title Row */}
-        <View style={styles.titleRow}>
-          {/* Back to Overview Button */}
+        {/* Header: ← · code chip · NAME · 🏆 max */}
+        <View style={styles.hdr}>
           <TouchableOpacity
-            style={styles.backToOverviewButton}
+            style={styles.back}
             onPress={onBackToOverview}
             activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Back to overview"
           >
-            <Ionicons name="arrow-back" size={16} color={LOGGER_COLORS.muted} />
+            <Ionicons name="arrow-back" size={16} color="rgba(255,255,255,0.7)" />
           </TouchableOpacity>
-
-          {/* Block Label as a visible pill — was tiny grey text, easy to
-              miss. Now a small bordered chip beside the exercise name so
-              superset (A1/A2) grouping is glanceable. */}
           {blockLabel && (
-            <View style={styles.blockPill}>
-              <Text style={styles.blockPillText}>{blockLabel}</Text>
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>{blockLabel}</Text>
             </View>
           )}
-
-          {/* Exercise Name */}
-          <Text style={styles.exerciseName} numberOfLines={2}>
-            {exerciseName}
+          <Text style={styles.ttl} numberOfLines={2}>
+            {exerciseName.toUpperCase()}
           </Text>
-
-          {/* PR Trophy — now tappable, opens the PR popover. */}
-          {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
+          {prPillText && (
             <TouchableOpacity
+              style={styles.pr}
               onPress={() => setPRPopoverOpen(true)}
-              hitSlop={10}
+              hitSlop={8}
               activeOpacity={0.6}
+              accessibilityRole="button"
               accessibilityLabel="View personal records"
             >
-              <Text style={styles.headerPrTrophy}>🏆</Text>
+              <Text style={styles.prText} numberOfLines={1}>{prPillText}</Text>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Variation chip — was buried in parentheses next to the
-            exercise name. Now its own purple-tinted pill so the athlete
-            sees they're on a variation at a glance. */}
-        {exercise.selected_variation && (
-          <View style={styles.variationPillWrap}>
-            <View style={styles.variationPill}>
-              <Text style={styles.variationPillText}>
-                {exercise.selected_variation.toUpperCase()}
-              </Text>
-            </View>
-          </View>
-        )}
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.setsScrollView}
+          contentContainerStyle={[styles.setsContent, { paddingBottom: bottomBarHeight + 80 }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {!!rx && <Text style={styles.rx}>{rx}</Text>}
+          {renderCoachNote()}
+          {renderSets()}
+        </ScrollView>
 
-        {/* Tempo only shown in header */}
-        {exercise.tempo && (
-          <View style={styles.exerciseDetailsInline}>
-            <Text style={styles.inlineDetail}>⏱ {exercise.tempo}</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Superset progress pills — for supersets/circuits, show a small
-          horizontal row of pills with each exercise's letter+number and
-          set progress ("A1 2/3 · A2 1/3"). Current exercise highlighted in
-          accent, completed exercises in green, others muted. */}
-      {(() => {
-        const ctx = getSupersetContext(routine, exercise.id, currentSetIndex, completedSets);
-        if (!ctx || ctx.exercises.length <= 1) return null;
-        return (
-          <View style={styles.supersetPillsWrap}>
-            {ctx.blockName && (
-              <Text style={styles.supersetBlockName}>{ctx.blockName.toUpperCase()}</Text>
-            )}
-            <View style={styles.supersetPillsRow}>
-              {(() => {
-                // Block letter reflects the routine's position in the
-                // workout (A, B, C…). blockLabel string from the parent
-                // would be ideal, but we can derive a stable letter from
-                // the FIRST exercise's code letter via the prop. Fall back
-                // to 'A' if not provided — same convention used elsewhere.
-                const blockLetter = (blockLabel || 'A').toString().charAt(0).toUpperCase();
-                return ctx.exercises.map((ex, idx) => {
-                  const code = `${blockLetter}${idx + 1}`; // A1, A2, A3…
-                  const isCurrent = idx === ctx.currentExerciseIndex;
-                  const isDone = ex.completedSets >= ex.totalSets;
-                  const stateStyle = isCurrent
-                    ? styles.supersetPillCurrent
-                    : isDone
-                    ? styles.supersetPillDone
-                    : styles.supersetPillIdle;
-                  const textStyle = isCurrent
-                    ? styles.supersetPillTextCurrent
-                    : isDone
-                    ? styles.supersetPillTextDone
-                    : styles.supersetPillTextIdle;
-                  return (
-                    <View key={ex.id} style={[styles.supersetPill, stateStyle]}>
-                      <Text style={[styles.supersetPillLetter, textStyle]}>{code}</Text>
-                      <Text style={[styles.supersetPillProgress, textStyle]}>
-                        {ex.completedSets}/{ex.totalSets}
-                      </Text>
-                    </View>
-                  );
-                });
-              })()}
-            </View>
-          </View>
-        );
-      })()}
-
-      {/* Sets Section */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.setsScrollView}
-        contentContainerStyle={styles.setsContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Coach Instructions — prominent, always-visible panel that
-            consolidates everything the athlete needs to read before lifting
-            (scrolls with the sets):
-            block-level notes (routine.notes / text_info), the coach's
-            exercise-level note (parsed with the same bullet logic the
-            overview uses, so "; "-separated cues become a checklist), and
-            the exercise library description in a muted style.
-            Collapsed to a short preview by default; "more" opens it all. */}
-        {(() => {
-          const trim = (s: string | null | undefined) => (s ?? '').trim();
-          const routineNote = trim((routine as any).notes);
-          const routineTextInfo = trim((routine as any).text_info);
-          const exerciseCoachNote = trim((exercise as any).notes);
-          const exerciseDescription = trim((exercise.exercises as any)?.description);
-          const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
-          // A coach note counts only if it parses to cues or callouts (a
-          // headers-only note would leave an empty card).
-          const noteHasContent =
-            !!parsedNote &&
-            (parsedNote.sections.some((sec) => sec.items.length > 0) || parsedNote.callouts.length > 0);
-          const hasAnything =
-            !!routineNote || !!routineTextInfo || noteHasContent || !!exerciseDescription;
-          if (!hasAnything) return null;
-          // Collapsed preview: the coach's first two cues, else the first
-          // note we have. "more" appears only when there is more to read.
-          const allCues = parsedNote ? parsedNote.sections.flatMap((sec) => sec.items) : [];
-          const previewItems = allCues.slice(0, 2);
-          const callouts = parsedNote?.callouts ?? [];
-          const previewText = routineNote || routineTextInfo || exerciseDescription || callouts[0] || '';
-          const hasMore = previewItems.length > 0
-            ? allCues.length > 2 ||
-              callouts.length > 0 ||
-              (parsedNote?.sections.some((sec) => !!sec.header) ?? false) ||
-              !!routineNote || !!routineTextInfo || !!exerciseDescription
-            : [routineNote, routineTextInfo, exerciseDescription, ...callouts].filter(Boolean).length > 1 ||
-              previewText.length > 120;
-          // Nothing more to read → the preview is the whole card.
-          const expanded = notesExpanded && hasMore;
-          return (
-            <View style={styles.coachPanel}>
-              <TouchableOpacity
-                style={styles.coachPanelHeader}
-                onPress={() => hasMore && setNotesExpanded((v) => !v)}
-                activeOpacity={hasMore ? 0.7 : 1}
-                hitSlop={6}
-              >
-                <Text style={styles.coachPanelTitle}>Coach Instructions</Text>
-                {hasMore && (
-                  <Text style={styles.coachPanelChev}>{expanded ? 'less ▴' : 'more ▾'}</Text>
-                )}
-              </TouchableOpacity>
-              {!expanded && (
-                <View style={styles.coachPreview}>
-                  {previewItems.length > 0
-                    ? previewItems.map((item, idx) => (
-                        <View key={idx} style={styles.coachBulletRow}>
-                          <Text style={styles.coachBullet}>•</Text>
-                          <Text style={styles.coachBulletText}>{item}</Text>
-                        </View>
-                      ))
-                    : (
-                        <Text style={styles.coachSectionBody} numberOfLines={3}>
-                          {previewText}
-                        </Text>
-                      )}
-                </View>
-              )}
-              {expanded && (
-                <View style={styles.coachPanelBody}>
-                  {/* Block context — what the coach said for this section */}
-                  {!!routineNote && (
-                    <View style={styles.coachSection}>
-                      <Text style={styles.coachSectionLabel}>BLOCK NOTE</Text>
-                      <Text style={styles.coachSectionBody}>{routineNote}</Text>
-                    </View>
-                  )}
-                  {!!routineTextInfo && (
-                    <View style={styles.coachSection}>
-                      <Text style={styles.coachSectionLabel}>BLOCK INFO</Text>
-                      <Text style={styles.coachSectionBody}>{routineTextInfo}</Text>
-                    </View>
-                  )}
-                  {/* Exercise-level coach note, bullet-parsed */}
-                  {!!parsedNote && (parsedNote.sections.length > 0 || parsedNote.callouts.length > 0) && (
-                    <View style={styles.coachSection}>
-                      <Text style={styles.coachSectionLabel}>COACH NOTE</Text>
-                      {parsedNote.sections.map((section, sIdx) => (
-                        <View key={sIdx} style={sIdx > 0 ? { marginTop: 6 } : undefined}>
-                          {!!section.header && (
-                            <Text style={styles.coachSectionHeader}>{section.header}</Text>
-                          )}
-                          {section.items.map((item, iIdx) => (
-                            <View key={iIdx} style={styles.coachBulletRow}>
-                              <Text style={styles.coachBullet}>•</Text>
-                              <Text style={styles.coachBulletText}>{item}</Text>
-                            </View>
-                          ))}
-                        </View>
-                      ))}
-                      {parsedNote.callouts.length > 0 && (
-                        <View style={{ marginTop: 6 }}>
-                          {parsedNote.callouts.map((c, cIdx) => (
-                            <View key={cIdx} style={styles.coachBulletRow}>
-                              <Text style={styles.coachCalloutIcon}>⚠</Text>
-                              <Text style={styles.coachCalloutText}>{c}</Text>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                    </View>
-                  )}
-                  {/* Library description — muted, italic, last */}
-                  {!!exerciseDescription && (
-                    <View style={styles.coachSection}>
-                      <Text style={styles.coachSectionLabel}>HOW IT WORKS</Text>
-                      <Text style={styles.coachDescription}>{exerciseDescription}</Text>
-                    </View>
-                  )}
-                </View>
-              )}
-            </View>
-          );
-        })()}
-        {renderSetCards()}
-      </ScrollView>
-
-      {/* History — slide-up bottom sheet. Was previously an overlay panel
-          that floated over the set cards; now it's a proper sheet with a
-          dim backdrop, dismissable by tapping outside. */}
-      <Modal
-        visible={showHistory}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowHistory(false)}
-      >
-        <Pressable
-          style={styles.historySheetBackdrop}
-          onPress={() => setShowHistory(false)}
+        {/* History — slide-up bottom sheet with a dim backdrop. */}
+        <Modal
+          visible={showHistory}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowHistory(false)}
         >
           <Pressable
-            onPress={(e) => e.stopPropagation()}
-            style={styles.historySheetCard}
+            style={styles.historySheetBackdrop}
+            onPress={() => setShowHistory(false)}
           >
-          <View style={styles.historySheetGrabber} />
-          <View style={styles.historyPanelHeader}>
-            <Text style={styles.historyPanelTitle}>Workout History</Text>
-            <TouchableOpacity onPress={() => setShowHistory(false)} activeOpacity={0.7}>
-              <Text style={styles.historyPanelClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.historyPanelScroll} showsVerticalScrollIndicator={false}>
-            {(!exerciseHistory || exerciseHistory.length === 0) ? (
-              <View style={styles.historyEmpty}>
-                <Text style={styles.historyEmptyText}>No previous workout history for this exercise</Text>
-              </View>
-            ) : (
-              exerciseHistory.slice(0, 10).map((workout, wIndex) => {
-                const stats = computeSessionStats(workout.sets);
-                const dateFormatted = new Date(workout.date).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                });
-                const relativeTime = getRelativeTime(workout.date);
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              style={styles.historySheetCard}
+            >
+            <View style={styles.historySheetGrabber} />
+            <View style={styles.historyPanelHeader}>
+              <Text style={styles.historyPanelTitle}>Workout History</Text>
+              <TouchableOpacity onPress={() => setShowHistory(false)} activeOpacity={0.7}>
+                <Text style={styles.historyPanelClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.historyPanelScroll} showsVerticalScrollIndicator={false}>
+              {(!exerciseHistory || exerciseHistory.length === 0) ? (
+                <View style={styles.historyEmpty}>
+                  <Text style={styles.historyEmptyText}>No previous workout history for this exercise</Text>
+                </View>
+              ) : (
+                exerciseHistory.slice(0, 10).map((workout, wIndex) => {
+                  const stats = computeSessionStats(workout.sets);
+                  const dateFormatted = new Date(workout.date).toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                  });
+                  const relativeTime = getRelativeTime(workout.date);
 
-                return (
-                  <View key={workout.id || wIndex} style={styles.historyWorkout}>
-                    <View style={styles.historyDateRow}>
-                      <Text style={styles.historyRelative}>{relativeTime}</Text>
-                      <Text style={styles.historyDateFormatted}>{dateFormatted}</Text>
-                    </View>
-                    <View style={styles.historyStatsRow}>
-                      {stats.totalReps > 0 && (
+                  return (
+                    <View key={workout.id || wIndex} style={styles.historyWorkout}>
+                      <View style={styles.historyDateRow}>
+                        <Text style={styles.historyRelative}>{relativeTime}</Text>
+                        <Text style={styles.historyDateFormatted}>{dateFormatted}</Text>
+                      </View>
+                      <View style={styles.historyStatsRow}>
+                        {stats.totalReps > 0 && (
+                          <View style={styles.historyStat}>
+                            <Text style={styles.historyStatValue}>{stats.totalReps}</Text>
+                            <Text style={styles.historyStatLabel}>reps</Text>
+                          </View>
+                        )}
+                        {stats.maxWeight > 0 && (
+                          <View style={styles.historyStat}>
+                            <Text style={styles.historyStatValue}>{stats.maxWeight}</Text>
+                            <Text style={styles.historyStatLabel}>max lb</Text>
+                          </View>
+                        )}
+                        {stats.volume > 0 && (
+                          <View style={styles.historyStat}>
+                            <Text style={styles.historyStatValue}>{(stats.volume / 1000).toFixed(1)}k</Text>
+                            <Text style={styles.historyStatLabel}>volume</Text>
+                          </View>
+                        )}
                         <View style={styles.historyStat}>
-                          <Text style={styles.historyStatValue}>{stats.totalReps}</Text>
-                          <Text style={styles.historyStatLabel}>reps</Text>
+                          <Text style={styles.historyStatValue}>{stats.setsCount}</Text>
+                          <Text style={styles.historyStatLabel}>sets</Text>
                         </View>
-                      )}
-                      {stats.maxWeight > 0 && (
-                        <View style={styles.historyStat}>
-                          <Text style={styles.historyStatValue}>{stats.maxWeight}</Text>
-                          <Text style={styles.historyStatLabel}>max lb</Text>
-                        </View>
-                      )}
-                      {stats.volume > 0 && (
-                        <View style={styles.historyStat}>
-                          <Text style={styles.historyStatValue}>{(stats.volume / 1000).toFixed(1)}k</Text>
-                          <Text style={styles.historyStatLabel}>volume</Text>
-                        </View>
-                      )}
-                      <View style={styles.historyStat}>
-                        <Text style={styles.historyStatValue}>{stats.setsCount}</Text>
-                        <Text style={styles.historyStatLabel}>sets</Text>
                       </View>
                     </View>
-                  </View>
-                );
-              })
-            )}
-          </ScrollView>
+                  );
+                })
+              )}
+            </ScrollView>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
+        </Modal>
 
-      {/* Fixed Bottom Navigation */}
-      <View
-        style={styles.bottomNav}
-        onLayout={(e) => setBottomBarHeight(e.nativeEvent.layout.height)}
-      >
-        <View style={[styles.bottomNavGradient, { paddingBottom: Math.max(insets.bottom - 8, 16) }]}>
-          <View style={styles.bottomNavContainer}>
-            {/* History Button — anchors the left edge so the bar reads
-                [utility] [primary CTA centered] [utility]. The previous
-                layout bunched both squares on the left and shoved Log Set
-                to the right, which felt off-balance. */}
+        {/* Bottom bar: History · Done · menu */}
+        <View
+          style={styles.bottomNav}
+          onLayout={(e) => setBottomBarHeight(e.nativeEvent.layout.height)}
+        >
+          <View style={[styles.bottomNavInner, { paddingBottom: Math.max(insets.bottom - 8, 16) }]}>
             <TouchableOpacity
-              style={[styles.historyButton, showHistory && styles.historyButtonActive]}
+              style={[styles.g, showHistory && styles.gActive]}
               onPress={() => setShowHistory(!showHistory)}
               activeOpacity={0.7}
               accessibilityRole="button"
@@ -1587,104 +1319,68 @@ export default function ExerciseDetailView({
             >
               <Ionicons
                 name="stats-chart"
-                size={18}
+                size={16}
                 color={showHistory ? LOGGER_COLORS.accent : 'rgba(255,255,255,0.7)'}
               />
+              <Text style={[styles.gLabel, showHistory && styles.gLabelActive]}>History</Text>
             </TouchableOpacity>
 
-            {/* Next Set / Next Exercise / DONE Button */}
             {(() => {
               const currentSetCompleted = isSetCompleted(currentSetIndex);
-              const nextText = getNextButtonText();
               const isNotesOnly = metricFields.length === 0;
 
-              // For notes-only exercises, always show navigation (skip "Log Set")
-              // They just need to see the content and move on
+              // Notes-only rows: no set to log — step to the next row.
               if (isNotesOnly) {
-                // For notes-only, determine what to show
-                // Next skips text blocks, so "last" = no exercise row after this one.
                 const nextExercise = neighborExercise(allExercises, exercise.id, 1);
-                const isLastExercise = nextExercise == null;
-
-                if (isLastExercise) {
-                  return (
-                    <TouchableOpacity
-                      style={styles.nextSetButton}
-                      onPress={onNextSet}
-                      activeOpacity={0.85}
-                    >
-                      <LinearGradient
-                        colors={[LOGGER_COLORS.green, '#059669']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.nextSetButtonGradient}
-                      >
-                        <Text style={[styles.nextSetButtonIcon, { color: '#FFFFFF' }]}>✓</Text>
-                        <Text style={[styles.nextSetButtonText, { color: '#FFFFFF' }]}>DONE</Text>
-                      </LinearGradient>
-                    </TouchableOpacity>
-                  );
-                }
-
-                // Show next exercise name
-                const nextExerciseName = nextExercise
-                  ? truncateName(nextExercise.exercises?.name ?? nextExercise.placeholder_name ?? '') + ' →'
-                  : 'Next';
-
+                const isLast = nextExercise == null;
+                const notesLabel = nextExercise
+                  ? `${truncateName(nextExercise.exercises?.name ?? nextExercise.placeholder_name ?? '')} →`
+                  : '✓ DONE';
                 return (
-                  <TouchableOpacity
-                    style={styles.nextSetButton}
-                    onPress={onNextSet}
-                    activeOpacity={0.85}
-                  >
+                  <TouchableOpacity style={styles.lb} onPress={onNextSet} activeOpacity={0.85}>
                     <LinearGradient
-                      colors={[LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const}
+                      colors={isLast ? ([LOGGER_COLORS.green, '#059669'] as const) : ([LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const)}
                       start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.nextSetButtonGradient}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.lbFill}
                     >
-                      <Text style={styles.nextSetButtonIcon}>›</Text>
-                      <Text style={styles.nextSetButtonText}>{nextExerciseName}</Text>
+                      <Text style={[styles.lbText, isLast && styles.lbTextOnGreen]} numberOfLines={1}>
+                        {notesLabel}
+                      </Text>
                     </LinearGradient>
                   </TouchableOpacity>
                 );
               }
 
+              const nextText = getNextButtonText();
               const isDone = nextText === 'DONE' && currentSetCompleted;
-              const gradientColors = isDone
-                ? ([LOGGER_COLORS.green, '#059669'] as const)
-                : ([LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const);
               const label = isDone
-                ? 'DONE'
+                ? '✓ DONE'
                 : !currentSetCompleted
-                  ? 'Log Set'
+                  ? `✓ ${doneLabel()}`
                   : nextText;
-              const icon = isDone || !currentSetCompleted ? '✓' : '›';
-
-              const contentColorStyle = isDone ? { color: '#FFFFFF' } : null;
-
               return (
                 <TouchableOpacity
-                  style={styles.nextSetButton}
+                  style={styles.lb}
                   onPress={handleNextButtonPress}
                   activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={label}
                 >
                   <LinearGradient
-                    colors={gradientColors}
+                    colors={isDone ? ([LOGGER_COLORS.green, '#059669'] as const) : ([LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const)}
                     start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.nextSetButtonGradient}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.lbFill}
                   >
-                    <Text style={[styles.nextSetButtonIcon, contentColorStyle]}>{icon}</Text>
-                    <Text style={[styles.nextSetButtonText, contentColorStyle]}>{label}</Text>
+                    <Text style={[styles.lbText, isDone && styles.lbTextOnGreen]} numberOfLines={1}>{label}</Text>
                   </LinearGradient>
                 </TouchableOpacity>
               );
             })()}
 
-            {/* Overview Button — anchors the right edge to balance History */}
             <TouchableOpacity
-              style={styles.overviewButton}
+              style={styles.g}
               onPress={onBackToOverview}
               activeOpacity={0.7}
               accessibilityRole="button"
@@ -1694,7 +1390,6 @@ export default function ExerciseDetailView({
             </TouchableOpacity>
           </View>
         </View>
-      </View>
       </KeyboardAvoidingView>
 
       {/* Floating demo video — overlays the screen without blocking logging;
@@ -1725,14 +1420,12 @@ export default function ExerciseDetailView({
           onBackspace={handleKeypadBackspace}
           onDone={handleKeypadDone}
           showDecimal={true}
-          hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
+          hasNextField={inputOrder.indexOf(activeInput.metricId) < inputOrder.length - 1}
         />
       )}
 
-      {/* PR popover — opens when the trophy in the header is tapped.
-          Reads from the cached athleteMaxes object that's already on
-          this component, so no fetch needed. Lists each tracked metric
-          with the athlete's all-time best. */}
+      {/* PR popover — the 🏆 pill. Each tracked metric with the athlete's
+          all-time best, from the cached athleteMaxes (no fetch). */}
       <Modal
         visible={prPopoverOpen}
         transparent
@@ -1753,13 +1446,13 @@ export default function ExerciseDetailView({
                 {exerciseName}
               </Text>
             </View>
-            {(exercise.tracked_max_metrics ?? []).length === 0 ? (
+            {trackedMetrics.length === 0 ? (
               <Text style={styles.prPopoverEmpty}>
                 No tracked PR metrics on this exercise yet.
               </Text>
             ) : (
               <View style={styles.prPopoverList}>
-                {(exercise.tracked_max_metrics ?? []).map((metricId) => {
+                {trackedMetrics.map((metricId) => {
                   const max = athleteMaxes[exercise.exercise_id]?.[metricId] ?? null;
                   const label = getMetricLabel(metricId, customMeasurements);
                   return (
@@ -1768,7 +1461,7 @@ export default function ExerciseDetailView({
                       <Text
                         style={[
                           styles.prPopoverRowValue,
-                          { color: max != null ? '#FBBF24' : '#4b5563' },
+                          max != null ? styles.prPopoverRowValueOn : styles.prPopoverRowValueOff,
                         ]}
                       >
                         {max != null ? max : '—'}
@@ -1792,6 +1485,13 @@ export default function ExerciseDetailView({
   );
 }
 
+// Mock: docs/superpowers/mockups/logger-v2/exercise-table.html (web repo).
+const INK_2 = 'rgba(255,255,255,0.6)';
+const INK_3 = 'rgba(255,255,255,0.4)';
+const ROW_LINE = 'rgba(255,255,255,0.06)';
+const PR_BORDER = 'rgba(217,164,65,0.45)';
+const SKY_BORDER = 'rgba(155,221,255,0.45)';
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1801,94 +1501,344 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: LOGGER_COLORS.bg,
   },
-  header: {
-    backgroundColor: LOGGER_COLORS.bg,
-    paddingHorizontal: 14,
-    paddingTop: 4,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
-  },
-  prAlertBanner: {
-    marginBottom: 12,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  prAlertGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    gap: 8,
-  },
-  prAlertTrophy: {
-    fontSize: 20,
-  },
-  prAlertTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#000000',
-  },
-  prAlertMetric: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#000000',
-  },
-  titleRow: {
+  // Header
+  hdr: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+    backgroundColor: LOGGER_COLORS.bg,
   },
-  backToOverviewButton: {
-    width: 34,
+  back: {
+    width: 32,
     height: 30,
-    backgroundColor: '#111214',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 8,
-    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  // Block pill — replaces the dim "A3" text with a visible cyan-tinted
-  // chip so superset grouping is obvious at a glance.
-  blockPill: {
+  chip: {
     minWidth: 30,
     height: 22,
     paddingHorizontal: 6,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.45)',
+    borderColor: SKY_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  blockPillText: {
+  chipText: {
     color: LOGGER_COLORS.accent,
     fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 0.4,
   },
-  // Variation pill — was tiny text in parens, now a purple-tinted chip
-  // on its own row under the exercise name. Same visual language as
-  // category pills used elsewhere on the dashboard.
-  variationPillWrap: {
-    flexDirection: 'row',
-    paddingTop: 6,
-    paddingLeft: 44, // align under the code chip (past the back btn)
+  ttl: {
+    flex: 1,
+    color: LOGGER_COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 1.2,
   },
-  variationPill: {
+  pr: {
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(192,132,252,0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(192,132,252,0.35)',
+    borderColor: PR_BORDER,
+    maxWidth: 150,
   },
-  variationPillText: {
-    color: '#C084FC',
-    fontSize: 10,
+  prText: {
+    color: LOGGER_COLORS.rpe,
+    fontSize: 11,
     fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  // rx line + coach note
+  rx: {
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    color: INK_2,
+    fontSize: 13,
+  },
+  note: {
+    paddingHorizontal: 16,
+    paddingTop: 2,
+    paddingBottom: 10,
+  },
+  noteLabel: {
+    color: LOGGER_COLORS.accent,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.6,
+  },
+  noteText: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  noteMore: {
+    color: LOGGER_COLORS.accent,
+    fontSize: 12,
+  },
+  noteBody: { gap: 10 },
+  noteSection: { gap: 4 },
+  noteHeader: {
+    color: '#E5E7EB',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  noteBulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 3,
+  },
+  noteBullet: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    lineHeight: 18,
+    width: 8,
+  },
+  noteBulletText: { flex: 1 },
+  noteCalloutIcon: {
+    color: '#FBBF24',
+    fontSize: 13,
+    lineHeight: 18,
+    width: 14,
+  },
+  noteCalloutText: {
+    color: '#FCD34D',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  noteDescription: {
+    color: LOGGER_COLORS.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  setsScrollView: {
+    flex: 1,
+  },
+  setsContent: {
+    paddingTop: 0,
+  },
+  // Table — SET 24 · LAST 64 · metric columns · circle 32, gap 8
+  th: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+  },
+  thText: {
+    color: INK_3,
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  thTrophy: {
+    color: LOGGER_COLORS.rpe,
+    fontSize: 9.5,
+  },
+  colSet: { width: 24 },
+  colLast: { width: 64 },
+  colMetric: { flex: 1, minWidth: 0 },
+  colBall: { flex: 1.1, minWidth: 0 },
+  colPairReps: { flex: 0.7, minWidth: 0 },
+  colPairMph: { flex: 1, minWidth: 0 },
+  colCheck: { width: 32, alignItems: 'flex-end' },
+  set: {
+    borderBottomWidth: 1,
+    borderBottomColor: ROW_LINE,
+  },
+  setCur: {
+    backgroundColor: 'rgba(155,221,255,0.06)',
+  },
+  setOpen: {
+    backgroundColor: 'rgba(155,221,255,0.03)',
+  },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: LOGGER_COLORS.accent,
+  },
+  tr: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    minHeight: 52,
+  },
+  trSub: { minHeight: 42 },
+  n: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 15,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  nCur: { color: LOGGER_COLORS.text },
+  last: {
+    color: INK_3,
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  cell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  v: {
+    flexShrink: 1,
+    color: LOGGER_COLORS.text,
+    fontSize: 16,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  vDone: { color: LOGGER_COLORS.greenText },
+  vDim: { color: 'rgba(255,255,255,0.5)' },
+  u: {
+    color: 'rgba(255,255,255,0.42)',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  amrapTag: {
+    marginLeft: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.4)',
+  },
+  amrapTagText: {
+    color: LOGGER_COLORS.accent,
+    fontSize: 9,
+    fontWeight: '900',
     letterSpacing: 1,
   },
-  // PR popover (opens when the trophy is tapped)
+  in: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 36,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#000000',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  inFocus: { borderColor: LOGGER_COLORS.accent },
+  inAutoFilled: {
+    borderColor: LOGGER_COLORS.green,
+    backgroundColor: 'rgba(16,185,129,0.12)',
+  },
+  inText: {
+    flexShrink: 1,
+    color: LOGGER_COLORS.text,
+    fontSize: 16,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  ph: { color: 'rgba(255,255,255,0.32)' },
+  ck: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ckOn: {
+    backgroundColor: LOGGER_COLORS.green,
+    borderColor: LOGGER_COLORS.green,
+  },
+  ckIcon: {
+    color: '#04130C',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  ball: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  ballName: {
+    flexShrink: 1,
+    color: LOGGER_COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  ballTrophy: { fontSize: 11 },
+  // Under a row: coach set note, intensity caption, RPE
+  cn: {
+    paddingLeft: 48,
+    paddingRight: 16,
+    paddingBottom: 8,
+    color: LOGGER_COLORS.accent,
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  caption: {
+    paddingLeft: 48,
+    paddingRight: 16,
+    paddingBottom: 8,
+    color: LOGGER_COLORS.accent,
+    fontSize: 12,
+    fontStyle: 'italic',
+    fontVariant: ['tabular-nums'],
+  },
+  rpeStrip: {
+    paddingLeft: 48,
+    paddingRight: 16,
+    paddingBottom: 10,
+  },
+  rpeDone: {
+    paddingLeft: 48,
+    paddingBottom: 8,
+    color: LOGGER_COLORS.rpe,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  rpeMissing: {
+    paddingLeft: 48,
+    paddingBottom: 8,
+    color: LOGGER_COLORS.rpe,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  foot: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  footText: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
+  },
+  footTimer: {
+    color: LOGGER_COLORS.accent,
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  // PR popover
   prPopoverBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.65)',
@@ -1901,7 +1851,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0d0d0d',
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(251,191,36,0.25)',
+    borderColor: PR_BORDER,
     overflow: 'hidden',
   },
   prPopoverHeader: {
@@ -1909,23 +1859,23 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: ROW_LINE,
   },
   prPopoverEyebrow: {
-    color: '#FBBF24',
+    color: LOGGER_COLORS.rpe,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1.6,
   },
   prPopoverTitle: {
-    color: '#fff',
+    color: LOGGER_COLORS.text,
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: -0.2,
     marginTop: 4,
   },
   prPopoverEmpty: {
-    color: '#9ca3af',
+    color: LOGGER_COLORS.muted,
     fontSize: 12,
     fontStyle: 'italic',
     paddingVertical: 24,
@@ -1954,180 +1904,17 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.5,
   },
+  prPopoverRowValueOn: { color: LOGGER_COLORS.rpe },
+  prPopoverRowValueOff: { color: '#4b5563' },
   prPopoverCloseBtn: {
     paddingVertical: 14,
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
   prPopoverCloseText: {
-    color: '#9ca3af',
+    color: LOGGER_COLORS.muted,
     fontSize: 13,
     fontWeight: '700',
-  },
-  exerciseName: {
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1.6,
-    color: LOGGER_COLORS.text,
-  },
-  headerPrTrophy: {
-    fontSize: 18,
-  },
-  exerciseDetailsInline: {
-    marginTop: 6,
-    paddingLeft: 44,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  inlineDetail: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    lineHeight: 16,
-  },
-  // Superset progress pills (A1 2/3 · A2 1/3)
-  supersetPillsWrap: {
-    marginHorizontal: 14,
-    marginTop: 10,
-  },
-  supersetBlockName: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    color: 'rgba(255,255,255,0.55)',
-    marginBottom: 6,
-  },
-  supersetPillsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    flexWrap: 'wrap',
-  },
-  supersetPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  supersetPillCurrent: {
-    backgroundColor: 'rgba(155,221,255,0.16)',
-    borderColor: 'rgba(155,221,255,0.55)',
-  },
-  supersetPillDone: {
-    backgroundColor: 'rgba(0,255,85,0.10)',
-    borderColor: 'rgba(0,255,85,0.35)',
-  },
-  supersetPillIdle: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderColor: 'rgba(255,255,255,0.10)',
-  },
-  supersetPillLetter: {
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  supersetPillProgress: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  supersetPillTextCurrent: { color: LOGGER_COLORS.accent },
-  supersetPillTextDone: { color: '#7ef0a8' },
-  supersetPillTextIdle: { color: 'rgba(255,255,255,0.6)' },
-  // Coach-instructions panel: what the coach wrote, "; "-separated cues as
-  // bullets.
-  coachPanel: {
-    backgroundColor: '#111214',
-    borderWidth: 1,
-    borderColor: LOGGER_COLORS.hairline,
-    borderLeftWidth: 3,
-    borderLeftColor: LOGGER_COLORS.accent,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-  },
-  coachPanelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  coachPanelTitle: {
-    flex: 1,
-    color: LOGGER_COLORS.text,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-  },
-  coachPanelChev: { color: LOGGER_COLORS.muted, fontSize: 11 },
-  coachPanelBody: { marginTop: 8, gap: 10 },
-  coachPreview: { marginTop: 6 },
-  coachSection: { gap: 4 },
-  coachSectionLabel: {
-    color: LOGGER_COLORS.accent,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.6,
-  },
-  coachSectionBody: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  coachSectionHeader: {
-    color: '#E5E7EB',
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  coachBulletRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginTop: 3,
-  },
-  coachBullet: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    lineHeight: 18,
-    width: 8,
-  },
-  coachBulletText: {
-    flex: 1,
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  coachCalloutIcon: {
-    color: '#FBBF24',
-    fontSize: 13,
-    lineHeight: 19,
-    width: 14,
-  },
-  coachCalloutText: {
-    flex: 1,
-    color: '#FCD34D',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  coachDescription: {
-    color: '#A3A3A3',
-    fontSize: 13,
-    lineHeight: 19,
-    fontStyle: 'italic',
-  },
-  setsScrollView: {
-    flex: 1,
-  },
-  setsContent: {
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 130,
-    gap: 8,
   },
   // Slide-up sheet wrapper for the workout-history Modal.
   historySheetBackdrop: {
@@ -2203,7 +1990,7 @@ const styles = StyleSheet.create({
   historyRelative: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#A3A3A3',
+    color: LOGGER_COLORS.muted,
   },
   historyDateFormatted: {
     fontSize: 11,
@@ -2226,243 +2013,7 @@ const styles = StyleSheet.create({
     color: '#737373',
     marginTop: 2,
   },
-  // One shell for every set — collapsed row and open card share background,
-  // hairline, radius and padding so a set opens in place without jumping.
-  setRow: {
-    backgroundColor: '#0E1013',
-    borderWidth: 1,
-    borderColor: LOGGER_COLORS.hairline,
-    borderRadius: 12,
-    padding: 12,
-  },
-  // Collapsed: one-line summary + the circle on the right.
-  setRowCollapsed: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  setRowDone: {
-    backgroundColor: 'rgba(16,185,129,0.04)',
-  },
-  // Completion circle (collapsed row and open card).
-  setCheck: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  setCheckDone: {
-    backgroundColor: LOGGER_COLORS.green,
-    borderColor: LOGGER_COLORS.green,
-  },
-  setCheckIcon: {
-    color: '#04130C',
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  setRowLabel: {
-    color: LOGGER_COLORS.text,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  setRowBody: { flex: 1, minWidth: 0 },
-  setRowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  // Done set: "220 × 2 · RPE 8.5 · +5 lb over last week" in green.
-  setResultLine: {
-    marginTop: 2,
-    color: LOGGER_COLORS.green,
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  // Upcoming set: its target, muted.
-  setTargetLine: {
-    marginTop: 2,
-    color: LOGGER_COLORS.muted,
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  setRowRpeMissing: {
-    color: LOGGER_COLORS.rpe,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  // Subtle "Saved" tick under the active set. Briefly visible on each
-  // input change so the athlete knows the value landed.
-  savedTick: {
-    color: LOGGER_COLORS.green,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    marginTop: 8,
-    alignSelf: 'flex-end',
-  },
-  // Brief green highlight applied to inputs that just got auto-filled
-  // (either by completing the set checkbox or by the inter-metric
-  // auto-fill on Done/Next). Visible for ~600ms.
-  inputAutoFilled: {
-    borderColor: LOGGER_COLORS.green,
-    backgroundColor: 'rgba(16,185,129,0.10)',
-  },
-  // Open card of a done set keeps a green edge.
-  setCardDone: {
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  setCardCurrent: {
-    borderColor: 'rgba(155, 221, 255, 0.45)',
-  },
-  // "Set 2 of 3 · top set" never truncates; a long caption ("70% of
-  // Romanian Deadlift max") gives way instead. The circle sits at the right
-  // edge with or without a caption.
-  setHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  setHeaderText: {
-    flexShrink: 0,
-    marginRight: 'auto',
-    fontSize: 15,
-    fontWeight: '800',
-    color: LOGGER_COLORS.text,
-  },
-  setHeaderCaption: {
-    flex: 1,
-    textAlign: 'right',
-    color: LOGGER_COLORS.muted,
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  // "last week 215 × 2" under the set header.
-  lastWeekLine: {
-    marginTop: 3,
-    color: '#737373',
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  metricsGrid: {
-    flexDirection: 'column',
-    gap: 10,
-    marginTop: 10,
-  },
-  nonBallMetricsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  metricInput: {
-    flex: 1,
-    minWidth: '40%',
-  },
-  metricInputWide: {
-    flex: 1.4,
-  },
-  metricLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 5,
-    gap: 6,
-  },
-  metricLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.8,
-    color: LOGGER_COLORS.muted,
-  },
-  input: {
-    height: 48,
-    paddingHorizontal: 12,
-    backgroundColor: '#000000',
-    borderWidth: 1,
-    borderColor: LOGGER_COLORS.hairline,
-    borderRadius: 10,
-    justifyContent: 'center',
-  },
-  inputText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: LOGGER_COLORS.text,
-    fontVariant: ['tabular-nums'],
-  },
-  inputPlaceholder: {
-    color: '#737373',
-  },
-  inputPrompt: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  inputActive: {
-    borderColor: LOGGER_COLORS.accent,
-  },
-  inputFilled: {
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  // Ball metric group styles
-  ballMetricGroup: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 8,
-    padding: 8,
-    gap: 8,
-    minWidth: '100%',
-  },
-  ballGroupHeader: {
-    width: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingTop: 16,
-  },
-  ballGroupInputs: {
-    flex: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  ballGroupMetricInput: {
-    flexBasis: '45%',
-    flexGrow: 1,
-    maxWidth: '48%',
-  },
-  ballGroupMetricLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
-    color: LOGGER_COLORS.muted,
-    marginBottom: 4,
-    textAlign: 'center',
-  },
-  ballGroupInput: {
-    height: 44,
-    paddingHorizontal: 8,
-    backgroundColor: '#000000',
-    borderWidth: 1,
-    borderColor: LOGGER_COLORS.hairline,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  // Per-set coach note — repainted from amber to the brand cyan so it
-  // matches the rest of the app's accent palette (#9BDDFF). The amber
-  // had drifted out of the global theme.
-  setNotesDisplay: {
-    width: '100%',
-    backgroundColor: 'rgba(155, 221, 255, 0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.2)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginTop: 10,
-  },
-  setNotesText: {
-    fontSize: 13,
-    color: LOGGER_COLORS.accent,
-    fontStyle: 'italic',
-  },
+  // Bottom bar: History (labelled) · Done · menu
   bottomNav: {
     position: 'absolute',
     bottom: 0,
@@ -2470,76 +2021,57 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 40,
   },
-  bottomNavGradient: {
-    paddingTop: 10,
-    paddingBottom: 16,
-    backgroundColor: LOGGER_COLORS.bg,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  bottomNavContainer: {
+  bottomNavInner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    paddingTop: 10,
     paddingHorizontal: 14,
-    width: '100%',
+    backgroundColor: LOGGER_COLORS.bg,
+    borderTopWidth: 1,
+    borderTopColor: ROW_LINE,
   },
-  // History + Overview are compact icon-only squares so the primary
-  // Log Set / Next action can dominate the bottom bar instead of being
-  // visually equal to two utility buttons.
-  historyButton: {
+  g: {
     width: 52,
     height: 52,
-    backgroundColor: '#111214',
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 14,
+    backgroundColor: '#111214',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 2,
   },
-  historyButtonActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.12)',
+  gActive: {
+    backgroundColor: 'rgba(155,221,255,0.12)',
     borderColor: LOGGER_COLORS.accent,
   },
-  overviewButton: {
-    width: 52,
-    height: 52,
-    backgroundColor: '#111214',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
+  gLabel: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 10,
+    fontWeight: '600',
   },
-  // Primary action button — solid gradient fill, slightly taller than the
-  // 44px utility squares so the CTA wins the visual hierarchy. The shell
-  // is just a container; the gradient does the painting.
-  nextSetButton: {
+  gLabelActive: { color: LOGGER_COLORS.accent },
+  lb: {
     flex: 1,
     height: 52,
     borderRadius: 14,
     overflow: 'hidden',
     minWidth: 0,
   },
-  nextSetButtonGradient: {
+  lbFill: {
     width: '100%',
     height: '100%',
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
-  nextSetButtonIcon: {
-    fontSize: 16,
-    fontWeight: '900',
+  lbText: {
     color: '#06202E',
-  },
-  nextSetButtonText: {
-    fontSize: 16,
-    color: '#06202E',
+    fontSize: 15,
     fontWeight: '800',
   },
+  lbTextOnGreen: { color: LOGGER_COLORS.text },
 });
 
 const instructionStyles = StyleSheet.create({

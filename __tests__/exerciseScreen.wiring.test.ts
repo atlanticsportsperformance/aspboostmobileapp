@@ -2,20 +2,17 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const D = readFileSync(join(__dirname, '../screens/exercise-detail-view.tsx'), 'utf8');
+const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'utf8');
+const sets = () => D.slice(D.indexOf('const renderSets'), D.indexOf('// Helper to truncate exercise name'));
 
-describe('exercise screen v2 wiring', () => {
-  it('uses LOGGER_COLORS', () => {
+describe('exercise screen — dense table (task 15)', () => {
+  it('uses LOGGER_COLORS; amber only for RPE and the PR 🏆', () => {
     expect(D).toContain("import { LOGGER_COLORS } from '../lib/logger/theme'");
     expect(D).toContain('LOGGER_COLORS.accent');
     expect(D).toContain('LOGGER_COLORS.bg');
     expect(D).toContain('LOGGER_COLORS.green');
-    expect(D).toContain('LOGGER_COLORS.hairline');
-  });
-
-  it('renders last week line', () => {
-    expect(D).toMatch(/lastSession\(lastWeekRows/);
-    expect(D).toContain('last week ${');
-    expect(D).toContain('styles.lastWeekLine');
+    expect(D).toContain('LOGGER_COLORS.greenText');
+    expect(D).not.toMatch(/#D9A441/i); // amber comes from LOGGER_COLORS.rpe
   });
 
   it('no fontSize above 28', () => {
@@ -24,83 +21,123 @@ describe('exercise screen v2 wiring', () => {
     expect(Math.max(...sizes)).toBeLessThanOrEqual(28);
   });
 
-  it('done set shows result line', () => {
-    expect(D).toContain('styles.setResultLine');
-    expect(D).toMatch(/deltaText\(/);
-    expect(D).toContain('RPE ${');
-    // still flags a missing RPE on an ask_rpe exercise
-    expect(D).toMatch(/isCompleted && exercise\.ask_rpe && rpeValues/);
+  it('header: back · code chip · UPPERCASE name · PR pill only when PR-tracked; no counter', () => {
+    expect(D).toContain('exerciseName.toUpperCase()');
+    expect(D).toContain('{blockLabel && (');
+    expect(D).toContain('if (trackedMetrics.length === 0) return null;');
+    expect(D).toContain('`🏆 ${line ? `${line.name} ` : \'\'}max ${value != null ? value : \'—\'}`');
+    expect(D).not.toContain('exercisePosition');
   });
 
-  it('collapsed rows keep every logged metric, not just weight × reps', () => {
-    // body lives in lib/logger/setLine (shared with the overview)
-    expect(D).toContain('formatSetLine(metricFields, valueOf, customMeasurements)');
-    const S = readFileSync(join(__dirname, '../lib/logger/setLine.ts'), 'utf8');
-    const fn = S.slice(S.indexOf('export function formatSetMetrics'));
-    expect(fn).toContain('for (const metricId of metricFields)');
-    expect(fn).toContain('parts.length >= 3');
-    expect(D.match(/formatSetMetrics\(/g)?.length).toBe(2); // done + upcoming
+  it('removed: A1/A2 pills, New PR banner, card shells, "last week" line, athlete note input', () => {
+    expect(D).not.toContain('supersetPill');
+    expect(D).not.toContain('NEW PERSONAL RECORD');
+    expect(D).not.toContain('prAlert');
+    expect(L).not.toContain('prAlert');
+    expect(D).not.toContain('setCardCurrent');
+    expect(D).not.toContain('last week ${');
+    expect(D).not.toContain('<TextInput');
+    // PR detection + saving maxes stays in the logger
+    expect(L).toContain("supabase.from('athlete_maxes').update(row)");
+    expect(L).toContain('checkAndSavePR(targetExerciseId, field, numValue, repsNum)');
   });
 
-  it('back-off sets never fall back to last week\'s top set; today is excluded', () => {
+  it('one rx line: sets × reps / AMRAP / rest, or the superset round + next + rest', () => {
+    expect(D).toContain('`round ${currentRound} of ${totalRounds}`');
+    expect(D).toContain('`next ${codeFor(next.reId)} ${nameOf(next.reId)}`');
+    expect(D).toContain('`rest ${formatRest(rest)} after ${codeFor(last.reId)}`');
+    expect(D).toContain("parts.push('last set AMRAP')");
+    expect(D).toContain('{!!rx && <Text style={styles.rx}>{rx}</Text>}');
+  });
+
+  it('coach note is one line with "more"', () => {
+    expect(D).toContain('<Text style={styles.noteLabel}>COACH  </Text>');
+    expect(D).toContain('numberOfLines={2}');
+    expect(D).toContain('parseInstructionBlock(exerciseCoachNote)');
+  });
+
+  it('column header: SET · LAST (weight + history only) · metrics · paired BALL/REPS/MPH; 🏆 on tracked columns', () => {
+    expect(D).toContain("const showLast = metricFields.includes('weight') && lastWeek != null;");
+    expect(D).toContain('{showLast && <Text style={[styles.thText, styles.colLast]}>LAST</Text>}');
+    expect(D).toContain("{trackedMetrics.includes(m) ? trophy : null}");
+    expect(D).toContain("{pairedIsBall ? 'BALL' : 'TYPE'}");
+    expect(D).toContain("if (m?.category !== 'paired') {");
+    // the tracked ball's name carries a 🏆 too
+    expect(D).toContain('{ball.tracked ? <Text style={styles.ballTrophy}> 🏆</Text> : null}');
+  });
+
+  it('rows in set order; current = rail + tint + inputs; done green; upcoming grey prescription', () => {
+    const fn = sets();
+    expect(fn).toContain('for (let i = 0; i < setCount; i++) {');
+    expect(fn).toContain('{isCurrentSet && <View style={styles.rail} />}');
+    expect(fn).toContain('styles.setCur');
+    expect(D).toContain("done ? 'done' : 'dim'");
+    expect(D).toContain("tone === 'done' && styles.vDone");
+    // free-text prescriptions display as written
+    expect(D).toContain('if (!isEmptyValue(target)) return { text: String(target) };');
+    // AMRAP: "max" + tag
+    expect(D).toContain("return { text: 'max', amrap: true };");
+    expect(D).toContain('>AMRAP</Text>');
+  });
+
+  it('paired balls: one line per ball inside the set, one circle per set', () => {
+    const fn = sets();
+    expect(fn).toContain('const lineCount = Math.max(1, pairedLines.length);');
+    expect(fn).toContain('{first ? renderSetCheck(i, isCompleted) : null}');
+    expect(fn.match(/renderSetCheck\(/g)?.length).toBe(1);
+  });
+
+  it('under a row: coach set note, intensity caption and the compact RPE strip on the open set', () => {
+    const fn = sets();
+    expect(fn).toContain('{!!setConfig?.notes && <Text style={styles.cn}>{setConfig.notes}</Text>}');
+    expect(fn).toContain('const caption = isOpen ? intensityCaption(i) : null;');
+    expect(D).toContain('intensityCaptionText(targetArgs(setIndex, m))');
+    expect(fn).toMatch(/isOpen && exercise\.ask_rpe && onRpeChange && \(/);
+    expect(fn).toContain('<RpeRow\n                compact');
+  });
+
+  it('LAST column: back-off sets never fall back to last week\'s top set; today is excluded', () => {
     const fn = D.slice(D.indexOf('const lastWeekFor'), D.indexOf('function isBackoffSet'));
     expect(fn).toContain('setIndex === 0 || !isBackoffSet(setIndex)');
     expect(D).toMatch(/lastSession\(lastWeekRows \?\? \[\], exercise\.exercise_id, workoutInstanceId/);
-    const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'utf8');
     expect(L).toContain('workoutInstanceId={workoutInstanceId}');
   });
 
-  it('done result line is LOGGER_COLORS.green; bar buttons carry their own labels', () => {
-    const st = D.slice(D.indexOf('  setResultLine: {'));
-    expect(st.slice(0, 120)).toContain('LOGGER_COLORS.green');
+  it('tap a row opens it in place; open set scrolls into view; circle toggles done', () => {
+    const fn = sets();
+    expect(fn.match(/onLayout=\{\(e\) => onSetLayout\(i, e\.nativeEvent\.layout\.y\)\}/g)?.length).toBe(2);
+    expect(fn).toContain('accessibilityLabel={`Open set ${i + 1}`}');
+    expect(D).toContain('scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });');
+    const check = D.slice(D.indexOf('const renderSetCheck'), D.indexOf('// Header 🏆'));
+    expect(check).toContain('onPress={() => handleCheckboxToggle(setIndex)}');
+  });
+
+  it('footer: prescribed rest + live countdown from the logger\'s rest timer', () => {
+    expect(D).toContain('between sets`');
+    expect(D).toContain('between rounds`');
+    expect(D).toContain('`Rest ${formatRest(restSecondsLeft)}`');
+    expect(L).toContain('restSecondsLeft={restTimer.secondsLeft}');
+  });
+
+  it('bottom bar: labelled History · Done (set / → next / round) · menu', () => {
     expect(D).toMatch(/accessibilityLabel="History"/);
+    expect(D).toContain('>History</Text>');
     expect(D).toMatch(/accessibilityLabel="Overview"/);
+    expect(D).toContain('`Done · set ${currentSetIndex + 1}`');
+    expect(D).toContain('`Done → ${codeFor(next.reId)} ');
+    expect(D).toContain('`Done · round ${currentRound}`');
     expect(D).not.toMatch(/<Ionicons[^>]*accessibilityLabel/);
   });
 
-  it('header has no exercise counter and the set card marks the top set', () => {
-    expect(D).not.toContain('exercisePosition');
-    expect(D).toContain('· top set');
-    // caption text lives in lib/logger/targets (intensityText)
-    expect(D).toContain('return t ? intensityText(t) : null;');
-  });
-
-  it('sets render in set order; the open set expands in place and scrolls into view', () => {
-    const fn = D.slice(D.indexOf('const renderSetCards'), D.indexOf('// Helper to truncate exercise name'));
-    expect(fn).toContain('for (let i = 0; i < setCount; i++) {');
-    expect(fn).not.toContain('order.push');
-    expect(fn.match(/onLayout=\{\(e\) => onSetLayout\(i, e\.nativeEvent\.layout\.y\)\}/g)?.length).toBe(2);
-    expect(D).toContain('scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });');
-    expect(D).not.toContain('scrollTo({ y: 0, animated: true });\n    }, 100)');
-  });
-
-  it('collapsed row: whole row opens the set, no "edit" link, circle on the right like the open card', () => {
-    const fn = D.slice(D.indexOf('const renderSetCards'), D.indexOf('// Helper to truncate exercise name'));
-    expect(D).not.toContain('setRowEdit');
-    expect(fn).not.toMatch(/>edit</);
-    // one circle component, rendered last in both the row and the card header
-    expect(fn.match(/\{renderSetCheck\(i, isCompleted\)\}/g)?.length).toBe(2);
-    expect(fn).toMatch(/\{renderSetCheck\(i, isCompleted\)\}\s*<\/TouchableOpacity>,/);
-    expect(fn).toMatch(/\{renderSetCheck\(i, isCompleted\)\}\s*<\/View>/);
-    const check = D.slice(D.indexOf('const renderSetCheck'), D.indexOf('const renderSetCards'));
-    expect(check).toContain('onPress={() => handleCheckboxToggle(setIndex)}');
-    // row and card share one shell (radius/padding/background)
-    expect(fn).toContain('styles.setRow,\n              styles.setRowCollapsed,');
-    expect(fn).toContain('styles.setRow,\n            isCompleted && styles.setRowDone,');
-  });
-
-  it('empty inputs show the pending % ("90% of set 1"), and the header caption is not repeated', () => {
-    expect(D).toContain('pendingTargetText(intensity)');
-    expect(D).not.toContain('no max set`');
-    expect(D).toContain('const headerCaption = caption && !showsPendingTarget(i, setData) ? caption : null;');
-  });
-
-  it('keeps swipe, PR banner, history sheet, keypad and the two-phase Log Set', () => {
+  it('keeps swipe, history sheet, keypad and the two-phase Done (log, then advance)', () => {
     expect(D).toContain('{...panResponder.panHandlers}');
-    expect(D).toContain('NEW PERSONAL RECORD!');
     expect(D).toContain('visible={showHistory}');
     expect(D).toContain('<NumericKeypad');
-    expect(D).toContain("'Log Set'");
     expect(D).toContain('onPress={handleNextButtonPress}');
+    const fn = D.slice(D.indexOf('const handleNextButtonPress'), D.indexOf('// Swipe gesture handler'));
+    expect(fn).toContain('handleCheckboxToggle(currentSetIndex);');
+    expect(fn).toContain('onNextSet();');
+    // keypad walks the columns in screen order
+    expect(D).toContain('hasNextField={inputOrder.indexOf(activeInput.metricId) < inputOrder.length - 1}');
   });
 });
