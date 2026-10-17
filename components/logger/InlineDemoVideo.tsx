@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Linking, useWindowDimensions } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import YoutubePlayer, { type YoutubeIframeRef } from 'react-native-youtube-iframe';
 import { LOGGER_COLORS } from '../../lib/logger/theme';
 
@@ -12,18 +13,26 @@ const PLAYER_BASE_URL = 'https://aspboostapp.vercel.app';
 let collapsedThisSession = false;
 
 // Inline demo at the top of the exercise screen: a "▶ DEMO" strip over a
-// muted, looping 16:9 player (full width minus 16 px margins). Tapping the
+// looping 16:9 player (full width minus 16 px margins). It starts muted; the
+// strip has unmute and ⤢ (full screen → the shared VideoModal). Tapping the
 // strip collapses the player to the strip. While the keypad is open the
-// player is hidden and paused (kept mounted so it doesn't reload).
+// player is hidden and paused (kept mounted so it doesn't reload); `paused`
+// also pauses it under the screen's modals.
 // A non-YouTube link shows only the strip, which opens the link.
 export default function InlineDemoVideo({
   videoId,
   url,
   keypadOpen,
+  paused = false,
+  onExpand,
 }: {
   videoId: string | null;
   url: string;
   keypadOpen: boolean;
+  /** Pause without hiding (History / PR / full-screen modal open). */
+  paused?: boolean;
+  /** ⤢ — open this video full screen (VideoModal). */
+  onExpand: (videoId: string) => void;
 }) {
   const win = useWindowDimensions();
   const W = Math.max(0, win.width - SIDE * 2 - 2); // inside the 1 px border
@@ -38,6 +47,8 @@ export default function InlineDemoVideo({
     setCollapsed(!collapsed);
   };
   const hidden = collapsed || keypadOpen;
+  // Gym audio: starts muted; the strip's speaker toggles it.
+  const [muted, setMuted] = useState(true); // muted
 
   const [videoError, setVideoError] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
@@ -77,7 +88,31 @@ export default function InlineDemoVideo({
         accessibilityLabel={!videoId ? 'Open demo video' : collapsed ? 'Show demo video' : 'Hide demo video'}
       >
         <Text style={styles.stripText}>▶ DEMO</Text>
-        {!!videoId && <Text style={styles.stripChev}>{collapsed ? 'show' : 'hide'}</Text>}
+        {!!videoId && (
+          <View style={styles.stripActions}>
+            {!collapsed && (
+              <TouchableOpacity
+                style={styles.stripBtn}
+                onPress={() => setMuted((m) => !m)}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={muted ? 'Unmute video' : 'Mute video'}
+              >
+                <Ionicons name={muted ? 'volume-mute' : 'volume-high'} size={16} color="rgba(255,255,255,0.7)" />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.stripBtn}
+              onPress={() => onExpand(videoId)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Full screen video"
+            >
+              <Text style={styles.stripIcon}>⤢</Text>
+            </TouchableOpacity>
+            <Text style={styles.stripChev}>{collapsed ? 'show' : 'hide'}</Text>
+          </View>
+        )}
       </TouchableOpacity>
       {!!videoId && (
         <View
@@ -104,8 +139,8 @@ export default function InlineDemoVideo({
               ref={playerRef}
               height={H}
               width={W}
-              play={playing && !hidden}
-              mute
+              play={playing && !hidden && !paused}
+              mute={muted || hidden}
               videoId={videoId}
               playList={playList}
               // Library-typed params only. Looping a single video needs loop +
@@ -166,6 +201,21 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1.4,
+  },
+  stripActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  stripBtn: {
+    width: 36,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stripIcon: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 16,
   },
   stripChev: {
     color: 'rgba(255,255,255,0.45)',

@@ -7,10 +7,10 @@ const O = read('screens/block-overview.tsx');
 const V = read('components/logger/InlineDemoVideo.tsx');
 
 describe('inline demo video (exercise screen)', () => {
-  it('floating tile + window are gone from the exercise screen; the overview keeps VideoModal', () => {
+  it('floating tile + window are gone; VideoModal is the ⤢ target here and in the overview', () => {
     expect(D).not.toContain('FloatingVideoButton');
     expect(D).not.toContain('FloatingVideoWindow');
-    expect(D).not.toContain('<VideoModal');
+    expect(D).toContain('<VideoModal videoId={fullVideoId} onClose={() => setFullVideoId(null)} />');
     expect(existsSync(join(__dirname, '..', 'components/logger/FloatingVideoWindow.tsx'))).toBe(false);
     expect(existsSync(join(__dirname, '..', 'components/logger/VideoModal.tsx'))).toBe(true);
     expect(O).toContain('<VideoModal');
@@ -45,14 +45,14 @@ describe('inline demo video (exercise screen)', () => {
 
   it('hidden + paused while the keypad is open or collapsed (kept mounted)', () => {
     expect(V).toContain('const hidden = collapsed || keypadOpen;');
-    expect(V).toContain('play={playing && !hidden}');
+    expect(V).toContain('play={playing && !hidden && !paused}');
     expect(V).toContain('styles.videoHidden');
   });
 
   it('muted, looping, local HTML player with an https base URL and inline autoplay', () => {
     const i = V.indexOf('<YoutubePlayer');
     const tag = V.slice(i, V.indexOf('/>', i));
-    expect(tag).toMatch(/\n\s+mute\n/);
+    expect(tag).toContain('mute={muted || hidden}');
     expect(tag).toContain('loop: true');
     expect(tag).toContain('playList={playList}');
     expect(tag).toContain('controls: false');
@@ -71,5 +71,23 @@ describe('inline demo video (exercise screen)', () => {
 
   it('keypad renders directly', () => {
     expect(D).toMatch(/\{activeInput && \(\s*<NumericKeypad/);
+  });
+
+  it('strip: mute toggle (starts muted) and ⤢ full screen (review I4)', () => {
+    expect(V).toContain('useState(true); // muted');
+    expect(V).toContain('setMuted((m) => !m)');
+    expect(V).toContain("accessibilityLabel={muted ? 'Unmute video' : 'Mute video'}");
+    expect(V).toContain('onPress={() => onExpand(videoId)}');
+    expect(V).toContain('⤢');
+    const vid = D.indexOf('<InlineDemoVideo');
+    const tag = D.slice(vid, D.indexOf('/>', vid));
+    expect(tag).toContain('onExpand={setFullVideoId}');
+  });
+
+  it('pauses under the screen\'s modals (History / PR / full screen)', () => {
+    expect(V).toContain('play={playing && !hidden && !paused}');
+    const vid = D.indexOf('<InlineDemoVideo');
+    const tag = D.slice(vid, D.indexOf('/>', vid));
+    expect(tag).toContain('paused={showHistory || prPopoverOpen || fullVideoId != null}');
   });
 });

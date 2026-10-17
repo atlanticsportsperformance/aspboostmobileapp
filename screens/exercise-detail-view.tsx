@@ -42,6 +42,7 @@ import type {
 import { neighborExercise, nextStep, type SeqStep } from '../lib/logger/sequence';
 import RpeRow from '../components/logger/RpeRow';
 import InlineDemoVideo from '../components/logger/InlineDemoVideo';
+import VideoModal from '../components/logger/VideoModal';
 import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
@@ -259,6 +260,8 @@ export default function ExerciseDetailView({
       });
     }, 600);
   }, []);
+  // ⤢ on the inline demo → full-screen VideoModal.
+  const [fullVideoId, setFullVideoId] = useState<string | null>(null);
   // Measured bottom-bar height (scroll padding under the last set).
   const [bottomBarHeight, setBottomBarHeight] = useState(80);
 
@@ -1276,6 +1279,8 @@ export default function ExerciseDetailView({
               videoId={videoId}
               url={videoUrl!}
               keypadOpen={!!activeInput}
+              paused={showHistory || prPopoverOpen || fullVideoId != null}
+              onExpand={setFullVideoId}
             />
           )}
           {renderCoachNote()}
@@ -1444,6 +1449,8 @@ export default function ExerciseDetailView({
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <VideoModal videoId={fullVideoId} onClose={() => setFullVideoId(null)} />
 
       {/* Custom Numeric Keypad */}
       {activeInput && (
