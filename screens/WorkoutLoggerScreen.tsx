@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Pressable,
   Text,
+  AppState,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -36,6 +37,14 @@ import type {
 } from '../types/logger';
 import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
+import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
+import { createOutbox } from '../lib/logger/outbox';
+import { restAfter } from '../lib/logger/rest';
+import { useRestTimer } from '../hooks/useRestTimer';
+
+// One device-wide outbox (AsyncStorage 'logger_outbox_v1'): every set write
+// lands here first and syncs when it can (spec §7).
+const loggerOutbox = createOutbox();
 type RootStackParamList = {
   WorkoutLogger: { workoutInstanceId: string; athleteId: string };
   Dashboard: undefined;
@@ -80,15 +89,20 @@ export default function WorkoutLoggerScreen() {
   // Mound velocity for throwing velocity fallback (5oz baseball PR)
   const [moundVelocity, setMoundVelocity] = useState<number | null>(null);
   const [prAlert, setPRAlert] = useState<PRAlert | null>(null);
-  // Debounce handle for saveSetData. useRef (not useState) because rapid
-  // input changes need to read+clear the previous timeout SYNCHRONOUSLY —
-  // useState batches and a second call within the same render tick would
-  // see the stale `null` and fail to cancel the prior timeout, firing both
-  // writes (one of them with the wrong exerciseId after navigation).
-  // One debounce timer PER (exercise, set, field). A single shared timer
-  // meant typing reps then weight inside 500 ms cancelled the reps write —
-  // the value survived in local state and vanished on reload.
-  const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Draft-save debounce, one timer PER SET (`reId:setIndex`). Every write
+  // carries the set's full current state (read from inputsRef when the timer
+  // fires), so typing reps then weight inside 500 ms still saves both.
+  // useRef (not useState) so a rapid second edit cancels the first timer
+  // synchronously.
+  const draftTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Synchronous mirrors of exerciseInputs / completedSets. Saves build rows
+  // from these so a write never uses a value from a stale render closure.
+  const inputsRef = useRef<Record<string, any[]>>({});
+  const completedRef = useRef<Record<string, boolean[]>>({});
+  // rpe per `reId:setIndex` as loaded — the upsert RPC writes the whole row,
+  // so a known rpe must be sent back or it would be cleared.
+  const rpeRef = useRef<Record<string, number | null>>({});
+  const restTimer = useRestTimer();
   // Sets whose completion toggle is still saving — a fast double-tap on Log
   // Set is ignored instead of flipping the set back locally.
   const completionInFlightRef = useRef<Set<string>>(new Set());
@@ -149,10 +163,20 @@ export default function WorkoutLoggerScreen() {
     };
   }, [athleteId, workoutInstance?.scheduled_date]);
 
-  // Load workout data
+  // Load workout data, then push anything still queued on this device.
   useEffect(() => {
-    loadWorkout();
+    loadWorkout().finally(() => {
+      void loggerOutbox.flush();
+    });
   }, [workoutInstanceId]);
+
+  // Coming back to the app (gym Wi-Fi returns, phone unlocked) → sync.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') void loggerOutbox.flush();
+    });
+    return () => sub.remove();
+  }, []);
 
   // Fetch mound velocity for throwing velocity fallback
   useEffect(() => {
@@ -324,12 +348,30 @@ export default function WorkoutLoggerScreen() {
         .eq('workout_instance_id', workoutInstanceId)
         .order('set_number');
 
+      // Rows saved on this device but not synced yet are newer than the
+      // server's — overlay them so a reopened workout shows every set.
+      const pendingRows = await loggerOutbox.pending().catch(() => []);
+      const logsBySet = new Map<string, any>();
+      (logs || []).forEach((l: any) => logsBySet.set(`${l.routine_exercise_id}:${l.set_number}`, l));
+      pendingRows
+        .filter(r => r.workout_instance_id === workoutInstanceId)
+        .forEach(r => {
+          const k = `${r.routine_exercise_id}:${r.set_number}`;
+          logsBySet.set(k, { ...logsBySet.get(k), ...r });
+        });
+      const allLogs = Array.from(logsBySet.values());
+      const rpeMap: Record<string, number | null> = {};
+      allLogs.forEach((l: any) => {
+        if ('rpe' in l) rpeMap[`${l.routine_exercise_id}:${l.set_number - 1}`] = l.rpe ?? null;
+      });
+      rpeRef.current = rpeMap;
+
       // Populate exerciseInputs from existing logs
       const inputsMap: Record<string, any[]> = {};
       const completedMap: Record<string, boolean[]> = {};
 
       exercises.forEach((ex: RoutineExercise) => {
-        const exLogs = logs?.filter((l: any) => l.routine_exercise_id === ex.id) || [];
+        const exLogs = allLogs.filter((l: any) => l.routine_exercise_id === ex.id);
 
         // Initialize arrays for all sets
         const setsData = Array(ex.sets).fill(null).map(() => ({}));
@@ -361,6 +403,8 @@ export default function WorkoutLoggerScreen() {
         completedMap[ex.id] = completedArray;
       });
 
+      inputsRef.current = inputsMap;
+      completedRef.current = completedMap;
       setExerciseInputs(inputsMap);
       setCompletedSets(completedMap);
 
@@ -581,118 +625,96 @@ export default function WorkoutLoggerScreen() {
     );
   };
 
+  // Whole-workout set order (lib/logger/sequence.ts) — the single source of
+  // "which exercise/set comes next" for both handleNextSet and the Next label.
+  const sequence = useMemo(() => (workout ? buildSequence(workout.routines) : []), [workout]);
+
+  // Local-state writers that keep the synchronous refs in step.
+  const commitInputs = (next: Record<string, any[]>) => {
+    inputsRef.current = next;
+    setExerciseInputs(next);
+  };
+  const commitCompleted = (exerciseId: string, update: (sets: boolean[]) => boolean[], totalSets: number) => {
+    const current = completedRef.current[exerciseId] || Array(totalSets).fill(false);
+    const next = { ...completedRef.current, [exerciseId]: update([...current]) };
+    completedRef.current = next;
+    setCompletedSets(next);
+  };
+  const cancelDraft = (exerciseId: string, setIndex: number) => {
+    const k = `${exerciseId}:${setIndex}`;
+    const pending = draftTimersRef.current[k];
+    if (pending) clearTimeout(pending);
+    delete draftTimersRef.current[k];
+  };
+
+  // Save one set (spec §7 / §11.2): build the set's FULL current row, put it
+  // in the device outbox, then sync. complete=false is a draft (field edits),
+  // true is a logged set (Log Set / check / quick-complete); un-checking
+  // writes false. Resolves true once the row is safely queued (or sent).
+  const persistSet = useCallback(async (
+    exerciseId: string,
+    setIndex: number,
+    complete: boolean,
+  ): Promise<boolean> => {
+    const exercise = allExercises.find(ex => ex.id === exerciseId);
+    if (!exercise) return false;
+    // Notes-only rows have no exercise_id (NOT NULL) — nothing to persist.
+    if (!exercise.exercise_id) return false;
+    // A finished superset exercise leaves its set index at `sets`; never
+    // persist a phantom set_number past the prescribed sets.
+    if (!isValidSetIndex(setIndex, exercise.sets)) return false;
+
+    const row = buildLogRow(
+      { workoutInstanceId, routineExerciseId: exerciseId, setNumber: setIndex + 1 },
+      inputsRef.current[exerciseId]?.[setIndex] || {},
+      {
+        complete,
+        athleteId,
+        exerciseId: exercise.exercise_id,
+        // org_id was never written from mobile before — web writes it; any
+        // org-scoped RLS/report misses mobile logs without it.
+        orgId,
+        rpe: rpeRef.current[`${exerciseId}:${setIndex}`],
+      },
+    );
+    try {
+      await loggerOutbox.enqueue(row);
+    } catch (error) {
+      // Device storage failed — fall back to a direct write.
+      console.error('logger outbox enqueue failed, writing directly:', error);
+      return (await upsertSet(supabase, row)).ok;
+    }
+    void loggerOutbox.flush();
+    return true;
+  }, [allExercises, athleteId, orgId, workoutInstanceId]);
+
+  // Rest after a logged set (spec §11.6); display lands in Task 12.
+  const startRestAfter = useCallback((exerciseId: string, setIndex: number) => {
+    const step = sequence.find(s => s.reId === exerciseId && s.setIndex === setIndex);
+    if (!step || !workout) return;
+    const routine = workout.routines.find(r => r.id === step.routineId);
+    const re = allExercises.find(ex => ex.id === exerciseId);
+    if (!routine || !re) return;
+    const sec = restAfter(step, re, routine);
+    if (sec != null) restTimer.start(sec);
+  }, [sequence, workout, allExercises, restTimer.start]);
+
   // Quick-complete: Toggle all sets for an exercise
   const handleToggleExerciseComplete = async (exerciseId: string, totalSets: number) => {
-    const currentSets = completedSets[exerciseId] || Array(totalSets).fill(false);
+    const currentSets = completedRef.current[exerciseId] || Array(totalSets).fill(false);
     const allCompleted = currentSets.every(s => s === true);
 
     // Toggle: if all complete, uncomplete all; otherwise complete all
     const newStatus = !allCompleted;
-    const newSetsArray = Array(totalSets).fill(newStatus);
 
     // Update local state immediately for responsiveness
-    setCompletedSets(prev => ({
-      ...prev,
-      [exerciseId]: newSetsArray,
-    }));
+    commitCompleted(exerciseId, () => Array(totalSets).fill(newStatus), totalSets);
 
     // Persist each set's completion. Un-completing must write
     // is_complete:false too — resume trusts is_complete.
     for (let setIndex = 0; setIndex < totalSets; setIndex++) {
-      await saveSetData(exerciseId, setIndex, null, null, newStatus);
-    }
-  };
-
-  // Save set data to database (debounced)
-  // field === null persists completion only (set checkbox / Log Set / quick-
-  // complete): isComplete=true writes the row, false un-marks an existing row.
-  const saveSetData = async (
-    exerciseId: string,
-    setIndex: number,
-    field: string | null,
-    value: any,
-    isComplete: boolean = true
-  ) => {
-    try {
-      const exercise = allExercises.find(ex => ex.id === exerciseId);
-      if (!exercise) return;
-      // Notes-only rows have no exercise_id (NOT NULL) — nothing to persist.
-      if (field === null && !exercise.exercise_id) return;
-      // A finished superset exercise leaves its set index at `sets`; never
-      // persist a phantom set_number past the prescribed sets.
-      if (field === null && !isValidSetIndex(setIndex, exercise.sets)) return;
-
-      // exercise_logs schema:
-      //   actual_reps INT, actual_weight NUMERIC, actual_duration_seconds INT,
-      //   actual_distance NUMERIC, metric_data JSONB, notes TEXT.
-      // Previously this code wrote `reps`/`weight`/`time_seconds`/`distance`/
-      // `custom_metrics` columns that don't exist, so every insert was either
-      // silently rejected (NOT NULL on athlete_id/exercise_id) or coerced
-      // blank on reload. Map field → actual_<column> and emit the required
-      // ids.
-      const { data: existingLog } = await supabase
-        .from('exercise_logs')
-        .select('id, metric_data')
-        .eq('workout_instance_id', workoutInstanceId)
-        .eq('routine_exercise_id', exerciseId)
-        .eq('set_number', setIndex + 1)
-        .maybeSingle();
-
-      if (field === null && !isComplete) {
-        if (!existingLog) return;
-        const { error: updErr } = await supabase
-          .from('exercise_logs')
-          .update({ is_complete: false })
-          .eq('id', existingLog.id);
-        if (updErr) console.error('saveSetData un-complete failed:', updErr);
-        return;
-      }
-
-      const logData: any = {
-        workout_instance_id: workoutInstanceId,
-        routine_exercise_id: exerciseId,
-        exercise_id: exercise.exercise_id,
-        athlete_id: athleteId,
-        set_number: setIndex + 1,
-        // org_id was never written from mobile (6,208 of 6,275 logs in prod
-        // have it null) — web writes it; any org-scoped RLS/report misses
-        // mobile logs without it.
-        ...(orgId ? { org_id: orgId } : {}),
-        is_complete: true,
-      };
-
-      // Built-in fields go to dedicated actual_<x> columns; custom
-      // measurements go into metric_data JSONB.
-      if (field === 'reps') logData.actual_reps = value === '' || value == null ? null : Number(value);
-      else if (field === 'weight') logData.actual_weight = value === '' || value == null ? null : Number(value);
-      else if (field === 'time_seconds') logData.actual_duration_seconds = value === '' || value == null ? null : Number(value);
-      else if (field === 'distance') logData.actual_distance = value === '' || value == null ? null : Number(value);
-      else if (field === 'notes') logData.notes = value || null;
-      else if (field !== null) {
-        const existingMetrics = (existingLog as any)?.metric_data || {};
-        logData.metric_data = {
-          ...existingMetrics,
-          [field]: value,
-        };
-      }
-
-      if (existingLog) {
-        const { error: updErr } = await supabase
-          .from('exercise_logs')
-          .update(logData)
-          .eq('id', existingLog.id);
-        if (updErr) console.error('saveSetData update failed:', updErr, 'payload:', logData);
-      } else {
-        const { error: insErr } = await supabase
-          .from('exercise_logs')
-          .insert(logData);
-        if (insErr) console.error('saveSetData insert failed:', insErr, 'payload:', logData);
-      }
-
-    } catch (error) {
-      // Surface unexpected runtime errors. Previously silent → coaches had
-      // no idea iOS athletes' logs were vanishing.
-      console.error('saveSetData unexpected error:', error);
+      cancelDraft(exerciseId, setIndex);
+      await persistSet(exerciseId, setIndex, newStatus);
     }
   };
 
@@ -799,55 +821,33 @@ export default function WorkoutLoggerScreen() {
 
     if (!targetExercise || !targetExerciseId) return;
 
-    // 1. Update local state
-    setExerciseInputs(prev => {
-      const exerciseData = prev[targetExerciseId] || [];
-      const updatedData = [...exerciseData];
+    // 1. Update local state (and its synchronous mirror)
+    const exerciseData = [...(inputsRef.current[targetExerciseId] || [])];
+    while (exerciseData.length <= setIndex) exerciseData.push({});
+    exerciseData[setIndex] = { ...exerciseData[setIndex], [field]: value };
+    commitInputs({ ...inputsRef.current, [targetExerciseId]: exerciseData });
+    const setData = exerciseData[setIndex];
 
-      // Ensure array is long enough
-      while (updatedData.length <= setIndex) {
-        updatedData.push({});
-      }
-
-      // Update the field
-      updatedData[setIndex] = {
-        ...updatedData[setIndex],
-        [field]: value,
-      };
-
-      return {
-        ...prev,
-        [targetExerciseId]: updatedData,
-      };
-    });
-
-    // 2. Save to database (debounced). targetExerciseId is captured in the
-    // closure here — even if the user navigates to a different exercise
-    // before the 500ms elapses, the pending write still lands on the
-    // correct row. The ref avoids the React-state-batching race that would
-    // otherwise let a rapid second call skip cancelling the prior timeout.
-    const timerKey = `${targetExerciseId}:${setIndex}:${field}`;
-    const pending = saveTimersRef.current[timerKey];
-    if (pending) clearTimeout(pending);
-    saveTimersRef.current[timerKey] = setTimeout(() => {
-      delete saveTimersRef.current[timerKey];
-      saveSetData(targetExerciseId, setIndex, field, value);
-    }, 500);
-
-    // 3. Check if set has data now
-    const setData = exerciseInputs[targetExerciseId]?.[setIndex] || { [field]: value };
-    const hasData = Object.keys(setData).some(key =>
-      setData[key] && setData[key] !== '' && setData[key] !== 0 && key !== 'notes'
-    );
-
-    // 4. Mark set as completed (only if NOT auto-filled)
-    if (hasData && !isAutoFill) {
-      setCompletedSets(prev => {
-        const exerciseSets = prev[targetExerciseId] || Array(targetExercise.sets).fill(false);
-        const updatedSets = [...exerciseSets];
-        updatedSets[setIndex] = true;
-        return { ...prev, [targetExerciseId]: updatedSets };
-      });
+    // 2. Save a draft (debounced 500 ms per set). An edit never logs a set —
+    // Log Set does (spec §11.2) — but editing an already-logged set keeps it
+    // logged. Auto-fill into a set that isn't logged stays local: it is a
+    // suggestion, and Log Set saves it with the set. The timer reads the
+    // latest values and completion when it fires, and targetExerciseId is
+    // captured here, so navigating away inside 500 ms still saves the
+    // right row.
+    const setIsDone = completeForEdit(completedRef.current[targetExerciseId], setIndex);
+    if (!isAutoFill || setIsDone) {
+      const timerKey = `${targetExerciseId}:${setIndex}`;
+      const pending = draftTimersRef.current[timerKey];
+      if (pending) clearTimeout(pending);
+      draftTimersRef.current[timerKey] = setTimeout(() => {
+        delete draftTimersRef.current[timerKey];
+        persistSet(
+          targetExerciseId,
+          setIndex,
+          completeForEdit(completedRef.current[targetExerciseId], setIndex),
+        );
+      }, 500);
     }
 
     // 5. Check for PR (if tracked metric). Carry the reps from the same set
@@ -860,11 +860,7 @@ export default function WorkoutLoggerScreen() {
         checkAndSavePR(targetExerciseId, field, numValue, repsNum);
       }
     }
-  }, [activeExerciseId, allExercises, exerciseInputs]);
-
-  // Whole-workout set order (lib/logger/sequence.ts) — the single source of
-  // "which exercise/set comes next" for both handleNextSet and the Next label.
-  const sequence = useMemo(() => (workout ? buildSequence(workout.routines) : []), [workout]);
+  }, [activeExerciseId, allExercises, persistSet]);
 
   // Handle next set / done - the set order comes from the sequence engine
   const handleNextSet = useCallback(() => {
@@ -881,16 +877,21 @@ export default function WorkoutLoggerScreen() {
 
     const isStraight = normalizeScheme(currentRoutine.scheme) === 'straight';
     const currentSetIndex = currentSetIndexes[activeExerciseId] || 0;
-    const currentSetData = exerciseInputs[activeExerciseId]?.[currentSetIndex] || {};
+    const currentSetData = inputsRef.current[activeExerciseId]?.[currentSetIndex] || {};
 
-    // Mark current set as completed
+    // Mark current set as completed and log it (rest starts only if this
+    // tap is what logged it — Log Set already started it otherwise).
+    const wasDone = completeForEdit(completedRef.current[activeExerciseId], currentSetIndex);
     const markDone = (sets: boolean[] | undefined) => {
       const updatedSets = [...(sets || Array(exercise.sets).fill(false))];
       updatedSets[currentSetIndex] = true;
       return updatedSets;
     };
-    setCompletedSets(prev => ({ ...prev, [activeExerciseId]: markDone(prev[activeExerciseId]) }));
-    saveSetData(activeExerciseId, currentSetIndex, null, null, true);
+    commitCompleted(activeExerciseId, markDone, exercise.sets);
+    cancelDraft(activeExerciseId, currentSetIndex);
+    persistSet(activeExerciseId, currentSetIndex, true).then(ok => {
+      if (ok && !wasDone) startRestAfter(activeExerciseId, currentSetIndex);
+    });
 
     const goToOverview = () => {
       setViewMode('overview');
@@ -909,7 +910,7 @@ export default function WorkoutLoggerScreen() {
       return;
     }
 
-    const done = { ...completedSets, [activeExerciseId]: markDone(completedSets[activeExerciseId]) };
+    const done = completedRef.current;
     const next = nextStep(sequence, done, { reId: activeExerciseId, setIndex: currentSetIndex });
 
     if (!next) {
@@ -933,7 +934,7 @@ export default function WorkoutLoggerScreen() {
       [next.reId]: next.setIndex,
     }));
     setActiveExerciseId(next.reId);
-  }, [activeExerciseId, workout, allExercises, sequence, currentSetIndexes, exerciseInputs, completedSets, handleInputChange]);
+  }, [activeExerciseId, workout, allExercises, sequence, currentSetIndexes, handleInputChange, persistSet, startRestAfter]);
 
   // Navigation handlers
   const handleExercisePress = (exerciseId: string) => {
@@ -972,7 +973,7 @@ export default function WorkoutLoggerScreen() {
     const inFlightKey = `${activeExerciseId}:${setIndex}`;
     if (completionInFlightRef.current.has(inFlightKey)) return;
 
-    const currentlyCompleted = completedSets[activeExerciseId]?.[setIndex] === true;
+    const currentlyCompleted = completeForEdit(completedRef.current[activeExerciseId], setIndex);
 
     // If checking (not unchecking) and we have auto-fill values, apply them
     if (!currentlyCompleted && autoFillValues) {
@@ -981,19 +982,21 @@ export default function WorkoutLoggerScreen() {
       });
     }
 
-    setCompletedSets(prev => {
-      const exerciseSets = prev[activeExerciseId] || Array(exercise.sets).fill(false);
-      const updatedSets = [...exerciseSets];
-      updatedSets[setIndex] = !updatedSets[setIndex]; // Toggle
-      return { ...prev, [activeExerciseId]: updatedSets };
-    });
+    commitCompleted(activeExerciseId, sets => {
+      sets[setIndex] = !currentlyCompleted; // Toggle
+      return sets;
+    }, exercise.sets);
 
-    // Persist the check/uncheck — with nothing typed and no auto-fill this
-    // was local-only and lost on exit.
+    // Log Set / check → complete:true; uncheck → complete:false. The row
+    // carries the set's full values (incl. the auto-fill just applied).
     completionInFlightRef.current.add(inFlightKey);
-    saveSetData(activeExerciseId, setIndex, null, null, !currentlyCompleted)
+    cancelDraft(activeExerciseId, setIndex);
+    persistSet(activeExerciseId, setIndex, !currentlyCompleted)
+      .then(ok => {
+        if (ok && !currentlyCompleted) startRestAfter(activeExerciseId, setIndex);
+      })
       .finally(() => completionInFlightRef.current.delete(inFlightKey));
-  }, [activeExerciseId, allExercises, completedSets, handleInputChange]);
+  }, [activeExerciseId, allExercises, handleInputChange, persistSet, startRestAfter]);
 
   // Get current exercise and routine
   const currentExercise = useMemo(() => {

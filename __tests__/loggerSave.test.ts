@@ -1,0 +1,232 @@
+import { buildLogRow, completeForEdit, upsertSet, type SetKey } from '../lib/logger/saveSet';
+import { createOutbox, OUTBOX_KEY, type OutboxStorage } from '../lib/logger/outbox';
+
+const KEY: SetKey = { workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2 };
+const OPTS = { athleteId: 'ath-1', exerciseId: 'ex-1', orgId: 'org-1' };
+
+function memoryStorage(): OutboxStorage & { data: Record<string, string> } {
+  const data: Record<string, string> = {};
+  return {
+    data,
+    getItem: async k => (k in data ? data[k] : null),
+    setItem: async (k, v) => {
+      data[k] = v;
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>(r => (resolve = r));
+  return { promise, resolve };
+}
+
+describe('buildLogRow', () => {
+  it('edit writes draft not complete', () => {
+    const row = buildLogRow(KEY, { reps: '5', weight: '135' }, { ...OPTS, complete: false });
+    expect(row.is_complete).toBe(false);
+    expect(row).toMatchObject({
+      workout_instance_id: 'wi-1',
+      routine_exercise_id: 're-1',
+      set_number: 2,
+      athlete_id: 'ath-1',
+      exercise_id: 'ex-1',
+      org_id: 'org-1',
+      actual_reps: 5,
+      actual_weight: 135,
+    });
+  });
+
+  it('Log Set writes complete', () => {
+    expect(buildLogRow(KEY, {}, { ...OPTS, complete: true }).is_complete).toBe(true);
+  });
+
+  it('always writes the full set state: cleared built-ins are null, custom metrics go to metric_data', () => {
+    const row = buildLogRow(
+      KEY,
+      { reps: '', weight: null, time_seconds: '30', distance: '12.5', notes: 'ok', velo: 82, spin: '' },
+      { ...OPTS, complete: true },
+    );
+    expect(row.actual_reps).toBeNull();
+    expect(row.actual_weight).toBeNull();
+    expect(row.actual_duration_seconds).toBe(30);
+    expect(row.actual_distance).toBe(12.5);
+    expect(row.notes).toBe('ok');
+    // cleared custom metric is dropped so the full-state write removes it
+    expect(row.metric_data).toEqual({ velo: 82 });
+  });
+
+  it('non-numeric built-in values become null instead of NaN', () => {
+    expect(buildLogRow(KEY, { reps: 'abc' }, { ...OPTS, complete: false }).actual_reps).toBeNull();
+  });
+
+  it('rpe included only when provided', () => {
+    expect('rpe' in buildLogRow(KEY, {}, { ...OPTS, complete: true })).toBe(false);
+    expect(buildLogRow(KEY, {}, { ...OPTS, complete: true, rpe: 8 }).rpe).toBe(8);
+    expect(buildLogRow(KEY, {}, { ...OPTS, complete: true, rpe: null }).rpe).toBeNull();
+  });
+
+  it('omits org_id when unknown', () => {
+    expect('org_id' in buildLogRow(KEY, {}, { athleteId: 'a', exerciseId: 'e', complete: false })).toBe(false);
+  });
+});
+
+describe('upsertSet', () => {
+  it('writes through the upsert_exercise_log RPC', async () => {
+    const rpc = jest.fn(async (_fn: string, _args: Record<string, unknown>) => ({ data: 'log-id', error: null }));
+    const row = buildLogRow(KEY, { reps: 3 }, { ...OPTS, complete: true });
+    await expect(upsertSet({ rpc }, row)).resolves.toEqual({ ok: true, id: 'log-id' });
+    expect(rpc).toHaveBeenCalledWith('upsert_exercise_log', { p_row: row });
+  });
+
+  it('reports failure on error or throw', async () => {
+    const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(upsertSet({ rpc: async () => ({ data: null, error: { message: 'x' } }) }, {})).resolves.toEqual({ ok: false });
+    await expect(upsertSet({ rpc: async () => { throw new Error('offline'); } }, {})).resolves.toEqual({ ok: false });
+    quiet.mockRestore();
+  });
+});
+
+describe('outbox', () => {
+  const row = (fields: Record<string, unknown>, complete: boolean, key: SetKey = KEY) =>
+    buildLogRow(key, fields, { ...OPTS, complete });
+
+  it('concurrent completes write one row', async () => {
+    const storage = memoryStorage();
+    const send = jest.fn(async (_r: Record<string, unknown>) => ({ ok: true }));
+    const ob = createOutbox(storage, send);
+    await Promise.all([ob.enqueue(row({ reps: 5 }, true)), ob.enqueue(row({ reps: 5 }, true))]);
+    expect(await ob.size()).toBe(1);
+    expect(await ob.flush()).toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('latest full row wins for the same set (no merge of stale values)', async () => {
+    const send = jest.fn(async (_r: Record<string, unknown>) => ({ ok: true }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5, velo: 80 }, false));
+    await ob.enqueue(row({ reps: 6 }, true));
+    await ob.flush();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0]).toMatchObject({ actual_reps: 6, is_complete: true, metric_data: {} });
+  });
+
+  it('different sets are kept separately', async () => {
+    const ob = createOutbox(memoryStorage(), async () => ({ ok: true }));
+    await ob.enqueue(row({}, true));
+    await ob.enqueue(row({}, true, { ...KEY, setNumber: 3 }));
+    expect(await ob.size()).toBe(2);
+  });
+
+  it('outbox survives restart and flushes once', async () => {
+    const storage = memoryStorage();
+    await createOutbox(storage, async () => ({ ok: false })).enqueue(row({ reps: 5 }, true));
+    expect(storage.data[OUTBOX_KEY]).toBeDefined();
+
+    const send = jest.fn(async (_r: Record<string, unknown>) => ({ ok: true }));
+    const restarted = createOutbox(storage, send);
+    expect(await restarted.flush()).toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await restarted.size()).toBe(0);
+    await restarted.flush();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('failed send stays queued', async () => {
+    const ob = createOutbox(memoryStorage(), async () => ({ ok: false }));
+    await ob.enqueue(row({ reps: 5 }, true));
+    expect(await ob.flush()).toBe(0);
+    expect(await ob.size()).toBe(1);
+  });
+
+  it('a throwing send stays queued and does not block other rows', async () => {
+    const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const send = jest.fn(async (r: Record<string, unknown>) => {
+      if (r.set_number === 2) throw new Error('offline');
+      return { ok: true };
+    });
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({}, true));
+    await ob.enqueue(row({}, true, { ...KEY, setNumber: 3 }));
+    expect(await ob.flush()).toBe(1);
+    expect(await ob.size()).toBe(1);
+    quiet.mockRestore();
+  });
+
+  it('flush during flush does not send twice', async () => {
+    const gate = deferred<{ ok: boolean }>();
+    const send = jest.fn((_r: Record<string, unknown>) => gate.promise);
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, true));
+    const first = ob.flush();
+    const second = ob.flush();
+    await new Promise(r => setTimeout(r, 0));
+    expect(send).toHaveBeenCalledTimes(1);
+    gate.resolve({ ok: true });
+    await Promise.all([first, second]);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await ob.size()).toBe(0);
+  });
+
+  it('enqueue during flush survives (same set re-edited while its old row is sending)', async () => {
+    const gate = deferred<{ ok: boolean }>();
+    const sent: Record<string, unknown>[] = [];
+    let calls = 0;
+    const send = jest.fn(async (r: Record<string, unknown>) => {
+      sent.push(r);
+      calls += 1;
+      return calls === 1 ? gate.promise : { ok: true };
+    });
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, false));
+    const flushing = ob.flush();
+    await new Promise(r => setTimeout(r, 0));
+    await ob.enqueue(row({ reps: 6 }, true)); // newer state while v1 is in flight
+    const again = ob.flush(); // screen flushes after each enqueue
+    gate.resolve({ ok: true });
+    await Promise.all([flushing, again]);
+    expect(sent.map(r => r.actual_reps)).toEqual([5, 6]);
+    expect(sent[1].is_complete).toBe(true);
+    expect(await ob.size()).toBe(0);
+  });
+
+  it('enqueue during flush with no new flush call stays queued', async () => {
+    const gate = deferred<{ ok: boolean }>();
+    const ob = createOutbox(memoryStorage(), () => gate.promise);
+    await ob.enqueue(row({ reps: 5 }, true));
+    const flushing = ob.flush();
+    await new Promise(r => setTimeout(r, 0));
+    await ob.enqueue(row({}, true, { ...KEY, setNumber: 9 }));
+    gate.resolve({ ok: true });
+    await flushing;
+    expect(await ob.size()).toBe(1);
+  });
+
+  it('pending() returns queued rows for resume overlay', async () => {
+    const ob = createOutbox(memoryStorage(), async () => ({ ok: false }));
+    await ob.enqueue(row({ reps: 5 }, true));
+    expect(await ob.pending()).toEqual([expect.objectContaining({ actual_reps: 5, set_number: 2 })]);
+  });
+
+  it('corrupt storage is treated as empty', async () => {
+    const storage = memoryStorage();
+    storage.data[OUTBOX_KEY] = '{not json';
+    const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const ob = createOutbox(storage, async () => ({ ok: true }));
+    expect(await ob.size()).toBe(0);
+    await ob.enqueue(row({}, true));
+    expect(await ob.size()).toBe(1);
+    quiet.mockRestore();
+  });
+});
+
+describe('completeForEdit — draft vs complete on a field edit', () => {
+  it('editing a set that is not logged yet is a draft', () => {
+    expect(completeForEdit(undefined, 0)).toBe(false);
+    expect(completeForEdit([false, false], 1)).toBe(false);
+  });
+  it('editing a completed set stays complete', () => {
+    expect(completeForEdit([true, false], 0)).toBe(true);
+    expect(buildLogRow(KEY, { reps: 4 }, { ...OPTS, complete: completeForEdit([false, true], 1) }).is_complete).toBe(true);
+  });
+});
