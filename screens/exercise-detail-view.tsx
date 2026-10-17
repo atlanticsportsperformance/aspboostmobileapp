@@ -33,7 +33,7 @@ import type {
   LoggerRoutine as Routine,
   LoggerWorkout as Workout,
 } from '../types/logger';
-import { nextStep, type SeqStep } from '../lib/logger/sequence';
+import { neighborExercise, nextStep, type SeqStep } from '../lib/logger/sequence';
 import RpeRow from '../components/logger/RpeRow';
 import FloatingVideoButton from '../components/logger/FloatingVideoButton';
 import FloatingVideoWindow from '../components/logger/FloatingVideoWindow';
@@ -396,7 +396,9 @@ export default function ExerciseDetailView({
   prAlert,
 }: ExerciseDetailViewProps) {
   const insets = useSafeAreaInsets();
-  const videoUrl = exercise.exercises.video_url || null;
+  // Text blocks have no joined exercise (navigation skips them; guard anyway).
+  const exerciseName = exercise.exercises?.name ?? exercise.placeholder_name ?? '';
+  const videoUrl = exercise.exercises?.video_url || null;
   const videoId = youTubeId(videoUrl);
   const [prAlertVisible, setPRAlertVisible] = useState(false);
   const [prAnimation] = useState(new Animated.Value(0));
@@ -1182,8 +1184,7 @@ export default function ExerciseDetailView({
     // Rows outside the sequence (notes-only, text blocks) step to the next row
     // in the list — same as the parent's handleNextSet.
     if (!sequence.some(s => s.reId === exercise.id)) {
-      const currentExerciseIndex = allExercises.findIndex(ex => ex.id === exercise.id);
-      const following = allExercises[currentExerciseIndex + 1];
+      const following = neighborExercise(allExercises, exercise.id, 1);
       return following ? truncateName(following.exercises?.name ?? following.placeholder_name ?? '') + ' →' : 'DONE';
     }
 
@@ -1197,7 +1198,7 @@ export default function ExerciseDetailView({
     if (next.reId === exercise.id) return 'Next Set →';
 
     const nextExercise = allExercises.find(ex => ex.id === next.reId);
-    return nextExercise ? truncateName(nextExercise.exercises.name) + ' →' : 'DONE';
+    return nextExercise ? truncateName(nextExercise.exercises?.name ?? nextExercise.placeholder_name ?? '') + ' →' : 'DONE';
   };
 
   return (
@@ -1267,7 +1268,7 @@ export default function ExerciseDetailView({
 
           {/* Exercise Name */}
           <Text style={styles.exerciseName} numberOfLines={2}>
-            {exercise.exercises.name}
+            {exerciseName}
           </Text>
 
           {/* Position in the workout — "4 of 7" */}
@@ -1605,8 +1606,9 @@ export default function ExerciseDetailView({
               // They just need to see the content and move on
               if (isNotesOnly) {
                 // For notes-only, determine what to show
-                const currentExerciseIndex = allExercises.findIndex(ex => ex.id === exercise.id);
-                const isLastExercise = currentExerciseIndex >= allExercises.length - 1;
+                // Next skips text blocks, so "last" = no exercise row after this one.
+                const nextExercise = neighborExercise(allExercises, exercise.id, 1);
+                const isLastExercise = nextExercise == null;
 
                 if (isLastExercise) {
                   return (
@@ -1629,8 +1631,9 @@ export default function ExerciseDetailView({
                 }
 
                 // Show next exercise name
-                const nextExercise = allExercises[currentExerciseIndex + 1];
-                const nextExerciseName = nextExercise ? truncateName(nextExercise.exercises.name) + ' →' : 'Next';
+                const nextExerciseName = nextExercise
+                  ? truncateName(nextExercise.exercises?.name ?? nextExercise.placeholder_name ?? '') + ' →'
+                  : 'Next';
 
                 return (
                   <TouchableOpacity
@@ -1707,7 +1710,7 @@ export default function ExerciseDetailView({
       {floatingVideoOpen && videoId && (
         <FloatingVideoWindow
           videoId={videoId}
-          title={exercise.exercises.name}
+          title={exerciseName}
           bottom={bottomBarHeight + 12}
           keypadOpen={!!activeInput}
           onClose={() => setFloatingVideoOpen(false)}
@@ -1751,7 +1754,7 @@ export default function ExerciseDetailView({
             <View style={styles.prPopoverHeader}>
               <Text style={styles.prPopoverEyebrow}>PERSONAL RECORDS</Text>
               <Text style={styles.prPopoverTitle} numberOfLines={1}>
-                {exercise.exercises.name}
+                {exerciseName}
               </Text>
             </View>
             {(exercise.tracked_max_metrics ?? []).length === 0 ? (

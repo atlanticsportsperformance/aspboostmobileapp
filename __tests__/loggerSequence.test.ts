@@ -1,4 +1,4 @@
-import { buildSequence, nextStep } from '../lib/logger/sequence';
+import { buildSequence, neighborExercise, nextStep } from '../lib/logger/sequence';
 import type { LoggerRoutine, LoggerRoutineExercise } from '../types/logger';
 
 function re(id: string, sets: number, extra: Partial<LoggerRoutineExercise> = {}): LoggerRoutineExercise {
@@ -113,5 +113,36 @@ describe('placeholders', () => {
       ]),
     ]);
     expect(pairs(seq)).toEqual([['A', 0], ['A', 1]]);
+  });
+});
+
+describe('neighborExercise — prev/next/swipe skip text blocks (final review I5)', () => {
+  const rows = [
+    { id: 'warm', exercises: null },
+    { id: 'A', exercises: { name: 'A' } },
+    { id: 'note', exercises: null },
+    { id: 'B', exercises: { name: 'B' } },
+    { id: 'cool', exercises: null },
+  ];
+  it('steps over rows with no joined exercise', () => {
+    expect(neighborExercise(rows, 'A', 1)?.id).toBe('B');
+    expect(neighborExercise(rows, 'B', -1)?.id).toBe('A');
+  });
+  it('null at the ends (only text blocks beyond) and for an unknown id', () => {
+    expect(neighborExercise(rows, 'A', -1)).toBeNull();
+    expect(neighborExercise(rows, 'B', 1)).toBeNull();
+    expect(neighborExercise(rows, 'zzz', 1)).toBeNull();
+    expect(neighborExercise(rows, null, 1)).toBeNull();
+  });
+  it('the logger and exercise screen navigate through it and never dereference exercises unguarded', () => {
+    const { readFileSync } = require('fs');
+    const { join } = require('path');
+    const L: string = readFileSync(join(__dirname, '..', 'screens/WorkoutLoggerScreen.tsx'), 'utf8');
+    const D: string = readFileSync(join(__dirname, '..', 'screens/exercise-detail-view.tsx'), 'utf8');
+    expect(L).toContain('const prev = neighborExercise(allExercises, activeExerciseId, -1);');
+    expect(L).toContain('const following = neighborExercise(allExercises, activeExerciseId, 1);');
+    expect(L).toContain('hasPrev={neighborExercise(allExercises, currentExercise.id, -1) != null}');
+    expect(L).toContain('hasNext={neighborExercise(allExercises, currentExercise.id, 1) != null}');
+    expect(D).not.toMatch(/\.exercises\.(name|video_url)/);
   });
 });

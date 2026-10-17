@@ -34,7 +34,7 @@ import type {
   LoggerRoutine as Routine,
   LoggerWorkout as Workout,
 } from '../types/logger';
-import { buildSequence, nextStep } from '../lib/logger/sequence';
+import { buildSequence, neighborExercise, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
 import { nextSetPrefill } from '../lib/logger/targets';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
@@ -944,9 +944,9 @@ export default function WorkoutLoggerScreen() {
     // Notes-only rows / text blocks have no sets in the sequence: step to the
     // next row in the list (what their button label shows).
     if (!sequence.some(s => s.reId === activeExerciseId)) {
-      const currentExerciseIndex = allExercises.findIndex(ex => ex.id === activeExerciseId);
-      if (currentExerciseIndex < allExercises.length - 1) {
-        setActiveExerciseId(allExercises[currentExerciseIndex + 1].id);
+      const following = neighborExercise(allExercises, activeExerciseId, 1);
+      if (following) {
+        setActiveExerciseId(following.id);
       } else {
         goToOverview();
       }
@@ -1007,20 +1007,16 @@ export default function WorkoutLoggerScreen() {
     setActiveExerciseId(null);
   };
 
+  // Prev / next / swipe skip text blocks (no joined exercise) — the
+  // exercise screen can't render them (lib/logger/sequence neighborExercise).
   const handlePrevExercise = () => {
-    if (!activeExerciseId) return;
-    const currentIndex = allExercises.findIndex(ex => ex.id === activeExerciseId);
-    if (currentIndex > 0) {
-      setActiveExerciseId(allExercises[currentIndex - 1].id);
-    }
+    const prev = neighborExercise(allExercises, activeExerciseId, -1);
+    if (prev) setActiveExerciseId(prev.id);
   };
 
   const handleNextExercise = () => {
-    if (!activeExerciseId) return;
-    const currentIndex = allExercises.findIndex(ex => ex.id === activeExerciseId);
-    if (currentIndex < allExercises.length - 1) {
-      setActiveExerciseId(allExercises[currentIndex + 1].id);
-    }
+    const following = neighborExercise(allExercises, activeExerciseId, 1);
+    if (following) setActiveExerciseId(following.id);
   };
 
   // Toggle set completion (for clicking checkboxes)
@@ -1208,8 +1204,8 @@ export default function WorkoutLoggerScreen() {
         currentSetIndexes={currentSetIndexes}
         allExercises={allExercises}
         sequence={sequence}
-        hasPrev={currentExerciseIndex > 0}
-        hasNext={currentExerciseIndex < allExercises.length - 1}
+        hasPrev={neighborExercise(allExercises, currentExercise.id, -1) != null}
+        hasNext={neighborExercise(allExercises, currentExercise.id, 1) != null}
         blockLabel={blockLabel}
         exerciseHistory={exerciseHistory[currentExercise.exercise_id]}
         lastWeekRows={lastWeekRows}

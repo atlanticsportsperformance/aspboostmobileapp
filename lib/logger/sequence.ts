@@ -80,3 +80,20 @@ export function nextStep(
   }
   return null;
 }
+
+// The row prev/next/swipe (and Next on a notes-only row) moves to: the
+// nearest row in `dir` that has a joined exercise. Text blocks (warm-up /
+// notes stored with exercises = null) are skipped — the exercise screen
+// can't render them; the overview shows them. null when there is none.
+export function neighborExercise<T extends { id: string; exercises?: unknown }>(
+  rows: T[],
+  currentId: string | null | undefined,
+  dir: 1 | -1,
+): T | null {
+  const from = rows.findIndex(r => r.id === currentId);
+  if (from < 0) return null;
+  for (let i = from + dir; i >= 0 && i < rows.length; i += dir) {
+    if (rows[i].exercises) return rows[i];
+  }
+  return null;
+}
