@@ -23,7 +23,7 @@ import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
-import { isSetDoneFromLog, isValidSetIndex } from '../lib/loggerResume';
+import { isSetDoneFromLog, isValidSetIndex, logToSetInputs } from '../lib/loggerResume';
 
 // Types
 import type {
@@ -166,14 +166,14 @@ export default function WorkoutLoggerScreen() {
   // Load workout data, then push anything still queued on this device.
   useEffect(() => {
     loadWorkout().finally(() => {
-      void loggerOutbox.flush();
+      void loggerOutbox.flush({ foreground: true });
     });
   }, [workoutInstanceId]);
 
   // Coming back to the app (gym Wi-Fi returns, phone unlocked) → sync.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') void loggerOutbox.flush();
+      if (state === 'active') void loggerOutbox.flush({ foreground: true });
     });
     return () => sub.remove();
   }, []);
@@ -384,17 +384,9 @@ export default function WorkoutLoggerScreen() {
         exLogs.forEach((log: any) => {
           const setIndex = log.set_number - 1; // Convert to 0-indexed
           if (setIndex >= 0 && setIndex < ex.sets) {
-            setsData[setIndex] = {
-              reps: log.actual_reps,
-              weight: log.actual_weight,
-              time_seconds: log.actual_duration_seconds,
-              distance: log.actual_distance,
-              notes: log.notes,
-              ...(log.metric_data || {}),
-            };
+            setsData[setIndex] = logToSetInputs(log);
 
-            // Done if is_complete was saved (value-less completions) or the
-            // row has any logged value (legacy rows).
+            // Done only if is_complete — drafts resume not-done with values.
             completedArray[setIndex] = isSetDoneFromLog(log);
           }
         });
@@ -814,7 +806,8 @@ export default function WorkoutLoggerScreen() {
     field: string,
     value: any,
     exerciseIdOverride?: string,
-    isAutoFill: boolean = false
+    // Auto-fill saves a draft like a typed edit (spec §11.2); kept for callers.
+    _isAutoFill: boolean = false
   ) => {
     const targetExerciseId = exerciseIdOverride || activeExerciseId;
     const targetExercise = allExercises.find(ex => ex.id === targetExerciseId);
@@ -828,27 +821,24 @@ export default function WorkoutLoggerScreen() {
     commitInputs({ ...inputsRef.current, [targetExerciseId]: exerciseData });
     const setData = exerciseData[setIndex];
 
-    // 2. Save a draft (debounced 500 ms per set). An edit never logs a set —
-    // Log Set does (spec §11.2) — but editing an already-logged set keeps it
-    // logged. Auto-fill into a set that isn't logged stays local: it is a
-    // suggestion, and Log Set saves it with the set. The timer reads the
+    // 2. Save a draft (debounced 500 ms per set). An edit — typed or
+    // auto-filled — never logs a set; Log Set does (spec §11.2). Editing an
+    // already-logged set keeps it logged. Drafts persist so they survive an
+    // app kill and resume not-done with their values. The timer reads the
     // latest values and completion when it fires, and targetExerciseId is
     // captured here, so navigating away inside 500 ms still saves the
     // right row.
-    const setIsDone = completeForEdit(completedRef.current[targetExerciseId], setIndex);
-    if (!isAutoFill || setIsDone) {
-      const timerKey = `${targetExerciseId}:${setIndex}`;
-      const pending = draftTimersRef.current[timerKey];
-      if (pending) clearTimeout(pending);
-      draftTimersRef.current[timerKey] = setTimeout(() => {
-        delete draftTimersRef.current[timerKey];
-        persistSet(
-          targetExerciseId,
-          setIndex,
-          completeForEdit(completedRef.current[targetExerciseId], setIndex),
-        );
-      }, 500);
-    }
+    const timerKey = `${targetExerciseId}:${setIndex}`;
+    const pending = draftTimersRef.current[timerKey];
+    if (pending) clearTimeout(pending);
+    draftTimersRef.current[timerKey] = setTimeout(() => {
+      delete draftTimersRef.current[timerKey];
+      persistSet(
+        targetExerciseId,
+        setIndex,
+        completeForEdit(completedRef.current[targetExerciseId], setIndex),
+      );
+    }, 500);
 
     // 5. Check for PR (if tracked metric). Carry the reps from the same set
     // so reps_at_max is recorded (a reps-metric PR uses its own value).

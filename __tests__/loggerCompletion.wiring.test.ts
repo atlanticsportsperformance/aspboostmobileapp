@@ -36,8 +36,9 @@ describe('workout logger — set completion survives leaving and resuming', () =
     expect(fn).toContain('void loggerOutbox.flush()');
     expect(fn).not.toContain(".from('exercise_logs')");
   });
-  it('field edits save drafts; an edit never marks a set done, editing a done set keeps it done', () => {
+  it('field edits (typed or auto-filled) save drafts; an edit never marks a set done, editing a done set keeps it done', () => {
     const fn = body('const handleInputChange', '// Handle next set / done');
+    expect(fn).not.toContain('isAutoFill ||');
     expect(fn).toContain('completeForEdit(completedRef.current[targetExerciseId], setIndex)');
     expect(fn).toContain('}, 500);');
     expect(fn).not.toContain('commitCompleted');
@@ -45,8 +46,8 @@ describe('workout logger — set completion survives leaving and resuming', () =
   });
   it('outbox flushes after load and on app foreground; reload overlays unsynced rows', () => {
     expect(S).toContain('const loggerOutbox = createOutbox();');
-    expect(S).toContain("if (state === 'active') void loggerOutbox.flush();");
-    expect(S).toMatch(/loadWorkout\(\)\.finally\(\(\) => \{\s*void loggerOutbox\.flush\(\);/);
+    expect(S).toContain("if (state === 'active') void loggerOutbox.flush({ foreground: true });");
+    expect(S).toMatch(/loadWorkout\(\)\.finally\(\(\) => \{\s*void loggerOutbox\.flush\(\{ foreground: true \}\);/);
     expect(S).toContain('await loggerOutbox.pending()');
   });
 });

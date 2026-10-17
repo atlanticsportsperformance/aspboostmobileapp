@@ -8,6 +8,10 @@ import { supabase } from '../supabase';
 import { upsertSet, type LogRow } from './saveSet';
 
 export const OUTBOX_KEY = 'logger_outbox_v1';
+// After this many consecutive failed sends for one set, the row is kept but
+// only retried on foreground flushes (app open / back to the app), so a row
+// the server keeps rejecting doesn't ride along on every save.
+export const MAX_FAILURES = 5;
 
 export type OutboxStorage = {
   getItem: (key: string) => Promise<string | null>;
@@ -18,8 +22,9 @@ export type Send = (row: LogRow) => Promise<{ ok: boolean }>;
 
 export type Outbox = {
   enqueue: (row: LogRow) => Promise<void>;
-  // Sends every queued row once; resolves to the number accepted.
-  flush: () => Promise<number>;
+  // Sends every queued row once; resolves to the number accepted. Rows that
+  // backed off (MAX_FAILURES) are only sent when `foreground` is set.
+  flush: (opts?: { foreground?: boolean }) => Promise<number>;
   size: () => Promise<number>;
   // Queued (unsynced) rows — overlaid on server logs when a workout reopens.
   pending: () => Promise<LogRow[]>;
@@ -68,17 +73,29 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
 
   // One pass over a snapshot. A row is removed only if it is still exactly
   // the row that was sent — a newer edit enqueued mid-send stays queued.
-  const drainOnce = async (): Promise<number> => {
+  // Consecutive failures per set, in memory (an app restart retries all).
+  const failures = new Map<string, number>();
+
+  const drainOnce = async (foreground: boolean): Promise<number> => {
     const snapshot = await withLock(storage, read);
     let sent = 0;
     for (const [k, row] of Object.entries(snapshot)) {
+      if (!foreground && (failures.get(k) ?? 0) >= MAX_FAILURES) continue;
       let ok = false;
       try {
         ok = (await send(row)).ok;
       } catch (error) {
         console.error('logger outbox: send threw', error);
       }
-      if (!ok) continue;
+      if (!ok) {
+        const n = (failures.get(k) ?? 0) + 1;
+        failures.set(k, n);
+        if (n === MAX_FAILURES) {
+          console.warn(`logger outbox: ${k} failed ${n} times in a row — kept, retrying only on app foreground`);
+        }
+        continue;
+      }
+      failures.delete(k);
       sent += 1;
       const body = JSON.stringify(row);
       await withLock(storage, async () => {
@@ -94,18 +111,23 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
 
   let flushing: Promise<number> | null = null;
   let rerun = false;
-  const flush = (): Promise<number> => {
+  let rerunForeground = false;
+  const flush = (opts?: { foreground?: boolean }): Promise<number> => {
     if (flushing) {
       // Already flushing: run one more pass when it finishes so rows enqueued
       // meanwhile go out, without ever sending concurrently.
       rerun = true;
+      if (opts?.foreground) rerunForeground = true;
       return flushing;
     }
+    let foreground = !!opts?.foreground;
     flushing = (async () => {
       let sent = 0;
       do {
         rerun = false;
-        sent += await drainOnce();
+        sent += await drainOnce(foreground);
+        foreground = rerunForeground;
+        rerunForeground = false;
       } while (rerun);
       return sent;
     })().finally(() => {

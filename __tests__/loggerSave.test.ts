@@ -1,5 +1,5 @@
 import { buildLogRow, completeForEdit, upsertSet, type SetKey } from '../lib/logger/saveSet';
-import { createOutbox, OUTBOX_KEY, type OutboxStorage } from '../lib/logger/outbox';
+import { createOutbox, OUTBOX_KEY, MAX_FAILURES, type OutboxStorage } from '../lib/logger/outbox';
 
 const KEY: SetKey = { workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2 };
 const OPTS = { athleteId: 'ath-1', exerciseId: 'ex-1', orgId: 'org-1' };
@@ -200,6 +200,42 @@ describe('outbox', () => {
     gate.resolve({ ok: true });
     await flushing;
     expect(await ob.size()).toBe(1);
+  });
+
+  it('after 5 consecutive failures a set backs off to foreground-only flushes (kept, logged)', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    let fail = true;
+    const send = jest.fn(async (r: Record<string, unknown>) => ({ ok: r.set_number === 2 ? !fail : true }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, true));
+    expect(MAX_FAILURES).toBe(5);
+    for (let i = 0; i < 5; i++) await ob.flush();
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // backed off: regular flushes skip it, other sets still go out
+    await ob.enqueue(row({}, true, { ...KEY, setNumber: 3 }));
+    expect(await ob.flush()).toBe(1);
+    expect(send.mock.calls.filter(c => c[0].set_number === 2)).toHaveLength(5);
+    expect(await ob.size()).toBe(1);
+
+    // foreground flush retries it; success clears the back-off
+    fail = false;
+    expect(await ob.flush({ foreground: true })).toBe(1);
+    expect(await ob.size()).toBe(0);
+    warn.mockRestore();
+  });
+
+  it('a success resets the failure count', async () => {
+    let calls = 0;
+    const send = jest.fn(async () => ({ ok: ++calls === 4 }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({}, true));
+    for (let i = 0; i < 4; i++) await ob.flush(); // 3 fails, then ok
+    await ob.enqueue(row({ reps: 1 }, true));
+    for (let i = 0; i < 4; i++) await ob.flush(); // 4 more fails — under the cap
+    await ob.flush();
+    expect(send).toHaveBeenCalledTimes(9);
   });
 
   it('pending() returns queued rows for resume overlay', async () => {

@@ -1,22 +1,28 @@
 /**
  * Resume rule for the workout logger: is a saved exercise_logs row a "done"
- * set? `is_complete` is authoritative when true (quick-complete and Log Set
- * with no values write value-less is_complete rows); any logged value also
- * counts, for legacy rows written before is_complete was reliable.
+ * set? Only `is_complete === true`. Every legacy write path (old saveSetData,
+ * quick-complete) wrote is_complete:true, so legacy rows still read as done;
+ * is_complete:false rows are un-checks and v2 drafts (typed or auto-filled
+ * values not logged yet), which must resume not-done with their values.
  */
 export function isSetDoneFromLog(log: Record<string, any> | null | undefined): boolean {
-  if (!log) return false;
-  if (log.is_complete === true) return true;
-  const values: Record<string, any> = {
+  return log?.is_complete === true;
+}
+
+/**
+ * A saved row's values in the logger's local field names (dedicated
+ * actual_* columns → reps/weight/time_seconds/distance, custom metrics from
+ * metric_data). Drafts keep their values on resume through this.
+ */
+export function logToSetInputs(log: Record<string, any>): Record<string, any> {
+  return {
     reps: log.actual_reps,
     weight: log.actual_weight,
     time_seconds: log.actual_duration_seconds,
     distance: log.actual_distance,
+    notes: log.notes,
     ...(log.metric_data || {}),
   };
-  return Object.keys(values).some(
-    key => key !== 'notes' && values[key] != null && values[key] !== '',
-  );
 }
 
 /** A 0-based set index is within the exercise's prescribed sets. */
