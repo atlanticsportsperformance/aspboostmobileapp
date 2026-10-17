@@ -181,4 +181,21 @@ describe('exercise screen — dense table (task 15)', () => {
     const tr = D.slice(D.indexOf('  tr: {'), D.indexOf('  trSub:'));
     expect(tr).toContain('minHeight: 64,');
   });
+
+  it('+/− steppers on the current set only, through the same input path as typing', () => {
+    expect(D).toContain("import { canStep, stepValue } from '../lib/logger/stepper';");
+    const fn = D.slice(D.indexOf('const renderMetric'), D.indexOf('// The completion circle'));
+    // read-only rows return before the stepper branch
+    expect(fn.indexOf('if (!open) {')).toBeLessThan(fn.indexOf('const steppable'));
+    expect(fn).toContain('const steppable = canStep(stepBase);');
+    expect(fn).toContain('{steppable && stepper(-1)}');
+    expect(fn).toContain('{steppable && stepper(1)}');
+    expect(fn).toContain('onInputChange(setIndex, metricId, String(next));');
+    expect(fn).toContain('markFieldEdited(setIndex, metricId);');
+    // 36 pt targets: 24 wide + 6 px slop each side, 36 tall
+    const st = D.slice(D.indexOf('  stepBtn: {'), D.indexOf('  stepText:'));
+    expect(st).toContain('width: 24,');
+    expect(st).toContain('height: 36,');
+    expect(fn).toContain('hitSlop={{ top: 0, bottom: 0, left: 6, right: 6 }}');
+  });
 });

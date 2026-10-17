@@ -115,7 +115,7 @@ describe('exercise screen wiring', () => {
   });
 
   it('marks hand-typed fields as edited (keypad press + backspace)', () => {
-    expect(src.match(/markFieldEdited\(setIndex, metricId\)/g)).toHaveLength(2);
+    expect(src.match(/markFieldEdited\(setIndex, metricId\)/g)).toHaveLength(3); // keypad press, backspace, stepper
   });
 });
 

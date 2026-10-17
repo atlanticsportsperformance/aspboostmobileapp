@@ -28,6 +28,7 @@ import {
 } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { formatRest } from '../lib/logger/rest';
+import { canStep, stepValue } from '../lib/logger/stepper';
 import { normalizeScheme } from '../lib/logger/scheme';
 
 // Types
@@ -554,13 +555,13 @@ export default function ExerciseDetailView({
   // target as the coach wrote it (280, "5 LB DB", "10 yards"), the short
   // pending % ("90% S1" until set 1 is logged, "80%" with no max on file),
   // else null. The full "90% of set 1" is the open row's caption.
-  const targetCell = (setIndex: number, metricId: string): { text: string; amrap?: boolean } | null => {
+  const targetCell = (setIndex: number, metricId: string): { text: string; amrap?: boolean; pending?: boolean } | null => {
     if (isAmrapFor(setIndex, metricId)) return { text: 'max', amrap: true };
     const target: unknown = resolveTarget(targetArgs(setIndex, metricId));
     if (!isEmptyValue(target)) return { text: String(target) };
     const t = getIntensityTarget(setIndex, metricId);
     if (t && t.calculatedValue == null) {
-      return { text: t.referenceSet != null ? `${t.percent}% S${t.referenceSet}` : `${t.percent}%` };
+      return { text: t.referenceSet != null ? `${t.percent}% S${t.referenceSet}` : `${t.percent}%`, pending: true };
     }
     return null;
   };
@@ -822,16 +823,42 @@ export default function ExerciseDetailView({
     const text = empty ? target?.text ?? hintFor(metricId) : String(value);
     const isActive = activeInput?.setIndex === setIndex && activeInput?.metricId === metricId;
     const justFilled = autoFilledKeys.has(`${setIndex}:${metricId}`);
+    // What −/+ step from: the typed value, else the prescribed number shown
+    // as the placeholder, else 0 (AMRAP / pending %). Free text — typed or
+    // prescribed ("5 LB DB") — gets no steppers.
+    const stepBase: unknown = !empty ? value : target && !target.amrap && !target.pending ? target.text : '';
+    const steppable = canStep(stepBase);
+    const step = (dir: 1 | -1) => {
+      const next = stepValue(metricId, stepBase, dir);
+      if (next == null) return;
+      setActiveInput(null);
+      markFieldEdited(setIndex, metricId);
+      onInputChange(setIndex, metricId, String(next));
+    };
+    const label = getMetricLabel(metricId, customMeasurements);
+    const stepper = (dir: 1 | -1) => (
+      <TouchableOpacity
+        style={styles.stepBtn}
+        onPress={() => step(dir)}
+        hitSlop={{ top: 0, bottom: 0, left: 6, right: 6 }}
+        activeOpacity={0.6}
+        accessibilityRole="button"
+        accessibilityLabel={`${dir > 0 ? 'Increase' : 'Decrease'} set ${setIndex + 1} ${label}`}
+      >
+        <Text style={styles.stepText}>{dir > 0 ? '+' : '−'}</Text>
+      </TouchableOpacity>
+    );
     return (
-      <View key={metricId} style={styles.cell}>
+      <View key={metricId} style={[styles.cell, styles.stepRow]}>
+        {steppable && stepper(-1)}
         <TouchableOpacity
-          style={[styles.in, isActive && styles.inFocus, justFilled && styles.inAutoFilled]}
+          style={[styles.in, steppable && styles.inStepped, isActive && styles.inFocus, justFilled && styles.inAutoFilled]}
           onPress={() => setActiveInput({ setIndex, metricId, isDecimal: metricTypeOf(metricId) === 'decimal' })}
           activeOpacity={0.7}
           accessibilityRole="button"
-          accessibilityLabel={`Set ${setIndex + 1} ${getMetricLabel(metricId, customMeasurements)}`}
+          accessibilityLabel={`Set ${setIndex + 1} ${label}`}
         >
-          <Text style={[styles.inText, empty && styles.ph]} numberOfLines={1}>
+          <Text style={[styles.inText, empty && styles.ph]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
             {text}
             {unit && isNumberText(text) ? <Text style={styles.u}>{` ${unit}`}</Text> : null}
           </Text>
@@ -841,6 +868,7 @@ export default function ExerciseDetailView({
             </View>
           )}
         </TouchableOpacity>
+        {steppable && stepper(1)}
       </View>
     );
   };
@@ -1669,9 +1697,11 @@ const styles = StyleSheet.create({
   colSet: { width: 24 },
   colLast: { width: 64, marginLeft: 8 },
   colMetric: { flex: 1, minWidth: 0, marginLeft: 8 },
-  colBall: { flex: 1.1, minWidth: 0, marginLeft: 8 },
-  colPairReps: { flex: 0.7, minWidth: 0, marginLeft: 8 },
-  colPairMph: { flex: 1, minWidth: 0, marginLeft: 8 },
+  // Paired: mock had 1.1 / 0.7 / 1; reps/mph widened so the current set's
+  // [−] value [+] fits (a 0.7 reps column left ~7 px for the number).
+  colBall: { flex: 0.9, minWidth: 0, marginLeft: 8 },
+  colPairReps: { flex: 1, minWidth: 0, marginLeft: 8 },
+  colPairMph: { flex: 1.1, minWidth: 0, marginLeft: 8 },
   colCheck: { width: 32, marginLeft: 8, alignItems: 'flex-end' },
   set: {
     borderBottomWidth: 1,
@@ -1753,6 +1783,21 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.14)',
   },
   inFocus: { borderColor: LOGGER_COLORS.accent },
+  // Current set: [−] value [+]. Buttons are 24 wide + 6 px hit slop each side
+  // (36 pt targets) so two columns still fit beside SET / LAST.
+  stepRow: { flex: 1, maxWidth: 176 },
+  inStepped: { maxWidth: '100%', paddingHorizontal: 6, justifyContent: 'center' },
+  stepBtn: {
+    width: 24,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepText: {
+    color: LOGGER_COLORS.accent,
+    fontSize: 20,
+    fontWeight: '700',
+  },
   inAutoFilled: {
     borderColor: LOGGER_COLORS.green,
     backgroundColor: 'rgba(16,185,129,0.12)',
