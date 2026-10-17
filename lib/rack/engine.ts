@@ -9,20 +9,36 @@
  *
  * Source of truth: the server's `rack_sessions` row owns who is active and
  * the queue. It arrives as `sessionSync(row)` (realtime, and the row each
- * rack RPC returns). The engine never edits the queue locally; it asks the
- * server through `rpcSetActive` / `rpcEndSet` and waits for the next sync.
- * Phone join / "I'm up" / Leave are server RPCs the phone calls; the engine
- * only sees their result in a sync.
+ * rack RPC returns). A row whose `updated_at` is older than the last applied
+ * row is ignored, so an RPC response landing after a newer realtime row is
+ * harmless. The engine never edits the queue locally; it asks the server
+ * through `rpcSetActive` / `rpcStartSet` / `rpcEndSet` and waits for the next
+ * sync. Phone join / "I'm up" / Leave are server RPCs the phone calls; the
+ * engine only sees their result in a sync.
  *
- * Effects are ORDERED. The executor must run them in order; in particular
- * `rpcEndSet` must only be called after the preceding `endSet` row has been
- * persisted (or durably queued). The executor should feed every RPC's
- * returned row back as a `sessionSync`.
+ * Executor contract:
+ *   - Effects are ORDERED; run them in order. `rpcEndSet` only after the
+ *     preceding `endSet` row is persisted (or durably queued).
+ *   - Feed every RPC's returned row back as a `sessionSync`.
+ *   - Dispatch `rpcFailed{kind, athleteId}` when an RPC errors (refused or
+ *     unsendable). `rpcSetActive` must NOT be queued offline: show the tiles
+ *     as offline and dispatch `rpcFailed('setActive')`.
+ *   - `writeRep` -> vbt_reps insert (dedupe on client_rep_id).
+ *     `endSet` / `amendSet` -> upsert_exercise_log; both SKIPPED when `free`.
+ *   - Dispatch `tick` about once a second.
+ *
+ * Set start: the first rep while not lifting starts a set and emits
+ * `rpcStartSet{athleteId, setStartedAt}` (rack_start_set flips the row to
+ * 'lifting' only while that athlete is still active).
  *
  * Set end triggers (ending is idempotent; a set is ended once):
- *   - `ipadDone`                                   endedBy 'ipad'
+ *   - `ipadDone` / `done`                          endedBy 'ipad' ('phone' in solo)
  *   - sync with pending_end = true                 endedBy 'phone'
  *   - sync with leave_requested = true             endedBy 'leave'
+ *     Both flags only count when the row belongs to the live set: its
+ *     set_started_at equals the live set's start; or, when the row has no
+ *     set_started_at and no rpcEndSet is in flight for the lifter, its
+ *     updated_at is newer than the live set's start. Otherwise ignored.
  *   - `selectAthlete(other)`                        endedBy 'switch'
  *     (endSet, then rpcSetActive; NO rpcEndSet — rack_set_active rotates)
  *   - sync where the server moved the active lifter away mid-set
@@ -33,28 +49,40 @@
  * (`writeRep` + `amendSet` with the full updated summary). After 3 s a rep
  * starts a new set.
  *
- * Set numbers: the phone's context (rack_sessions.set_number) is used as-is
- * when the phone sends a new one. When the phone has NOT sent a new context
- * since the athlete's last set ended (same workout / routine exercise / raw
- * set_number), the engine uses lastSetNumber + 1 so a following set never
- * overwrites the previous one through the upsert key.
- * EXCEPTION — idle end: after a 60 s idle end the set number is NOT advanced
- * until the phone sends a new context or the active athlete changes. A later
- * rep with the unchanged context starts a new set with the SAME set_number,
- * and that set carries the idle-ended set's reps forward, so the upsert on
- * (same set_number) rewrites the set with all its reps — the server-side
- * "reopen" of spec §3. Carried reps are not re-written to vbt_reps.
+ * Tile switch: after `selectAthlete`, reps are BUFFERED (never dropped) until
+ * the sync that shows the chosen athlete active — they are then credited to
+ * that athlete — or `rpcFailed('setActive')` — then to the still-active one.
+ *
+ * Set numbers: per (athlete, workout instance, routine exercise) the engine
+ * keeps a high-water mark of the set numbers it has written. A new set's
+ * number is max(phone set_number, highWater + 1), so a lagging phone context
+ * (or a superset A1 -> A2 -> A1) can never overwrite a written set.
+ * EXCEPTION — idle end: after a 60 s idle end the number is held until the
+ * context changes or the active athlete changes. A later rep with the
+ * unchanged context starts a new set with the SAME set_number that carries
+ * the idle-ended set's reps forward, so the upsert rewrites the set with all
+ * its reps — the server-side "reopen" of spec §3. Carried reps are not
+ * re-written to vbt_reps (rep_index continues; clientRepIds use the new
+ * set start, so they never collide).
+ *
+ * Context for the next set (rack): pending_* if the phone sent one mid-set,
+ * else the row's live context; if that has no workout instance, the iPad's
+ * `localContext` for the active athlete (the executor's "first remaining
+ * exercise in workout order"). A server/phone context always wins. The live
+ * set's context, load and zone are frozen at its start. A free set (no
+ * workout instance or no routine exercise) writes vbt_reps only and keeps no
+ * ROM history (partials use the 8 in rule).
  *
  * Modes (fixed at init):
  *   - 'rack': the rack iPad (above). endSet.source = 'rack'.
  *   - 'solo': phone-direct fallback — the athlete paired the OVR straight to
  *     their iPhone, no rack iPad. The active athlete is fixed, there is no
  *     queue and no sessionSync; context + exercise metadata arrive as
- *     `soloContext`. Emits NO rpcSetActive / rpcEndSet / sessionPatch.
+ *     `soloContext`. Emits NO rpcSetActive / rpcStartSet / rpcEndSet.
  *     endSet.source = 'phone'. Every other rule (Done, 60 s idle end, 3 s
  *     late-rep attach, partials, drop cue, writeRep, writeLoadToSensor,
- *     set-number advance/hold) is identical. rackId is null (vbt_reps.rack_id
- *     null); clientRepId uses the prefix 'solo'.
+ *     set-number high-water/hold) is identical. rackId is null
+ *     (vbt_reps.rack_id null); clientRepId uses the prefix 'solo'.
  */
 
 import {
@@ -67,8 +95,6 @@ import {
 
 export const IDLE_END_MS = 60_000;
 export const LATE_REP_MS = 3_000;
-/** Safety: forget a pending tile switch if no sync arrives within this. */
-export const SWITCH_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------- types
 
@@ -95,6 +121,8 @@ export interface RackSessionRow {
   pending_load_lb: number | null;
   leave_requested: boolean;
   pending_end: boolean;
+  /** Maintained by the touch_updated_at trigger; orders out-of-order rows. */
+  updated_at: string;
 }
 
 /** Which set the phone has open (camelCase of the session's context). */
@@ -135,9 +163,9 @@ export interface EngineRep {
 export interface LiveSet {
   athleteId: string;
   startedAtMs: number;
-  /** Context as the phone/session gave it (before set-number advance). */
+  /** Context as the phone/session/iPad gave it (before set numbering). */
   rawContext: RackContext;
-  /** Context this set is written with. */
+  /** Context this set is written with (numbered, load fallback applied). */
   context: RackContext;
   zone: [number, number] | null;
   dropStopPct: number | null;
@@ -198,7 +226,7 @@ interface EndRecord {
   rawContext: RackContext;
   setNumber: number | null;
   endedBy: EndedBy;
-  /** Idle end: don't advance set_number (cleared when the athlete changes). */
+  /** Idle end: don't advance set_number (released on context/athlete change). */
   hold: boolean;
   set: LiveSet;
 }
@@ -209,7 +237,9 @@ export interface RackEngineState {
   rackId: string | null;
   /** Solo mode: the phone's latest context (rack mode: unused, null). */
   soloContext: RackContext | null;
-  /** Last row synced from the server (null until the first sync). */
+  /** iPad-picked context, used only while the server row has no workout. */
+  localContext: (RackContext & { athleteId: string }) | null;
+  /** Last row applied from the server (null until the first sync). */
   session: RackSessionRow | null;
   activeAthleteId: string | null;
   queue: string[];
@@ -219,15 +249,18 @@ export interface RackEngineState {
   /** The most recently ended set (shown in summary; late reps attach to it). */
   lastEnded: LiveSet | null;
   lastEndByAthlete: Record<string, EndRecord>;
+  /** Highest set number written, key `${athleteId}:${workoutInstanceId}:${routineExerciseId}`. */
+  setHighWater: Record<string, number>;
   metaByExercise: Record<string, ExerciseMeta>;
   exerciseByRoutineExercise: Record<string, string>;
-  /** Full-rep ROMs of ended sets, key `${athleteId}:${exerciseId ?? 'free'}`. */
+  /** Full-rep ROMs of ended non-free sets, key `${athleteId}:${exerciseId}`. */
   romHistory: Record<string, number[]>;
   loadOverrideLb: number | null;
   sensorLoadLb: number | null;
-  /** Tile tapped; waiting for the server's sync. */
+  /** Tile tapped; waiting for the confirming sync (or rpcFailed). */
   switchingTo: string | null;
-  switchingSinceMs: number | null;
+  /** Reps that arrived while switching; credited once the switch resolves. */
+  switchBuffer: { rep: OvrRep; atMs: number }[];
   /** rpcEndSet emitted for this athlete; not yet reflected by a sync. */
   endRpcPendingFor: string | null;
 }
@@ -254,6 +287,23 @@ export type RackEvent =
       zoneMax: number | null;
       dropStopPct: number | null;
     }
+  | {
+      /**
+       * Rack mode only: the iPad's pick (first remaining exercise in workout
+       * order) for `athleteId`, used while the server row has no workout
+       * context. Carries that exercise's metadata.
+       */
+      type: 'localContext';
+      athleteId: string;
+      workoutInstanceId: string | null;
+      routineExerciseId: string | null;
+      exerciseId: string | null;
+      setNumber: number | null;
+      loadLb: number | null;
+      zoneMin: number | null;
+      zoneMax: number | null;
+      dropStopPct: number | null;
+    }
   | { type: 'rep'; rep: OvrRep }
   /** Done on the rack iPad (rack mode) — endedBy 'ipad'. */
   | { type: 'ipadDone' }
@@ -261,35 +311,32 @@ export type RackEvent =
   | { type: 'done' }
   | { type: 'selectAthlete'; athleteId: string }
   | { type: 'tick' }
-  | { type: 'loadChanged'; lb: number | null };
+  | { type: 'loadChanged'; lb: number | null }
+  /** The executor's RPC errored (refused, or not sendable). */
+  | { type: 'rpcFailed'; kind: 'setActive' | 'endSet' | 'startSet'; athleteId: string };
 
 export type RackEffect =
-  | {
-      type: 'sessionPatch';
-      patch: { state: 'lifting'; set_started_at: string };
-    }
+  /** rack_start_set(p_rack, athleteId, setStartedAt): 'lifting' only if still active. */
+  | { type: 'rpcStartSet'; athleteId: string; setStartedAt: string }
   | { type: 'writeRep'; rep: RepWrite }
   | { type: 'endSet'; summary: SetSummary }
   | { type: 'amendSet'; summary: SetSummary; rep: RepWrite }
   | { type: 'rpcEndSet'; athleteId: string }
   | { type: 'rpcSetActive'; athleteId: string }
   | { type: 'writeLoadToSensor'; lb: number }
-  | {
-      type: 'droppedRep';
-      reason: 'noAthlete' | 'switching';
-      rep: OvrRep;
-    };
+  /** Only when nobody is (or is becoming) active on the rack. */
+  | { type: 'droppedRep'; reason: 'noAthlete'; rep: OvrRep };
 
 export interface ReduceResult {
   state: RackEngineState;
   effects: RackEffect[];
 }
 
-// ---------------------------------------------------------------- helpers
-
 export type EngineInit =
   | { mode: 'rack'; rackId: string }
   | { mode: 'solo'; athleteId: string };
+
+// ---------------------------------------------------------------- helpers
 
 /** `createRackEngine('rack-id')` is shorthand for `{ mode: 'rack', rackId }`. */
 export function createRackEngine(init: string | EngineInit): RackEngineState {
@@ -298,6 +345,7 @@ export function createRackEngine(init: string | EngineInit): RackEngineState {
     mode: i.mode,
     rackId: i.mode === 'rack' ? i.rackId : null,
     soloContext: null,
+    localContext: null,
     session: null,
     activeAthleteId: i.mode === 'solo' ? i.athleteId : null,
     queue: [],
@@ -305,17 +353,19 @@ export function createRackEngine(init: string | EngineInit): RackEngineState {
     live: null,
     lastEnded: null,
     lastEndByAthlete: {},
+    setHighWater: {},
     metaByExercise: {},
     exerciseByRoutineExercise: {},
     romHistory: {},
     loadOverrideLb: null,
     sensorLoadLb: null,
     switchingTo: null,
-    switchingSinceMs: null,
+    switchBuffer: [],
     endRpcPendingFor: null,
   };
 }
 
+/** Deterministic: same rack/athlete/set start/index → same id (replay-safe). */
 export function clientRepIdOf(
   rackId: string | null,
   athleteId: string,
@@ -325,8 +375,11 @@ export function clientRepIdOf(
   return `${rackId ?? 'solo'}:${athleteId}:${setStartedAtMs}:${repIndex}`;
 }
 
-const romKey = (athleteId: string, exerciseId: string | null) =>
-  `${athleteId}:${exerciseId ?? 'free'}`;
+const romKey = (athleteId: string, exerciseId: string | null) => `${athleteId}:${exerciseId}`;
+const hwKey = (athleteId: string, c: RackContext) =>
+  `${athleteId}:${c.workoutInstanceId}:${c.routineExerciseId}`;
+const isFree = (c: RackContext) => c.workoutInstanceId == null || c.routineExerciseId == null;
+const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
 
 function median(xs: number[]): number | null {
   if (xs.length === 0) return null;
@@ -346,23 +399,20 @@ const EMPTY_CTX: RackContext = {
 /** Context for the next set, either mode. */
 function nextContext(s: RackEngineState): RackContext {
   if (s.mode === 'solo') return s.soloContext ?? EMPTY_CTX;
-  return nextContextOf(s.session, s.exerciseByRoutineExercise);
+  const server = serverNextContext(s.session, s.exerciseByRoutineExercise);
+  if (server.workoutInstanceId == null && s.localContext && s.localContext.athleteId === s.activeAthleteId) {
+    const { athleteId: _a, ...ctx } = s.localContext;
+    return ctx;
+  }
+  return server;
 }
 
-/** Context for the NEXT set: pending (phone sent it mid-set) wins over live. */
-function nextContextOf(
+/** Server context for the NEXT set: pending (phone sent it mid-set) wins over live. */
+function serverNextContext(
   row: RackSessionRow | null,
   exByRe: Record<string, string>,
 ): RackContext {
-  if (!row) {
-    return {
-      workoutInstanceId: null,
-      routineExerciseId: null,
-      exerciseId: null,
-      setNumber: null,
-      loadLb: null,
-    };
-  }
+  if (!row) return EMPTY_CTX;
   const hasPending =
     row.pending_workout_instance_id != null ||
     row.pending_routine_exercise_id != null ||
@@ -392,11 +442,13 @@ const sameCtx = (a: RackContext, b: RackContext) =>
   a.routineExerciseId === b.routineExerciseId &&
   a.setNumber === b.setNumber;
 
+/** Summary of an ENDED set (throws if the set has no end reason). */
 export function summarize(
   rackId: string | null,
   set: LiveSet,
   source: SetSource = rackId == null ? 'phone' : 'rack',
 ): SetSummary {
+  if (set.endedBy == null) throw new Error('rack engine: summarize() needs an ended set');
   const full = set.reps.filter((r) => !r.partial);
   const bestV = full.length ? Math.max(...full.map((r) => r.v)) : null;
   const avgV = full.length
@@ -419,10 +471,13 @@ export function summarize(
     bestV,
     dropPct: bestV != null && last ? dropPctOf(bestV, last.v) : null,
     zone: set.zone,
-    endedBy: set.endedBy ?? 'ipad',
+    endedBy: set.endedBy,
     free: set.free,
   };
 }
+
+const summarizeFor = (s: RackEngineState, set: LiveSet) =>
+  summarize(s.rackId, set, s.mode === 'solo' ? 'phone' : 'rack');
 
 function effectiveLoad(s: RackEngineState): number | null {
   const ctxLoad = s.live ? s.live.context.loadLb : nextContext(s).loadLb;
@@ -436,6 +491,15 @@ function syncSensorLoad(s: RackEngineState, fx: RackEffect[]): RackEngineState {
   return { ...s, sensorLoadLb: lb };
 }
 
+/** The active athlete's idle hold is released once the next context differs. */
+function releaseHoldOnNewContext(s: RackEngineState): RackEngineState {
+  const a = s.activeAthleteId;
+  const rec = a ? s.lastEndByAthlete[a] : undefined;
+  if (!a || !rec || !rec.hold || s.setState === 'lifting') return s;
+  if (sameCtx(rec.rawContext, nextContext(s))) return s;
+  return { ...s, lastEndByAthlete: { ...s.lastEndByAthlete, [a]: { ...rec, hold: false } } };
+}
+
 /** Build + append one rep to `set`; returns the new set and its write. */
 function addRep(
   s: RackEngineState,
@@ -443,7 +507,9 @@ function addRep(
   rep: OvrRep,
   now: number,
 ): { set: LiveSet; write: RepWrite } {
-  const med = median(s.romHistory[romKey(set.athleteId, set.context.exerciseId)] ?? []);
+  const med = set.free
+    ? null
+    : median(s.romHistory[romKey(set.athleteId, set.context.exerciseId)] ?? []);
   const partial = isPartialRom(rep.romIn, med);
   const repIndex = set.reps.length + 1;
   const zone = set.zone ? zoneOf(rep.meanV, set.zone[0], set.zone[1]) : null;
@@ -498,21 +564,20 @@ function addRep(
 
 function startSet(s: RackEngineState, athleteId: string, now: number): LiveSet {
   const raw = nextContext(s);
+  const free = isFree(raw);
   const prev = s.lastEndByAthlete[athleteId];
+  const reopen = !!prev && prev.hold && sameCtx(prev.rawContext, raw);
   let setNumber = raw.setNumber;
-  let carried: EngineRep[] = [];
-  if (prev && sameCtx(prev.rawContext, raw) && raw.workoutInstanceId != null) {
-    if (prev.hold) {
+  if (!free) {
+    if (reopen) {
       // Idle end, unchanged context: same set_number, reps carried forward.
       setNumber = prev.setNumber;
-      carried = prev.set.reps.map((r) => ({ ...r, carried: true }));
-    } else if (prev.setNumber != null) {
-      setNumber = prev.setNumber + 1;
+    } else {
+      const floor = s.setHighWater[hwKey(athleteId, raw)] ?? 0;
+      setNumber = Math.max(raw.setNumber ?? 0, floor + 1);
     }
-  } else if (prev && prev.hold && raw.workoutInstanceId == null && sameCtx(prev.rawContext, raw)) {
-    // Free set after an idle free set: carry for the summary only.
-    carried = prev.set.reps.map((r) => ({ ...r, carried: true }));
   }
+  const carried: EngineRep[] = reopen ? prev.set.reps.map((r) => ({ ...r, carried: true })) : [];
   const meta = raw.exerciseId ? s.metaByExercise[raw.exerciseId] : undefined;
   const zone: [number, number] | null =
     meta && meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
@@ -520,19 +585,16 @@ function startSet(s: RackEngineState, athleteId: string, now: number): LiveSet {
     athleteId,
     startedAtMs: now,
     rawContext: raw,
-    context: { ...raw, setNumber },
+    context: { ...raw, setNumber, loadLb: raw.loadLb ?? s.loadOverrideLb },
     zone,
     dropStopPct: meta?.dropStopPct ?? null,
     reps: carried,
     lastRepAtMs: now,
     endedAtMs: null,
     endedBy: null,
-    free: raw.workoutInstanceId == null,
+    free,
   };
 }
-
-const summarizeFor = (s: RackEngineState, set: LiveSet) =>
-  summarize(s.rackId, set, s.mode === 'solo' ? 'phone' : 'rack');
 
 /** End the live set (no-op when nothing is lifting). */
 function endLive(
@@ -543,12 +605,25 @@ function endLive(
   callEndRpc: boolean,
 ): RackEngineState {
   if (s.setState !== 'lifting' || !s.live) return s;
+  const rpc = callEndRpc && s.mode === 'rack';
   const ended: LiveSet = { ...s.live, endedAtMs: now, endedBy: by };
   fx.push({ type: 'endSet', summary: summarizeFor(s, ended) });
-  if (callEndRpc && s.mode === 'rack') fx.push({ type: 'rpcEndSet', athleteId: ended.athleteId });
+  if (rpc) fx.push({ type: 'rpcEndSet', athleteId: ended.athleteId });
 
-  const key = romKey(ended.athleteId, ended.context.exerciseId);
-  const fullRoms = ended.reps.filter((r) => !r.partial && !r.carried).map((r) => r.rom);
+  let romHistory = s.romHistory;
+  let setHighWater = s.setHighWater;
+  if (!ended.free) {
+    const key = romKey(ended.athleteId, ended.context.exerciseId);
+    const fullRoms = ended.reps.filter((r) => !r.partial && !r.carried).map((r) => r.rom);
+    romHistory = { ...romHistory, [key]: [...(romHistory[key] ?? []), ...fullRoms] };
+    const hk = hwKey(ended.athleteId, ended.context);
+    if (ended.context.setNumber != null) {
+      setHighWater = {
+        ...setHighWater,
+        [hk]: Math.max(setHighWater[hk] ?? 0, ended.context.setNumber),
+      };
+    }
+  }
   const next: RackEngineState = {
     ...s,
     setState: 'summary',
@@ -564,10 +639,83 @@ function endLive(
         set: ended,
       },
     },
-    romHistory: { ...s.romHistory, [key]: [...(s.romHistory[key] ?? []), ...fullRoms] },
-    endRpcPendingFor: callEndRpc && s.mode === 'rack' ? ended.athleteId : s.endRpcPendingFor,
+    romHistory,
+    setHighWater,
+    endRpcPendingFor: rpc ? ended.athleteId : s.endRpcPendingFor,
   };
   return syncSensorLoad(next, fx);
+}
+
+/** Credit a rep to the active athlete: start a set if needed, then add it. */
+function applyRep(s: RackEngineState, rep: OvrRep, at: number, fx: RackEffect[]): RackEngineState {
+  const athleteId = s.activeAthleteId;
+  if (!athleteId) {
+    fx.push({ type: 'droppedRep', reason: 'noAthlete', rep });
+    return s;
+  }
+  let live = s.live;
+  if (s.setState !== 'lifting' || !live) {
+    live = startSet(s, athleteId, at);
+    if (s.mode === 'rack') {
+      fx.push({ type: 'rpcStartSet', athleteId, setStartedAt: new Date(at).toISOString() });
+    }
+    s = { ...s, setState: 'lifting' };
+  }
+  const { set, write } = addRep(s, live, rep, at);
+  fx.push({ type: 'writeRep', rep: write });
+  return syncSensorLoad({ ...s, live: set }, fx);
+}
+
+function flushSwitchBuffer(s: RackEngineState, fx: RackEffect[]): RackEngineState {
+  const buf = s.switchBuffer;
+  s = { ...s, switchingTo: null, switchBuffer: [] };
+  for (const b of buf) s = applyRep(s, b.rep, b.atMs, fx);
+  return s;
+}
+
+/** Does this row's pending_end / leave_requested belong to the live set? */
+function flagsBelongToLive(s: RackEngineState, row: RackSessionRow): boolean {
+  const live = s.live;
+  if (!live) return false;
+  if (row.set_started_at != null) return ms(row.set_started_at) === live.startedAtMs;
+  return s.endRpcPendingFor !== live.athleteId && ms(row.updated_at) > live.startedAtMs;
+}
+
+function applyMeta(
+  s: RackEngineState,
+  e: { exerciseId: string; routineExerciseId?: string | null } & ExerciseMeta,
+): RackEngineState {
+  const meta: ExerciseMeta = { zoneMin: e.zoneMin, zoneMax: e.zoneMax, dropStopPct: e.dropStopPct };
+  s = {
+    ...s,
+    metaByExercise: { ...s.metaByExercise, [e.exerciseId]: meta },
+    exerciseByRoutineExercise: e.routineExerciseId
+      ? { ...s.exerciseByRoutineExercise, [e.routineExerciseId]: e.exerciseId }
+      : s.exerciseByRoutineExercise,
+  };
+  // Metadata (not a context change): fill in a live set that started before
+  // its exercise's metadata / exercise id loaded.
+  const live = s.live;
+  if (
+    live &&
+    (live.context.exerciseId === e.exerciseId ||
+      (live.context.exerciseId == null &&
+        e.routineExerciseId != null &&
+        live.context.routineExerciseId === e.routineExerciseId))
+  ) {
+    const zone: [number, number] | null =
+      meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
+    s = {
+      ...s,
+      live: {
+        ...live,
+        context: { ...live.context, exerciseId: e.exerciseId },
+        zone,
+        dropStopPct: meta.dropStopPct,
+      },
+    };
+  }
+  return s;
 }
 
 // ---------------------------------------------------------------- reducer
@@ -580,6 +728,9 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
     case 'sessionSync': {
       if (s.mode === 'solo') break;
       const row = event.row;
+      // Out-of-order delivery: never apply a row older than the last one.
+      if (s.session && ms(row.updated_at) < ms(s.session.updated_at)) break;
+
       const prevActive = s.activeAthleteId;
       const nextActive = row.active_athlete_id;
 
@@ -606,8 +757,6 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
         session: row,
         activeAthleteId: nextActive,
         queue: [...row.queue],
-        switchingTo: null,
-        switchingSinceMs: null,
         endRpcPendingFor,
         lastEndByAthlete,
       };
@@ -616,13 +765,12 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
         if (s.live.athleteId !== nextActive) {
           // Server moved the rack on mid-set; save what we have.
           s = endLive(s, 'switch', now, fx, false);
-        } else if (row.pending_end) {
-          s = endLive(s, 'phone', now, fx, true);
-        } else if (row.leave_requested) {
-          s = endLive(s, 'leave', now, fx, true);
+        } else if ((row.pending_end || row.leave_requested) && flagsBelongToLive(s, row)) {
+          s = endLive(s, row.pending_end ? 'phone' : 'leave', now, fx, true);
         }
       } else if (
         nextActive &&
+        !s.switchingTo &&
         (row.pending_end || row.leave_requested) &&
         s.endRpcPendingFor !== nextActive
       ) {
@@ -635,30 +783,40 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       if (prevActive !== nextActive && s.setState !== 'lifting') {
         s = { ...s, setState: 'idle' };
       }
+      // The confirming sync of a tile switch: buffered reps go to whoever
+      // the server says is active.
+      if (s.switchingTo && nextActive === s.switchingTo) s = flushSwitchBuffer(s, fx);
+      s = releaseHoldOnNewContext(s);
       s = syncSensorLoad(s, fx);
       break;
     }
 
-    case 'contextMeta': {
-      const meta: ExerciseMeta = {
-        zoneMin: event.zoneMin,
-        zoneMax: event.zoneMax,
-        dropStopPct: event.dropStopPct,
-      };
-      s = {
-        ...s,
-        metaByExercise: { ...s.metaByExercise, [event.exerciseId]: meta },
-        exerciseByRoutineExercise: event.routineExerciseId
-          ? { ...s.exerciseByRoutineExercise, [event.routineExerciseId]: event.exerciseId }
-          : s.exerciseByRoutineExercise,
-      };
-      // Metadata (not a context change): fill in a live set that started
-      // before its exercise's metadata loaded.
-      if (s.live && s.live.context.exerciseId === event.exerciseId) {
-        const zone: [number, number] | null =
-          meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
-        s = { ...s, live: { ...s.live, zone, dropStopPct: meta.dropStopPct } };
+    case 'contextMeta':
+      s = applyMeta(s, event);
+      break;
+
+    case 'soloContext': {
+      if (s.mode !== 'solo') break;
+      const { type: _t, zoneMin, zoneMax, dropStopPct, ...ctx } = event;
+      s = { ...s, soloContext: ctx };
+      if (ctx.exerciseId) {
+        s = applyMeta(s, { exerciseId: ctx.exerciseId, routineExerciseId: ctx.routineExerciseId, zoneMin, zoneMax, dropStopPct });
       }
+      // Mid-set: the live set is frozen; this context applies to the next set.
+      s = releaseHoldOnNewContext(s);
+      s = syncSensorLoad(s, fx);
+      break;
+    }
+
+    case 'localContext': {
+      if (s.mode !== 'rack') break;
+      const { type: _t, zoneMin, zoneMax, dropStopPct, ...ctx } = event;
+      s = { ...s, localContext: ctx };
+      if (ctx.exerciseId) {
+        s = applyMeta(s, { exerciseId: ctx.exerciseId, routineExerciseId: ctx.routineExerciseId, zoneMin, zoneMax, dropStopPct });
+      }
+      s = releaseHoldOnNewContext(s);
+      s = syncSensorLoad(s, fx);
       break;
     }
 
@@ -676,8 +834,12 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
         fx.push({ type: 'writeRep', rep: write });
         fx.push({ type: 'amendSet', summary: summarizeFor(s, amended), rep: write });
         const rec = s.lastEndByAthlete[amended.athleteId];
-        const key = romKey(amended.athleteId, amended.context.exerciseId);
         const last = amended.reps[amended.reps.length - 1];
+        let romHistory = s.romHistory;
+        if (!amended.free && !last.partial) {
+          const key = romKey(amended.athleteId, amended.context.exerciseId);
+          romHistory = { ...romHistory, [key]: [...(romHistory[key] ?? []), last.rom] };
+        }
         s = {
           ...s,
           lastEnded: amended,
@@ -685,67 +847,15 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
             rec && rec.set.startedAtMs === amended.startedAtMs
               ? { ...s.lastEndByAthlete, [amended.athleteId]: { ...rec, set: amended } }
               : s.lastEndByAthlete,
-          romHistory: last.partial
-            ? s.romHistory
-            : { ...s.romHistory, [key]: [...(s.romHistory[key] ?? []), last.rom] },
+          romHistory,
         };
         break;
       }
-
-      if (!s.activeAthleteId) {
-        fx.push({ type: 'droppedRep', reason: 'noAthlete', rep: event.rep });
-        break;
-      }
       if (s.switchingTo) {
-        fx.push({ type: 'droppedRep', reason: 'switching', rep: event.rep });
+        s = { ...s, switchBuffer: [...s.switchBuffer, { rep: event.rep, atMs: now }] };
         break;
       }
-
-      let live = s.live;
-      if (s.setState !== 'lifting' || !live) {
-        live = startSet(s, s.activeAthleteId, now);
-        if (s.mode === 'rack') {
-          fx.push({
-            type: 'sessionPatch',
-            patch: { state: 'lifting', set_started_at: new Date(now).toISOString() },
-          });
-        }
-        s = { ...s, setState: 'lifting' };
-      }
-      const { set, write } = addRep(s, live, event.rep, now);
-      fx.push({ type: 'writeRep', rep: write });
-      s = { ...s, live: set };
-      s = syncSensorLoad(s, fx);
-      break;
-    }
-
-    case 'soloContext': {
-      if (s.mode !== 'solo') break;
-      const ctx: RackContext = {
-        workoutInstanceId: event.workoutInstanceId,
-        routineExerciseId: event.routineExerciseId,
-        exerciseId: event.exerciseId,
-        setNumber: event.setNumber,
-        loadLb: event.loadLb,
-      };
-      s = { ...s, soloContext: ctx };
-      if (event.exerciseId) {
-        // Reuse the metadata path (also fills a live set missing its zone).
-        s = reduce(
-          s,
-          {
-            type: 'contextMeta',
-            exerciseId: event.exerciseId,
-            routineExerciseId: event.routineExerciseId,
-            zoneMin: event.zoneMin,
-            zoneMax: event.zoneMax,
-            dropStopPct: event.dropStopPct,
-          },
-          now,
-        ).state;
-      }
-      // Mid-set: the live set is frozen; this context applies to the next set.
-      s = syncSensorLoad(s, fx);
+      s = applyRep(s, event.rep, now, fx);
       break;
     }
 
@@ -756,22 +866,33 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
 
     case 'selectAthlete': {
       if (s.mode === 'solo') break;
-      if (event.athleteId === s.activeAthleteId || event.athleteId === s.switchingTo) break;
+      if (event.athleteId === s.switchingTo) break;
+      if (!s.switchingTo && event.athleteId === s.activeAthleteId) break;
       s = endLive(s, 'switch', now, fx, false);
       fx.push({ type: 'rpcSetActive', athleteId: event.athleteId });
-      s = { ...s, switchingTo: event.athleteId, switchingSinceMs: now };
+      s = { ...s, switchingTo: event.athleteId };
       break;
     }
 
-    case 'tick': {
-      if (s.switchingTo && s.switchingSinceMs != null && now - s.switchingSinceMs >= SWITCH_TIMEOUT_MS) {
-        s = { ...s, switchingTo: null, switchingSinceMs: null };
+    case 'rpcFailed': {
+      if (s.mode === 'solo') break;
+      if (event.kind === 'setActive' && s.switchingTo === event.athleteId) {
+        // Switch refused / unsendable: buffered reps go to the still-active athlete.
+        s = flushSwitchBuffer(s, fx);
+      } else if (event.kind === 'endSet' && s.endRpcPendingFor === event.athleteId) {
+        // Allow the release path to try again on the next flagged sync.
+        s = { ...s, endRpcPendingFor: null };
       }
+      // 'startSet' refused: the athlete is no longer active server-side; the
+      // sync that shows the new lifter ends the live set as a 'switch'.
+      break;
+    }
+
+    case 'tick':
       if (s.setState === 'lifting' && s.live && now - s.live.lastRepAtMs >= IDLE_END_MS) {
         s = endLive(s, 'idle', now, fx, true);
       }
       break;
-    }
 
     case 'loadChanged':
       s = syncSensorLoad({ ...s, loadOverrideLb: event.lb }, fx);
