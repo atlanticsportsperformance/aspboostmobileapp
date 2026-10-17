@@ -60,9 +60,9 @@ describe('exercise screen — dense table (task 15)', () => {
 
   it('column header: SET · LAST (weight + history only) · metrics · paired BALL/REPS/MPH; 🏆 on tracked columns', () => {
     expect(D).toContain("const showLast = metricFields.includes('weight') && lastWeek != null;");
-    expect(D).toContain('{showLast && <Text style={[styles.thText, styles.colLast]}>LAST</Text>}');
-    expect(D).toContain("{trackedMetrics.includes(m) ? trophy : null}");
-    expect(D).toContain("{pairedIsBall ? 'BALL' : 'TYPE'}");
+    expect(D).toContain("{showLast && headerCell('last', styles.colLast, 'LAST')}");
+    expect(D).toContain('{tracked ? trophy : null}');
+    expect(D).toContain("pairedIsBall ? 'BALL' : 'TYPE'");
     expect(D).toContain("if (m?.category !== 'paired') {");
     // the tracked ball's name carries a 🏆 too
     expect(D).toContain('{ball.tracked ? <Text style={styles.ballTrophy}> 🏆</Text> : null}');
@@ -146,15 +146,34 @@ describe('exercise screen — dense table (task 15)', () => {
   it('device fixes: prescribed columns, pending text, fixed widths, empty done, note once', () => {
     // columns = enabled measurements ∪ prescribed metrics (Back Squat reps)
     expect(D).toContain('const metricFields = tableFieldsFor(exercise, customMeasurements);');
-    // upcoming cell / empty input: "90% of set 1" until set 1 is logged
-    expect(D).toContain('const pending = pendingTargetText(t);');
-    expect(D).not.toContain('`${t.percent}%`');
-    // table columns have a fixed basis, not flex: 1
-    expect(D).toContain('colMetric: { flexBasis: 108, flexGrow: 0');
-    expect(D).not.toContain('colMetric: { flex: 1');
+    // upcoming cell / empty input: short "90% S1" (full text is the caption)
+    expect(D).toContain('`${t.percent}% S${t.referenceSet}`');
+    // grid like the mock: fixed SET/LAST/circle, equal metric columns, no gap
+    // or auto margins (an earlier flexBasis/auto-margin grid overlapped cells)
+    expect(D).toContain("colMetric: { flex: 1, minWidth: 0, marginLeft: 8 },");
+    expect(D).not.toContain("marginLeft: 'auto'");
+    const tr = D.slice(D.indexOf('  tr: {'), D.indexOf('  trSub:'));
+    expect(tr).not.toContain('gap');
+    // header cells use the same column styles as the rows
+    expect(D).toContain("{singleMetrics.map((m) => headerCell(m, styles.colMetric, columnLabel(m), trackedMetrics.includes(m)))}");
+    // inputs fill their column up to 120 px
+    expect(D).toContain('maxWidth: 120,');
+    // inputs and the RPE strip only on the open row
+    const fn = sets();
+    expect(fn).toContain('renderMetric(i, m, isOpen, isCompleted)');
+    expect(fn).toMatch(/isOpen && exercise\.ask_rpe && onRpeChange && \(/);
     // ticked with no values reads "done" in green
     expect(D).toContain("metricId === inputOrder[0] ? 'done' : ''");
     // a % -only coach note isn't repeated under the caption
     expect(D).toContain('!(caption && noteRepeatsCaption(setConfig.notes, caption))');
+  });
+
+  it('exactly one open set: tapping a row makes it the current set', () => {
+    const fn = sets();
+    expect(D).not.toContain('manuallyExpandedSets');
+    expect(fn).toContain('const isOpen = isCurrentSet;');
+    expect(fn).toContain('onSelectSet(i);');
+    expect(L).toContain('onSelectSet={handleSelectSet}');
+    expect(L).toContain('setCurrentSetIndexes(prev => ({ ...prev, [activeExerciseId]: setIndex }));');
   });
 });

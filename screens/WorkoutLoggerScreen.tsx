@@ -992,6 +992,13 @@ export default function WorkoutLoggerScreen() {
     setViewMode('exercise');
   };
 
+  // Tapping a set row on the exercise screen makes it THE current set (one
+  // open set at a time; the Done button then logs that set).
+  const handleSelectSet = useCallback((setIndex: number) => {
+    if (!activeExerciseId) return;
+    setCurrentSetIndexes(prev => ({ ...prev, [activeExerciseId]: setIndex }));
+  }, [activeExerciseId]);
+
   const handleBackToOverview = () => {
     setViewMode('overview');
     setActiveExerciseId(null);
@@ -1207,6 +1214,7 @@ export default function WorkoutLoggerScreen() {
         onPrevExercise={handlePrevExercise}
         onNextExercise={handleNextExercise}
         onBackToOverview={handleBackToOverview}
+        onSelectSet={handleSelectSet}
         restSecondsLeft={restTimer.secondsLeft}
       />
     ) : null;

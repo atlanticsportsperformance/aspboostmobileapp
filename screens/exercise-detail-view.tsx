@@ -19,7 +19,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import NumericKeypad from '../components/NumericKeypad';
 import {
   backoffUpdates,
-  pendingTargetText,
   fieldKey,
   intensityCaptionText,
   intensityFor,
@@ -101,6 +100,8 @@ interface ExerciseDetailViewProps {
   onPrevExercise: () => void;
   onNextExercise: () => void;
   onBackToOverview: () => void;
+  /** Tap a set row → it becomes the current set (parent's currentSetIndex). */
+  onSelectSet: (setIndex: number) => void;
 }
 
 // Helper: Get relative time string
@@ -217,6 +218,7 @@ export default function ExerciseDetailView({
   onPrevExercise,
   onNextExercise,
   onBackToOverview,
+  onSelectSet,
 }: ExerciseDetailViewProps) {
   const insets = useSafeAreaInsets();
   // Text blocks have no joined exercise (navigation skips them; guard anyway).
@@ -229,9 +231,6 @@ export default function ExerciseDetailView({
   const [notesExpanded, setNotesExpanded] = useState(false);
   // PR popover — tapping the 🏆 pill in the header.
   const [prPopoverOpen, setPRPopoverOpen] = useState(false);
-  // Sets the athlete tapped open (e.g. to re-edit a done set). The current
-  // set is always open; the rest are read-only rows.
-  const [manuallyExpandedSets, setManuallyExpandedSets] = useState<Set<number>>(new Set());
   // Auto-fill pulse tracker — "setIndex:metricId" keys just auto-filled;
   // those inputs briefly flash green so the athlete sees it happen.
   const [autoFilledKeys, setAutoFilledKeys] = useState<Set<string>>(new Set());
@@ -314,8 +313,6 @@ export default function ExerciseDetailView({
     const t = setTimeout(() => {
       if (scrollPendingRef.current && scrollToCurrentSet()) scrollPendingRef.current = false;
     }, 100);
-    // A new current set closes any sets the athlete tapped open.
-    setManuallyExpandedSets(new Set());
     return () => clearTimeout(t);
   }, [currentSetIndex, exercise.id]);
 
@@ -554,16 +551,17 @@ export default function ExerciseDetailView({
   };
 
   // What a set's cell shows before anything is typed: "max" (AMRAP), the
-  // target as the coach wrote it (280, "5 LB DB", "10 yards"), "90% of set 1"
-  // until the reference set is logged ("80% · no max set" with no max), else
-  // null. Upcoming rows and empty inputs show the same text.
+  // target as the coach wrote it (280, "5 LB DB", "10 yards"), the short
+  // pending % ("90% S1" until set 1 is logged, "80%" with no max on file),
+  // else null. The full "90% of set 1" is the open row's caption.
   const targetCell = (setIndex: number, metricId: string): { text: string; amrap?: boolean } | null => {
     if (isAmrapFor(setIndex, metricId)) return { text: 'max', amrap: true };
     const target: unknown = resolveTarget(targetArgs(setIndex, metricId));
     if (!isEmptyValue(target)) return { text: String(target) };
     const t = getIntensityTarget(setIndex, metricId);
-    const pending = pendingTargetText(t);
-    if (pending) return { text: pending };
+    if (t && t.calculatedValue == null) {
+      return { text: t.referenceSet != null ? `${t.percent}% S${t.referenceSet}` : `${t.percent}%` };
+    }
     return null;
   };
 
@@ -867,29 +865,22 @@ export default function ExerciseDetailView({
   const pairedRepsTracked = pairedLines.some((l) => !!l.repsId && trackedMetrics.includes(l.repsId));
   const pairedMphTracked = pairedLines.some((l) => !!l.mphId && trackedMetrics.includes(l.mphId));
 
+  const headerCell = (key: string, colStyle: object, label: string, tracked = false) => (
+    <View key={key} style={colStyle}>
+      <Text style={styles.thText} numberOfLines={1}>
+        {label}
+        {tracked ? trophy : null}
+      </Text>
+    </View>
+  );
   const renderTableHeader = () => (
     <View key="th" style={styles.th}>
-      <Text style={[styles.thText, styles.colSet]}>SET</Text>
-      {showLast && <Text style={[styles.thText, styles.colLast]}>LAST</Text>}
-      {singleMetrics.map((m) => (
-        <Text key={m} style={[styles.thText, styles.colMetric]} numberOfLines={1}>
-          {columnLabel(m)}
-          {trackedMetrics.includes(m) ? trophy : null}
-        </Text>
-      ))}
-      {pairedLines.length > 0 && (
-        <>
-          <Text style={[styles.thText, styles.colBall]}>{pairedIsBall ? 'BALL' : 'TYPE'}</Text>
-          <Text style={[styles.thText, styles.colPairReps]} numberOfLines={1}>
-            {pairedRepsLabel}
-            {pairedRepsTracked ? trophy : null}
-          </Text>
-          <Text style={[styles.thText, styles.colPairMph]} numberOfLines={1}>
-            {pairedMphLabel}
-            {pairedMphTracked ? trophy : null}
-          </Text>
-        </>
-      )}
+      {headerCell('set', styles.colSet, 'SET')}
+      {showLast && headerCell('last', styles.colLast, 'LAST')}
+      {singleMetrics.map((m) => headerCell(m, styles.colMetric, columnLabel(m), trackedMetrics.includes(m)))}
+      {pairedLines.length > 0 && headerCell('ball', styles.colBall, pairedIsBall ? 'BALL' : 'TYPE')}
+      {pairedLines.length > 0 && headerCell('preps', styles.colPairReps, pairedRepsLabel, pairedRepsTracked)}
+      {pairedLines.length > 0 && headerCell('pmph', styles.colPairMph, pairedMphLabel, pairedMphTracked)}
       <View style={styles.colCheck} />
     </View>
   );
@@ -949,7 +940,9 @@ export default function ExerciseDetailView({
       const setConfig = getSetConfig(i);
       const isCompleted = isSetCompleted(i);
       const isCurrentSet = i === currentSetIndex;
-      const isOpen = isCurrentSet || manuallyExpandedSets.has(i);
+      // Exactly one open set: the current one. Tapping another row makes it
+      // current (parent state), and this one collapses to plain text.
+      const isOpen = isCurrentSet;
       const rpe = rpeValues?.[`${exercise.id}:${i}`] ?? null;
 
       // Lines of the set: one for plain metrics, or one per ball (the first
@@ -961,11 +954,13 @@ export default function ExerciseDetailView({
         const ball = pairedLines[k];
         lines.push(
           <View key={k} style={[styles.tr, !first && styles.trSub]}>
-            <Text style={[styles.n, styles.colSet, isCurrentSet && styles.nCur]}>{first ? i + 1 : ''}</Text>
+            <View style={styles.colSet}>
+              <Text style={[styles.n, isCurrentSet && styles.nCur]}>{first ? i + 1 : ''}</Text>
+            </View>
             {showLast && (
-              <Text style={[styles.last, styles.colLast]} numberOfLines={1}>
-                {first ? lastText(lastWeekFor(i)) : ''}
-              </Text>
+              <View style={styles.colLast}>
+                <Text style={styles.last} numberOfLines={1}>{first ? lastText(lastWeekFor(i)) : ''}</Text>
+              </View>
             )}
             {singleMetrics.map((m) =>
               first ? (
@@ -976,7 +971,7 @@ export default function ExerciseDetailView({
             )}
             {ball && (
               <>
-                <View style={[styles.ball, styles.colBall]}>
+                <View style={[styles.colBall, styles.ball]}>
                   <View style={[styles.dot, { backgroundColor: ball.color }]} />
                   <Text style={styles.ballName} numberOfLines={1}>
                     {ball.name}
@@ -1029,7 +1024,7 @@ export default function ExerciseDetailView({
           <View
             key={i}
             onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
-            style={[styles.set, isCurrentSet ? styles.setCur : styles.setOpen]}
+            style={[styles.set, styles.setCur]}
           >
             {body}
           </View>
@@ -1038,11 +1033,8 @@ export default function ExerciseDetailView({
             key={i}
             onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
             onPress={() => {
-              setManuallyExpandedSets((prev) => {
-                const next = new Set(prev);
-                next.add(i);
-                return next;
-              });
+              setActiveInput(null);
+              onSelectSet(i);
             }}
             activeOpacity={0.7}
             accessibilityRole="button"
@@ -1655,7 +1647,6 @@ const styles = StyleSheet.create({
   th: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderTopWidth: 1,
@@ -1672,24 +1663,22 @@ const styles = StyleSheet.create({
     color: LOGGER_COLORS.rpe,
     fontSize: 9.5,
   },
+  // Table grid (mock phone 1): 24 px SET · [64 px LAST] · equal-width
+  // metric columns · 32 px circle, 8 px between columns. Spacing is a left
+  // margin on every column after SET — no gap / auto margins.
   colSet: { width: 24 },
-  colLast: { width: 64 },
-  // Fixed table columns (mock: ~100–110 px each), shrinking only when they
-  // don't fit; the circle is pushed to the right edge.
-  colMetric: { flexBasis: 108, flexGrow: 0, flexShrink: 1, minWidth: 0 },
-  colBall: { flexBasis: 106, flexGrow: 0, flexShrink: 1, minWidth: 0 },
-  colPairReps: { flexBasis: 68, flexGrow: 0, flexShrink: 1, minWidth: 0 },
-  colPairMph: { flexBasis: 96, flexGrow: 0, flexShrink: 1, minWidth: 0 },
-  colCheck: { width: 32, marginLeft: 'auto', alignItems: 'flex-end' },
+  colLast: { width: 64, marginLeft: 8 },
+  colMetric: { flex: 1, minWidth: 0, marginLeft: 8 },
+  colBall: { flex: 1.1, minWidth: 0, marginLeft: 8 },
+  colPairReps: { flex: 0.7, minWidth: 0, marginLeft: 8 },
+  colPairMph: { flex: 1, minWidth: 0, marginLeft: 8 },
+  colCheck: { width: 32, marginLeft: 8, alignItems: 'flex-end' },
   set: {
     borderBottomWidth: 1,
     borderBottomColor: ROW_LINE,
   },
   setCur: {
     backgroundColor: 'rgba(155,221,255,0.06)',
-  },
-  setOpen: {
-    backgroundColor: 'rgba(155,221,255,0.03)',
   },
   rail: {
     position: 'absolute',
@@ -1702,7 +1691,6 @@ const styles = StyleSheet.create({
   tr: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
     paddingHorizontal: 16,
     minHeight: 52,
   },
@@ -1754,6 +1742,7 @@ const styles = StyleSheet.create({
   },
   in: {
     flex: 1,
+    maxWidth: 120,
     flexDirection: 'row',
     alignItems: 'center',
     height: 36,
