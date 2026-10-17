@@ -51,7 +51,7 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(D).not.toContain('<TextInput');
     // PR detection + saving maxes stays in the logger
     expect(L).toContain("supabase.from('athlete_maxes').update(row)");
-    expect(L).toContain('checkAndSavePR(targetExerciseId, field, numValue, repsNum)');
+    expect(L).toContain('checkAndSavePR(routineExerciseId, metric, value, reps);');
   });
 
   it('one rx line: sets × reps / AMRAP / rest, or the superset round + next + rest', () => {
@@ -213,5 +213,18 @@ describe('exercise screen — dense table (task 15)', () => {
     const fn = D.slice(D.indexOf('const renderMetric'), D.indexOf('// The completion circle'));
     expect(fn).toContain('if (isBackoffReference(exercise, setIndex)) setBackoffTick((t) => t + 1);');
     expect(D).toContain('activeInput == null, backoffTick]);');
+  });
+
+  it('PR check runs once per logged set, never per edit (review I2)', () => {
+    const edit = L.slice(L.indexOf('const handleInputChange'), L.indexOf('const checkPRsForSet'));
+    expect(edit).not.toContain('checkAndSavePR(');
+    expect(edit).not.toContain('checkPRs');
+    expect(L).toContain('prCandidates(re?.tracked_max_metrics, setData)');
+    // Done (log + advance), the circle, and the overview's complete-all
+    expect(L).toContain('if (!wasDone) checkPRsRef.current(activeExerciseId, currentSetIndex);');
+    expect(L).toContain('if (!currentlyCompleted) checkPRsRef.current(activeExerciseId, setIndex);');
+    expect(L).toContain('if (newStatus && !currentSets[setIndex]) checkPRsRef.current(exerciseId, setIndex);');
+    // compares against the latest maxes, not a stale closure
+    expect(L).toContain('return athleteMaxesRef.current[exerciseId]?.[metricId] ?? null;');
   });
 });

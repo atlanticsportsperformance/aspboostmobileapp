@@ -42,6 +42,7 @@ import { loggerOutbox } from '../lib/logger/outbox';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
 import { flushWithCap, syncAll } from '../lib/logger/syncAll';
 import SessionRpeSheet from '../components/logger/SessionRpeSheet';
+import { prCandidates } from '../lib/logger/pr';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
 
@@ -749,14 +750,19 @@ export default function WorkoutLoggerScreen() {
     // another device entered. Un-completing writes is_complete:false too —
     // resume trusts is_complete.
     for (let setIndex = 0; setIndex < totalSets; setIndex++) {
+      // Sets this logs get their PR check (on whatever values they hold).
+      if (newStatus && !currentSets[setIndex]) checkPRsRef.current(exerciseId, setIndex);
       const fields = cancelDraft(exerciseId, setIndex);
       await persistSet(exerciseId, setIndex, { complete: newStatus, fields });
     }
   };
 
-  // Helper to get max value from athleteMaxes
+  // Helper to get max value from athleteMaxes. Reads a ref so a PR check
+  // started from a memoized callback compares against the latest maxes.
+  const athleteMaxesRef = useRef(athleteMaxes);
+  athleteMaxesRef.current = athleteMaxes;
   const getMaxValue = (exerciseId: string, metricId: string): number | null => {
-    return athleteMaxes[exerciseId]?.[metricId] ?? null;
+    return athleteMaxesRef.current[exerciseId]?.[metricId] ?? null;
   };
 
   // Check and save PR.
@@ -859,7 +865,6 @@ export default function WorkoutLoggerScreen() {
     while (exerciseData.length <= setIndex) exerciseData.push({});
     exerciseData[setIndex] = { ...exerciseData[setIndex], [field]: value };
     commitInputs({ ...inputsRef.current, [targetExerciseId]: exerciseData });
-    const setData = exerciseData[setIndex];
 
     // 2. Save a draft (debounced 500 ms per set). An edit — typed or
     // auto-filled — never logs a set; Log Set does (spec §11.2). Editing an
@@ -883,17 +888,21 @@ export default function WorkoutLoggerScreen() {
       persistSet(targetExerciseId, setIndex, { fields });
     }, 500);
 
-    // 5. Check for PR (if tracked metric). Carry the reps from the same set
-    // so reps_at_max is recorded (a reps-metric PR uses its own value).
-    if (targetExercise.tracked_max_metrics?.includes(field)) {
-      const numValue = parseFloat(value);
-      if (!isNaN(numValue) && numValue > 0) {
-        const repsRaw = field === 'reps' ? value : setData.reps;
-        const repsNum = repsRaw == null || repsRaw === '' ? null : parseFloat(repsRaw);
-        checkAndSavePR(targetExerciseId, field, numValue, repsNum);
-      }
-    }
+    // PRs are not checked on edits — only when the set is logged (below).
   }, [activeExerciseId, allExercises, persistSet]);
+
+  // PR check once per logged set (Done / circle), on the set's final values
+  // incl. auto-fill — never per edit, so stepping 300 → 310 → 300 can't save
+  // a phantom 310. Called through a ref so memoized callbacks get the latest.
+  const checkPRsForSet = (routineExerciseId: string, setIndex: number) => {
+    const re = allExercises.find(ex => ex.id === routineExerciseId);
+    const setData = inputsRef.current[routineExerciseId]?.[setIndex] || {};
+    prCandidates(re?.tracked_max_metrics, setData).forEach(({ metric, value, reps }) => {
+      checkAndSavePR(routineExerciseId, metric, value, reps);
+    });
+  };
+  const checkPRsRef = useRef(checkPRsForSet);
+  checkPRsRef.current = checkPRsForSet;
 
   // Handle next set / done - the set order comes from the sequence engine
   const handleNextSet = useCallback(() => {
@@ -921,6 +930,7 @@ export default function WorkoutLoggerScreen() {
       return updatedSets;
     };
     commitCompleted(activeExerciseId, markDone, exercise.sets);
+    if (!wasDone) checkPRsRef.current(activeExerciseId, currentSetIndex);
     const draftFields = cancelDraft(activeExerciseId, currentSetIndex);
     persistSet(activeExerciseId, currentSetIndex, { complete: true, fields: draftFields }).then(ok => {
       if (ok && !wasDone) startRestAfter(activeExerciseId, currentSetIndex);
@@ -1039,6 +1049,7 @@ export default function WorkoutLoggerScreen() {
       sets[setIndex] = !currentlyCompleted; // Toggle
       return sets;
     }, exercise.sets);
+    if (!currentlyCompleted) checkPRsRef.current(activeExerciseId, setIndex);
 
     // Log Set / check → complete:true; uncheck → complete:false. The row
     // carries the set's full values (incl. the auto-fill just applied).
