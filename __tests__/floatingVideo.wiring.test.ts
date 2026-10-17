@@ -75,6 +75,16 @@ describe('floating video wiring', () => {
     expect(Win).toContain('playList={playList}');
     expect(Win).not.toContain('modestbranding');
   });
+  it('player uses the local HTML (JSON play/mute messages work) with an https base URL and inline autoplay', () => {
+    const i = Win.indexOf('<YoutubePlayer');
+    const tag = Win.slice(i, Win.indexOf('/>', i));
+    expect(tag).toContain('useLocalHTML');
+    expect(tag).toContain('baseUrlOverride={PLAYER_BASE_URL}');
+    expect(Win).toMatch(/const PLAYER_BASE_URL = 'https:\/\//);
+    expect(tag).toContain('allowsInlineMediaPlayback: true');
+    expect(tag).toContain('mediaPlaybackRequiresUserAction: false');
+    expect(tag).toContain('mute={muted || hidden}');
+  });
   it('starts muted with a tap-to-unmute control; openURL rejections are caught', () => {
     expect(Win).toContain('useState(true); // muted');
     expect(Win).toContain('setMuted((m) => !m)');

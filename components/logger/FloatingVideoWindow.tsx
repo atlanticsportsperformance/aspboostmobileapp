@@ -22,6 +22,8 @@ const VIDEO_H = Math.round(WIN_W * (9 / 16));
 const HANDLE_H = 14;
 const WIN_H = VIDEO_H + HANDLE_H;
 const MARGIN = 8;
+// Origin for the local player HTML (YouTube rejects embeds with no referrer).
+const PLAYER_BASE_URL = 'https://aspboostapp.vercel.app';
 
 export const clamp = (v: number, min: number, max: number) =>
   Math.min(Math.max(v, min), Math.max(min, max));
@@ -208,6 +210,13 @@ export default function FloatingVideoWindow({
               onReady={() => setVideoReady(true)}
               onError={() => setVideoError(true)}
               onChangeState={onChangeState}
+              // The library's default hosted page (iframe_v2.html) matches
+              // the raw message string, but v2.4.1 posts JSON — so play/mute
+              // never reached the player (no autoplay, poster + YouTube title
+              // stayed up). Its local HTML parses the JSON; the https base
+              // URL gives YouTube the referrer embeds require.
+              useLocalHTML
+              baseUrlOverride={PLAYER_BASE_URL}
               webViewProps={{
                 allowsInlineMediaPlayback: true,
                 mediaPlaybackRequiresUserAction: false,
