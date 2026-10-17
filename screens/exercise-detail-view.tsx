@@ -5,7 +5,6 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
-  TextInput,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -19,19 +18,25 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import NumericKeypad from '../components/NumericKeypad';
-import { backoffUpdates, fieldKey, intensityFor, prescribedValue, resolveTarget, type IntensityResult } from '../lib/logger/targets';
+import {
+  backoffUpdates,
+  fieldKey,
+  intensityFor,
+  intensityText,
+  pendingTargetText,
+  prescribedValue,
+  resolveTarget,
+  type IntensityResult,
+} from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { getSupersetContext } from '../lib/supersetContext';
 
 // Types
 import type {
   Measurement,
-  Exercise,
-  IntensityTarget,
   SetConfiguration,
   LoggerRoutineExercise as RoutineExercise,
   LoggerRoutine as Routine,
-  LoggerWorkout as Workout,
 } from '../types/logger';
 import { neighborExercise, nextStep, type SeqStep } from '../lib/logger/sequence';
 import RpeRow from '../components/logger/RpeRow';
@@ -80,7 +85,6 @@ interface ExerciseDetailViewProps {
   exerciseInputs: Record<string, any[]>;
   completedSets: Record<string, boolean[]>;
   currentSetIndex: number;
-  currentSetIndexes: Record<string, number>;
   allExercises: RoutineExercise[];
   // Whole-workout set order from buildSequence (lib/logger/sequence.ts)
   sequence: SeqStep[];
@@ -88,7 +92,7 @@ interface ExerciseDetailViewProps {
   hasNext: boolean;
   blockLabel?: string;
   exerciseHistory?: ExerciseHistory[];
-  /** Raw completed logs for lastSession() (Task 11 renders the line). */
+  /** Raw completed logs for lastSession() — the "last week" line. */
   lastWeekRows?: LogRow[];
   /** Today's workout instance — excluded from "last week". */
   workoutInstanceId?: string;
@@ -376,7 +380,6 @@ export default function ExerciseDetailView({
   exerciseInputs,
   completedSets,
   currentSetIndex,
-  currentSetIndexes,
   allExercises,
   sequence,
   hasPrev,
@@ -476,12 +479,35 @@ export default function ExerciseDetailView({
     else if (videoUrl) Linking.openURL(videoUrl.trim()).catch(() => {});
   };
 
-  // The current set always renders first (right under the coach card), so
-  // a new current set just scrolls back to the top.
+  // Sets render in set order and the current one opens in place, so a new
+  // current set is scrolled into view: set 1 → top (coach card visible), a
+  // later set → its row with the set before it still showing above.
+  // setYRef holds each set's y in the scroll content (from onLayout); the
+  // scroll runs once that layout is known — on the timer or, if the layout
+  // lands later, on the current set's onLayout.
   const scrollViewRef = useRef<ScrollView>(null);
-  useEffect(() => {
-    const t = setTimeout(() => {
+  const setYRef = useRef<Record<number, number>>({});
+  const scrollPendingRef = useRef(false);
+  const scrollToCurrentSet = () => {
+    if (currentSetIndex <= 0) {
       scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      return true;
+    }
+    const y = setYRef.current[currentSetIndex - 1] ?? setYRef.current[currentSetIndex];
+    if (y == null) return false;
+    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
+    return true;
+  };
+  const onSetLayout = (setIndex: number, y: number) => {
+    setYRef.current[setIndex] = y;
+    if (setIndex === currentSetIndex && scrollPendingRef.current && scrollToCurrentSet()) {
+      scrollPendingRef.current = false;
+    }
+  };
+  useEffect(() => {
+    scrollPendingRef.current = true;
+    const t = setTimeout(() => {
+      if (scrollPendingRef.current && scrollToCurrentSet()) scrollPendingRef.current = false;
     }, 100);
     // Clear any manually-expanded sets when the active set changes —
     // keeps the screen tight as the athlete progresses. They can tap
@@ -505,6 +531,12 @@ export default function ExerciseDetailView({
     },
     [onInputChange],
   );
+
+  // A custom measurement's metric type ('integer' | 'decimal' | …).
+  const metricTypeOf = (metricId: string): string | undefined => {
+    const m = customMeasurements.find((x) => x.primary_metric_id === metricId || x.secondary_metric_id === metricId);
+    return m?.primary_metric_id === metricId ? m?.primary_metric_type : m?.secondary_metric_type;
+  };
 
   // Custom keypad handlers
   const handleKeypadPress = (key: string) => {
@@ -563,15 +595,7 @@ export default function ExerciseDetailView({
     if (currentMetricIndex < metricFields.length - 1) {
       // Move to next metric in same set
       const nextMetricId = metricFields[currentMetricIndex + 1];
-      const nextMeasurement = customMeasurements.find(
-        m => m.primary_metric_id === nextMetricId || m.secondary_metric_id === nextMetricId
-      );
-      const nextMetricType = nextMeasurement?.primary_metric_id === nextMetricId
-        ? nextMeasurement?.primary_metric_type
-        : nextMeasurement?.secondary_metric_type;
-      const isDecimal = nextMetricType === 'decimal';
-
-      setActiveInput({ setIndex, metricId: nextMetricId, isDecimal });
+      setActiveInput({ setIndex, metricId: nextMetricId, isDecimal: metricTypeOf(nextMetricId) === 'decimal' });
     } else {
       // All metrics filled, close keypad
       setActiveInput(null);
@@ -685,11 +709,29 @@ export default function ExerciseDetailView({
   // "70% of Back Squat max", "80% of max".
   const intensityCaption = (setIndex: number): string | null => {
     const t = metricFields.map((m) => getIntensityTarget(setIndex, m)).find((x) => x !== null);
-    if (!t) return null;
-    const src = t.sourceExerciseName || null;
-    if (src && /^Set \d/.test(src)) return `${t.percent}% of ${src.replace(/^Set/, 'set')}`;
-    return src ? `${t.percent}% of ${src} max` : `${t.percent}% of max`;
+    return t ? intensityText(t) : null;
   };
+
+  // What an empty input shows in place of a number: "AMRAP", the pending %
+  // ("90% of set 1" until set 1 is logged; "80% · no max set"), the target,
+  // else "Enter Reps". Shared by the input and the open card's header so the
+  // header caption is dropped when the input already says the same thing.
+  const emptyInputText = (setIndex: number, metricId: string): string => {
+    if (isAmrapFor(setIndex, metricId)) return 'AMRAP';
+    const target = getTargetValue(setIndex, metricId);
+    const intensity = getIntensityTarget(setIndex, metricId);
+    const pending = !target ? pendingTargetText(intensity) : null;
+    if (pending) return pending;
+    const value = intensity?.calculatedValue ?? target;
+    return value ? String(value) : `Enter ${getMetricLabel(metricId, customMeasurements)}`;
+  };
+  const showsPendingTarget = (setIndex: number, setData: Record<string, any>): boolean =>
+    metricFields.some((m) => {
+      const v = setData[m];
+      if ((v != null && v !== '') || isBallMetric(m, customMeasurements)) return false;
+      return !isAmrapFor(setIndex, m) && !getTargetValue(setIndex, m) &&
+        pendingTargetText(getIntensityTarget(setIndex, m)) != null;
+    });
 
   const numeric = (v: unknown): number | null => {
     if (v == null || v === '') return null;
@@ -815,6 +857,21 @@ export default function ExerciseDetailView({
   const formatSetMetrics = (valueOf: (metricId: string) => unknown): string =>
     formatSetLine(metricFields, valueOf, customMeasurements);
 
+  // The completion circle — same size and spot (right edge) on a collapsed
+  // row and on the open card. Toggles done; never opens/closes the set.
+  const renderSetCheck = (setIndex: number, isCompleted: boolean) => (
+    <TouchableOpacity
+      style={[styles.setCheck, isCompleted && styles.setCheckDone]}
+      onPress={() => handleCheckboxToggle(setIndex)}
+      activeOpacity={0.7}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel={isCompleted ? `Mark set ${setIndex + 1} not done` : `Mark set ${setIndex + 1} done`}
+    >
+      {isCompleted ? <Text style={styles.setCheckIcon}>✓</Text> : null}
+    </TouchableOpacity>
+  );
+
   const renderSetCards = () => {
     // Notes-only exercises (no measurement fields and/or notes_only=true)
     // are instruction cards, not loggable sets. Render the parsed
@@ -867,13 +924,11 @@ export default function ExerciseDetailView({
     }
 
     const sets = [];
-    // The current set leads (right under the coach card); the rest follow
-    // in set order — done sets as a green result line, upcoming as targets.
+    // Always set order (1, 2, 3…). The current set opens in place; the rest
+    // are one-line rows — done sets as a green result line, upcoming as
+    // targets.
     const setCount = exercise.sets || 0;
-    const order: number[] = [];
-    if (currentSetIndex >= 0 && currentSetIndex < setCount) order.push(currentSetIndex);
-    for (let k = 0; k < setCount; k++) if (k !== currentSetIndex) order.push(k);
-    for (const i of order) {
+    for (let i = 0; i < setCount; i++) {
       const setData = exerciseInputs[exercise.id]?.[i] || {};
       const setConfig = getSetConfig(i);
       const isCompleted = isSetCompleted(i);
@@ -884,7 +939,8 @@ export default function ExerciseDetailView({
       const last = lastWeekFor(i);
 
       // Collapsed row — done sets show their result, upcoming sets their
-      // target. Tap (or "edit") to expand and change any set.
+      // target. Tap the row to open it in place; the circle (right, same
+      // spot as on the open card) toggles done without opening.
       if (!isExpanded) {
         let line: string;
         if (isCompleted) {
@@ -912,6 +968,7 @@ export default function ExerciseDetailView({
         sets.push(
           <TouchableOpacity
             key={i}
+            onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
             onPress={() => {
               setManuallyExpandedSets((prev) => {
                 const next = new Set(prev);
@@ -920,19 +977,14 @@ export default function ExerciseDetailView({
               });
             }}
             activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={`Open set ${i + 1}`}
             style={[
+              styles.setRow,
               styles.setRowCollapsed,
-              isCompleted && styles.setRowCollapsedDone,
+              isCompleted && styles.setRowDone,
             ]}
           >
-            <View
-              style={[
-                styles.setRowCheck,
-                isCompleted && styles.setRowCheckDone,
-              ]}
-            >
-              {isCompleted ? <Text style={styles.setRowCheckIcon}>✓</Text> : null}
-            </View>
             <View style={styles.setRowBody}>
               <View style={styles.setRowTitleLine}>
                 <Text style={styles.setRowLabel}>
@@ -949,18 +1001,23 @@ export default function ExerciseDetailView({
                 {line}
               </Text>
             </View>
-            {!isCompleted && <Text style={styles.setRowEdit}>edit</Text>}
+            {renderSetCheck(i, isCompleted)}
           </TouchableOpacity>,
         );
         continue;
       }
 
+      // The header caption is dropped when an input already shows the same
+      // pending % ("90% of set 1" until set 1 is logged).
+      const headerCaption = caption && !showsPendingTarget(i, setData) ? caption : null;
       sets.push(
         <View
           key={i}
+          onLayout={(e) => onSetLayout(i, e.nativeEvent.layout.y)}
           style={[
-            styles.setCard,
-            isCompleted && styles.setCardCompleted,
+            styles.setRow,
+            isCompleted && styles.setRowDone,
+            isCompleted && styles.setCardDone,
             isCurrentSet && styles.setCardCurrent,
           ]}
         >
@@ -969,31 +1026,13 @@ export default function ExerciseDetailView({
             <Text style={styles.setHeaderText} numberOfLines={1}>
               Set {i + 1} of {exercise.sets}{topSet ? ' · top set' : ''}
             </Text>
-            <View style={styles.setHeaderRight}>
-              {!!caption && (
-                <Text style={styles.setHeaderCaption} numberOfLines={1}>{caption}</Text>
-              )}
-              <TouchableOpacity
-                style={[
-                  styles.completionCheckmark,
-                  isCompleted && styles.completionCheckmarkCompleted,
-                ]}
-                onPress={() => handleCheckboxToggle(i)}
-                activeOpacity={0.7}
-                hitSlop={8}
-                accessibilityLabel={isCompleted ? 'Mark set not done' : 'Mark set done'}
-              >
-                <Text style={[
-                  styles.checkmarkIcon,
-                  !isCompleted && styles.checkmarkIconEmpty,
-                ]}>
-                  {isCompleted ? '✓' : ''}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            {!!headerCaption && (
+              <Text style={styles.setHeaderCaption} numberOfLines={1}>{headerCaption}</Text>
+            )}
+            {renderSetCheck(i, isCompleted)}
           </View>
 
-          {/* Last week's result for this set (Task 7 reference) */}
+          {/* Last week's result for this set */}
           {(() => {
             const wr = last ? formatWeightReps(last.weight, last.reps) : null;
             return wr ? <Text style={styles.lastWeekLine}>{`last week ${wr}`}</Text> : null;
@@ -1014,31 +1053,14 @@ export default function ExerciseDetailView({
                     <View style={styles.nonBallMetricsRow}>
                       {nonBallMetrics.map(metricId => {
                         const label = getMetricLabel(metricId, customMeasurements);
-                        const targetValue = getTargetValue(i, metricId);
-                        const intensityTarget = getIntensityTarget(i, metricId);
                         const currentValue = setData[metricId];
-                        const measurement = customMeasurements.find(
-                          m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
-                        );
-                        const metricType =
-                          measurement?.primary_metric_id === metricId
-                            ? measurement?.primary_metric_type
-                            : measurement?.secondary_metric_type;
-                        const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-                        const isDecimal = metricType === 'decimal';
+                        const isDecimal = metricTypeOf(metricId) === 'decimal';
                         const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
                         const justFilled = autoFilledKeys.has(`${i}:${metricId}`);
                         const isEmpty = currentValue == null || currentValue === '';
-                        const shown = !isEmpty
-                          ? String(currentValue)
-                          : isAmrapFor(i, metricId)
-                            ? 'AMRAP'
-                            : intensityTarget?.percent && !intensityTarget.calculatedValue && !targetValue
-                              // A % was prescribed but there's no max on file — say so.
-                              ? `${intensityTarget.percent}% · no max set`
-                              : placeholderValue ? String(placeholderValue) : `Enter ${label}`;
-                        // Prompts ("Enter Reps", "80% · no max set") sit smaller than numbers.
+                        const shown = !isEmpty ? String(currentValue) : emptyInputText(i, metricId);
+                        // Prompts ("Enter Reps", "90% of set 1") sit smaller than numbers.
                         const isPrompt = isEmpty && !/^-?\d+(\.\d+)?$/.test(shown);
                         return (
                           <View
@@ -1086,18 +1108,10 @@ export default function ExerciseDetailView({
                       <View style={styles.ballGroupInputs}>
                         {group.metrics.map(metricId => {
                           const label = getMetricLabel(metricId, customMeasurements);
-                          const targetValue = getTargetValue(i, metricId);
-                          const intensityTarget = getIntensityTarget(i, metricId);
                           const currentValue = setData[metricId];
-                          const measurement = customMeasurements.find(
-                            m => m.primary_metric_id === metricId || m.secondary_metric_id === metricId
-                          );
-                          const metricType =
-                            measurement?.primary_metric_id === metricId
-                              ? measurement?.primary_metric_type
-                              : measurement?.secondary_metric_type;
-                          const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-                          const isDecimal = metricType === 'decimal';
+                          const placeholderValue =
+                            getIntensityTarget(i, metricId)?.calculatedValue ?? getTargetValue(i, metricId);
+                          const isDecimal = metricTypeOf(metricId) === 'decimal';
                           const isActive = activeInput?.setIndex === i && activeInput?.metricId === metricId;
 
                           const justFilledBall = autoFilledKeys.has(`${i}:${metricId}`);
@@ -1600,7 +1614,7 @@ export default function ExerciseDetailView({
                       activeOpacity={0.85}
                     >
                       <LinearGradient
-                        colors={['#10B981', '#059669']}
+                        colors={[LOGGER_COLORS.green, '#059669']}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 1 }}
                         style={styles.nextSetButtonGradient}
@@ -1624,7 +1638,7 @@ export default function ExerciseDetailView({
                     activeOpacity={0.85}
                   >
                     <LinearGradient
-                      colors={['#9BDDFF', '#5BB8E8'] as const}
+                      colors={[LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={styles.nextSetButtonGradient}
@@ -1638,8 +1652,8 @@ export default function ExerciseDetailView({
 
               const isDone = nextText === 'DONE' && currentSetCompleted;
               const gradientColors = isDone
-                ? (['#10B981', '#059669'] as const)
-                : (['#9BDDFF', '#5BB8E8'] as const);
+                ? ([LOGGER_COLORS.green, '#059669'] as const)
+                : ([LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd] as const);
               const label = isDone
                 ? 'DONE'
                 : !currentSetCompleted
@@ -1834,26 +1848,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  prevButton: {
-    width: 32,
-    height: 32,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.3)',
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  prevButtonIcon: {
-    fontSize: 16,
-    color: '#60A5FA',
-  },
-  blockLabelText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: 'rgba(255, 255, 255, 0.4)',
-    marginRight: 8,
-  },
   // Block pill — replaces the dim "A3" text with a visible cyan-tinted
   // chip so superset grouping is obvious at a glance.
   blockPill: {
@@ -1978,28 +1972,8 @@ const styles = StyleSheet.create({
     letterSpacing: 1.6,
     color: LOGGER_COLORS.text,
   },
-  variationText: {
-    color: '#C084FC',
-    fontSize: 14,
-    fontWeight: 'normal',
-    textTransform: 'none',
-  },
   headerPrTrophy: {
     fontSize: 18,
-  },
-  nextButton: {
-    width: 32,
-    height: 32,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  nextButtonIcon: {
-    fontSize: 16,
-    color: '#6EE7B7',
   },
   exerciseDetailsInline: {
     marginTop: 6,
@@ -2013,91 +1987,6 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     lineHeight: 16,
   },
-  // Legacy styles kept for compatibility
-  exerciseDetailsSection: {
-    marginTop: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 8,
-    padding: 12,
-    gap: 8,
-  },
-  tempoBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.2)',
-    borderRadius: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    alignSelf: 'flex-start',
-  },
-  tempoIcon: {
-    fontSize: 14,
-  },
-  tempoText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#9BDDFF',
-  },
-  notesContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'flex-start',
-  },
-  notesIcon: {
-    fontSize: 14,
-    marginTop: 2,
-  },
-  exerciseNotes: {
-    flex: 1,
-    fontSize: 13,
-    color: '#D4D4D4',
-    lineHeight: 18,
-  },
-  descriptionContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'flex-start',
-    marginTop: 4,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  descriptionIcon: {
-    fontSize: 14,
-    marginTop: 2,
-  },
-  exerciseDescription: {
-    flex: 1,
-    fontSize: 12,
-    color: '#A3A3A3',
-    lineHeight: 18,
-    fontStyle: 'italic',
-  },
-  exerciseNotesSection: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 10,
-    padding: 12,
-    gap: 10,
-  },
-  // Collapsible notes accordion — replaces the always-visible notes box.
-  notesAccordion: {
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  // Prominent coach-instructions panel — replaces the muted accordion so the
-  // athlete actually sees what the coach wrote, with bulleted parsing for
-  // "; "-separated cues.
   // Superset progress pills (A1 2/3 · A2 1/3)
   supersetPillsWrap: {
     marginHorizontal: 14,
@@ -2145,9 +2034,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  supersetPillTextCurrent: { color: '#9BDDFF' },
+  supersetPillTextCurrent: { color: LOGGER_COLORS.accent },
   supersetPillTextDone: { color: '#7ef0a8' },
   supersetPillTextIdle: { color: 'rgba(255,255,255,0.6)' },
+  // Coach-instructions panel: what the coach wrote, "; "-separated cues as
+  // bullets.
   coachPanel: {
     backgroundColor: '#111214',
     borderWidth: 1,
@@ -2229,58 +2120,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     fontStyle: 'italic',
   },
-  notesAccordionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  notesAccordionIcon: { fontSize: 13 },
-  notesAccordionTitle: {
-    flex: 1,
-    color: '#e5e7eb',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  notesAccordionChev: { color: '#9ca3af', fontSize: 11 },
-  notesAccordionBody: {
-    paddingTop: 8,
-    paddingHorizontal: 4,
-    gap: 6,
-  },
-  coachNoteRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  coachNoteIcon: {
-    fontSize: 14,
-    marginTop: 1,
-  },
-  coachNoteText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#E5E5E5',
-    lineHeight: 20,
-  },
-  descriptionRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  descriptionText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#A3A3A3',
-    lineHeight: 18,
-    fontStyle: 'italic',
-  },
   setsScrollView: {
     flex: 1,
   },
@@ -2288,32 +2127,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 12,
     paddingBottom: 130,
-    gap: 8,
-  },
-  historySection: {
-    marginBottom: 12,
-  },
-  historyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  historyTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#A3A3A3',
-  },
-  historyToggle: {
-    fontSize: 10,
-    color: '#737373',
-  },
-  historyContent: {
-    marginTop: 8,
     gap: 8,
   },
   // Slide-up sheet wrapper for the workout-history Modal.
@@ -2339,19 +2152,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     marginTop: 10,
     marginBottom: 8,
-  },
-  historyPanel: {
-    position: 'absolute',
-    bottom: 75,
-    left: 8,
-    right: 8,
-    maxHeight: 250,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#404040',
-    zIndex: 50,
-    overflow: 'hidden',
   },
   historyPanelHeader: {
     flexDirection: 'row',
@@ -2426,29 +2226,26 @@ const styles = StyleSheet.create({
     color: '#737373',
     marginTop: 2,
   },
-  setCard: {
+  // One shell for every set — collapsed row and open card share background,
+  // hairline, radius and padding so a set opens in place without jumping.
+  setRow: {
     backgroundColor: '#0E1013',
     borderWidth: 1,
     borderColor: LOGGER_COLORS.hairline,
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 12,
   },
-  // Collapsed set row — used for completed and upcoming sets so only the
-  // active set occupies a full card. One-line summary, tappable to expand.
+  // Collapsed: one-line summary + the circle on the right.
   setRowCollapsed: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: '#0E0F11',
-    borderWidth: 1,
-    borderColor: LOGGER_COLORS.hairline,
+    gap: 10,
   },
-  setRowCollapsedDone: {
+  setRowDone: {
     backgroundColor: 'rgba(16,185,129,0.04)',
   },
-  setRowCheck: {
+  // Completion circle (collapsed row and open card).
+  setCheck: {
     width: 22,
     height: 22,
     borderRadius: 11,
@@ -2457,11 +2254,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  setRowCheckDone: {
+  setCheckDone: {
     backgroundColor: LOGGER_COLORS.green,
     borderColor: LOGGER_COLORS.green,
   },
-  setRowCheckIcon: {
+  setCheckIcon: {
     color: '#04130C',
     fontSize: 11,
     fontWeight: '900',
@@ -2493,15 +2290,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1,
   },
-  setRowEdit: {
-    color: LOGGER_COLORS.accent,
-    fontSize: 12,
-    fontWeight: '700',
-  },
   // Subtle "Saved" tick under the active set. Briefly visible on each
   // input change so the athlete knows the value landed.
   savedTick: {
-    color: '#34D399',
+    color: LOGGER_COLORS.green,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.4,
@@ -2515,31 +2307,34 @@ const styles = StyleSheet.create({
     borderColor: LOGGER_COLORS.green,
     backgroundColor: 'rgba(16,185,129,0.10)',
   },
-  setCardCompleted: {
+  // Open card of a done set keeps a green edge.
+  setCardDone: {
     borderColor: 'rgba(16, 185, 129, 0.3)',
-    backgroundColor: 'rgba(16, 185, 129, 0.05)',
   },
   setCardCurrent: {
     borderColor: 'rgba(155, 221, 255, 0.45)',
   },
+  // "Set 2 of 3 · top set" never truncates; a long caption ("70% of
+  // Romanian Deadlift max") gives way instead. The circle sits at the right
+  // edge with or without a caption.
   setHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   setHeaderText: {
-    flexShrink: 1,
+    flexShrink: 0,
+    marginRight: 'auto',
     fontSize: 15,
     fontWeight: '800',
     color: LOGGER_COLORS.text,
   },
-  setHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 },
   setHeaderCaption: {
+    flex: 1,
+    textAlign: 'right',
     color: LOGGER_COLORS.muted,
     fontSize: 12,
     fontVariant: ['tabular-nums'],
-    flexShrink: 1,
   },
   // "last week 215 × 2" under the set header.
   lastWeekLine: {
@@ -2547,36 +2342,6 @@ const styles = StyleSheet.create({
     color: '#737373',
     fontSize: 12,
     fontVariant: ['tabular-nums'],
-  },
-  completionCheckmark: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.25)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  completionCheckmarkCompleted: {
-    backgroundColor: LOGGER_COLORS.green,
-    borderColor: LOGGER_COLORS.green,
-  },
-  checkmarkIcon: {
-    fontSize: 11,
-    color: '#04130C',
-    fontWeight: '900',
-  },
-  checkmarkIconEmpty: {
-    color: 'transparent',
-  },
-  // Unused legacy styles kept for reference
-  _targetIcon: {
-    fontSize: 16,
-  },
-  _intensityText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#93C5FD',
   },
   metricsGrid: {
     flexDirection: 'column',
@@ -2606,9 +2371,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.8,
     color: LOGGER_COLORS.muted,
-  },
-  metricLabelWithIcon: {
-    marginLeft: 0,
   },
   input: {
     height: 48,
@@ -2698,22 +2460,8 @@ const styles = StyleSheet.create({
   },
   setNotesText: {
     fontSize: 13,
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
     fontStyle: 'italic',
-  },
-  notesField: {
-    width: '100%',
-  },
-  notesInput: {
-    minHeight: 60,
-    padding: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    fontSize: 14,
-    color: '#FFFFFF',
-    lineHeight: 21,
   },
   bottomNav: {
     position: 'absolute',
@@ -2763,27 +2511,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  prevExerciseButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    backgroundColor: '#1E3A5F',
-    borderWidth: 1,
-    borderColor: '#3B82F6',
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 0,
-  },
-  prevExerciseButtonIcon: {
-    fontSize: 14,
-    color: '#93C5FD',
-  },
-  prevExerciseButtonText: {
-    fontSize: 9,
-    color: '#93C5FD',
-    marginTop: 2,
-  },
   // Primary action button — solid gradient fill, slightly taller than the
   // 44px utility squares so the CTA wins the visual hierarchy. The shell
   // is just a container; the gradient does the painting.
@@ -2812,9 +2539,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#06202E',
     fontWeight: '800',
-  },
-  emptyButton: {
-    flex: 1,
   },
 });
 

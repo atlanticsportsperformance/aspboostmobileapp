@@ -1201,7 +1201,6 @@ export default function WorkoutLoggerScreen() {
         exerciseInputs={exerciseInputs}
         completedSets={completedSets}
         currentSetIndex={currentSetIndexes[currentExercise.id] || 0}
-        currentSetIndexes={currentSetIndexes}
         allExercises={allExercises}
         sequence={sequence}
         hasPrev={neighborExercise(allExercises, currentExercise.id, -1) != null}

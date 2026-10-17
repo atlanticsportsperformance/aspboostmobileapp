@@ -61,7 +61,38 @@ describe('exercise screen v2 wiring', () => {
   it('header has no exercise counter and the set card marks the top set', () => {
     expect(D).not.toContain('exercisePosition');
     expect(D).toContain('· top set');
-    expect(D).toMatch(/% of \$\{/);
+    // caption text lives in lib/logger/targets (intensityText)
+    expect(D).toContain('return t ? intensityText(t) : null;');
+  });
+
+  it('sets render in set order; the open set expands in place and scrolls into view', () => {
+    const fn = D.slice(D.indexOf('const renderSetCards'), D.indexOf('// Helper to truncate exercise name'));
+    expect(fn).toContain('for (let i = 0; i < setCount; i++) {');
+    expect(fn).not.toContain('order.push');
+    expect(fn.match(/onLayout=\{\(e\) => onSetLayout\(i, e\.nativeEvent\.layout\.y\)\}/g)?.length).toBe(2);
+    expect(D).toContain('scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });');
+    expect(D).not.toContain('scrollTo({ y: 0, animated: true });\n    }, 100)');
+  });
+
+  it('collapsed row: whole row opens the set, no "edit" link, circle on the right like the open card', () => {
+    const fn = D.slice(D.indexOf('const renderSetCards'), D.indexOf('// Helper to truncate exercise name'));
+    expect(D).not.toContain('setRowEdit');
+    expect(fn).not.toMatch(/>edit</);
+    // one circle component, rendered last in both the row and the card header
+    expect(fn.match(/\{renderSetCheck\(i, isCompleted\)\}/g)?.length).toBe(2);
+    expect(fn).toMatch(/\{renderSetCheck\(i, isCompleted\)\}\s*<\/TouchableOpacity>,/);
+    expect(fn).toMatch(/\{renderSetCheck\(i, isCompleted\)\}\s*<\/View>/);
+    const check = D.slice(D.indexOf('const renderSetCheck'), D.indexOf('const renderSetCards'));
+    expect(check).toContain('onPress={() => handleCheckboxToggle(setIndex)}');
+    // row and card share one shell (radius/padding/background)
+    expect(fn).toContain('styles.setRow,\n              styles.setRowCollapsed,');
+    expect(fn).toContain('styles.setRow,\n            isCompleted && styles.setRowDone,');
+  });
+
+  it('empty inputs show the pending % ("90% of set 1"), and the header caption is not repeated', () => {
+    expect(D).toContain('pendingTargetText(intensity)');
+    expect(D).not.toContain('no max set`');
+    expect(D).toContain('const headerCaption = caption && !showsPendingTarget(i, setData) ? caption : null;');
   });
 
   it('keeps swipe, PR banner, history sheet, keypad and the two-phase Log Set', () => {
