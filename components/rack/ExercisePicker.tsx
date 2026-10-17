@@ -11,9 +11,10 @@
 
 import React, { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import type { TodayExercise } from '../../lib/rack/api';
 import { preselectedSet, type PickerRow } from '../../lib/rack/resolveRackSet';
-import { RACK_COLORS } from '../../lib/rack/viewModel';
+import { RACK_COLORS, pillParts } from '../../lib/rack/viewModel';
 import { ALL_MODAL_ORIENTATIONS } from '../../lib/rack/orientation';
 
 export interface ExercisePickerProps {
@@ -33,6 +34,7 @@ export interface ExercisePickerProps {
 }
 
 const keyOf = (e: { workoutInstanceId: string; routineExerciseId: string }) => `${e.workoutInstanceId}:${e.routineExerciseId}`;
+
 
 export default function ExercisePicker({ label, exercises, rows, currentRoutineExerciseId, currentSetNumber, phoneOwnsContext, onPick, prompt = false }: ExercisePickerProps) {
   const [open, setOpen] = useState(false);
@@ -57,12 +59,21 @@ export default function ExercisePicker({ label, exercises, rows, currentRoutineE
           <Text style={styles.promptTxt}>Pick an exercise ▾</Text>
         </TouchableOpacity>
       ) : (
-        <TouchableOpacity disabled={!can} onPress={() => setOpen(true)} style={styles.trigger} activeOpacity={0.7}>
-          <Text style={styles.label} numberOfLines={1}>
-            {label}
+        // A clear button: a bordered pill, zone-blue text, a full-size chevron,
+        // ≥ 44 pt tall. The exercise name truncates; "Set n of N" stays visible.
+        <Pressable
+          disabled={!can}
+          onPress={() => setOpen(true)}
+          style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
+          accessibilityRole="button"
+          accessibilityLabel={`${label}. Change exercise or set`}
+        >
+          <Text style={styles.pillName} numberOfLines={1}>
+            {pillParts(label).name}
           </Text>
-          {can && <Text style={styles.chev}>▾</Text>}
-        </TouchableOpacity>
+          {pillParts(label).set ? <Text style={styles.pillSet}>{` · ${pillParts(label).set}`}</Text> : null}
+          {can && <Ionicons name="chevron-down" size={20} color={RACK_COLORS.acc} style={styles.pillChev} />}
+        </Pressable>
       )}
       <Modal visible={open} transparent animationType="fade" supportedOrientations={[...ALL_MODAL_ORIENTATIONS]} onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.scrim} onPress={() => setOpen(false)}>
@@ -134,9 +145,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   promptTxt: { fontSize: 13, fontWeight: '800', color: RACK_COLORS.acc },
-  trigger: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  label: { fontSize: 13, color: 'rgba(255,255,255,0.65)', flexShrink: 1 },
-  chev: { fontSize: 12, color: RACK_COLORS.acc },
+  pill: {
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    minHeight: 44,
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(155,221,255,0.35)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(155,221,255,0.06)',
+  },
+  pillPressed: { backgroundColor: 'rgba(155,221,255,0.14)' },
+  pillName: { flexShrink: 1, fontSize: 15, fontWeight: '700', color: '#9BDDFF' },
+  pillSet: { flexShrink: 0, fontSize: 15, fontWeight: '700', color: '#9BDDFF' },
+  pillChev: { marginLeft: 6 },
   scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
   sheet: { width: 520, borderRadius: 18, backgroundColor: RACK_COLORS.card, borderWidth: 1, borderColor: RACK_COLORS.line, padding: 20, gap: 8 },
   k: { fontSize: 11, fontWeight: '900', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)' },

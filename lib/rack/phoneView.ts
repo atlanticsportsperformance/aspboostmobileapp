@@ -623,6 +623,8 @@ export function phoneRackNow(i: {
   workoutInstanceId: string;
   /** Exercise open on the phone (null on the overview). */
   openExerciseId: string | null;
+  /** The set the phone sends for it (its selected row; > prescribed = finished). */
+  openSetNumber?: number | null;
   isEcho: (ctx: RackCtx) => boolean;
   /** A coach's explicit exercise + set (coachSetChoice) — honoured exactly. */
   chosen?: { routineExerciseId: string; setNumber: number } | null;
@@ -648,7 +650,7 @@ export function phoneRackNow(i: {
   const res = resolveRackSet({
     ...base,
     phone: i.openExerciseId
-      ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.openExerciseId }
+      ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.openExerciseId, setNumber: i.openSetNumber ?? null }
       : lastSent
         ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: lastSent.routineExerciseId, setNumber: lastSent.setNumber }
         : null,

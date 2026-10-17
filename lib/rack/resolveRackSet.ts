@@ -6,8 +6,9 @@
 // Rules, in priority order:
 //   1. Exercise: the phone-open exercise, then the coach override, then the
 //      first unfinished RACK LIFT (isRackLift) in workout order.
-//   2. Set: the lowest set number in 1..prescribed that is not complete. Set
-//      numbers come from exercise_logs, never from a counter.
+//   2. Set: the phone's selected row when it is not complete (a skipped
+//      earlier set included); otherwise the lowest set in 1..prescribed that is
+//      not complete. Set numbers come from exercise_logs, never a counter.
 //   3. Never an is_complete set.
 //   4. Exercise finished (every prescribed set complete): the phone wins if it
 //      moved on (rule 1); else, while lifting continues on it, an extra set
@@ -53,7 +54,7 @@ export interface RackSetLog {
 export interface RackExerciseRef {
   workoutInstanceId: string | null;
   routineExerciseId: string | null;
-  /** Phone: its open set (its own first incomplete set) — a "below is done" hint. Override: the coach's explicit set. */
+  /** Phone: its selected row (the target when not complete; > prescribed = "done through N"). Override: the coach's explicit set. */
   setNumber?: number | null;
 }
 
@@ -105,11 +106,11 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
   };
 
   const phone = find(input.phone);
-  // The phone's open set is its own first incomplete set, so every set below
-  // it is done on the phone — including a save still in its outbox.
-  const phoneSet = input.phone?.setNumber;
-  if (phone && phoneSet != null) {
-    for (let n = 1; n < phoneSet; n++) complete.add(keyOf(phone.inst.workoutInstanceId, phone.ex.routineExerciseId, n));
+  // The phone's selected row. Past the prescription it means "done through N"
+  // (a finished exercise, its last save maybe still in the outbox).
+  const phoneSet = input.phone?.setNumber ?? null;
+  if (phone && phoneSet != null && phoneSet > Math.max(0, phone.ex.sets ?? 1)) {
+    for (let n = 1; n <= Math.max(0, phone.ex.sets ?? 1); n++) complete.add(keyOf(phone.inst.workoutInstanceId, phone.ex.routineExerciseId, n));
   }
 
   const done = (h: Hit, n: number) => complete.has(keyOf(h.inst.workoutInstanceId, h.ex.routineExerciseId, n));
@@ -151,7 +152,11 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
         .find(h => h.ex.group === phoneTarget.ex.group && h.ex.rackLift && openSet(h) != null);
       if (lift) return pick(lift, openSet(lift)!, 'superset-lift');
     } else {
-      return pick(phoneTarget, openSet(phoneTarget)!, 'phone');
+      // The phone-open SET wins: the selected row when it is not complete
+      // (a skipped earlier set too); else (no row / a complete row = viewing)
+      // the lowest incomplete set.
+      const sel = phoneSet != null && phoneSet >= 1 && phoneSet <= prescribed(phoneTarget) && !done(phoneTarget, phoneSet) ? phoneSet : null;
+      return pick(phoneTarget, sel ?? openSet(phoneTarget)!, 'phone');
     }
   }
 

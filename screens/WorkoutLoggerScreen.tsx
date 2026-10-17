@@ -1410,21 +1410,21 @@ export default function WorkoutLoggerScreen() {
     return logs;
   }, [workoutInstanceId, completedSets, rackExtra]);
   const ctxExercise = viewMode === 'exercise' ? allExercises.find(ex => ex.id === activeExerciseId) : undefined;
-  const phoneRackSet =
-    rackInstance && ctxExercise
-      ? resolveRackSet({ instances: [rackInstance], logs: rackLogs, phone: { workoutInstanceId, routineExerciseId: ctxExercise.id } })
-      : null;
-  // The resolver's set when it serves the open exercise; otherwise (a superset
-  // partner, a row the iPad doesn't serve) the open exercise's own first
-  // incomplete set — the same rule — so the row still says what's open.
+  // The phone-open SET is the rack's set: the selected row when it is not
+  // complete (a skipped earlier set too). A complete row is viewing/editing →
+  // the lowest incomplete set; a finished exercise → "done through N" (N+1).
+  // A coach's chosen set (iPad picker) is sent as is, even a done one.
   const chosenHere = rackChosen && ctxExercise && rackChosen.routineExerciseId === ctxExercise.id && rackChosen.setNumber <= (ctxExercise.sets ?? 1) ? rackChosen : null;
+  const ctxSelected = ctxExercise ? currentSetIndexes[ctxExercise.id] ?? 0 : null;
   const ctxSetIndex = ctxExercise
     ? chosenHere
       ? chosenHere.setNumber - 1
-      : phoneRackSet && !phoneRackSet.none && phoneRackSet.routineExerciseId === ctxExercise.id
-      ? phoneRackSet.setNumber - 1
-      : firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets ?? 1)
+      : ctxSelected != null && ctxSelected >= 0 && ctxSelected < (ctxExercise.sets ?? 1) && completedSets[ctxExercise.id]?.[ctxSelected] !== true
+        ? ctxSelected
+        : firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets ?? 1)
     : null;
+  /** The set number the phone sends for its open exercise. */
+  const ctxSendSet = ctxExercise ? (ctxSetIndex == null ? (ctxExercise.sets ?? 1) + 1 : ctxSetIndex + 1) : null;
   // The iPad's auto-pick for this phone's state (no phone context): a null→X
   // to exactly this is not a coach override (followTarget, N4).
   const rackAutoPickSet = useMemo(() => {
@@ -1466,7 +1466,8 @@ export default function WorkoutLoggerScreen() {
     // N1: so does a set advancing on the open exercise (manual Done, or the
     // rack's row landing) — the iPad must never start the set just saved.
     const prev = rackLastCtxRef.current;
-    const advanced = !!prev && prev.reId === ctxExercise.id && prev.setIndex !== ctxSetIndex;
+    // The open row changed (another row tapped, a set saved, another exercise): send at once.
+    const advanced = !prev || prev.reId !== ctxExercise.id || prev.setIndex !== ctxSetIndex;
     rackLastCtxRef.current = { reId: ctxExercise.id, setIndex: ctxSetIndex };
     const immediate = rackActivationSentRef.current !== rackActivation || advanced;
     rackActivationSentRef.current = rackActivation;
@@ -1538,6 +1539,7 @@ export default function WorkoutLoggerScreen() {
         athleteId,
         workoutInstanceId,
         openExerciseId: viewMode === 'exercise' ? activeExerciseId : null,
+        openSetNumber: viewMode === 'exercise' ? ctxSendSet : null,
         isEcho: rack.isEcho,
         chosen: rackChosen,
       })

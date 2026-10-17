@@ -687,6 +687,70 @@ describe('fix round 3 (owner bugs)', () => {
   });
 });
 
+describe('the set open on the phone is the rack’s set (owner bug)', () => {
+  it('pure: the selected incomplete row wins (a skipped set 1 too); a complete row → lowest incomplete', () => {
+    const ph = (n: number) => ({ workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: n });
+    expect(resolve({ logs: [], phone: ph(2) })).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, reason: 'phone' });
+    expect(resolve({ logs: done('wi', 'squat', 1), phone: ph(3) })).toMatchObject({ setNumber: 3 });
+    expect(resolve({ logs: done('wi', 'squat', 1, 2), phone: ph(1) })).toMatchObject({ setNumber: 3 }); // row 1 complete = viewing
+  });
+
+  async function onSquat(logs: SetLogRow[] = []) {
+    const r = rig(logs);
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: logs.length + 1 });
+    return r;
+  }
+  const view = (r: ReturnType<typeof rig>) =>
+    require('../lib/rack/viewModel').buildRackView({ state: r.ex.getState(), today: [SIM()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+
+  it('phone opens set 2 with set 1 empty → the iPad targets set 2 (card + picker CURRENT chip)', async () => {
+    const r = await onSquat();
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 }, r.advance(500));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, reason: 'phone' });
+    expect(view(r).exerciseLine).toBe('squat · Set 2 of 3');
+    expect(view(r).setNumber).toBe(2); // the picker's CURRENT chip (preselectedSet uses it)
+    const { preselectedSet } = require('../lib/rack/resolveRackSet');
+    const row = r.ex.pickerRows('tyler').find(x => x.routineExerciseId === 'squat');
+    expect(preselectedSet(row, true, view(r).setNumber)).toBe(2);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+  });
+
+  it('phone switches the open row from 2 to 3 → the iPad targets set 3', async () => {
+    const r = await onSquat();
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 }, r.advance(500));
+    await settle();
+    r.sync({ set_number: 3 }, r.advance(500));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    expect(view(r).exerciseLine).toBe('squat · Set 3 of 3');
+  });
+
+  it('phone opens a completed row → the iPad is unchanged', async () => {
+    const r = await onSquat(logRows('squat', 1));
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 1 }, r.advance(500));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+  });
+
+  it('phone vs coach: the latest action wins', async () => {
+    const r = await onSquat();
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 }, r.advance(500));
+    await settle();
+    r.ex.setOverride('tyler', SIM().exercises.find(e => e.routineExerciseId === 'squat')!, 3); // coach after the phone
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3, reason: 'override' });
+    r.sync({ set_number: 1 }, r.advance(500)); // the phone after the coach
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 1, reason: 'phone' });
+  });
+});
+
 describe('wiring: no bare high-water + 1', () => {
   const E = readFileSync(join(__dirname, '..', 'lib/rack/engine.ts'), 'utf8');
   const X = readFileSync(join(__dirname, '..', 'lib/rack/executor.ts'), 'utf8');

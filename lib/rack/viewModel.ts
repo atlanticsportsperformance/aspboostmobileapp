@@ -596,3 +596,9 @@ export function phoneContextOfRow(s: RackEngineState): { athleteId: string; ctx:
   if (ctx.workoutInstanceId == null) return null;
   return { athleteId: row.active_athlete_id, ctx };
 }
+
+/** The card's exercise pill: "Romanian Deadlift · Set 1 of 3" → name + "Set 1 of 3" (the set part never truncates). */
+export function pillParts(label: string): { name: string; set: string | null } {
+  const i = label.lastIndexOf(' · Set ');
+  return i < 0 ? { name: label, set: null } : { name: label.slice(0, i), set: label.slice(i + 3) };
+}

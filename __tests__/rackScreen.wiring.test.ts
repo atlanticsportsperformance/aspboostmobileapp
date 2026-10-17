@@ -302,3 +302,29 @@ describe('staff-check guard (N-2)', () => {
     expect(fn.indexOf('if (end) await bounded(')).toBeLessThan(fn.indexOf('if (flush) await bounded('));
   });
 });
+
+describe('athlete card: the exercise + set line is a clear button (pill)', () => {
+  const P = read('components/rack/ExercisePicker.tsx');
+  it('a Pressable pill that opens the picker: border, zone-blue text, full chevron, 44 pt', () => {
+    const trigger = P.slice(P.indexOf('<Pressable\n          disabled={!can}'), P.indexOf('</Pressable>', P.indexOf('<Pressable\n          disabled={!can}')));
+    expect(trigger).toContain('onPress={() => setOpen(true)}');
+    expect(trigger).toContain('accessibilityRole="button"');
+    expect(trigger).toContain('<Ionicons name="chevron-down" size={20}');
+    expect(P).toContain("borderColor: 'rgba(155,221,255,0.35)'");
+    expect(P).toContain("color: '#9BDDFF'");
+    expect(P).toContain('minHeight: 44,');
+    expect(P).toContain('paddingVertical: 8,');
+    expect(P).toContain('paddingHorizontal: 12,');
+    expect(P).toContain('borderRadius: 10,');
+    expect(P).not.toContain('styles.chev}>▾');
+  });
+  it('the name truncates, "Set n of N" never does; the source label stays under the pill (both layouts)', () => {
+    const { pillParts } = require('../lib/rack/viewModel');
+    expect(pillParts('Romanian Deadlift · Set 1 of 3')).toEqual({ name: 'Romanian Deadlift', set: 'Set 1 of 3' });
+    expect(pillParts('Free lift')).toEqual({ name: 'Free lift', set: null });
+    expect(P).toContain('<Text style={styles.pillName} numberOfLines={1}>');
+    expect(P).toContain('pillSet: { flexShrink: 0,');
+    // one card component for both layouts; the source label sits right under the pill
+    expect(CARD.indexOf('<ExercisePicker')).toBeLessThan(CARD.indexOf('<Text style={styles.src}>{view.sourceLine}</Text>'));
+  });
+});

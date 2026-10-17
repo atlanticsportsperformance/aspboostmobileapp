@@ -124,12 +124,15 @@ describe('rack phone wiring', () => {
 describe('rack phone wiring — shared resolver + re-review N1/N3/N4', () => {
   it('the phone’s current rack set comes from resolveRackSet (same function as the iPad), open exercise = phone context', () => {
     expect(L).toContain("import { rackInstanceFromLogger, rackLogsFromCompleted, resolveRackSet } from '../lib/rack/resolveRackSet';");
-    expect(L).toContain('resolveRackSet({ instances: [rackInstance], logs: rackLogs, phone: { workoutInstanceId, routineExerciseId: ctxExercise.id } })');
+    // the phone-open SET (selected incomplete row) is what it sends and what its strip resolves with
+    expect(L).toContain('const ctxSelected = ctxExercise ? currentSetIndexes[ctxExercise.id] ?? 0 : null;');
+    expect(L).toContain('openSetNumber: viewMode === \'exercise\' ? ctxSendSet : null,');
     expect(L).toContain('autoPickExerciseId: rackAutoPick,');
   });
 
   it('N1 phone: a set advancing on the open exercise sends the context immediately (no debounce)', () => {
-    expect(L).toContain('const advanced = !!prev && prev.reId === ctxExercise.id && prev.setIndex !== ctxSetIndex;');
+    // any change of the open row (a tapped row, a saved set, another exercise) goes out at once
+    expect(L).toContain('const advanced = !prev || prev.reId !== ctxExercise.id || prev.setIndex !== ctxSetIndex;');
     expect(L).toContain('const immediate = rackActivationSentRef.current !== rackActivation || advanced;');
   });
 
