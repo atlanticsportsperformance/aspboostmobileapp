@@ -21,6 +21,7 @@ import {
   fieldKey,
   intensityCaptionText,
   intensityFor,
+  isBackoffReference,
   prescribedValue,
   resolveTarget,
   type IntensityResult,
@@ -568,6 +569,9 @@ export default function ExerciseDetailView({
   // its `expected` map between runs. Runs when the keypad closes or moves to
   // another field, and on exercise change — not per keystroke.
   const backoffExpectedRef = useRef<Record<string, Record<string, number>>>({});
+  // Bumped when a stepper changes a set that back-offs reference — a stepper
+  // tap is a commit point too (the keypad never opened or closed).
+  const [backoffTick, setBackoffTick] = useState(0);
   useEffect(() => {
     const { apply, expected } = backoffUpdates({
       re: exercise,
@@ -585,7 +589,7 @@ export default function ExerciseDetailView({
       flashAutoFill(setIndex, metric);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately keyed to commit points (keypad field change/close, exercise change), not inputs: running per keystroke would move back-offs off half-typed values. Current props are read from this render's closure.
-  }, [exercise.id, activeInput?.setIndex, activeInput?.metricId, activeInput == null]);
+  }, [exercise.id, activeInput?.setIndex, activeInput?.metricId, activeInput == null, backoffTick]);
 
   // Handle checkbox toggle - compute auto-fill values if checking
   const handleCheckboxToggle = (setIndex: number) => {
@@ -816,6 +820,7 @@ export default function ExerciseDetailView({
       setActiveInput(null);
       markFieldEdited(setIndex, metricId);
       onInputChange(setIndex, metricId, String(next));
+      if (isBackoffReference(exercise, setIndex)) setBackoffTick((t) => t + 1);
     };
     const label = getMetricLabel(metricId, customMeasurements);
     const stepper = (dir: 1 | -1) => (

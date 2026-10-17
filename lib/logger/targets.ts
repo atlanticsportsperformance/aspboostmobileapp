@@ -189,6 +189,18 @@ export function backoffFills(args: Omit<TargetArgs, 'setIndex'> & { edited: Set<
   return fills;
 }
 
+// Is set `setIndex` (0-indexed) the reference of some later set's "% of set
+// K" target? A change to such a set must re-run backoffUpdates at once —
+// e.g. a stepper tap, which is not a keypad commit point.
+export function isBackoffReference(re: LoggerRoutineExercise, setIndex: number): boolean {
+  const setCount = Math.max(re.sets || 0, re.set_configurations?.length ?? 0);
+  for (let j = setIndex + 1; j < setCount; j++) {
+    const targets = re.set_configurations?.[j]?.intensity_targets || re.intensity_targets || [];
+    if (targets.some((t) => referenceIndex(t, j) === setIndex)) return true;
+  }
+  return false;
+}
+
 // "set:metric" — the key for one input field of one set.
 export const fieldKey = (setIndex: number, metric: string) => `${setIndex}:${metric}`;
 

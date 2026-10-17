@@ -208,4 +208,10 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(st).toContain('height: 36,');
     expect(fn).toContain('hitSlop={{ top: 0, bottom: 0, left: 6, right: 6 }}');
   });
+
+  it('a stepper on a back-off reference set re-runs backoffUpdates (review I1)', () => {
+    const fn = D.slice(D.indexOf('const renderMetric'), D.indexOf('// The completion circle'));
+    expect(fn).toContain('if (isBackoffReference(exercise, setIndex)) setBackoffTick((t) => t + 1);');
+    expect(D).toContain('activeInput == null, backoffTick]);');
+  });
 });

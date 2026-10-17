@@ -1,6 +1,6 @@
 import {
   roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor, nextSetPrefill,
-  intensityText, pendingTargetText, needsWeightEntry, intensityCaptionText,
+  intensityText, pendingTargetText, needsWeightEntry, intensityCaptionText, isBackoffReference,
 } from '../lib/logger/targets';
 import type { LoggerRoutineExercise } from '../types/logger';
 
@@ -290,5 +290,19 @@ describe('intensityCaptionText', () => {
     const e = re({ intensity_targets: [{ metric: 'weight', percent: 80 }] });
     expect(intensityCaptionText({ re: e, setIndex: 0, metric: 'weight', maxes: { 'ex-A': { weight: 312 } }, logged: {} }))
       .toBe('80% of max · 249.6 → 250');
+  });
+});
+
+describe('isBackoffReference — back-off follow-through trigger', () => {
+  it('true only for a set another set is "% of"', () => {
+    expect(isBackoffReference(wave, 0)).toBe(true); // sets 2 and 3 are 90% of set 1
+    expect(isBackoffReference(wave, 1)).toBe(false);
+    expect(isBackoffReference(wave, 2)).toBe(false);
+    expect(isBackoffReference(re(), 0)).toBe(false);
+  });
+
+  it('exercise-level "% of set 1" makes set 1 a reference; % of max never does', () => {
+    expect(isBackoffReference(re({ intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 1 }] }), 0)).toBe(true);
+    expect(isBackoffReference(re({ intensity_targets: [{ metric: 'weight', percent: 80 }] }), 0)).toBe(false);
   });
 });
