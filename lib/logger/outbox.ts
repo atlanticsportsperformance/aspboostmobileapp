@@ -5,12 +5,13 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../supabase';
-import { upsertSet, type LogRow } from './saveSet';
+import { upsertSet, type LogRow, type SendResult } from './saveSet';
 
 export const OUTBOX_KEY = 'logger_outbox_v1';
-// After this many consecutive failed sends for one set, the row is kept but
-// only retried on foreground flushes (app open / back to the app), so a row
-// the server keeps rejecting doesn't ride along on every save.
+// After this many consecutive server REJECTIONS for one set (not network
+// failures), the row is kept but only retried on foreground flushes (app
+// open / back to the app), so a row the server keeps rejecting doesn't ride
+// along on every save. A new enqueue for the set gives it a fresh try.
 export const MAX_FAILURES = 5;
 
 export type OutboxStorage = {
@@ -18,7 +19,7 @@ export type OutboxStorage = {
   setItem: (key: string, value: string) => Promise<void>;
 };
 
-export type Send = (row: LogRow) => Promise<{ ok: boolean }>;
+export type Send = (row: LogRow) => Promise<SendResult>;
 
 export type Outbox = {
   enqueue: (row: LogRow) => Promise<void>;
@@ -48,6 +49,9 @@ function withLock<T>(storage: object, fn: () => Promise<T>): Promise<T> {
 
 const defaultSend: Send = row => upsertSet(supabase, row);
 
+// The device-wide outbox the app uses (AsyncStorage 'logger_outbox_v1').
+export const loggerOutbox: Outbox = createOutbox();
+
 export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send = defaultSend): Outbox {
   const read = async (): Promise<Queue> => {
     const raw = await storage.getItem(OUTBOX_KEY);
@@ -62,10 +66,15 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
   };
   const write = (q: Queue) => storage.setItem(OUTBOX_KEY, JSON.stringify(q));
 
+  // Consecutive server rejections per set, in memory (an app restart
+  // retries all).
+  const failures = new Map<string, number>();
+
   const enqueue = (row: LogRow) =>
     withLock(storage, async () => {
       const q = await read();
       const k = setKeyOf(row);
+      failures.delete(k); // a new edit / Log Set gets a fresh try
       delete q[k]; // re-insert so queue order follows the latest edit
       q[k] = row;
       await write(q);
@@ -73,21 +82,23 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
 
   // One pass over a snapshot. A row is removed only if it is still exactly
   // the row that was sent — a newer edit enqueued mid-send stays queued.
-  // Consecutive failures per set, in memory (an app restart retries all).
-  const failures = new Map<string, number>();
-
   const drainOnce = async (foreground: boolean): Promise<number> => {
     const snapshot = await withLock(storage, read);
     let sent = 0;
     for (const [k, row] of Object.entries(snapshot)) {
       if (!foreground && (failures.get(k) ?? 0) >= MAX_FAILURES) continue;
       let ok = false;
+      let retryable = true;
       try {
-        ok = (await send(row)).ok;
+        const res = await send(row);
+        ok = res.ok;
+        retryable = res.retryable === true;
       } catch (error) {
         console.error('logger outbox: send threw', error);
       }
       if (!ok) {
+        // Offline: keep retrying on every trigger, never back off.
+        if (retryable) continue;
         const n = (failures.get(k) ?? 0) + 1;
         failures.set(k, n);
         if (n === MAX_FAILURES) {
@@ -123,16 +134,21 @@ export function createOutbox(storage: OutboxStorage = AsyncStorage, send: Send =
     let foreground = !!opts?.foreground;
     flushing = (async () => {
       let sent = 0;
-      do {
-        rerun = false;
-        sent += await drainOnce(foreground);
-        foreground = rerunForeground;
-        rerunForeground = false;
-      } while (rerun);
+      try {
+        do {
+          rerun = false;
+          sent += await drainOnce(foreground);
+          foreground = rerunForeground;
+          rerunForeground = false;
+        } while (rerun);
+      } finally {
+        // Cleared in the same tick as the last rerun check, so a flush()
+        // arriving right after starts a new pass instead of joining a
+        // finished one.
+        flushing = null;
+      }
       return sent;
-    })().finally(() => {
-      flushing = null;
-    });
+    })();
     return flushing;
   };
 

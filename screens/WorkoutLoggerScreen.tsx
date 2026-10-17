@@ -7,7 +7,6 @@ import {
   StyleSheet,
   Pressable,
   Text,
-  AppState,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -23,7 +22,7 @@ import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
-import { isSetDoneFromLog, isValidSetIndex, logToSetInputs } from '../lib/loggerResume';
+import { isSetDoneFromLog, isValidSetIndex, logToSetInputs, mergeLogsWithPending } from '../lib/loggerResume';
 
 // Types
 import type {
@@ -38,13 +37,13 @@ import type {
 import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
-import { createOutbox } from '../lib/logger/outbox';
+import { loggerOutbox } from '../lib/logger/outbox';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
 
-// One device-wide outbox (AsyncStorage 'logger_outbox_v1'): every set write
-// lands here first and syncs when it can (spec §7).
-const loggerOutbox = createOutbox();
+// Log Set's double-tap guard is held at least this long, so a fast second
+// tap can't un-check the set it just logged.
+const COMPLETION_GUARD_MS = 600;
 type RootStackParamList = {
   WorkoutLogger: { workoutInstanceId: string; athleteId: string };
   Dashboard: undefined;
@@ -169,14 +168,8 @@ export default function WorkoutLoggerScreen() {
       void loggerOutbox.flush({ foreground: true });
     });
   }, [workoutInstanceId]);
-
-  // Coming back to the app (gym Wi-Fi returns, phone unlocked) → sync.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') void loggerOutbox.flush({ foreground: true });
-    });
-    return () => sub.remove();
-  }, []);
+  // (Foreground sync of the outbox lives at app level:
+  // hooks/useOutboxForegroundSync, mounted in App.tsx.)
 
   // Fetch mound velocity for throwing velocity fallback
   useEffect(() => {
@@ -341,6 +334,12 @@ export default function WorkoutLoggerScreen() {
 
       setAthleteMaxes(maxesMap);
 
+      // Rows saved on this device but not synced yet are newer than the
+      // server's — overlay them so a reopened workout shows every set.
+      // Snapshot them BEFORE reading the server: a flush finishing in
+      // between would otherwise drop the row from both reads.
+      const pendingRows = await loggerOutbox.pending().catch(() => []);
+
       // Fetch existing logs (if resuming workout)
       const { data: logs } = await supabase
         .from('exercise_logs')
@@ -348,18 +347,7 @@ export default function WorkoutLoggerScreen() {
         .eq('workout_instance_id', workoutInstanceId)
         .order('set_number');
 
-      // Rows saved on this device but not synced yet are newer than the
-      // server's — overlay them so a reopened workout shows every set.
-      const pendingRows = await loggerOutbox.pending().catch(() => []);
-      const logsBySet = new Map<string, any>();
-      (logs || []).forEach((l: any) => logsBySet.set(`${l.routine_exercise_id}:${l.set_number}`, l));
-      pendingRows
-        .filter(r => r.workout_instance_id === workoutInstanceId)
-        .forEach(r => {
-          const k = `${r.routine_exercise_id}:${r.set_number}`;
-          logsBySet.set(k, { ...logsBySet.get(k), ...r });
-        });
-      const allLogs = Array.from(logsBySet.values());
+      const allLogs = mergeLogsWithPending(logs, pendingRows, workoutInstanceId);
       const rpeMap: Record<string, number | null> = {};
       allLogs.forEach((l: any) => {
         if ('rpe' in l) rpeMap[`${l.routine_exercise_id}:${l.set_number - 1}`] = l.rpe ?? null;
@@ -985,7 +973,9 @@ export default function WorkoutLoggerScreen() {
       .then(ok => {
         if (ok && !currentlyCompleted) startRestAfter(activeExerciseId, setIndex);
       })
-      .finally(() => completionInFlightRef.current.delete(inFlightKey));
+      .finally(() => {
+        setTimeout(() => completionInFlightRef.current.delete(inFlightKey), COMPLETION_GUARD_MS);
+      });
   }, [activeExerciseId, allExercises, handleInputChange, persistSet, startRestAfter]);
 
   // Get current exercise and routine

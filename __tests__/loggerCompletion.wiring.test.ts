@@ -14,7 +14,7 @@ describe('workout logger — set completion survives leaving and resuming', () =
     expect(fn).toContain('persistSet(activeExerciseId, setIndex, !currentlyCompleted)');
     // double-tap while saving is ignored, cleared when the save settles
     expect(fn).toContain('if (completionInFlightRef.current.has(inFlightKey)) return;');
-    expect(fn).toContain('.finally(() => completionInFlightRef.current.delete(inFlightKey))');
+    expect(fn).toContain('setTimeout(() => completionInFlightRef.current.delete(inFlightKey), COMPLETION_GUARD_MS)');
     // a logged set on a sequence step starts the rest timer
     expect(fn).toContain('if (ok && !currentlyCompleted) startRestAfter(activeExerciseId, setIndex);');
   });
@@ -45,9 +45,28 @@ describe('workout logger — set completion survives leaving and resuming', () =
     expect(fn).not.toContain('setCompletedSets');
   });
   it('outbox flushes after load and on app foreground; reload overlays unsynced rows', () => {
-    expect(S).toContain('const loggerOutbox = createOutbox();');
-    expect(S).toContain("if (state === 'active') void loggerOutbox.flush({ foreground: true });");
+    expect(S).toContain("import { loggerOutbox } from '../lib/logger/outbox';");
     expect(S).toMatch(/loadWorkout\(\)\.finally\(\(\) => \{\s*void loggerOutbox\.flush\(\{ foreground: true \}\);/);
     expect(S).toContain('await loggerOutbox.pending()');
+    // queue is snapshotted BEFORE the server logs are read (a flush landing
+    // in between can then never resurrect older server state)
+    const load = body('const loadWorkout', '// Timer effect');
+    const pendingAt = load.indexOf('await loggerOutbox.pending()');
+    const logsAt = load.indexOf(".from('exercise_logs')");
+    expect(pendingAt).toBeGreaterThan(-1);
+    expect(pendingAt).toBeLessThan(logsAt);
+    expect(load).toContain('mergeLogsWithPending(logs, pendingRows, workoutInstanceId)');
+  });
+  it('foreground sync lives at app level, so queued sets sync without the logger open', () => {
+    const app = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
+    expect(app).toContain('useOutboxForegroundSync(!!session)');
+    const hook = readFileSync(join(__dirname, '..', 'hooks/useOutboxForegroundSync.ts'), 'utf8');
+    expect(hook).toContain("if (state === 'active') void loggerOutbox.flush({ foreground: true });");
+    expect(S).not.toContain("AppState.addEventListener");
+  });
+  it('a fast second tap on Log Set cannot un-check the set (guard held ≥600 ms)', () => {
+    const fn = body('const handleToggleSetComplete', '// Get current exercise and routine');
+    expect(fn).toContain('COMPLETION_GUARD_MS');
+    expect(S).toContain('const COMPLETION_GUARD_MS = 600;');
   });
 });

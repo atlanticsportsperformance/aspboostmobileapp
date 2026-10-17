@@ -26,10 +26,15 @@ const NUMERIC_COLUMNS: Record<string, string> = {
   distance: 'actual_distance',
 };
 
-function toNumber(value: unknown): number | null {
+// The RPC casts these with ::int — a fractional value would fail the whole
+// set's write, so round them here.
+const INT_COLUMNS = new Set(['actual_reps', 'actual_duration_seconds']);
+
+function toNumber(value: unknown, integer: boolean): number | null {
   if (value === '' || value == null) return null;
   const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return integer ? Math.round(n) : n;
 }
 
 export function buildLogRow(key: SetKey, fields: Record<string, unknown>, opts: BuildOpts): LogRow {
@@ -42,7 +47,7 @@ export function buildLogRow(key: SetKey, fields: Record<string, unknown>, opts: 
     ...(opts.orgId ? { org_id: opts.orgId } : {}),
   };
   for (const [field, column] of Object.entries(NUMERIC_COLUMNS)) {
-    row[column] = toNumber(fields[field]);
+    row[column] = toNumber(fields[field], INT_COLUMNS.has(column));
   }
   const notes = fields.notes;
   row.notes = typeof notes === 'string' && notes !== '' ? notes : null;
@@ -67,19 +72,27 @@ export function completeForEdit(completed: boolean[] | undefined, setIndex: numb
 }
 
 export type RpcClient = {
-  rpc: (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: unknown }>;
+  rpc: (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: any; status?: number }>;
 };
 
-export async function upsertSet(client: RpcClient, row: LogRow): Promise<{ ok: boolean; id?: string }> {
+// retryable: true = the request never got a server answer (offline, fetch
+// TypeError) — the outbox retries freely. false = the server rejected the row
+// (Postgres/PostgREST error code, or a 4xx) — counts toward back-off.
+export type SendResult = { ok: boolean; id?: string; retryable?: boolean };
+
+export async function upsertSet(client: RpcClient, row: LogRow): Promise<SendResult> {
   try {
-    const { data, error } = await client.rpc('upsert_exercise_log', { p_row: row });
+    const { data, error, status } = await client.rpc('upsert_exercise_log', { p_row: row });
     if (error) {
-      console.error('upsert_exercise_log failed:', error, 'row:', row);
-      return { ok: false };
+      const hasCode = typeof error?.code === 'string' && error.code !== '';
+      const clientError = typeof status === 'number' && status >= 400 && status < 500;
+      const rejected = hasCode || clientError;
+      console.error(`upsert_exercise_log ${rejected ? 'rejected' : 'unreachable'}:`, error, 'row:', row);
+      return { ok: false, retryable: !rejected };
     }
     return { ok: true, id: typeof data === 'string' ? data : undefined };
   } catch (error) {
-    console.error('upsert_exercise_log threw:', error);
-    return { ok: false };
+    console.error('upsert_exercise_log threw (network):', error);
+    return { ok: false, retryable: true };
   }
 }

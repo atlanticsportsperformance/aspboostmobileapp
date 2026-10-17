@@ -1,4 +1,4 @@
-import { isSetDoneFromLog, isValidSetIndex, logToSetInputs } from '../lib/loggerResume';
+import { isSetDoneFromLog, isValidSetIndex, logToSetInputs, mergeLogsWithPending } from '../lib/loggerResume';
 
 describe('isSetDoneFromLog — resume rule (is_complete only)', () => {
   it('legacy complete row with no values resumes done', () => {
@@ -45,5 +45,31 @@ describe('isValidSetIndex — no phantom set rows', () => {
   });
   it('rejects everything when sets is missing', () => {
     expect(isValidSetIndex(0, undefined)).toBe(false);
+  });
+});
+
+describe('mergeLogsWithPending — reload overlay', () => {
+  const server = [
+    { id: 'a', routine_exercise_id: 're-1', set_number: 1, actual_reps: 3, is_complete: false, rpe: 7 },
+    { id: 'b', routine_exercise_id: 're-1', set_number: 2, actual_reps: 4, is_complete: true },
+  ];
+  it('pending rows win over server rows for the same set, keeping server-only columns', () => {
+    const pending = [{ workout_instance_id: 'wi', routine_exercise_id: 're-1', set_number: 1, actual_reps: 5, is_complete: true }];
+    const merged = mergeLogsWithPending(server, pending, 'wi');
+    expect(merged).toHaveLength(2);
+    expect(merged.find(l => l.set_number === 1)).toMatchObject({ id: 'a', actual_reps: 5, is_complete: true, rpe: 7 });
+    expect(merged.find(l => l.set_number === 2)).toEqual(server[1]);
+  });
+  it('adds pending-only sets and ignores other workouts', () => {
+    const pending = [
+      { workout_instance_id: 'wi', routine_exercise_id: 're-2', set_number: 1, actual_reps: 9 },
+      { workout_instance_id: 'other', routine_exercise_id: 're-1', set_number: 2, actual_reps: 99 },
+    ];
+    const merged = mergeLogsWithPending(server, pending, 'wi');
+    expect(merged).toHaveLength(3);
+    expect(merged.find(l => l.set_number === 2 && l.routine_exercise_id === 're-1')?.actual_reps).toBe(4);
+  });
+  it('handles null server logs', () => {
+    expect(mergeLogsWithPending(null, [], 'wi')).toEqual([]);
   });
 });

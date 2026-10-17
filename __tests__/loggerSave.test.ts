@@ -56,6 +56,14 @@ describe('buildLogRow', () => {
     expect(row.metric_data).toEqual({ velo: 82 });
   });
 
+  it('fractional reps / seconds are rounded for the int columns; weight/distance keep decimals', () => {
+    const r = buildLogRow(KEY, { reps: '7.6', time_seconds: 29.4, weight: '132.5', distance: 10.25 }, { ...OPTS, complete: true });
+    expect(r.actual_reps).toBe(8);
+    expect(r.actual_duration_seconds).toBe(29);
+    expect(r.actual_weight).toBe(132.5);
+    expect(r.actual_distance).toBe(10.25);
+  });
+
   it('non-numeric built-in values become null instead of NaN', () => {
     expect(buildLogRow(KEY, { reps: 'abc' }, { ...OPTS, complete: false }).actual_reps).toBeNull();
   });
@@ -79,10 +87,17 @@ describe('upsertSet', () => {
     expect(rpc).toHaveBeenCalledWith('upsert_exercise_log', { p_row: row });
   });
 
-  it('reports failure on error or throw', async () => {
+  it('server rejection (error with a code / 4xx) is not retryable', async () => {
     const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(upsertSet({ rpc: async () => ({ data: null, error: { message: 'x' } }) }, {})).resolves.toEqual({ ok: false });
-    await expect(upsertSet({ rpc: async () => { throw new Error('offline'); } }, {})).resolves.toEqual({ ok: false });
+    await expect(upsertSet({ rpc: async () => ({ data: null, error: { message: 'x', code: '42501' }, status: 403 }) }, {})).resolves.toEqual({ ok: false, retryable: false });
+    await expect(upsertSet({ rpc: async () => ({ data: null, error: { message: 'x', code: '' }, status: 400 }) }, {})).resolves.toEqual({ ok: false, retryable: false });
+    quiet.mockRestore();
+  });
+
+  it('network failure (throw, or error with no code and no response) is retryable', async () => {
+    const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(upsertSet({ rpc: async () => { throw new TypeError('Network request failed'); } }, {})).resolves.toEqual({ ok: false, retryable: true });
+    await expect(upsertSet({ rpc: async () => ({ data: null, error: { message: 'TypeError: Network request failed', code: '' }, status: 0 }) }, {})).resolves.toEqual({ ok: false, retryable: true });
     quiet.mockRestore();
   });
 });
@@ -224,6 +239,40 @@ describe('outbox', () => {
     expect(await ob.flush({ foreground: true })).toBe(1);
     expect(await ob.size()).toBe(0);
     warn.mockRestore();
+  });
+
+  it('network failures never back a set off', async () => {
+    const send = jest.fn(async () => ({ ok: false, retryable: true }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, true));
+    for (let i = 0; i < 8; i++) await ob.flush();
+    expect(send).toHaveBeenCalledTimes(8);
+    expect(await ob.size()).toBe(1);
+  });
+
+  it('a new enqueue for a backed-off set resets its failure count', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = jest.fn(async () => ({ ok: false }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, false));
+    for (let i = 0; i < 5; i++) await ob.flush();
+    await ob.flush();
+    expect(send).toHaveBeenCalledTimes(5); // backed off
+    await ob.enqueue(row({ reps: 5 }, true)); // athlete logs the set again
+    await ob.flush();
+    expect(send).toHaveBeenCalledTimes(6);
+    warn.mockRestore();
+  });
+
+  it('a flush requested as the previous one finishes still runs', async () => {
+    const send = jest.fn(async () => ({ ok: true }));
+    const ob = createOutbox(memoryStorage(), send);
+    await ob.enqueue(row({ reps: 5 }, true));
+    const first = ob.flush();
+    await first;
+    await ob.enqueue(row({}, true, { ...KEY, setNumber: 4 }));
+    await ob.flush();
+    expect(await ob.size()).toBe(0);
   });
 
   it('a success resets the failure count', async () => {

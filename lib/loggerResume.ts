@@ -29,3 +29,25 @@ export function logToSetInputs(log: Record<string, any>): Record<string, any> {
 export function isValidSetIndex(setIndex: number, sets: number | null | undefined): boolean {
   return Number.isInteger(setIndex) && setIndex >= 0 && setIndex < (sets ?? 0);
 }
+
+/**
+ * Reload overlay: this device's unsynced outbox rows for the workout win over
+ * the server's rows for the same set (they are never older on one device);
+ * server-only columns (id, rpe, ...) are kept. Snapshot `pending` BEFORE
+ * fetching server logs — a flush landing in between then can't hide a row.
+ */
+export function mergeLogsWithPending(
+  serverLogs: Record<string, any>[] | null | undefined,
+  pending: Record<string, any>[],
+  workoutInstanceId: string,
+): Record<string, any>[] {
+  const bySet = new Map<string, Record<string, any>>();
+  (serverLogs || []).forEach(l => bySet.set(`${l.routine_exercise_id}:${l.set_number}`, l));
+  pending
+    .filter(r => r.workout_instance_id === workoutInstanceId)
+    .forEach(r => {
+      const k = `${r.routine_exercise_id}:${r.set_number}`;
+      bySet.set(k, { ...bySet.get(k), ...r });
+    });
+  return Array.from(bySet.values());
+}

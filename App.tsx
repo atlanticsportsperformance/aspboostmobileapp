@@ -45,11 +45,14 @@ import LoadingScreen from './screens/LoadingScreen';
 // Stack.Screen below — react-navigation requires the module on first navigation,
 // so ~37 large screen modules no longer evaluate during app startup.
 import { StatusBar } from 'expo-status-bar';
+import { useOutboxForegroundSync } from './hooks/useOutboxForegroundSync';
 
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
   const { session, initializing, isParentAccount, isStaff } = useAuth();
+  // Logger outbox: sync queued sets on start / foreground, app-wide.
+  useOutboxForegroundSync(!!session);
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
