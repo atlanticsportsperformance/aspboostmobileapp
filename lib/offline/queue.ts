@@ -1,7 +1,11 @@
 // Generic durable FIFO queue on AsyncStorage. Items are stored as a plain JSON
 // array under `key` (the format Pulse's queue has always used).
 //
-// - enqueue appends (no coalescing); with `idOf`, an already-queued id is a no-op.
+// - enqueue appends (no coalescing); with `idOf`, an already-queued id is a no-op
+//   — or, with `replace: true`, the queued item is replaced in place by the new
+//   one (latest write wins). A replaced item that was in flight is NOT removed
+//   when its send completes: removal then matches the exact sent value, so the
+//   newer payload stays queued and goes out on the next pass.
 // - flush sends in FIFO order and stops at the first transient failure, leaving
 //   that item and everything after it queued. An error with `permanent: true`
 //   drops the item and continues.
@@ -19,6 +23,8 @@ export type QueueOptions<T> = {
   // that chunk so the bad item can be isolated.
   sendBatch?: (items: T[]) => Promise<void>;
   batchSize?: number;
+  // With `idOf`: a later enqueue of a queued id replaces it (same position).
+  replace?: boolean;
 };
 
 export type Queue<T> = {
@@ -66,16 +72,25 @@ export function createQueue<T>(
   opts: QueueOptions<T> = {},
 ): Queue<T> {
   const { idOf, maxItems, sendBatch } = opts;
+  const replace = !!(opts.replace && idOf);
   const batchSize = Math.max(1, opts.batchSize ?? 50);
   // Identity of a queued item: its id, else its serialized value.
-  const identOf = (item: T) => (idOf ? idOf(item) : JSON.stringify(item));
+  // In replace mode an id's payload can change while it is in flight, so a
+  // completed send removes only the exact value it sent.
+  const identOf = (item: T) => (idOf && !replace ? idOf(item) : JSON.stringify(item));
 
   const enqueue = (item: T) =>
     withLock(key, async () => {
       const items = await read<T>(key);
       if (idOf) {
         const id = idOf(item);
-        if (items.some(i => idOf(i) === id)) return;
+        const at = items.findIndex(i => idOf(i) === id);
+        if (at >= 0) {
+          if (!replace) return;
+          items[at] = item;
+          await write(key, items);
+          return;
+        }
       }
       items.push(item);
       if (maxItems && items.length > maxItems) items.splice(0, items.length - maxItems);
