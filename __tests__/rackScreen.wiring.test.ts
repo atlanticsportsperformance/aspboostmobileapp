@@ -310,20 +310,23 @@ describe('athlete card: the exercise + set line is a clear button (pill)', () =>
     expect(trigger).toContain('onPress={() => setOpen(true)}');
     expect(trigger).toContain('accessibilityRole="button"');
     expect(trigger).toContain('<Ionicons name="chevron-down" size={20}');
-    expect(P).toContain("borderColor: 'rgba(155,221,255,0.35)'");
+    expect(P).toContain("borderColor: 'rgba(155,221,255,0.45)'");
+    expect(P).toContain('borderWidth: 1.5,');
+    expect(P).toContain("backgroundColor: 'rgba(155,221,255,0.08)'");
+    expect(P).toContain('<View style={styles.pillText}>');
     expect(P).toContain("color: '#9BDDFF'");
     expect(P).toContain('minHeight: 44,');
-    expect(P).toContain('paddingVertical: 8,');
-    expect(P).toContain('paddingHorizontal: 12,');
-    expect(P).toContain('borderRadius: 10,');
+    expect(P).toContain('paddingVertical: 10,');
+    expect(P).toContain('paddingHorizontal: 14,');
+    expect(P).toContain('borderRadius: 12,');
     expect(P).not.toContain('styles.chev}>▾');
   });
   it('the name truncates, "Set n of N" never does; the source label stays under the pill (both layouts)', () => {
     const { pillParts } = require('../lib/rack/viewModel');
     expect(pillParts('Romanian Deadlift · Set 1 of 3')).toEqual({ name: 'Romanian Deadlift', set: 'Set 1 of 3' });
     expect(pillParts('Free lift')).toEqual({ name: 'Free lift', set: null });
-    expect(P).toContain('<Text style={styles.pillName} numberOfLines={1}>');
-    expect(P).toContain('pillSet: { flexShrink: 0,');
+    expect(P).toContain('<Text style={styles.pillName} numberOfLines={1} ellipsizeMode="tail">');
+    expect(P).toContain("pillSet: { fontSize: 14, fontWeight: '800'");
     // one card component for both layouts; the source label sits right under the pill
     expect(CARD.indexOf('<ExercisePicker')).toBeLessThan(CARD.indexOf('<Text style={styles.src}>{view.sourceLine}</Text>'));
   });

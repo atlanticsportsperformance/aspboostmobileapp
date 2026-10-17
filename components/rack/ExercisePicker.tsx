@@ -59,20 +59,31 @@ export default function ExercisePicker({ label, exercises, rows, currentRoutineE
           <Text style={styles.promptTxt}>Pick an exercise ▾</Text>
         </TouchableOpacity>
       ) : (
-        // A clear button: a bordered pill, zone-blue text, a full-size chevron,
-        // ≥ 44 pt tall. The exercise name truncates; "Set n of N" stays visible.
+        // A clear button: one bordered box — text column (name, 1 line,
+        // ellipsized / "Set n of N" bold) + a 20 px chevron, vertically centred.
+        // The style is static on an inner View (no style function).
         <Pressable
           disabled={!can}
           onPress={() => setOpen(true)}
-          style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
+          style={styles.pillHit}
           accessibilityRole="button"
           accessibilityLabel={`${label}. Change exercise or set`}
         >
-          <Text style={styles.pillName} numberOfLines={1}>
-            {pillParts(label).name}
-          </Text>
-          {pillParts(label).set ? <Text style={styles.pillSet}>{` · ${pillParts(label).set}`}</Text> : null}
-          {can && <Ionicons name="chevron-down" size={20} color={RACK_COLORS.acc} style={styles.pillChev} />}
+          {({ pressed }) => (
+            <View style={[styles.pill, pressed && styles.pillPressed]}>
+              <View style={styles.pillText}>
+                <Text style={styles.pillName} numberOfLines={1} ellipsizeMode="tail">
+                  {pillParts(label).name}
+                </Text>
+                {pillParts(label).set ? (
+                  <Text style={styles.pillSet} numberOfLines={1}>
+                    {pillParts(label).set}
+                  </Text>
+                ) : null}
+              </View>
+              {can && <Ionicons name="chevron-down" size={20} color={RACK_COLORS.acc} style={styles.pillChev} />}
+            </View>
+          )}
         </Pressable>
       )}
       <Modal visible={open} transparent animationType="fade" supportedOrientations={[...ALL_MODAL_ORIENTATIONS]} onRequestClose={() => setOpen(false)}>
@@ -145,24 +156,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   promptTxt: { fontSize: 13, fontWeight: '800', color: RACK_COLORS.acc },
+  pillHit: { alignSelf: 'flex-start', maxWidth: '100%', minHeight: 44, marginTop: 4 },
   pill: {
     alignSelf: 'flex-start',
     maxWidth: '100%',
     minHeight: 44,
-    marginTop: 4,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.35)',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: 'rgba(155,221,255,0.06)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(155,221,255,0.45)',
+    backgroundColor: 'rgba(155,221,255,0.08)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
   },
-  pillPressed: { backgroundColor: 'rgba(155,221,255,0.14)' },
-  pillName: { flexShrink: 1, fontSize: 15, fontWeight: '700', color: '#9BDDFF' },
-  pillSet: { flexShrink: 0, fontSize: 15, fontWeight: '700', color: '#9BDDFF' },
-  pillChev: { marginLeft: 6 },
+  pillPressed: { backgroundColor: 'rgba(155,221,255,0.16)' },
+  pillText: { flexShrink: 1, minWidth: 0 },
+  pillName: { fontSize: 15, fontWeight: '600', color: '#9BDDFF' },
+  pillSet: { fontSize: 14, fontWeight: '800', color: '#9BDDFF', marginTop: 1 },
+  pillChev: { marginLeft: 10 },
   scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
   sheet: { width: 520, borderRadius: 18, backgroundColor: RACK_COLORS.card, borderWidth: 1, borderColor: RACK_COLORS.line, padding: 20, gap: 8 },
   k: { fontSize: 11, fontWeight: '900', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)' },
