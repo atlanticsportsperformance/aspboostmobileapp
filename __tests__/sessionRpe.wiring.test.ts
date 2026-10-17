@@ -5,13 +5,15 @@ jest.mock('../lib/supabase', () => ({ supabase: {} }));
 jest.mock('../lib/workoutRefreshSignal', () => ({ markWorkoutListDirty: jest.fn() }));
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn() }));
 
-import { completionPatch, createPendingCompletions, PENDING_COMPLETE_KEY, type CompleteSend } from '../lib/logger/pendingComplete';
+import { createSyncAll } from '../lib/logger/syncAll';
+import { isRetryableError, completionPatch, createPendingCompletions, PENDING_COMPLETE_KEY, type CompleteSend } from '../lib/logger/pendingComplete';
 
 const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf8');
 const logger = read('screens/WorkoutLoggerScreen.tsx');
 const completed = read('screens/CompletedWorkoutScreen.tsx');
 const sheet = read('components/logger/SessionRpeSheet.tsx');
-const sync = read('hooks/useOutboxForegroundSync.ts');
+const sync = read('lib/logger/syncAll.ts');
+const hookSrc = read('hooks/useOutboxForegroundSync.ts');
 
 function mem() {
   const m: Record<string, string> = {};
@@ -35,7 +37,8 @@ describe('session RPE gating (wiring)', () => {
   it('outbox flushes before completion; sync chains completions after sets', () => {
     const fin = logger.slice(logger.indexOf('const finalizeWorkout'));
     expect(fin.indexOf('loggerOutbox.flush')).toBeLessThan(fin.indexOf('pendingCompletions.complete'));
-    expect(sync).toMatch(/\.flush\(\{ foreground: true \}\)[\s\S]*\.then\(\(\) => pendingCompletions\.flush\(\)\)/);
+    expect(sync).toMatch(/\.flush\(\{ foreground: true \}\)[\s\S]*\.then\(\(\) => pending\.flush\(\)\)/);
+    expect(hookSrc).toContain('syncAll');
   });
   it('CompletedWorkout select includes ask_rpe; reset/reopen clear queue and reset clears session_rpe', () => {
     expect(completed).toMatch(/ask_rpe,/);
@@ -100,10 +103,45 @@ describe('pending completions', () => {
     expect(await pc.pending()).toEqual([]);
     expect(PENDING_COMPLETE_KEY).toBeTruthy();
   });
-  it('replay runs only after the set flush (sync hook order)', async () => {
+  it('classifies errors: 5xx and PGRST000-002 retryable; 4xx/coded final; no code retryable', () => {
+    expect(isRetryableError({ code: '' }, 503)).toBe(true);
+    expect(isRetryableError({ code: 'PGRST001' }, 400)).toBe(true);
+    expect(isRetryableError({ code: 'PGRST002' })).toBe(true);
+    expect(isRetryableError({ code: '42501' }, 403)).toBe(false);
+    expect(isRetryableError({ code: 'PGRST116' }, 406)).toBe(false);
+    expect(isRetryableError({}, undefined)).toBe(true);
+  });
+  it('initial finish on 503 queues', async () => {
+    const send: CompleteSend = async () => ({ ok: false, retryable: isRetryableError({ code: '' }, 503) });
+    const pc = createPendingCompletions(mem(), send, async () => 'u1');
+    expect(await pc.complete(I('a'))).toEqual({ status: 'queued' });
+  });
+  it('initial finish on 403/42501 is rejected, not queued', async () => {
+    const send: CompleteSend = async () => ({ ok: false, retryable: isRetryableError({ code: '42501' }, 403), message: 'denied' });
+    const pc = createPendingCompletions(mem(), send, async () => 'u1');
+    expect((await pc.complete(I('a'))).status).toBe('rejected');
+    expect(await pc.pending()).toEqual([]);
+  });
+  it('replay keeps on 503 / PGRST001, drops on 403 / 42501', async () => {
+    const results = [
+      { ok: false, retryable: isRetryableError({ code: '' }, 503) },
+      { ok: false, retryable: isRetryableError({ code: 'PGRST001' }, 400) },
+      { ok: false, retryable: isRetryableError({ code: '42501' }, 403) },
+    ];
+    const st = mem();
+    const pc0 = createPendingCompletions(st, async () => NET, async () => 'u1');
+    await pc0.complete(I('a'));
+    await pc0.complete(I('b'));
+    await pc0.complete(I('c'));
+    const pc = createPendingCompletions(st, async p => results[['a', 'b', 'c'].indexOf(p.workoutInstanceId)], async () => 'u1');
+    await pc.flush();
+    expect((await pc.pending()).map(x => x.workoutInstanceId)).toEqual(['a', 'b']);
+  });
+  it('real syncAll runs completions only after the set flush settles (even on failure)', async () => {
     const order: string[] = [];
-    const sets = () => new Promise<number>(r => setTimeout(() => { order.push('sets'); r(0); }, 5));
-    await sets().catch(() => 0).then(() => order.push('status'));
+    const outbox = { flush: () => new Promise<number>((_, rej) => setTimeout(() => { order.push('sets'); rej(new Error('x')); }, 5)) };
+    const pending = { flush: async () => { order.push('status'); return 0; } };
+    await createSyncAll(outbox as any, pending)();
     expect(order).toEqual(['sets', 'status']);
   });
 });

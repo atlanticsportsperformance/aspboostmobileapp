@@ -62,7 +62,7 @@ describe('workout logger — set completion survives leaving and resuming', () =
     expect(app).toContain('useOutboxForegroundSync(!!session)');
     const hook = readFileSync(join(__dirname, '..', 'hooks/useOutboxForegroundSync.ts'), 'utf8');
     expect(hook).toContain("if (state === 'active') void syncAll();");
-    expect(hook).toContain('.flush({ foreground: true })');
+    expect(readFileSync(join(__dirname, '..', 'lib/logger/syncAll.ts'), 'utf8')).toContain('.flush({ foreground: true })');
     expect(S).not.toContain("AppState.addEventListener");
   });
   it('a fast second tap on Log Set cannot un-check the set (guard held ≥600 ms)', () => {

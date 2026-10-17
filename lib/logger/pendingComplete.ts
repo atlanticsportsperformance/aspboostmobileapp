@@ -41,7 +41,17 @@ export function completionPatch(p: PendingComplete): Record<string, unknown> {
   return patch;
 }
 
-// Same network-vs-server rule as the set outbox (saveSet.upsertSet).
+// Retryable = the request never got a real answer, or the server/DB is
+// temporarily down (5xx, PostgREST PGRST000-002 connection/pool errors). Only
+// 4xx-class rejections and other coded errors are final.
+export function isRetryableError(error: { code?: unknown } | null | undefined, status?: number): boolean {
+  if (typeof status === 'number' && status >= 500) return true;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  if (/^PGRST00[012]$/.test(code)) return true;
+  const clientError = typeof status === 'number' && status >= 400 && status < 500;
+  return !(code !== '' || clientError);
+}
+
 const defaultSend: CompleteSend = async p => {
   try {
     const { data, error, status } = await supabase
@@ -50,9 +60,7 @@ const defaultSend: CompleteSend = async p => {
       .eq('id', p.workoutInstanceId)
       .select('id');
     if (error) {
-      const hasCode = typeof (error as any).code === 'string' && (error as any).code !== '';
-      const clientError = typeof status === 'number' && status >= 400 && status < 500;
-      return { ok: false, retryable: !(hasCode || clientError), message: error.message };
+      return { ok: false, retryable: isRetryableError(error as any, status), message: error.message };
     }
     if (!data || data.length === 0) {
       return { ok: false, retryable: false, zeroRows: true, message: 'Workout not found or not allowed.' };
