@@ -1147,7 +1147,7 @@ export default function ExerciseDetailView({
 
           {exercise.ask_rpe && onRpeChange && (
             <RpeRow
-              target={setConfig?.rpe ?? null}
+              target={setConfig?.rpe ?? exercise.rpe_target ?? null}
               value={rpeValues?.[`${exercise.id}:${i}`] ?? null}
               onChange={(v) => onRpeChange(i, v)}
             />

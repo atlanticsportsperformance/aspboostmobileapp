@@ -71,6 +71,8 @@ export interface LoggerRoutineExercise {
   notes_only?: boolean;
   placeholder_name?: string | null;
   ask_rpe: boolean;
+  // Exercise-level RPE target; per-set set_configurations[n].rpe wins.
+  rpe_target?: number | null;
   velocity_min_mps: number | null;
   velocity_max_mps: number | null;
   speed_drop_stop_pct: number | null;

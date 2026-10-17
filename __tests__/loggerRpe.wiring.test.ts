@@ -17,6 +17,9 @@ describe('RPE row wiring', () => {
     const i = D.indexOf('<RpeRow');
     expect(D.slice(Math.max(0, i - 300), i)).toContain('exercise.ask_rpe');
   });
+  it('RPE row target falls back to the exercise-level rpe_target', () => {
+    expect(D).toContain('target={setConfig?.rpe ?? exercise.rpe_target ?? null}');
+  });
   it('done set with no rpe on an ask_rpe exercise shows RPE?', () => {
     expect(D).toContain('RPE?');
     expect(D).toMatch(/isCompleted && exercise\.ask_rpe && rpeValues/);
