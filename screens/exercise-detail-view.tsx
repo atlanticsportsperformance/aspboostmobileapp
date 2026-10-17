@@ -11,16 +11,13 @@ import {
   StyleSheet,
   Animated,
   LayoutChangeEvent,
-  useWindowDimensions,
   Linking,
-  Image,
   PanResponder,
   Modal,
   Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
 import { backoffUpdates, fieldKey, intensityFor, prescribedValue, resolveTarget, type IntensityResult } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
@@ -38,6 +35,10 @@ import type {
 } from '../types/logger';
 import { nextStep, type SeqStep } from '../lib/logger/sequence';
 import RpeRow from '../components/logger/RpeRow';
+import FloatingVideoButton from '../components/logger/FloatingVideoButton';
+import FloatingVideoWindow from '../components/logger/FloatingVideoWindow';
+import VideoModal from '../components/logger/VideoModal';
+import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 interface PRAlert {
   metric: string;
@@ -139,23 +140,6 @@ function computeSessionStats(sets: ExerciseHistorySet[]): {
     volume,
     setsCount: sets.length,
   };
-}
-
-// Helper: Get YouTube video ID from URL
-function getYouTubeVideoId(url: string | null): string | null {
-  if (!url) return null;
-
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/,
-    /youtube\.com\/embed\/([^&\n?#]+)/
-  ];
-
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match?.[1]) return match[1];
-  }
-
-  return null;
 }
 
 // Helper: Get keyboard type for metric
@@ -491,8 +475,8 @@ export default function ExerciseDetailView({
   prAlert,
 }: ExerciseDetailViewProps) {
   const insets = useSafeAreaInsets();
-  const { width: screenWidth } = useWindowDimensions();
-  const videoId = getYouTubeVideoId(exercise.exercises.video_url || null);
+  const videoUrl = exercise.exercises.video_url || null;
+  const videoId = youTubeId(videoUrl);
   const [prAlertVisible, setPRAlertVisible] = useState(false);
   const [prAnimation] = useState(new Animated.Value(0));
   const [showHistory, setShowHistory] = useState(false);
@@ -546,10 +530,11 @@ export default function ExerciseDetailView({
       });
     }, 600);
   }, []);
-  const [videoPlaying, setVideoPlaying] = useState(false);
-  const [videoReady, setVideoReady] = useState(false);
-  const [videoError, setVideoError] = useState(false);
-  const [shouldRenderPlayer, setShouldRenderPlayer] = useState(false);
+  // Floating demo video: closed by default; ⤢ hands off to the full modal.
+  const [floatingVideoOpen, setFloatingVideoOpen] = useState(false);
+  const [fullVideoId, setFullVideoId] = useState<string | null>(null);
+  // Measured bottom-bar height so the ▶ / window sit just above it.
+  const [bottomBarHeight, setBottomBarHeight] = useState(80);
 
   // Custom keypad state
   const [activeInput, setActiveInput] = useState<{
@@ -558,41 +543,17 @@ export default function ExerciseDetailView({
     isDecimal: boolean;
   } | null>(null);
 
-  // Calculate video dimensions
-  const videoWidth = Math.min(screenWidth - 32, 400);
-  const videoHeight = videoWidth * (9 / 16);
-
-  // Handle video state changes
-  const onVideoStateChange = useCallback((state: string) => {
-    if (state === 'ended') {
-      setVideoPlaying(false);
-    }
-  }, []);
-
-  // Handle video ready
-  const onVideoReady = useCallback(() => {
-    setVideoReady(true);
-  }, []);
-
-  // Handle video errors
-  const onVideoError = useCallback((error: string) => {
-    setVideoError(true);
-  }, []);
-
-  // Reset video state when exercise changes and delay player render
+  // A new exercise starts with its video closed.
   useEffect(() => {
-    setVideoError(false);
-    setVideoReady(false);
-    setVideoPlaying(false);
-    setShouldRenderPlayer(false);
-
-    // Delay rendering the player to avoid mount issues
-    const timer = setTimeout(() => {
-      setShouldRenderPlayer(true);
-    }, 100);
-
-    return () => clearTimeout(timer);
+    setFloatingVideoOpen(false);
+    setFullVideoId(null);
   }, [exercise.id]);
+
+  // YouTube → floating window; any other link opens full screen outside.
+  const openVideo = () => {
+    if (videoId) setFloatingVideoOpen(true);
+    else if (videoUrl) Linking.openURL(videoUrl);
+  };
 
   // Scroll refs for auto-scrolling to current set
   const scrollViewRef = useRef<ScrollView>(null);
@@ -1418,54 +1379,6 @@ export default function ExerciseDetailView({
         )}
       </View>
 
-      {/* Video Section - YouTube Player with fallback (hidden when keyboard is active) */}
-      {videoId && !activeInput && (
-        videoError ? (
-          // Fallback: Thumbnail that opens YouTube app
-          <TouchableOpacity
-            style={[styles.videoContainer, styles.videoFallback, { width: videoWidth, height: videoHeight }]}
-            onPress={() => Linking.openURL(`https://www.youtube.com/watch?v=${videoId}`)}
-            activeOpacity={0.8}
-          >
-            <Image
-              source={{ uri: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` }}
-              style={styles.videoThumbnail}
-              resizeMode="cover"
-            />
-            <View style={styles.playButtonOverlay}>
-              <View style={styles.playButton}>
-                <Text style={styles.playButtonIcon}>▶</Text>
-              </View>
-              <Text style={styles.watchOnYouTubeText}>Watch on YouTube</Text>
-            </View>
-          </TouchableOpacity>
-        ) : (
-          // YouTube Player
-          <View style={[styles.videoContainer, { width: videoWidth, height: videoHeight }]}>
-            {(!videoReady || !shouldRenderPlayer) && (
-              <View style={styles.videoLoading}>
-                <Text style={styles.videoLoadingText}>Loading video...</Text>
-              </View>
-            )}
-            {shouldRenderPlayer && (
-              <YoutubePlayer
-                height={videoHeight}
-                width={videoWidth}
-                play={videoPlaying}
-                videoId={videoId}
-                onChangeState={onVideoStateChange}
-                onReady={onVideoReady}
-                onError={onVideoError}
-                webViewProps={{
-                  allowsInlineMediaPlayback: true,
-                  mediaPlaybackRequiresUserAction: false,
-                }}
-              />
-            )}
-          </View>
-        )
-      )}
-
       {/* Superset progress pills — for supersets/circuits, show a small
           horizontal row of pills with each exercise's letter+number and
           set progress ("A1 2/3 · A2 1/3"). Current exercise highlighted in
@@ -1689,7 +1602,10 @@ export default function ExerciseDetailView({
       </Modal>
 
       {/* Fixed Bottom Navigation */}
-      <View style={styles.bottomNav}>
+      <View
+        style={styles.bottomNav}
+        onLayout={(e) => setBottomBarHeight(e.nativeEvent.layout.height)}
+      >
         <View style={styles.bottomNavGradient}>
           <View style={styles.bottomNavContainer}>
             {/* History Button — anchors the left edge so the bar reads
@@ -1806,6 +1722,25 @@ export default function ExerciseDetailView({
         </View>
       </View>
       </KeyboardAvoidingView>
+
+      {/* Floating demo video — overlays the screen without blocking logging;
+          the ▶ hides while the numeric keypad is open. */}
+      {hasVideo(videoUrl) && !activeInput && !floatingVideoOpen && (
+        <FloatingVideoButton url={videoUrl} bottom={bottomBarHeight + 14} onPress={openVideo} />
+      )}
+      {floatingVideoOpen && videoId && (
+        <FloatingVideoWindow
+          videoId={videoId}
+          title={exercise.exercises.name}
+          bottom={bottomBarHeight + 12}
+          onClose={() => setFloatingVideoOpen(false)}
+          onExpand={() => {
+            setFloatingVideoOpen(false);
+            setFullVideoId(videoId);
+          }}
+        />
+      )}
+      <VideoModal videoId={fullVideoId} onClose={() => setFullVideoId(null)} />
 
       {/* Custom Numeric Keypad */}
       {activeInput && (
@@ -2179,66 +2114,6 @@ const styles = StyleSheet.create({
     color: '#A3A3A3',
     lineHeight: 18,
     fontStyle: 'italic',
-  },
-  videoContainer: {
-    backgroundColor: '#000000',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    marginBottom: 16,
-    borderRadius: 8,
-    overflow: 'hidden',
-    alignSelf: 'center',
-  },
-  videoLoading: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1A1A1A',
-    zIndex: 1,
-  },
-  videoLoadingText: {
-    color: '#737373',
-    fontSize: 14,
-  },
-  videoFallback: {
-    position: 'relative',
-  },
-  videoThumbnail: {
-    width: '100%',
-    height: '100%',
-  },
-  playButtonOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255, 0, 0, 0.9)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playButtonIcon: {
-    fontSize: 24,
-    color: '#FFFFFF',
-    marginLeft: 4,
-  },
-  watchOnYouTubeText: {
-    marginTop: 8,
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontWeight: '600',
   },
   exerciseNotesSection: {
     marginHorizontal: 16,

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,15 @@ import {
   StyleSheet,
   Modal,
   Pressable,
-  useWindowDimensions,
-  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import YoutubePlayer from 'react-native-youtube-iframe';
 import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { buildSequence } from '../lib/logger/sequence';
 import { workoutProgress } from '../lib/logger/progress';
+import { youTubeId } from '../lib/video';
+import VideoModal from '../components/logger/VideoModal';
 
 // Types
 import type {
@@ -49,23 +48,6 @@ interface BlockOverviewProps {
    *  and body; selecting Throws swaps the exercise list out for this
    *  content so a long throws log can't push the workout off-screen. */
   throwsTabContent?: React.ReactNode;
-}
-
-// Helper: Get YouTube video ID from URL
-function getYouTubeVideoId(url: string | null): string | null {
-  if (!url) return null;
-
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/,
-    /youtube\.com\/embed\/([^&\n?#]+)/
-  ];
-
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match?.[1]) return match[1];
-  }
-
-  return null;
 }
 
 // Helper: Get exercise code badge (A1, A2, B1, etc.)
@@ -146,13 +128,6 @@ export default function BlockOverview({
   const [viewMode, setViewMode] = useState<'workout' | 'throws'>('workout');
   const hasThrowsTab = !!throwsTabContent;
   const [videoModalId, setVideoModalId] = useState<string | null>(null);
-  const [videoPlaying, setVideoPlaying] = useState(false);
-  const [videoReady, setVideoReady] = useState(false);
-  const [videoError, setVideoError] = useState(false);
-
-  const { width: screenWidth } = useWindowDimensions();
-  const videoWidth = Math.min(screenWidth - 48, 400);
-  const videoHeight = videoWidth * (9 / 16);
 
   const gradientColors = getCategoryGradient(workout.category);
   const accentColor = getCategoryAccent(workout.category);
@@ -160,31 +135,11 @@ export default function BlockOverview({
   // Video modal handlers
   const openVideoModal = (videoId: string) => {
     setVideoModalId(videoId);
-    setVideoPlaying(false);
-    setVideoReady(false);
-    setVideoError(false);
   };
 
   const closeVideoModal = () => {
     setVideoModalId(null);
-    setVideoPlaying(false);
-    setVideoReady(false);
-    setVideoError(false);
   };
-
-  const onVideoStateChange = useCallback((state: string) => {
-    if (state === 'ended') {
-      setVideoPlaying(false);
-    }
-  }, []);
-
-  const onVideoReady = useCallback(() => {
-    setVideoReady(true);
-  }, []);
-
-  const onVideoError = useCallback(() => {
-    setVideoError(true);
-  }, []);
 
   const toggleBlock = (routineId: string) => {
     setExpandedBlocks(prev => ({
@@ -358,7 +313,7 @@ export default function BlockOverview({
                     return null;
                   }
                   const exerciseCode = getExerciseCode(routineIndex, exerciseIndex);
-                  const videoId = getYouTubeVideoId(exercise.exercises?.video_url || null);
+                  const videoId = youTubeId(exercise.exercises?.video_url || null);
                   const isCompleted = isExerciseCompleted(exercise.id, completedSets);
                   const hasPRTracking = exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0;
 
@@ -673,77 +628,7 @@ export default function BlockOverview({
       </Modal>
 
       {/* Video Modal */}
-      <Modal
-        visible={!!videoModalId}
-        transparent
-        animationType="fade"
-        onRequestClose={closeVideoModal}
-      >
-        <Pressable
-          style={styles.videoModalBackdrop}
-          onPress={closeVideoModal}
-        >
-          <Pressable style={styles.videoModalContainer} onPress={() => {}}>
-            {/* Close Button */}
-            <TouchableOpacity
-              style={styles.videoModalClose}
-              onPress={closeVideoModal}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.videoModalCloseText}>✕</Text>
-            </TouchableOpacity>
-
-            {/* Video Player */}
-            {videoModalId && (
-              videoError ? (
-                // Fallback: Thumbnail that opens YouTube app
-                <TouchableOpacity
-                  style={[styles.videoModalPlayer, { width: videoWidth, height: videoHeight }]}
-                  onPress={() => {
-                    Linking.openURL(`https://www.youtube.com/watch?v=${videoModalId}`);
-                    closeVideoModal();
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Image
-                    source={{ uri: `https://img.youtube.com/vi/${videoModalId}/hqdefault.jpg` }}
-                    style={styles.videoModalThumbnail}
-                    resizeMode="cover"
-                  />
-                  <View style={styles.videoModalPlayOverlay}>
-                    <View style={styles.videoModalPlayButton}>
-                      <Text style={styles.videoModalPlayIcon}>▶</Text>
-                    </View>
-                    <Text style={styles.videoModalWatchText}>Watch on YouTube</Text>
-                  </View>
-                </TouchableOpacity>
-              ) : (
-                // YouTube Player
-                <View style={[styles.videoModalPlayer, { width: videoWidth, height: videoHeight }]}>
-                  {!videoReady && (
-                    <View style={styles.videoModalLoading}>
-                      <Text style={styles.videoModalLoadingText}>Loading video...</Text>
-                    </View>
-                  )}
-                  <YoutubePlayer
-                    height={videoHeight}
-                    width={videoWidth}
-                    play={videoPlaying}
-                    videoId={videoModalId}
-                    onChangeState={onVideoStateChange}
-                    onReady={onVideoReady}
-                    onError={onVideoError}
-                    webViewProps={{
-                      allowsInlineMediaPlayback: true,
-                      mediaPlaybackRequiresUserAction: false,
-                    }}
-                  />
-                </View>
-              )
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <VideoModal videoId={videoModalId} onClose={closeVideoModal} />
     </SafeAreaView>
     </LinearGradient>
   );
@@ -1306,85 +1191,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-  },
-  // Video Modal Styles
-  videoModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  videoModalContainer: {
-    alignItems: 'center',
-    padding: 16,
-  },
-  videoModalClose: {
-    position: 'absolute',
-    top: -40,
-    right: 0,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  videoModalCloseText: {
-    fontSize: 18,
-    color: '#FFFFFF',
-  },
-  videoModalPlayer: {
-    backgroundColor: '#000000',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  videoModalLoading: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1A1A1A',
-    zIndex: 1,
-  },
-  videoModalLoadingText: {
-    color: '#737373',
-    fontSize: 14,
-  },
-  videoModalThumbnail: {
-    width: '100%',
-    height: '100%',
-  },
-  videoModalPlayOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  videoModalPlayButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255, 0, 0, 0.9)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  videoModalPlayIcon: {
-    fontSize: 24,
-    color: '#FFFFFF',
-    marginLeft: 4,
-  },
-  videoModalWatchText: {
-    marginTop: 8,
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontWeight: '600',
   },
 });
