@@ -528,9 +528,13 @@ function serverNextContext(
 const sameExercise = (a: RackContext, b: RackContext) =>
   a.workoutInstanceId === b.workoutInstanceId && a.routineExerciseId === b.routineExerciseId;
 const sameCtx = (a: RackContext, b: RackContext) => sameExercise(a, b) && a.setNumber === b.setNumber;
-/** Idle hold: same exercise (resolved — its set number advances with the log write), else same context. */
+/**
+ * Idle hold: same exercise when the context is resolveRackSet's (rack: a
+ * resolved localContext; solo: the phone always resolves its set) — its set
+ * number advances with the log write — else the same context.
+ */
 const holdMatches = (s: RackEngineState, athleteId: string, held: RackContext, next: RackContext) =>
-  resolvedFor(s, athleteId) ? sameExercise(held, next) : sameCtx(held, next);
+  s.mode === 'solo' || resolvedFor(s, athleteId) ? sameExercise(held, next) : sameCtx(held, next);
 
 /** Summary of an ENDED set (throws if the set has no end reason). */
 export function summarize(

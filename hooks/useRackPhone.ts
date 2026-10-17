@@ -35,6 +35,10 @@ import {
 export interface RackPhone {
   /** Self + the org has at least one active rack (everything else is guarded by this). */
   hasRacks: boolean;
+  /** The signed-in user IS this athlete (the phone-direct sensor needs it too). */
+  isSelf: boolean;
+  /** On a rack: active or queued (the phone sensor stays off then). */
+  onRack: boolean;
   banner: BannerState | null;
   error: string | null;
   busy: boolean;
@@ -272,8 +276,12 @@ export function useRackPhone(opts: {
     [hasRacks, list, sessions, athleteId],
   );
 
+  const onRack = banner?.mode === 'active' || banner?.mode === 'queued';
+
   return {
     hasRacks,
+    isSelf,
+    onRack,
     banner,
     error,
     busy,

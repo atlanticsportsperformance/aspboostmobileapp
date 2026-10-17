@@ -19,7 +19,7 @@ describe('rack phone wiring', () => {
     }
     expect(L).toContain('rack={rackScreen}');
     expect(L).toContain('rack={rackExerciseProps}');
-    expect(L).toContain('if (!rack.hasRacks || !currentExercise) return null;');
+    expect(L).toContain('if ((!rack.hasRacks && !solo.on) || !currentExercise) return null;');
   });
 
   it('I2: realtime + 10 s poll only while on a rack, filtered per rack; browse = focus / foreground / pull only', () => {
@@ -180,7 +180,7 @@ describe('rack phone wiring — fix round 1 (review 10c + owner sync)', () => {
   });
 
   it('concern 4: extra rack sets past the prescription get a read-only row with the RACK line', () => {
-    expect(L).toContain("} else if (setIndex >= ex.sets && log.metric_data?.vbt?.source === 'rack') {");
+    expect(L).toContain('} else if (setIndex >= ex.sets && log.metric_data?.vbt) {');
     expect(L).toContain('extraSets: extraRackSets(reId, currentExercise.sets ?? 1),');
     expect(D).toContain('for (const x of rack?.hasRacks ? rack.extraSets ?? [] : []) {');
     expect(D).toContain('{x.rackLine && <Text style={styles.rackSummary}>{x.rackLine}</Text>}');

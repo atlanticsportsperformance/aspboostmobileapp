@@ -206,9 +206,26 @@ export interface RackPersist {
   readonly dead: { reps: DeadLetter<VbtRepRow>; sets: DeadLetter<SetWriteItem> };
 }
 
+/** Storage keys of one persist's queues (the rack's by default). */
+export interface PersistKeys {
+  reps: string;
+  sets: string;
+  deadReps: string;
+  deadSets: string;
+}
+
+export const RACK_PERSIST_KEYS: PersistKeys = {
+  reps: REP_QUEUE_KEY,
+  sets: SET_QUEUE_KEY,
+  deadReps: REP_DEAD_KEY,
+  deadSets: SET_DEAD_KEY,
+};
+
 export function createRackPersist(opts: {
   client: RackClient & RpcClient;
   orgId: string;
+  /** Queue keys; the phone-direct sensor (solo) uses its own, never the rack's. */
+  keys?: PersistKeys;
   batchSize?: number;
   log?: (...args: unknown[]) => void;
   now?: () => number;
@@ -218,14 +235,15 @@ export function createRackPersist(opts: {
   const log = opts.log ?? ((...a: unknown[]) => console.warn('[rack persist]', ...a));
   const now = opts.now ?? (() => Date.now());
   const timeoutMs = opts.sendTimeoutMs ?? SEND_TIMEOUT_MS;
+  const keys = opts.keys ?? RACK_PERSIST_KEYS;
 
   // Dead letters: a flush would "send" (= delete) them, so their send always
   // fails transiently and they are only exposed read-only.
   const never = async () => {
     throw new Error('dead letter: never flushed');
   };
-  const deadReps = createQueue<VbtRepRow>(REP_DEAD_KEY, never, { idOf: r => r.client_rep_id });
-  const deadSets = createQueue<SetWriteItem>(SET_DEAD_KEY, never);
+  const deadReps = createQueue<VbtRepRow>(keys.deadReps, never, { idOf: r => r.client_rep_id });
+  const deadSets = createQueue<SetWriteItem>(keys.deadSets, never);
 
   // Set by any transient send failure during a flush (drives back-off; a
   // dead-lettered permanent failure alone does not).
@@ -251,7 +269,7 @@ export function createRackPersist(opts: {
   };
 
   const repQueue = createQueue<VbtRepRow>(
-    REP_QUEUE_KEY,
+    keys.reps,
     async row => {
       try {
         await sendReps([row]);
@@ -267,7 +285,7 @@ export function createRackPersist(opts: {
   );
 
   const setQueue = createQueue<SetWriteItem>(
-    SET_QUEUE_KEY,
+    keys.sets,
     async item => {
       let row = item.row;
       if (item.resolveExerciseFor && !row.exercise_id) {

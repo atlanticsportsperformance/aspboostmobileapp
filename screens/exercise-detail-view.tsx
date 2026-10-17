@@ -48,6 +48,7 @@ import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
 import RackBanner, { type RackScreenProps } from '../components/logger/RackBanner';
+import SensorButton, { type SensorButtonProps } from '../components/logger/SensorButton';
 import LiveRepRow from '../components/logger/LiveRepRow';
 import { RACK_COLORS, liveDoneLabel, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
 
@@ -159,6 +160,8 @@ interface ExerciseDetailViewProps {
   onSelectSet: (setIndex: number) => void;
   /** Rack VBT (banner + live row); absent / !hasRacks = the logger as before. */
   rack?: ExerciseRackProps | null;
+  /** Phone-direct sensor control (Task 10b); null = hidden (on a rack / not self). */
+  sensor?: SensorButtonProps | null;
 }
 
 // Helper: Get relative time string
@@ -277,6 +280,7 @@ export default function ExerciseDetailView({
   onBackToOverview,
   onSelectSet,
   rack,
+  sensor = null,
 }: ExerciseDetailViewProps) {
   // Rack VBT — every piece below is guarded by hasRacks + an active live set.
   const rackLive = rack?.hasRacks ? rack.live : null;
@@ -1145,7 +1149,7 @@ export default function ExerciseDetailView({
             <Text style={styles.caption}>Saved · tap to edit</Text>
           )}
           {rack?.hasRacks && isCompleted && !isLiveRow(i) && rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt) && (
-            <Text style={styles.rackSummary}>{`RACK · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt)}`}</Text>
+            <Text style={styles.rackSummary}>{`${exerciseInputs[exercise.id]?.[i]?.vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt)}`}</Text>
           )}
           {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
           {!!caption && <Text style={styles.caption}>{caption}</Text>}
@@ -1427,6 +1431,7 @@ export default function ExerciseDetailView({
               onLeave={rack.onLeave}
             />
           )}
+          {sensor && <SensorButton {...sensor} />}
           {!!rx && <Text style={styles.rx}>{rx}</Text>}
           {/* Demo video inline at the top (muted, looping; "▶ DEMO" strip
               collapses it; hidden + paused while the keypad is open). */}

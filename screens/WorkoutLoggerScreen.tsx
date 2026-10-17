@@ -46,6 +46,9 @@ import { prCandidates } from '../lib/logger/pr';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
 import { useRackPhone } from '../hooks/useRackPhone';
+import { useSoloSensor } from '../hooks/useSoloSensor';
+import { showConnectSensor, soloChips, soloLiveSet, soloSavedLog } from '../lib/rack/solo';
+import type { SensorButtonProps } from '../components/logger/SensorButton';
 import {
   RACK_WRITE_TIMEOUT_MS,
   applyRackLog,
@@ -422,8 +425,8 @@ export default function WorkoutLoggerScreen() {
 
             // Done only if is_complete — drafts resume not-done with values.
             completedArray[setIndex] = isSetDoneFromLog(log);
-          } else if (setIndex >= ex.sets && log.metric_data?.vbt?.source === 'rack') {
-            // An extra set the rack logged past the prescription (shown read-only).
+          } else if (setIndex >= ex.sets && log.metric_data?.vbt) {
+            // An extra set the rack (or the phone's sensor) logged past the prescription (shown read-only).
             (extraMap[ex.id] ??= {})[log.set_number] = log;
           }
         });
@@ -1175,6 +1178,24 @@ export default function WorkoutLoggerScreen() {
   const rackActive = rack.hasRacks && !!rack.activeSession;
   const rackLive = rack.hasRacks ? liveRackSet(rack.activeSession, athleteId, workoutInstanceId) : null;
 
+  // ── Phone-direct sensor (Task 10b): no rack iPad — the OVR pairs to this
+  // phone, the solo engine ends sets (Done / 60 s idle / 30 s reopen) and the
+  // phone writes its own set row + reps (solo queues). Inert until "Connect
+  // sensor"; joining a rack disconnects it.
+  const soloAppliedRef = useRef<(log: Record<string, any>) => void>(() => undefined);
+  const solo = useSoloSensor({
+    athleteId,
+    orgId,
+    onRack: rack.onRack,
+    onSetSaved: summary => {
+      const log = soloSavedLog(summary);
+      if (log && log.workout_instance_id === workoutInstanceId) soloAppliedRef.current(log);
+    },
+  });
+  const soloLive = soloLiveSet(solo.engine, workoutInstanceId);
+  /** The set being lifted now — on the rack, or on this phone's sensor. */
+  const liveSet = rackLive ?? (soloLive ? { routineExerciseId: soloLive.routineExerciseId, setNumber: soloLive.setNumber } : null);
+
   const setRackSavingState = (update: (prev: Record<string, 'saving' | 'timeout'>) => Record<string, 'saving' | 'timeout'>) => {
     const next = update(rackSavingRef.current);
     if (next === rackSavingRef.current) return;
@@ -1183,7 +1204,7 @@ export default function WorkoutLoggerScreen() {
   };
   rackOwnsSetRef.current = (reId, setIndex) =>
     !!rackSavingRef.current[`${reId}:${setIndex}`] ||
-    (!!rackLive && rackLive.routineExerciseId === reId && rackLive.setNumber === setIndex + 1);
+    (!!liveSet && liveSet.routineExerciseId === reId && liveSet.setNumber === setIndex + 1);
 
   const showRackToast = useCallback((text: string) => {
     if (rackToastTimerRef.current) clearTimeout(rackToastTimerRef.current);
@@ -1215,7 +1236,8 @@ export default function WorkoutLoggerScreen() {
       completed: completedRef.current[reId],
       sets: ex.sets,
       log,
-      toInputs: logToSetInputs,
+      // A phone-built (solo) row has only the keys it wrote: keep the rest.
+      toInputs: l => Object.fromEntries(Object.entries(logToSetInputs(l)).filter(([, v]) => v !== undefined)),
     });
     if (!res) return;
     const key = `${reId}:${res.setIndex}`;
@@ -1246,6 +1268,8 @@ export default function WorkoutLoggerScreen() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- commit* read refs
   }, [allExercises, startRestAfter]);
+  // Solo: the phone's own just-queued set row fills the set in the same way.
+  soloAppliedRef.current = applyRackWrittenLog;
 
   // Re-read every pending rack write once; past 10 s the copy switches to
   // "pull to refresh" but the 10 s tick keeps re-reading until the row lands.
@@ -1355,8 +1379,8 @@ export default function WorkoutLoggerScreen() {
   // same function, over the same logs, that the iPad runs — with the open
   // exercise as the phone context, so the two can't disagree.
   const rackInstance = useMemo(
-    () => (rack.hasRacks && workout ? rackInstanceFromLogger(workoutInstanceId, workout.routines) : null),
-    [rack.hasRacks, workout, workoutInstanceId],
+    () => ((rack.hasRacks || solo.on) && workout ? rackInstanceFromLogger(workoutInstanceId, workout.routines) : null),
+    [rack.hasRacks, solo.on, workout, workoutInstanceId],
   );
   const rackLogs = useMemo(() => {
     const logs = rackLogsFromCompleted(workoutInstanceId, completedSets);
@@ -1431,6 +1455,44 @@ export default function WorkoutLoggerScreen() {
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rackActive, rackActivation, ctxExercise?.id, ctxSetIndex, ctxLoad, workoutInstanceId, rack.setContext]);
+
+  // Solo: the open exercise + set (resolveRackSet with the phone as the only
+  // context) and LB (typed, else the prescribed number) → the solo engine,
+  // which writes the load to the sensor. A finished exercise → prescribed + 1
+  // (an extra set). The overview keeps the last context. The phone's complete
+  // sets are the engine's never-overwrite guard.
+  const soloWeight = ctxExercise && ctxSetIndex != null
+    ? loadFromInput(exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight) ??
+      (() => {
+        const p = prescribedValue(ctxExercise, ctxSetIndex, 'weight');
+        return typeof p === 'number' && Number.isFinite(p) ? p : null;
+      })()
+    : null;
+  useEffect(() => {
+    if (!solo.on || !ctxExercise || !ctxExercise.exercise_id) return;
+    solo.dispatch({
+      type: 'soloContext',
+      workoutInstanceId,
+      routineExerciseId: ctxExercise.id,
+      exerciseId: ctxExercise.exercise_id,
+      setNumber: ctxSetIndex == null ? (ctxExercise.sets ?? 1) + 1 : ctxSetIndex + 1,
+      loadLb: soloWeight,
+      zoneMin: ctxExercise.velocity_min_mps ?? null,
+      zoneMax: ctxExercise.velocity_max_mps ?? null,
+      dropStopPct: ctxExercise.speed_drop_stop_pct ?? null,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solo.on, solo.dispatch, ctxExercise?.id, ctxSetIndex, soloWeight, workoutInstanceId]);
+  useEffect(() => {
+    if (!solo.on) return;
+    solo.dispatch({
+      type: 'replaceComplete',
+      athleteId,
+      sets: rackLogs
+        .filter(l => l.isComplete)
+        .map(l => ({ workoutInstanceId: l.workoutInstanceId, routineExerciseId: l.routineExerciseId, setNumber: l.setNumber })),
+    });
+  }, [solo.on, solo.dispatch, rackLogs, athleteId]);
 
   // The rack's current set on the phone — the same resolver, data and wording
   // as the iPad's athlete card. Drives the banner strip (both screens), the
@@ -1736,7 +1798,7 @@ export default function WorkoutLoggerScreen() {
       const [re, idx] = k.split(':');
       if (re === reId && Number(idx) + 1 > sets) nos.add(Number(idx) + 1);
     });
-    if (rackLive && rackLive.routineExerciseId === reId && rackLive.setNumber > sets) nos.add(rackLive.setNumber);
+    if (liveSet && liveSet.routineExerciseId === reId && liveSet.setNumber > sets) nos.add(liveSet.setNumber);
     return [...nos].sort((a, b) => a - b).map(n => {
       const log = rackExtra[reId]?.[n];
       const vbt = log?.metric_data?.vbt;
@@ -1746,14 +1808,14 @@ export default function WorkoutLoggerScreen() {
       return {
         setNumber: n,
         values: log ? [reps != null ? `${reps} reps` : null, lb != null ? `${lb} lb` : null].filter(Boolean).join(' × ') || null : null,
-        rackLine: line ? `RACK · ${line}` : null,
-        live: !!rackLive && rackLive.routineExerciseId === reId && rackLive.setNumber === n,
+        rackLine: line ? `${vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${line}` : null,
+        live: !!liveSet && liveSet.routineExerciseId === reId && liveSet.setNumber === n,
         saving: rackSaving[`${reId}:${n - 1}`] ?? null,
       };
     });
   };
   const rackExerciseProps: ExerciseRackProps | null = (() => {
-    if (!rack.hasRacks || !currentExercise) return null;
+    if ((!rack.hasRacks && !solo.on) || !currentExercise) return null;
     const reId = currentExercise.id;
     const s = rack.activeSession;
     // I1: the live set comes from rack_sessions (exercise + set_number), never
@@ -1773,6 +1835,21 @@ export default function WorkoutLoggerScreen() {
         lifting: true,
         dropCue: speedDropCue(chips, zone, currentExercise.speed_drop_stop_pct),
       };
+    } else if (soloLive && soloLive.routineExerciseId === reId) {
+      // Solo: same live row, "SENSOR · LIVE", chips from the phone's engine.
+      const chips = soloChips(soloLive.set);
+      const zone = zoneOf(currentExercise.velocity_min_mps, currentExercise.velocity_max_mps);
+      const target = prescribedValue(currentExercise, soloLive.setNumber - 1, 'reps');
+      live = {
+        setIndex: soloLive.setNumber - 1,
+        source: 'sensor',
+        rackName: null,
+        chips: chipViews(chips, zone),
+        fullReps: fullRepCount(chips),
+        repsTarget: typeof target === 'number' ? target : null,
+        lifting: true,
+        dropCue: speedDropCue(chips, zone, currentExercise.speed_drop_stop_pct),
+      };
     }
     const saving: Record<number, 'saving' | 'timeout'> = {};
     Object.entries(rackSaving).forEach(([k, v]) => {
@@ -1784,6 +1861,8 @@ export default function WorkoutLoggerScreen() {
       .map(k => Number(k.split(':')[1]));
     return {
       ...rackScreen,
+      // Solo with no racks: the live / saved-row pieces render (no banner).
+      hasRacks: rack.hasRacks || solo.on,
       live,
       saving,
       idleSaved,
@@ -1793,6 +1872,11 @@ export default function WorkoutLoggerScreen() {
       onPullRefresh: handleRackPullRefresh,
       onEditingChange: handleRackEditingChange,
       onLiveDone: () => {
+        // Solo: this phone ends the set (engine Done → its own set row).
+        if (soloLive && !rackLive) {
+          solo.dispatch({ type: 'done' });
+          return;
+        }
         if (!s || !rackLive) return;
         const liveRe = rackLive.routineExerciseId;
         const liveNo = rackLive.setNumber;
@@ -1809,6 +1893,26 @@ export default function WorkoutLoggerScreen() {
       },
     };
   })();
+
+  const sensorProps: SensorButtonProps | null =
+    currentExercise &&
+    (showConnectSensor({ isSelf: rack.isSelf, onRack: rack.onRack, hasExercise: !!currentExercise.exercise_id }) ||
+      (solo.on && !rack.onRack))
+      ? {
+          on: solo.on,
+          state: solo.state,
+          deviceName: solo.deviceName,
+          busy: solo.busy,
+          error: solo.error,
+          fake: solo.fake,
+          zone:
+            currentExercise.velocity_min_mps != null && currentExercise.velocity_max_mps != null
+              ? [Number(currentExercise.velocity_min_mps), Number(currentExercise.velocity_max_mps)]
+              : null,
+          onConnect: solo.connect,
+          onDisconnect: solo.disconnect,
+        }
+      : null;
 
   const body =
     viewMode === 'overview' ? (
@@ -1866,6 +1970,7 @@ export default function WorkoutLoggerScreen() {
         onSelectSet={handleSelectSet}
         restSecondsLeft={restTimer.secondsLeft}
         rack={rackExerciseProps}
+        sensor={sensorProps}
       />
     ) : null;
 
