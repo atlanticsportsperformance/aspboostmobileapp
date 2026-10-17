@@ -46,17 +46,46 @@ import LoadingScreen from './screens/LoadingScreen';
 // so ~37 large screen modules no longer evaluate during app startup.
 import { StatusBar } from 'expo-status-bar';
 import { useOutboxForegroundSync } from './hooks/useOutboxForegroundSync';
+import { readRackDevice, subscribeRackDevice, type RackDevice } from './lib/rack/device';
+import { isRackRoute, lockPortrait, syncOrientationForRoute } from './lib/rack/orientation';
+
+// Everything is portrait except the Rack screens on an iPad (lib/rack/orientation).
+lockPortrait();
 
 const Stack = createNativeStackNavigator();
 
 function AppContent() {
-  const { session, initializing, isParentAccount, isStaff } = useAuth();
+  const { session, initializing, isParentAccount, isStaff, rolesResolved } = useAuth();
   // Logger outbox: sync queued sets on start / foreground, app-wide.
   useOutboxForegroundSync(!!session);
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const splashHiddenOnce = useRef(false);
+  const [navReady, setNavReady] = useState(false);
+
+  // Rack mode: this iPad's stored rack id (rack_device_v1). undefined = not read yet.
+  const [rackDevice, setRackDevice] = useState<RackDevice | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    readRackDevice().then((d) => { if (alive) setRackDevice(d); });
+    const off = subscribeRackDevice((d) => setRackDevice(d));
+    return () => { alive = false; off(); };
+  }, []);
+
+  // Boot to rack: a stored rack id AND a staff session → straight into Rack
+  // mode. No session or a non-staff login → normal routing, rack id kept.
+  const bootedRackRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!session || rackDevice === null) { bootedRackRef.current = null; return; }
+    if (!navReady || !rolesResolved || !isStaff || !rackDevice) return;
+    const key = `${session.user.id}:${rackDevice.rackId}`;
+    if (bootedRackRef.current === key) return;
+    bootedRackRef.current = key;
+    const nav = navigationRef.current;
+    if (!nav || isRackRoute(nav.getCurrentRoute()?.name)) return;
+    nav.reset({ index: 0, routes: [{ name: 'RackMode' }] });
+  }, [session, navReady, rolesResolved, isStaff, rackDevice]);
 
   // Hide native splash screen on mount
   useEffect(() => {
@@ -82,6 +111,8 @@ function AppContent() {
     }
 
     const nav = navigationRef.current as any;
+    // Rack mode is locked down: notification taps never navigate out of it.
+    if (isRackRoute(nav.getCurrentRoute?.()?.name)) return;
 
     if (data.screen) {
       nav.navigate(data.screen, data.id ? { id: data.id } : undefined);
@@ -181,7 +212,14 @@ function AppContent() {
   return (
     <View style={styles.container}>
       <SafeAreaProvider>
-        <NavigationContainer ref={navigationRef}>
+        <NavigationContainer
+          ref={navigationRef}
+          onReady={() => {
+            setNavReady(true);
+            syncOrientationForRoute(navigationRef.current?.getCurrentRoute()?.name);
+          }}
+          onStateChange={() => syncOrientationForRoute(navigationRef.current?.getCurrentRoute()?.name)}
+        >
           <StatusBar style="light" />
           <Stack.Navigator
             screenOptions={{
@@ -240,6 +278,10 @@ function AppContent() {
             <Stack.Screen name="LeagueStats" getComponent={() => require('./screens/LeagueStatsScreen').default} />
             <Stack.Screen name="LeagueGameLog" getComponent={() => require('./screens/LeagueGameLogScreen').default} />
             <Stack.Screen name="LeagueGameDetail" getComponent={() => require('./screens/LeagueGameDetailScreen').default} />
+            {/* Rack mode (staff, iPad only) — landscape via lib/rack/orientation */}
+            <Stack.Screen name="RackSetup" getComponent={() => require('./screens/rack/RackSetupScreen').default} />
+            <Stack.Screen name="RackMode" options={{ gestureEnabled: false }} getComponent={() => require('./screens/rack/RackModeScreen').default} />
+            <Stack.Screen name="RackPinExit" getComponent={() => require('./screens/rack/RackPinExit').default} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>

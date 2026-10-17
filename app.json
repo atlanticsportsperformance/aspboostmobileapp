@@ -4,7 +4,7 @@
     "slug": "aspboost-mobile",
     "scheme": "aspboost",
     "version": "1.5.32",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
@@ -14,7 +14,8 @@
       "backgroundColor": "#0A0A0A"
     },
     "ios": {
-      "supportsTablet": false,
+      "supportsTablet": true,
+      "requireFullScreen": true,
       "bundleIdentifier": "com.aspboost.app",
       "buildNumber": "20",
       "infoPlist": {
@@ -83,7 +84,7 @@
           "modes": [
             "central"
           ],
-          "bluetoothAlwaysPermission": "ASP Boost uses Bluetooth to sync your Motus Pulse sensor and track throws in real time."
+          "bluetoothAlwaysPermission": "ASP Boost uses Bluetooth to sync your Motus Pulse sensor and track throws in real time, and to connect the OVR velocity sensor for live bar speed."
         }
       ],
       [
@@ -94,7 +95,13 @@
           "microphonePermission": "ASP Boost uses your microphone to record audio with your form-check videos."
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ]
     ],
     "runtimeVersion": {
       "policy": "appVersion"

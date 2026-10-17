@@ -3,9 +3,14 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import { useAuth } from '../contexts/AuthContext';
+import { isTabletDevice } from '../lib/rack/device';
 
 export default function CoachToolsScreen() {
   const navigation = useNavigation<any>();
+  const { isStaff } = useAuth();
+  // Rack mode: staff only, iPad only. Phones and athletes never see it.
+  const showRackSetup = isStaff && isTabletDevice();
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -35,6 +40,17 @@ export default function CoachToolsScreen() {
           </View>
           <Ionicons name="chevron-forward" size={18} color="rgba(155,221,255,0.7)" />
         </TouchableOpacity>
+
+        {showRackSetup && (
+          <TouchableOpacity style={[styles.tool, styles.toolCoverage]} onPress={() => navigation.navigate('RackSetup')}>
+            <View style={[styles.toolIcon, styles.toolIconCoverage]}><Ionicons name="barbell" size={22} color="#9BDDFF" /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toolTitle}>Set up this iPad as a rack</Text>
+              <Text style={styles.toolDesc}>OVR velocity sensor · live sets on athletes' phones</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="rgba(155,221,255,0.7)" />
+          </TouchableOpacity>
+        )}
 
         <View style={[styles.tool, { opacity: 0.4 }]}>
           <View style={styles.toolIcon}><Ionicons name="baseball" size={22} color="rgba(255,255,255,0.5)" /></View>
