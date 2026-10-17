@@ -417,7 +417,7 @@ const EMPTY_CTX: RackContext = {
 };
 
 /** Context for the next set, either mode. */
-function nextContext(s: RackEngineState): RackContext {
+export function nextContext(s: RackEngineState): RackContext {
   if (s.mode === 'solo') return s.soloContext ?? EMPTY_CTX;
   const server = serverNextContext(s.session, s.exerciseByRoutineExercise);
   if (server.workoutInstanceId == null && s.localContext && s.localContext.athleteId === s.activeAthleteId) {
