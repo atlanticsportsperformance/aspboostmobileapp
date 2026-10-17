@@ -202,11 +202,11 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(fn).toContain('{steppable && stepper(1)}');
     expect(fn).toContain('onInputChange(setIndex, metricId, String(next));');
     expect(fn).toContain('markFieldEdited(setIndex, metricId);');
-    // 36 pt targets: 24 wide + 6 px slop each side, 36 tall
+    // 36 pt targets: 24 wide + 12 px slop on the outer side, 36 tall
     const st = D.slice(D.indexOf('  stepBtn: {'), D.indexOf('  stepText:'));
     expect(st).toContain('width: 24,');
     expect(st).toContain('height: 36,');
-    expect(fn).toContain('hitSlop={{ top: 0, bottom: 0, left: 6, right: 6 }}');
+    expect(fn).toContain('hitSlop={dir > 0 ? { top: 0, bottom: 0, left: 0, right: 12 } : { top: 0, bottom: 0, left: 12, right: 0 }}');
   });
 
   it('a stepper on a back-off reference set re-runs backoffUpdates (review I1)', () => {
@@ -237,5 +237,9 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(D).toContain("colPairMph: { flex: 1.1, minWidth: 0, marginLeft: 8 },");
     expect(D).toContain("colLast: { width: 64, marginLeft: 8 },");
     expect(D).toContain("colCheck: { width: 32, marginLeft: 8, alignItems: 'flex-end' },");
+  });
+
+  it('keypad closes when the open set or exercise changes (review M1)', () => {
+    expect(D).toMatch(/useEffect\(\(\) => \{\s*setActiveInput\(null\);\s*\}, \[currentSetIndex, exercise\.id\]\);/);
   });
 });

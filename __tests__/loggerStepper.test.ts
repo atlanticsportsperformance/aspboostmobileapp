@@ -31,6 +31,11 @@ describe('logger stepper', () => {
     expect(stepValue('weight', '5 LB DB', 1)).toBeNull();
     expect(stepValue('distance', '10 yards', -1)).toBeNull();
     expect(canStep('12.5')).toBe(true);
+    // mid-typing forms keep their steppers
+    expect(canStep('12.')).toBe(true);
+    expect(canStep('.5')).toBe(true);
+    expect(stepValue('red_ball_velo', '.5', 1)).toBe(1);
+    expect(stepValue('weight', '12.', 1)).toBe(17);
   });
 });
 

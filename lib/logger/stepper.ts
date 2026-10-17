@@ -13,7 +13,8 @@ export function stepFor(metric: string): number {
   return 1;
 }
 
-const NUMBER = /^-?\d+(\.\d+)?$/;
+// A plain number, incl. mid-typing forms ("12.", ".5").
+const NUMBER = /^-?(\d+\.?\d*|\.\d+)$/;
 
 // Can this value be stepped? Empty (starts from 0) or a plain number —
 // free text the coach wrote ("5 LB DB", "10 yards") cannot.

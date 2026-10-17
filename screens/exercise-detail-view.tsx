@@ -178,7 +178,7 @@ const isNumberText = (s: string) => /^-?\d+(\.\d+)?$/.test(s);
 function noteRepeatsCaption(note: string, caption: string): boolean {
   const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, ' ');
   const n = norm(note);
-  if (n === norm(caption) || norm(caption).startsWith(n)) return true;
+  if (n === norm(caption)) return true;
   return /^[-+]?\d+(\.\d+)?\s*%(\s+of\s+[a-z0-9 ]+)?\.?$/.test(n);
 }
 const isEmptyValue = (v: unknown) => v == null || v === '';
@@ -303,6 +303,12 @@ export default function ExerciseDetailView({
       if (scrollPendingRef.current && scrollToCurrentSet()) scrollPendingRef.current = false;
     }, 100);
     return () => clearTimeout(t);
+  }, [currentSetIndex, exercise.id]);
+
+  // Done → advance, a tapped row, or a new exercise closes the keypad, so
+  // keystrokes never land in a collapsed set or the next exercise.
+  useEffect(() => {
+    setActiveInput(null);
   }, [currentSetIndex, exercise.id]);
 
   // A custom measurement's metric type ('integer' | 'decimal' | …).
@@ -842,7 +848,8 @@ export default function ExerciseDetailView({
       <TouchableOpacity
         style={styles.stepBtn}
         onPress={() => step(dir)}
-        hitSlop={{ top: 0, bottom: 0, left: 6, right: 6 }}
+        // Slop only on the outer side, so it never overlaps the value's touch area.
+        hitSlop={dir > 0 ? { top: 0, bottom: 0, left: 0, right: 12 } : { top: 0, bottom: 0, left: 12, right: 0 }}
         activeOpacity={0.6}
         accessibilityRole="button"
         accessibilityLabel={`${dir > 0 ? 'Increase' : 'Decrease'} set ${setIndex + 1} ${label}`}
