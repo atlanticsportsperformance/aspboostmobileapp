@@ -25,7 +25,9 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(D).toContain('exerciseName.toUpperCase()');
     expect(D).toContain('{blockLabel && (');
     expect(D).toContain('if (trackedMetrics.length === 0) return null;');
-    expect(D).toContain('`🏆 ${line ? `${line.name} ` : \'\'}max ${value != null ? value : \'—\'}`');
+    expect(D).toContain("if (value == null) return '🏆 tracked';");
+    expect(D).toContain('`🏆 ${line ? `${line.name} ` : \'\'}max ${value}`');
+    expect(D).not.toContain('max —');
     expect(D).not.toContain('exercisePosition');
   });
 
@@ -89,7 +91,7 @@ describe('exercise screen — dense table (task 15)', () => {
 
   it('under a row: coach set note, intensity caption and the compact RPE strip on the open set', () => {
     const fn = sets();
-    expect(fn).toContain('{!!setConfig?.notes && <Text style={styles.cn}>{setConfig.notes}</Text>}');
+    expect(fn).toContain('{showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}');
     expect(fn).toContain('const caption = isOpen ? intensityCaption(i) : null;');
     expect(D).toContain('intensityCaptionText(targetArgs(setIndex, m))');
     expect(fn).toMatch(/isOpen && exercise\.ask_rpe && onRpeChange && \(/);
@@ -139,5 +141,20 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(fn).toContain('onNextSet();');
     // keypad walks the columns in screen order
     expect(D).toContain('hasNextField={inputOrder.indexOf(activeInput.metricId) < inputOrder.length - 1}');
+  });
+
+  it('device fixes: prescribed columns, pending text, fixed widths, empty done, note once', () => {
+    // columns = enabled measurements ∪ prescribed metrics (Back Squat reps)
+    expect(D).toContain('const metricFields = tableFieldsFor(exercise, customMeasurements);');
+    // upcoming cell / empty input: "90% of set 1" until set 1 is logged
+    expect(D).toContain('const pending = pendingTargetText(t);');
+    expect(D).not.toContain('`${t.percent}%`');
+    // table columns have a fixed basis, not flex: 1
+    expect(D).toContain('colMetric: { flexBasis: 108, flexGrow: 0');
+    expect(D).not.toContain('colMetric: { flex: 1');
+    // ticked with no values reads "done" in green
+    expect(D).toContain("metricId === inputOrder[0] ? 'done' : ''");
+    // a % -only coach note isn't repeated under the caption
+    expect(D).toContain('!(caption && noteRepeatsCaption(setConfig.notes, caption))');
   });
 });

@@ -19,6 +19,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import NumericKeypad from '../components/NumericKeypad';
 import {
   backoffUpdates,
+  pendingTargetText,
   fieldKey,
   intensityCaptionText,
   intensityFor,
@@ -44,7 +45,7 @@ import FloatingVideoWindow from '../components/logger/FloatingVideoWindow';
 import VideoModal from '../components/logger/VideoModal';
 import { hasVideo, youTubeId } from '../lib/video';
 import { LOGGER_COLORS } from '../lib/logger/theme';
-import { getMeasurementName, getMetricLabel, metricFieldsFor } from '../lib/logger/setLine';
+import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -169,6 +170,15 @@ function shortBallName(name: string): string {
 }
 
 const isNumberText = (s: string) => /^-?\d+(\.\d+)?$/.test(s);
+
+// A coach set note that says the same as the intensity caption: the same
+// text, or only a percentage ("-10% of top set", "90%").
+function noteRepeatsCaption(note: string, caption: string): boolean {
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, ' ');
+  const n = norm(note);
+  if (n === norm(caption) || norm(caption).startsWith(n)) return true;
+  return /^[-+]?\d+(\.\d+)?\s*%(\s+of\s+[a-z0-9 ]+)?\.?$/.test(n);
+}
 const isEmptyValue = (v: unknown) => v == null || v === '';
 
 // One paired measurement (ball × reps × mph) — a line inside every set.
@@ -317,8 +327,10 @@ export default function ExerciseDetailView({
   const measurementOf = (metricId: string): Measurement | undefined =>
     customMeasurements.find((x) => x.primary_metric_id === metricId || x.secondary_metric_id === metricId);
 
-  // Metric fields to log (ball metrics heaviest → lightest, weight before reps).
-  const metricFields = metricFieldsFor(exercise, customMeasurements);
+  // Metric fields to log: enabled measurements plus anything the coach
+  // prescribed (reps = 2 per set on a weight-only Back Squat); weight, reps,
+  // then the rest (ball metrics heaviest → lightest).
+  const metricFields = tableFieldsFor(exercise, customMeasurements);
   const trackedMetrics = exercise.tracked_max_metrics ?? [];
 
   // Table layout: every non-paired metric is its own column; paired
@@ -542,14 +554,16 @@ export default function ExerciseDetailView({
   };
 
   // What a set's cell shows before anything is typed: "max" (AMRAP), the
-  // target as the coach wrote it (280, "5 LB DB", "10 yards"), "90%" while a
-  // % target has no number yet, else null.
+  // target as the coach wrote it (280, "5 LB DB", "10 yards"), "90% of set 1"
+  // until the reference set is logged ("80% · no max set" with no max), else
+  // null. Upcoming rows and empty inputs show the same text.
   const targetCell = (setIndex: number, metricId: string): { text: string; amrap?: boolean } | null => {
     if (isAmrapFor(setIndex, metricId)) return { text: 'max', amrap: true };
     const target: unknown = resolveTarget(targetArgs(setIndex, metricId));
     if (!isEmptyValue(target)) return { text: String(target) };
     const t = getIntensityTarget(setIndex, metricId);
-    if (t && t.calculatedValue == null) return { text: `${t.percent}%` };
+    const pending = pendingTargetText(t);
+    if (pending) return { text: pending };
     return null;
   };
 
@@ -764,7 +778,8 @@ export default function ExerciseDetailView({
     const metric = trackedMetrics.find((m) => maxes[m] != null) ?? trackedMetrics[0];
     const value = maxes[metric];
     const line = pairedLines.find((l) => l.repsId === metric || l.mphId === metric);
-    return `🏆 ${line ? `${line.name} ` : ''}max ${value != null ? value : '—'}`;
+    if (value == null) return '🏆 tracked';
+    return `🏆 ${line ? `${line.name} ` : ''}max ${value}`;
   })();
 
   // ── Cells ─────────────────────────────────────────────────────────────
@@ -794,7 +809,13 @@ export default function ExerciseDetailView({
     const unit = unitFor(metricId);
     if (!open) {
       if (!isEmptyValue(value)) return renderCell(String(value), unit, done ? 'done' : 'dim', false, metricId);
-      if (done) return renderCell('—', null, 'dim', false, metricId);
+      if (done) {
+        // Ticked with nothing typed: "done" in green once, not a row of dashes.
+        if (inputOrder.every((m) => isEmptyValue(setData[m]))) {
+          return renderCell(metricId === inputOrder[0] ? 'done' : '', null, 'done', false, metricId);
+        }
+        return renderCell('—', null, 'dim', false, metricId);
+      }
       const target = targetCell(setIndex, metricId);
       return renderCell(target?.text ?? '—', unit, 'dim', !!target?.amrap, metricId);
     }
@@ -976,11 +997,14 @@ export default function ExerciseDetailView({
       }
 
       const caption = isOpen ? intensityCaption(i) : null;
+      // A coach set note that only restates the % ("-10% of top set") is
+      // dropped where the intensity caption already says it.
+      const showNote = !!setConfig?.notes && !(caption && noteRepeatsCaption(setConfig.notes, caption));
       const body = (
         <>
           {isCurrentSet && <View style={styles.rail} />}
           {lines}
-          {!!setConfig?.notes && <Text style={styles.cn}>{setConfig.notes}</Text>}
+          {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
           {!!caption && <Text style={styles.caption}>{caption}</Text>}
           {isOpen && exercise.ask_rpe && onRpeChange && (
             <View style={styles.rpeStrip}>
@@ -1650,11 +1674,13 @@ const styles = StyleSheet.create({
   },
   colSet: { width: 24 },
   colLast: { width: 64 },
-  colMetric: { flex: 1, minWidth: 0 },
-  colBall: { flex: 1.1, minWidth: 0 },
-  colPairReps: { flex: 0.7, minWidth: 0 },
-  colPairMph: { flex: 1, minWidth: 0 },
-  colCheck: { width: 32, alignItems: 'flex-end' },
+  // Fixed table columns (mock: ~100–110 px each), shrinking only when they
+  // don't fit; the circle is pushed to the right edge.
+  colMetric: { flexBasis: 108, flexGrow: 0, flexShrink: 1, minWidth: 0 },
+  colBall: { flexBasis: 106, flexGrow: 0, flexShrink: 1, minWidth: 0 },
+  colPairReps: { flexBasis: 68, flexGrow: 0, flexShrink: 1, minWidth: 0 },
+  colPairMph: { flexBasis: 96, flexGrow: 0, flexShrink: 1, minWidth: 0 },
+  colCheck: { width: 32, marginLeft: 'auto', alignItems: 'flex-end' },
   set: {
     borderBottomWidth: 1,
     borderBottomColor: ROW_LINE,

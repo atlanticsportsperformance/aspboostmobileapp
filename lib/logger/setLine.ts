@@ -193,3 +193,30 @@ export function formatSetMetrics(
   }
   return parts.join(' · ');
 }
+
+// The exercise table's columns: metricFieldsFor (enabled measurements) plus
+// every metric the coach prescribed a value or % target for (metric_targets,
+// set_configurations[n].metric_values / intensity_targets) — a Back Squat
+// with enabled_measurements = [weight] still prescribes reps = 2 per set.
+// Order: weight first, then reps, then the rest as metricFieldsFor had them.
+export function tableFieldsFor(
+  exercise: LoggerRoutineExercise,
+  customMeasurements: Measurement[],
+): string[] {
+  const fields = [...metricFieldsFor(exercise, customMeasurements)];
+  const add = (metric: string | null | undefined) => {
+    if (metric && !fields.includes(metric)) fields.push(metric);
+  };
+  const hasValue = (v: unknown) => v != null && v !== '';
+  for (const [k, v] of Object.entries(exercise.metric_targets ?? {})) if (hasValue(v)) add(k);
+  for (const t of exercise.intensity_targets ?? []) add(t.metric);
+  for (const sc of exercise.set_configurations ?? []) {
+    for (const [k, v] of Object.entries(sc?.metric_values ?? {})) if (hasValue(v)) add(k);
+    for (const t of sc?.intensity_targets ?? []) add(t.metric);
+  }
+  const rank = (m: string) => (m === 'weight' ? 0 : m === 'reps' ? 1 : 2);
+  return fields
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => rank(a.m) - rank(b.m) || a.i - b.i)
+    .map((x) => x.m);
+}
