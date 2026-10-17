@@ -33,7 +33,10 @@ describe('exercise screen v2 wiring', () => {
   });
 
   it('collapsed rows keep every logged metric, not just weight × reps', () => {
-    const fn = D.slice(D.indexOf('const formatSetMetrics'), D.indexOf('const renderSetCards'));
+    // body lives in lib/logger/setLine (shared with the overview)
+    expect(D).toContain('formatSetLine(metricFields, valueOf, customMeasurements)');
+    const S = readFileSync(join(__dirname, '../lib/logger/setLine.ts'), 'utf8');
+    const fn = S.slice(S.indexOf('export function formatSetMetrics'));
     expect(fn).toContain('for (const metricId of metricFields)');
     expect(fn).toContain('parts.length >= 3');
     expect(D.match(/formatSetMetrics\(/g)?.length).toBe(2); // done + upcoming

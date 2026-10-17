@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -13,8 +13,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
-import { buildSequence } from '../lib/logger/sequence';
-import { workoutProgress } from '../lib/logger/progress';
+import { buildSequence, nextStep } from '../lib/logger/sequence';
+import { exerciseDashes, progressLine, workoutProgress } from '../lib/logger/progress';
+import { formatRest } from '../lib/logger/rest';
+import { formatSetMetrics, metricFieldsFor } from '../lib/logger/setLine';
+import { prescribedValue, resolveTarget } from '../lib/logger/targets';
+import { LOGGER_COLORS } from '../lib/logger/theme';
 import { youTubeId } from '../lib/video';
 import VideoModal from '../components/logger/VideoModal';
 
@@ -29,6 +33,15 @@ interface BlockOverviewProps {
   workout: Workout;
   customMeasurements: Measurement[];
   completedSets: Record<string, boolean[]>;
+  /** Values per exercise per set (results on done / current rows). */
+  exerciseInputs: Record<string, any[]>;
+  /** rpe per `reId:setIndex`. */
+  rpeValues: Record<string, number | null>;
+  /** exercise_id -> metric_id -> max, for the current row's next-set target. */
+  athleteMaxes: Record<string, Record<string, number>>;
+  moundVelocity: number | null;
+  /** Rest countdown (useRestTimer in WorkoutLoggerScreen); null when idle. */
+  restSecondsLeft: number | null;
   timer: number; // seconds elapsed
   onExercisePress: (exerciseId: string) => void;
   onCompleteWorkout: () => void;
@@ -54,6 +67,21 @@ interface BlockOverviewProps {
 function getExerciseCode(routineIndex: number, exerciseIndex: number): string {
   const letter = String.fromCharCode(65 + routineIndex); // A, B, C...
   return `${letter}${exerciseIndex + 1}`;
+}
+
+// Rows the list shows: keep notes_only / placeholder text rows (warm-up
+// blocks), drop only "true" placeholders. Matches CompletedWorkoutScreen.tsx:439.
+function visibleExercises(routine: Routine): RoutineExercise[] {
+  return routine.routine_exercises.filter(
+    ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder) || (ex as any).notes_only,
+  );
+}
+
+// "4 × 3 · all done" — prescribed sets × reps of a finished exercise.
+function doneSummary(exercise: RoutineExercise): string {
+  const reps = prescribedValue(exercise, 0, 'reps') ?? (exercise.reps || null);
+  const sets = exercise.sets || 0;
+  return reps != null ? `${sets} × ${reps} · all done` : `${sets} sets · all done`;
 }
 
 // Helper: Check if all sets are completed
@@ -112,6 +140,11 @@ export default function BlockOverview({
   workout,
   customMeasurements,
   completedSets,
+  exerciseInputs,
+  rpeValues,
+  athleteMaxes,
+  moundVelocity,
+  restSecondsLeft,
   timer,
   onExercisePress,
   onCompleteWorkout,
@@ -150,10 +183,63 @@ export default function BlockOverview({
 
   // Progress comes from the set-order sequence so it counts exactly the sets
   // the athlete can log (no text/notes rows, uneven supersets respected).
-  const { doneSets: completedSetsCount, totalSets } = workoutProgress(
-    buildSequence(workout.routines),
-    completedSets,
-  );
+  const sequence = useMemo(() => buildSequence(workout.routines), [workout.routines]);
+  const progress = workoutProgress(sequence, completedSets);
+  const { doneSets: completedSetsCount, totalSets } = progress;
+  // The current exercise = the exercise of the next set to log. Continue
+  // opens it (same handler as tapping its row).
+  const next = nextStep(sequence, completedSets);
+
+  // A1, A2, B1… per visible row — the list and the Continue label share it.
+  const codeById = useMemo(() => {
+    const map: Record<string, string> = {};
+    workout.routines.forEach((routine, routineIndex) => {
+      visibleExercises(routine).forEach((ex, exerciseIndex) => {
+        map[ex.id] = getExerciseCode(routineIndex, exerciseIndex);
+      });
+    });
+    return map;
+  }, [workout.routines]);
+  const nextExercise = next
+    ? workout.routines.flatMap(r => r.routine_exercises).find(ex => ex.id === next.reId)
+    : undefined;
+  const continueLabel = next
+    ? `Continue · ${codeById[next.reId] ?? ''} ${nextExercise?.exercises?.name ?? ''}`.trim()
+    : '';
+
+  // One set's result: "220 × 2 @8.5".
+  const setResult = (exercise: RoutineExercise, fields: string[], setIndex: number): string => {
+    const values = exerciseInputs[exercise.id]?.[setIndex] || {};
+    const base = formatSetMetrics(fields, m => values[m], customMeasurements);
+    const rpe = rpeValues[`${exercise.id}:${setIndex}`];
+    return [base, rpe != null ? `@${rpe}` : ''].filter(Boolean).join(' ') || 'done';
+  };
+
+  // Current row: "220 × 2 @8.5" (logged so far) + "set 2 next: 200 × 2".
+  const currentLine = (exercise: RoutineExercise, fields: string[], setIndex: number) => {
+    const inputs = exerciseInputs[exercise.id] || [];
+    const logged = (completedSets[exercise.id] || [])
+      .map((isDone, i) => (isDone ? setResult(exercise, fields, i) : null))
+      .filter((x): x is string => x !== null)
+      .join(', ');
+    const target = formatSetMetrics(
+      fields,
+      m => {
+        const v = inputs[setIndex]?.[m];
+        if (v != null && v !== '') return v;
+        return resolveTarget({
+          re: exercise,
+          setIndex,
+          metric: m,
+          maxes: athleteMaxes,
+          logged: inputs,
+          moundVelocity,
+        });
+      },
+      customMeasurements,
+    );
+    return { logged, next: `set ${setIndex + 1} next${target ? `: ${target}` : ''}` };
+  };
 
   const progressPercent = totalSets > 0 ? (completedSetsCount / totalSets) * 100 : 0;
   const allSetsCompleted = completedSetsCount === totalSets && totalSets > 0;
@@ -197,7 +283,7 @@ export default function BlockOverview({
         <View style={styles.progressBarContainer}>
           <View style={styles.progressBarBackground}>
             <LinearGradient
-              colors={['#10B981', '#059669']}
+              colors={[LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={[styles.progressBarFill, { width: `${progressPercent}%` }]}
@@ -205,9 +291,15 @@ export default function BlockOverview({
           </View>
         </View>
 
-        <Text style={styles.progressText}>
-          {completedSetsCount}/{totalSets} sets completed
-        </Text>
+        {/* "7/16 sets · 24 min" + the rest countdown on the right. */}
+        <View style={styles.progressMetaRow}>
+          <Text style={styles.progressText}>
+            {progressLine(progress, Math.floor(timer / 60))}
+          </Text>
+          {restSecondsLeft != null && (
+            <Text style={styles.restText}>Rest {formatRest(restSecondsLeft)}</Text>
+          )}
+        </View>
       </View>
 
       <ScrollView
@@ -255,10 +347,15 @@ export default function BlockOverview({
       {/* Exercise Blocks/Routines */}
       {workout.routines.map((routine, routineIndex) => {
         const isExpanded = expandedBlocks[routine.id] !== false; // Default expanded
-        const blockLetter = String.fromCharCode(65 + routineIndex); // A, B, C...
+        const rows = visibleExercises(routine);
+        // Every row checked off → the block dims and its header shows ✓.
+        // An empty completion array (a row with 0 sets) never counts as done.
+        const blockDone =
+          rows.length > 0 &&
+          rows.every(ex => (completedSets[ex.id]?.length ?? 0) > 0 && isExerciseCompleted(ex.id, completedSets));
 
         return (
-          <View key={routine.id} style={styles.blockSection}>
+          <View key={routine.id} style={[styles.blockSection, blockDone && styles.blockSectionDone]}>
             {/* Block Header */}
             <TouchableOpacity
               style={styles.blockHeader}
@@ -274,7 +371,11 @@ export default function BlockOverview({
                   <Text style={styles.blockDescription}>{routine.description}</Text>
                 )}
               </View>
-              <Text style={styles.chevronIcon}>{isExpanded ? '▼' : '▶'}</Text>
+              {blockDone ? (
+                <Text style={styles.blockDoneIcon}>✓</Text>
+              ) : (
+                <Text style={styles.chevronIcon}>{isExpanded ? '▼' : '▶'}</Text>
+              )}
             </TouchableOpacity>
 
             {/* Notes Section */}
@@ -298,13 +399,7 @@ export default function BlockOverview({
             {/* Exercise List */}
             {isExpanded && (
               <View style={styles.exerciseList}>
-                {routine.routine_exercises
-                  // Keep notes_only / placeholder rows (e.g. warm-up text blocks
-                  // whose joined exercise is null) so the block renders their
-                  // placeholder_name + parsed bulleted notes. Drop only "true"
-                  // placeholders. Matches CompletedWorkoutScreen.tsx:439.
-                  .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder) || (ex as any).notes_only)
-                  .map((exercise, exerciseIndex) => {
+                {rows.map((exercise, exerciseIndex) => {
                   const isNotesOnlyRow = !exercise.exercises || !!(exercise as any).notes_only;
                   // Bail only when we have neither an exercise join NOR notes-only
                   // content — those rows have nothing to show.
@@ -316,6 +411,17 @@ export default function BlockOverview({
                   const videoId = youTubeId(exercise.exercises?.video_url || null);
                   const isCompleted = isExerciseCompleted(exercise.id, completedSets);
                   const hasPRTracking = exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0;
+                  // Current exercise (exercise of the next set to log): sky
+                  // rail + tint, logged-so-far + next-set line, set dashes.
+                  const isCurrent = !!next && next.reId === exercise.id;
+                  const fields = isNotesOnlyRow ? [] : metricFieldsFor(exercise, customMeasurements);
+                  const dashes = isNotesOnlyRow
+                    ? []
+                    : exerciseDashes(exercise.id, sequence, completedSets, next ?? undefined);
+                  const showDashes = dashes.length > 0 && (isCurrent || dashes.includes('done'));
+                  const current = isCurrent && next ? currentLine(exercise, fields, next.setIndex) : null;
+                  const showRpeTag = exercise.ask_rpe === true;
+                  const showSpeedTag = exercise.velocity_min_mps != null && exercise.velocity_max_mps != null;
 
                   // Use newline separator for paired measurements (each ball type on its own line)
                   const metrics = formatExerciseMetrics({
@@ -339,11 +445,13 @@ export default function BlockOverview({
                     enabledMeasurementIds.length === 0 &&
                     !hasMetricTargets &&
                     !hasLegacyReps;
+                  // Finished exercise with sets → green "4 × 3 · all done".
+                  const showDoneLine = isCompleted && !isNotesOnly && !isNotesOnlyRow && (exercise.sets || 0) > 0;
 
                   return (
                     <TouchableOpacity
                       key={exercise.id}
-                      style={styles.exerciseCard}
+                      style={[styles.exerciseCard, isCurrent && styles.exerciseCardCurrent]}
                       // Notes-only rows have no exercise-detail page to open
                       // (no joined exercise) and opening one crashes. They also
                       // already show their full content inline, so tapping the
@@ -354,14 +462,16 @@ export default function BlockOverview({
                       {/* Left Section */}
                       <View style={styles.exerciseLeft}>
                         {/* Exercise Code - Simple text */}
-                        <Text style={styles.exerciseCodeText}>{exerciseCode}</Text>
+                        <Text style={[styles.exerciseCodeText, isCurrent && styles.exerciseCodeTextCurrent]}>
+                          {exerciseCode}
+                        </Text>
 
                         {/* Video Thumbnail — hidden for notes-only rows (no
                             exercise = no video; the empty ▶ icon previously
                             shown would crash on tap). */}
                         {!isNotesOnlyRow && (
                           <TouchableOpacity
-                            style={styles.videoThumbnail}
+                            style={[styles.videoThumbnail, isCurrent && styles.videoThumbnailCurrent]}
                             onPress={(e) => {
                               if (videoId) {
                                 e.stopPropagation();
@@ -397,13 +507,46 @@ export default function BlockOverview({
                             <Text style={styles.variationText}> ({exercise.selected_variation})</Text>
                           )}
                           {hasPRTracking && <Text style={styles.prTrophy}>🏆</Text>}
+                          {showRpeTag && (
+                            <View style={styles.rpeTag}>
+                              <Text style={styles.rpeTagText}>RPE</Text>
+                            </View>
+                          )}
+                          {showSpeedTag && (
+                            <View style={styles.speedTag}>
+                              <Text style={styles.speedTagText}>RACK · SPEED</Text>
+                            </View>
+                          )}
                         </View>
 
-                        {/* Metrics Display */}
-                        {metrics && (
+                        {/* Done → green summary; current → logged so far +
+                            next set; otherwise today's prescription. */}
+                        {showDoneLine ? (
+                          <Text style={styles.doneLine}>{doneSummary(exercise)}</Text>
+                        ) : current ? (
+                          <Text style={styles.currentLine} numberOfLines={2}>
+                            {current.logged ? `${current.logged} · ` : ''}
+                            <Text style={styles.currentNext}>{current.next}</Text>
+                          </Text>
+                        ) : metrics ? (
                           <Text style={styles.metricsDisplay} numberOfLines={6}>
                             {metrics}
                           </Text>
+                        ) : null}
+
+                        {showDashes && (
+                          <View style={styles.dashRow}>
+                            {dashes.map((d, i) => (
+                              <View
+                                key={i}
+                                style={[
+                                  styles.dash,
+                                  d === 'done' && styles.dashDone,
+                                  d === 'current' && styles.dashCurrent,
+                                ]}
+                              />
+                            ))}
+                          </View>
                         )}
 
                         {/* Exercise Notes — for notes-only rows, parse the
@@ -449,14 +592,14 @@ export default function BlockOverview({
                               </View>
                             );
                           })()
-                        ) : exercise.notes ? (
+                        ) : exercise.notes && !showDoneLine && !isCurrent ? (
                           <Text style={styles.exerciseNotes} numberOfLines={2}>
                             {exercise.notes}
                           </Text>
                         ) : null}
 
                         {/* Tempo */}
-                        {exercise.tempo && (
+                        {exercise.tempo && !showDoneLine && !isCurrent && (
                           <Text style={styles.tempo}>Tempo: {exercise.tempo}</Text>
                         )}
                       </View>
@@ -500,6 +643,7 @@ export default function BlockOverview({
                           >
                             <View style={[
                               styles.quickCompleteCheckbox,
+                              isCurrent && styles.quickCompleteCheckboxCurrent,
                               isCompleted && styles.quickCompleteCheckboxChecked
                             ]}>
                               {isCompleted && (
@@ -551,6 +695,33 @@ export default function BlockOverview({
                 <Text style={styles.completeButtonText}>COMPLETE WORKOUT</Text>
               </LinearGradient>
             </TouchableOpacity>
+          ) : next ? (
+            // Work left: Finish early + Continue to the next set's exercise.
+            <View style={styles.bottomBar}>
+              <TouchableOpacity
+                style={styles.finishEarlyButton}
+                onPress={() => setShowIncompleteModal(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.finishEarlyText}>Finish early</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.continueButton}
+                onPress={() => onExercisePress(next.reId)}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={[LOGGER_COLORS.accent, LOGGER_COLORS.accentEnd]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.continueButtonFill}
+                >
+                  <Text style={styles.continueButtonText} numberOfLines={1}>
+                    {continueLabel}
+                  </Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
           ) : (
             <TouchableOpacity
               style={styles.finishEarlyPill}
@@ -676,7 +847,7 @@ const styles = StyleSheet.create({
 
   contentContainer: {
     paddingHorizontal: 16,
-    paddingBottom: 96,
+    paddingBottom: 110,
     maxWidth: 672,
     alignSelf: 'center',
     width: '100%',
@@ -688,6 +859,15 @@ const styles = StyleSheet.create({
   },
   blockSection: {
     marginBottom: 20,
+  },
+  blockSectionDone: {
+    opacity: 0.55,
+  },
+  blockDoneIcon: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginLeft: 8,
   },
   blockHeader: {
     flexDirection: 'row',
@@ -747,6 +927,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
+  // Current exercise: sky left rail + faint sky tint. The negative margin
+  // keeps the code column aligned with the other rows.
+  exerciseCardCurrent: {
+    backgroundColor: 'rgba(155, 221, 255, 0.05)',
+    borderLeftWidth: 3,
+    borderLeftColor: LOGGER_COLORS.accent,
+    marginLeft: -16,
+    paddingLeft: 13,
+    marginRight: -16,
+    paddingRight: 16,
+  },
   exerciseLeft: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -758,12 +949,19 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.4)',
     minWidth: 28,
   },
+  exerciseCodeTextCurrent: {
+    color: LOGGER_COLORS.accent,
+  },
   videoThumbnail: {
     width: 48,
     height: 32,
     borderRadius: 4,
     overflow: 'hidden',
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  videoThumbnailCurrent: {
+    borderWidth: 1,
+    borderColor: 'rgba(155, 221, 255, 0.4)',
   },
   thumbnailImage: {
     width: '100%',
@@ -800,6 +998,67 @@ const styles = StyleSheet.create({
   },
   prTrophy: {
     fontSize: 14,
+  },
+  // Outlined tags after the name: RPE (amber, ask_rpe) and RACK · SPEED
+  // (sky, velocity band set).
+  rpeTag: {
+    borderWidth: 1,
+    borderColor: 'rgba(217, 164, 65, 0.4)',
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  rpeTagText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: LOGGER_COLORS.rpe,
+  },
+  speedTag: {
+    borderWidth: 1,
+    borderColor: 'rgba(155, 221, 255, 0.4)',
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  speedTagText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: LOGGER_COLORS.accent,
+  },
+  doneLine: {
+    fontSize: 13,
+    color: LOGGER_COLORS.green,
+    marginTop: 4,
+    fontVariant: ['tabular-nums'],
+  },
+  currentLine: {
+    fontSize: 13,
+    color: LOGGER_COLORS.text,
+    marginTop: 4,
+    lineHeight: 18,
+    fontVariant: ['tabular-nums'],
+  },
+  currentNext: {
+    color: LOGGER_COLORS.muted,
+  },
+  dashRow: {
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 6,
+  },
+  dash: {
+    width: 16,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  dashDone: {
+    backgroundColor: LOGGER_COLORS.green,
+  },
+  dashCurrent: {
+    backgroundColor: LOGGER_COLORS.accent,
   },
   completionCheckmark: {
     width: 20,
@@ -985,11 +1244,22 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 9999,
   },
+  progressMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+  },
   progressText: {
-    marginTop: 4,
-    fontSize: 12,
-    color: '#A3A3A3',
-    textAlign: 'center',
+    fontSize: 13,
+    color: LOGGER_COLORS.muted,
+    fontVariant: ['tabular-nums'],
+  },
+  restText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: LOGGER_COLORS.accent,
+    fontVariant: ['tabular-nums'],
   },
   scrollView: {
     flex: 1,
@@ -1067,6 +1337,40 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(245,158,11,0.4)',
     backgroundColor: 'rgba(245,158,11,0.10)',
   },
+  bottomBar: {
+    flexDirection: 'row',
+    gap: 8,
+    width: '100%',
+    maxWidth: 672,
+    alignSelf: 'center',
+  },
+  finishEarlyButton: {
+    width: 96,
+    height: 52,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.4)',
+    backgroundColor: '#111214',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  continueButton: {
+    flex: 1,
+    height: 52,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  continueButtonFill: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  continueButtonText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#06202E',
+  },
   finishEarlyText: {
     color: '#F59E0B',
     fontSize: 12,
@@ -1091,6 +1395,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  quickCompleteCheckboxCurrent: {
+    borderColor: LOGGER_COLORS.accent,
   },
   quickCompleteCheckboxChecked: {
     backgroundColor: '#10B981',

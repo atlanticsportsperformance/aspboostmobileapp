@@ -671,7 +671,7 @@ export default function WorkoutLoggerScreen() {
     return true;
   }, [allExercises, athleteId, orgId, workoutInstanceId]);
 
-  // Rest after a logged set (spec §11.6); display lands in Task 12.
+  // Rest after a logged set (spec §11.6); the overview shows the countdown.
   const startRestAfter = useCallback((exerciseId: string, setIndex: number) => {
     const step = sequence.find(s => s.reId === exerciseId && s.setIndex === setIndex);
     if (!step || !workout) return;
@@ -1098,6 +1098,11 @@ export default function WorkoutLoggerScreen() {
         workout={workout}
         customMeasurements={customMeasurements}
         completedSets={completedSets}
+        exerciseInputs={exerciseInputs}
+        rpeValues={rpeValues}
+        athleteMaxes={athleteMaxes}
+        moundVelocity={moundVelocity}
+        restSecondsLeft={restTimer.secondsLeft}
         timer={timer}
         onExercisePress={handleExercisePress}
         onCompleteWorkout={handleCompleteWorkout}
