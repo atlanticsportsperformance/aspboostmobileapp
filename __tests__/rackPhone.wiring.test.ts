@@ -49,7 +49,7 @@ describe('rack phone wiring', () => {
     expect(L).toContain('const write = rackSafeWrite(requested, rackOwnsSetRef.current(exerciseId, setIndex));');
     expect(L).toContain('awaitRackWrite(e.routineExerciseId, e.setNumber);');
     const toggle = D.slice(D.indexOf('const handleCheckboxToggle'), D.indexOf('// Done button — two-phase'));
-    expect(toggle).toContain("if (!isCompleted && rack && rackSaving(setIndex)) {");
+    expect(toggle).toContain('if (rack && rackSaving(setIndex)) {');
     expect(D).toContain("disabled={rackLabel === 'Saving…' && rackSaving(currentSetIndex) === 'saving'}");
     expect(D).toContain('<RefreshControl refreshing={rack.refreshing} onRefresh={rack.onPullRefresh}');
   });
@@ -118,5 +118,39 @@ describe('rack phone wiring', () => {
     for (const src of [BN, LR]) {
       expect(src).not.toMatch(/of \$\{|blockLabel|codeFor/);
     }
+  });
+});
+
+describe('rack phone wiring — shared resolver + re-review N1/N3/N4', () => {
+  it('the phone’s current rack set comes from resolveRackSet (same function as the iPad), open exercise = phone context', () => {
+    expect(L).toContain("import { rackInstanceFromLogger, rackLogsFromCompleted, resolveRackSet } from '../lib/rack/resolveRackSet';");
+    expect(L).toContain('resolveRackSet({ instances: [rackInstance], logs: rackLogs, phone: { workoutInstanceId, routineExerciseId: ctxExercise.id } })');
+    expect(L).toContain('autoPickExerciseId: rackAutoPick,');
+  });
+
+  it('N1 phone: a set advancing on the open exercise sends the context immediately (no debounce)', () => {
+    expect(L).toContain('const advanced = !!prev && prev.reId === ctxExercise.id && prev.setIndex !== ctxSetIndex;');
+    expect(L).toContain('const immediate = rackActivationSentRef.current !== rackActivation || advanced;');
+  });
+
+  it('N1 phone: a live rack set on a row shown complete → circle / Done end the rack set; never a local un-check', () => {
+    const toggle = D.slice(D.indexOf('const handleCheckboxToggle'), D.indexOf('// Done button — two-phase'));
+    expect(toggle).toContain('if (rack && rackLive?.lifting && isLiveRow(setIndex)) {');
+    expect(toggle.indexOf('rack.onLiveDone()')).toBeLessThan(toggle.indexOf('onToggleSetComplete'));
+    const next = D.slice(D.indexOf('const handleNextButtonPress'), D.indexOf('// Swipe gesture handler'));
+    expect(next).toContain('if (rack && rackLive?.lifting) {');
+    // the data path refuses a check/un-check of a rack-owned set too
+    const t = L.slice(L.indexOf('const handleToggleSetComplete'), L.indexOf('// RPE tap'));
+    expect(t).toContain('if (rackOwnsSetRef.current(activeExerciseId, setIndex)) return;');
+    expect(t.indexOf('rackOwnsSetRef.current(activeExerciseId, setIndex)')).toBeLessThan(t.indexOf('commitCompleted('));
+  });
+
+  it('N3: leaving / being bumped releases rack-owned and pending sets after a last read', () => {
+    const n3 = L.slice(L.indexOf('const rackWasActiveRef'), L.indexOf('// Real pull-to-refresh'));
+    expect(n3).toContain('void readPendingRackWrites();');
+    expect(n3).toContain('rackPendingRef.current = {};');
+    expect(n3).toContain('setRackSavingState(prev => (Object.keys(prev).length ? {} : prev));');
+    expect(n3).toContain('RACK_WRITE_TIMEOUT_MS');
+    expect(n3).toContain('if (rackWasActiveRef.current) return; // active again');
   });
 });

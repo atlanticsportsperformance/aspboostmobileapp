@@ -2,7 +2,7 @@ import * as engineModule from '../lib/rack/engine';
 import { createRackEngine, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
 import { createRackExecutor, SEED_RETRY_MS, SEED_REFRESH_MS, type ExecutorApi } from '../lib/rack/executor';
 import type { TodayAthlete, TodayExercise } from '../lib/rack/api';
-import type { WrittenSet } from '../lib/rack/api';
+import type { SetLogRow } from '../lib/rack/api';
 import type { OvrRep } from '../lib/ovr/protocol';
 
 const RACK = 'rack-3';
@@ -45,6 +45,12 @@ function deferred<T>() {
 const flushMicro = async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 };
+const settle = async () => {
+  for (let i = 0; i < 3; i++) {
+    await flushMicro();
+    await new Promise(res => setTimeout(res, 0));
+  }
+};
 
 function rig(over: { api?: Partial<ExecutorApi>; persist?: any } = {}) {
   let t = T0;
@@ -62,7 +68,7 @@ function rig(over: { api?: Partial<ExecutorApi>; persist?: any } = {}) {
       calls.push('rpc:endSet');
       return row({ active_athlete_id: 'jake', queue: [], updated_at: iso(t + 1) });
     }),
-    todaysWrittenSets: jest.fn(async (): Promise<WrittenSet[]> => []),
+    todaysSetLogs: jest.fn(async (): Promise<SetLogRow[]> => []),
     ...over.api,
   };
   const persist = {
@@ -195,17 +201,21 @@ describe('seed preload', () => {
     r.ex.setToday([tile('tyler'), tile('jake'), tile('cole')]);
     r.ex.start();
     await jest.advanceTimersByTimeAsync(0);
-    const calls = (r.api.todaysWrittenSets as jest.Mock).mock.calls.map(c => [...c[0]].sort());
+    const calls = (r.api.todaysSetLogs as jest.Mock).mock.calls.map(c => [...c[0]].sort());
     expect(calls[0]).toEqual(['cole', 'jake', 'tyler']);
     const n = calls.length;
     await jest.advanceTimersByTimeAsync(SEED_REFRESH_MS);
-    expect((r.api.todaysWrittenSets as jest.Mock).mock.calls.length).toBeGreaterThan(n);
+    expect((r.api.todaysSetLogs as jest.Mock).mock.calls.length).toBeGreaterThan(n);
     r.ex.stop();
   });
 
   it('a seed landing before the first rep puts the set above the high-water', async () => {
     const r = rig({
-      api: { todaysWrittenSets: jest.fn(async () => [{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 3 }]) },
+      api: {
+        todaysSetLogs: jest.fn(async () =>
+          [1, 2, 3].map(n => ({ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: n, isComplete: true })),
+        ),
+      },
     });
     r.ex.setToday([tile('tyler')]);
     await flushMicro();
@@ -216,17 +226,17 @@ describe('seed preload', () => {
     expect((r.persist.writeRep as jest.Mock).mock.calls[0][0].setNumber).toBe(4);
   });
 
-  it('reps are never buffered in the executor (seed pending or failing)', async () => {
+  it('logs failing: a first rep waits only for the bounded re-read, a later event releases it in order', async () => {
     jest.useFakeTimers();
     const seedFn = jest.fn(() => Promise.reject(new Error('offline')));
-    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    const r = rig({ api: { todaysSetLogs: seedFn } });
     r.ex.start();
     r.ex.dispatch({ type: 'sessionSync', row: row() });
     expect(r.ex.isSyncing()).toBe(true);
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
-    expect(events.filter(e => e.type === 'rep')).toHaveLength(1); // reached the engine synchronously
-    r.ex.dispatch({ type: 'ipadDone' });
-    expect(events.filter(e => e.type === 'ipadDone')).toHaveLength(1);
+    r.ex.dispatch({ type: 'ipadDone' }); // releases the held rep first
+    const order = events.filter(e => e.type === 'rep' || e.type === 'ipadDone').map(e => e.type);
+    expect(order).toEqual(['rep', 'ipadDone']);
     await jest.advanceTimersByTimeAsync(SEED_RETRY_MS + 10);
     await r.ex.idle();
     expect(seedFn.mock.calls.length).toBeGreaterThanOrEqual(2); // retried every 5 s
@@ -237,9 +247,9 @@ describe('seed preload', () => {
   });
 
   it("N-1 regression: Jake's reps stay Jake's when Tyler becomes active again", async () => {
-    const seed = deferred<WrittenSet[]>();
+    const seed = deferred<SetLogRow[]>();
     const seedFn = jest.fn().mockResolvedValueOnce([]).mockImplementation(() => seed.promise);
-    const r = rig({ api: { todaysWrittenSets: seedFn } });
+    const r = rig({ api: { todaysSetLogs: seedFn } });
     await activeTyler(r); // Tyler active + seeded
     r.ex.dispatch({ type: 'sessionSync', row: row({ active_athlete_id: 'jake', queue: ['tyler'], updated_at: iso(r.advance(1000)) }) });
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) }, r.advance(1000));
@@ -261,11 +271,11 @@ describe('seed preload', () => {
   it("a tile tap refreshes seeds right away (non-blocking)", async () => {
     const r = rig();
     await activeTyler(r);
-    const before = (r.api.todaysWrittenSets as jest.Mock).mock.calls.length;
+    const before = (r.api.todaysSetLogs as jest.Mock).mock.calls.length;
     r.ex.dispatch({ type: 'selectAthlete', athleteId: 'jake' });
     await flushMicro();
     await r.ex.idle();
-    const calls = (r.api.todaysWrittenSets as jest.Mock).mock.calls;
+    const calls = (r.api.todaysSetLogs as jest.Mock).mock.calls;
     expect(calls.length).toBeGreaterThan(before);
     expect(calls.some(c => c[0].includes('jake'))).toBe(true);
     expect(r.ex.getState().activeAthleteId).toBe('jake');
@@ -366,7 +376,7 @@ const todayOf = (athleteId: string, exs: TodayExercise[]): TodayAthlete => ({
   athleteId,
   firstName: athleteId,
   lastName: '',
-  instances: [{ workoutInstanceId: 'wi-9', status: 'not_started', createdAt: '2026-10-17T10:00:00Z', exercises: exs, remaining: exs }],
+  instances: [{ workoutInstanceId: exs[0]?.workoutInstanceId ?? 'wi-9', status: 'not_started', createdAt: '2026-10-17T10:00:00Z', exercises: exs, remaining: exs }],
   exercises: exs,
   remaining: exs,
 });
@@ -395,12 +405,13 @@ describe('exercise override lives in the executor', () => {
     const before = events.length;
     r.ex.setToday([todayOf('tyler', [A, B])]);
     const pushed = events.slice(before).filter(e => e.type === 'localContext');
-    expect(pushed.length).toBeGreaterThan(0);
     expect(pushed.every(e => (e as any).routineExerciseId === 're-b')).toBe(true);
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 're-b', resolved: true });
     expect(r.ex.getState().lastEndByAthlete.tyler.hold).toBe(true);
     // The next rep (past the 3 s late-rep window) reopens the same set.
     r.advance(5_000);
     r.ex.dispatch({ type: 'rep', rep: ovr(0.78) });
+    await r.ex.idle();
     expect(r.ex.getState().live).toMatchObject({ context: { routineExerciseId: 're-b', setNumber: 1 } });
   });
 
@@ -567,21 +578,22 @@ describe('unison: the iPad publishes its context (rack_set_ipad_context)', () =>
     r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
     r.ex.setToday([todayOf('tyler', [boxJump()])]);
     await flushMicro();
-    expect(r.ex.getState().localContext).toBeNull();
+    expect(r.ex.getState().localContext).toMatchObject({ resolved: true, workoutInstanceId: null, routineExerciseId: null });
     expect(setIpadContext).not.toHaveBeenCalled();
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
     await r.ex.idle();
     expect((r.persist.writeRep as jest.Mock).mock.calls[0][0]).toMatchObject({ workoutInstanceId: null, routineExerciseId: null });
   });
 
-  it('an earlier pick is cleared when no rack lift remains', () => {
-    const { r } = unisonRig();
+  it('an earlier pick is cleared when no rack lift remains (from the logs)', async () => {
+    let logs: SetLogRow[] = [];
+    const { r } = unisonRig({ todaysSetLogs: jest.fn(async () => logs) });
     r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, queue: [] }) });
     r.ex.setToday([todayOf('tyler', [squat()])]);
     expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 're-sq' });
-    const done = squat({ completedSets: 3 });
-    const a = todayOf('tyler', [done]);
-    r.ex.setToday([{ ...a, instances: [{ ...a.instances[0], remaining: [] }], remaining: [] }]);
+    logs = [1, 2, 3].map(n => ({ athleteId: 'tyler', workoutInstanceId: 'wi-9', routineExerciseId: 're-sq', setNumber: n, isComplete: true }));
+    r.ex.setToday([todayOf('tyler', [squat()])]);
+    await settle();
     expect(r.ex.getState().localContext).toMatchObject({ workoutInstanceId: null });
   });
 });

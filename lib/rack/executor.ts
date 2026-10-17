@@ -12,22 +12,28 @@
 //   - An RPC's returned row is dispatched as `sessionSync` BEFORE
 //     `rpcSettled`; an error dispatches `rpcFailed`. rpcSetActive is never
 //     queued offline — it just fails.
-//   - Seeds (high-water) are PRELOADED, never awaited: todaysWrittenSets for
-//     every athlete on today's tiles (+ the active / switching-to athlete) on
-//     start, every 60 s, and right away when the tile list or the active
-//     athlete changes. Each row is dispatched as `seedHighWater` the moment it
-//     lands; a failure retries every 5 s. Tiles are known before anyone
-//     lifts, so the seed is normally in before the first rep. `isSyncing()` =
-//     the rep athlete's seed hasn't loaded yet (UI indicator only).
-//     RESIDUAL RISK: iPad offline since boot + no phone context for the
-//     athlete → the rack numbers from its local high-water and can collide
-//     with a set the athlete logged on the phone.
+//   - Exercise + set come from resolveRackSet (the same function the phone
+//     runs) over the executor's cached exercise_logs: on every set start, and
+//     between sets on every event (sessionSync, today, override, log refresh).
+//     The answer goes to the engine as a resolved `localContext` and is
+//     published with rack_set_ipad_context (unison). At a set start the live
+//     set's context is published BEFORE rack_start_set when the row differs,
+//     so the phone's live row is the rack's set.
+//   - Logs (todaysSetLogs) are PRELOADED for every athlete on today's tiles
+//     (+ the active / switching-to athlete) on start, every 60 s, on a tile
+//     list / active change, on every rack_sessions row and after each set
+//     write. Complete rows also go to the engine as `seedHighWater` (its
+//     never-overwrite guard). The rack's own writes count as complete at once.
+//     A first rep whose athlete's logs are older than 2 s waits (≤ 1.5 s) for
+//     a fresh read of them; every later event first releases it, so order is
+//     kept. `isSyncing()` = the rep athlete's logs haven't loaded yet (UI).
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
 
-import { nextContext, nextSetNumber, nextSetNumberFor, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
+import { IDLE_END_MS, LATE_REP_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
-import { pickRackLift, prescribedWeightFor, percentWeightTarget, type TodayAthlete, type TodayExercise, type WrittenSet } from './api';
+import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAthlete, type TodayExercise } from './api';
+import { rackInstancesOf, resolveRackSet, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
 import { intensityFor, type LoggedSets } from '../logger/targets';
 import { withTimeout, type RackPersist } from './persist';
 
@@ -38,12 +44,19 @@ export const SEED_REFRESH_MS = 60_000;
 export const RPC_TIMEOUT_MS = 10_000;
 /** A failed last-logged-weight read is retried after this long. */
 export const WEIGHT_RETRY_MS = 30_000;
+/** Logs older than this are re-read before a set starts. */
+export const LOG_FRESH_MS = 2_000;
+/** The longest a first rep waits for that re-read. */
+export const LOG_HOLD_MAX_MS = 1_500;
+/** Reps this soon after the last rack set of a finished exercise = lifting continues on it. */
+export const CONTINUE_MS = IDLE_END_MS;
 
 export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
   setActive(rackId: string, athleteId: string): Promise<RackSessionRow>;
   endSet(rackId: string, athleteId: string): Promise<RackSessionRow>;
-  todaysWrittenSets(athleteIds: string[]): Promise<WrittenSet[]>;
+  /** Today's exercise_logs rows of these athletes (resolveRackSet's logs). */
+  todaysSetLogs(athleteIds: string[]): Promise<SetLogRow[]>;
   /** Last logged weight for (athlete, exercise) — the load fallback when
    *  neither the phone nor the plan gives one. Optional (tests). */
   lastLoggedWeight?(athleteId: string, exerciseId: string): Promise<number | null>;
@@ -71,22 +84,23 @@ export interface ExecutorSensor {
 }
 
 export interface RackExecutor {
-  /** Reduce one event (never buffered). */
+  /** Reduce one event. Only a set-starting rep can wait (≤ LOG_HOLD_MAX_MS)
+   *  for a fresh log read; any later non-rep event releases it first. */
   dispatch(event: RackEvent, atMs?: number): void;
   getState(): RackEngineState;
-  /** true while the rep athlete's seed has not loaded yet (UI indicator). */
+  /** true while the rep athlete's logs have not loaded yet (UI indicator). */
   isSyncing(): boolean;
   /** Called on every state or syncing change. */
   subscribe(listener: (s: RackEngineState, syncing: boolean) => void): () => void;
   /** Today's athletes: dispatches contextMeta for every exercise and the
-   *  iPad's localContext pick for the active athlete. */
+   *  active athlete's resolveRackSet answer (a resolved localContext). */
   setToday(athletes: TodayAthlete[]): void;
   /** Flush both queues now, ignoring back-off (e.g. realtime reconnect).
    *  Resolves when that flush pass is done. */
   flush(): Promise<void>;
-  /** iPad exercise pick for an athlete (null clears). Applied as the engine's
-   *  localContext by the executor itself, after its own pick, so the two
-   *  never alternate. Cleared when the active athlete changes. */
+  /** Coach exercise pick for an athlete (null clears) — resolveRackSet's
+   *  override input. Beats a phone context made before it; a newer phone
+   *  context clears it. Cleared when the active athlete changes. */
   setOverride(athleteId: string, ex: TodayExercise | null): void;
   /** End any live set (iPad Done) and wait until its writes are queued. */
   endLive(): Promise<void>;
@@ -127,11 +141,17 @@ export function createRackExecutor(opts: {
   let timers: ReturnType<typeof setInterval>[] = [];
   let running = false;
 
-  /** Athletes whose seed has landed at least once. */
+  /** Athletes whose logs have landed at least once. */
   const seeded = new Set<string>();
   let seedInFlight = false;
   let seedAgain = false;
   let seedRetry: ReturnType<typeof setTimeout> | null = null;
+  /** Cached exercise_logs per athlete (+ when they were read). */
+  const logsByAthlete = new Map<string, { rows: SetLogRow[]; at: number }>();
+  /** Sets the rack itself wrote complete, until a read shows them (key athlete:wi:re:n). */
+  const rackWritten = new Map<string, SetLogRow>();
+  /** Complete rows already handed to the engine as seedHighWater. */
+  const seededRows = new Set<string>();
 
   /** Writes whose enqueue failed (storage error) — retried on every flush. */
   const unsavedReps: RepWrite[] = [];
@@ -274,7 +294,8 @@ export function createRackExecutor(opts: {
             () => unsavedSets.push({ kind, summary: s }),
           );
           setWriteFailed = !ok;
-          flushSoon();
+          // Refresh the logs once the write has gone out.
+          void flushSoon().then(() => preloadSeeds());
           break;
         }
         case 'rpcEndSet':
@@ -314,21 +335,9 @@ export function createRackExecutor(opts: {
     if (seedRetry) clearTimeout(seedRetry);
     seedRetry = null;
     seedInFlight = true;
-    withTimeout(api.todaysWrittenSets(ids), RPC_TIMEOUT_MS, 'todaysWrittenSets')
-      .then(sets => {
-        for (const w of sets) {
-          apply(
-            {
-              type: 'seedHighWater',
-              athleteId: w.athleteId,
-              workoutInstanceId: w.workoutInstanceId,
-              routineExerciseId: w.routineExerciseId,
-              setNumber: w.setNumber,
-            },
-            now(),
-          );
-        }
-        ids.forEach(id => seeded.add(id));
+    withTimeout(api.todaysSetLogs(ids), RPC_TIMEOUT_MS, 'todaysSetLogs')
+      .then(rows => {
+        storeLogs(ids, rows);
         notify();
       })
       .catch(e => {
@@ -344,6 +353,252 @@ export function createRackExecutor(opts: {
       });
   };
 
+  /** A read of these athletes' logs landed: cache, seed the engine guard, re-resolve. */
+  const storeLogs = (ids: string[], rows: SetLogRow[]) => {
+    const at = now();
+    for (const id of ids) logsByAthlete.set(id, { rows: rows.filter(r => r.athleteId === id), at });
+    for (const w of rows) {
+      if (!w.isComplete) continue;
+      const k = `${w.athleteId}:${w.workoutInstanceId}:${w.routineExerciseId}:${w.setNumber}`;
+      rackWritten.delete(k);
+      if (seededRows.has(k)) continue;
+      seededRows.add(k);
+      apply(
+        {
+          type: 'seedHighWater',
+          athleteId: w.athleteId,
+          workoutInstanceId: w.workoutInstanceId,
+          routineExerciseId: w.routineExerciseId,
+          setNumber: w.setNumber,
+        },
+        now(),
+      );
+    }
+    ids.forEach(id => seeded.add(id));
+    reresolve();
+  };
+
+  /** The athlete's logs as resolveRackSet reads them (cache + the rack's own writes). */
+  const logsFor = (athleteId: string): RackSetLog[] => {
+    const rows = [...(logsByAthlete.get(athleteId)?.rows ?? [])];
+    for (const w of rackWritten.values()) if (w.athleteId === athleteId) rows.push(w);
+    return rows.map(r => ({
+      workoutInstanceId: r.workoutInstanceId,
+      routineExerciseId: r.routineExerciseId,
+      setNumber: r.setNumber,
+      isComplete: r.isComplete,
+    }));
+  };
+
+  // ---------------------------------------------------------------- resolve (shared with the phone)
+
+  const refSig = (r: RackExerciseRef | null) => (r ? `${r.workoutInstanceId}:${r.routineExerciseId}:${r.setNumber ?? ''}` : '');
+
+  /** The phone's open exercise + set — only when the row's context is the phone's. */
+  const phoneRef = (): RackExerciseRef | null => {
+    if (!phoneOwnsRow()) return null;
+    const n = rowNext()!;
+    return { workoutInstanceId: n.wi, routineExerciseId: n.re, setNumber: n.set };
+  };
+  const lastRackExerciseOf = (athleteId: string): RackExerciseRef | null => {
+    const set = state.lastEndByAthlete[athleteId]?.set;
+    return set && !set.free ? { workoutInstanceId: set.context.workoutInstanceId, routineExerciseId: set.context.routineExerciseId } : null;
+  };
+
+  /** resolveRackSet for the athlete; null = their workout isn't loaded (the engine falls back to the row). */
+  const resolveFor = (athleteId: string, liftingContinues = false): ResolvedRackSet | null => {
+    const a = today.find(t => t.athleteId === athleteId);
+    if (!a) return null;
+    const ovr = override && override.athleteId === athleteId ? override : null;
+    const ov = ovr?.ex ?? null;
+    const instances = rackInstancesOf(a);
+    // Phone-open beats the coach pick — except a pick made AFTER the phone's
+    // current context (the latest action wins; the phone then follows it).
+    // A newer phone context clears the override (apply()).
+    const phoneNow = phoneRef();
+    const phone = ovr && refSig(phoneNow) === ovr.phoneSig ? null : phoneNow;
+    const known = (ref: RackExerciseRef) =>
+      instances.some(i => (!ref.workoutInstanceId || i.workoutInstanceId === ref.workoutInstanceId) && i.exercises.some(e => e.routineExerciseId === ref.routineExerciseId));
+    // The phone has an exercise open that today's list doesn't hold (another
+    // instance / a stale list): the phone wins — the row's context applies.
+    if (phone && !known(phone) && !ov) return null;
+    return resolveRackSet({
+      instances,
+      logs: logsFor(athleteId),
+      phone,
+      override: ov ? { workoutInstanceId: ov.workoutInstanceId, routineExerciseId: ov.routineExerciseId } : null,
+      lastRackExercise: lastRackExerciseOf(athleteId),
+      liftingContinues,
+    });
+  };
+
+  /** Hand a resolution to the engine (a resolved localContext) when it changed. */
+  const applyResolution = (athleteId: string, res: ResolvedRackSet | null) => {
+    const cur = state.localContext;
+    if (!res) {
+      // Workout not loaded: drop an older resolution so the row's context applies.
+      if (cur && cur.athleteId === athleteId && cur.resolved) {
+        apply({ type: 'localContext', athleteId, workoutInstanceId: null, routineExerciseId: null, exerciseId: null, setNumber: null, loadLb: null, zoneMin: null, zoneMax: null, dropStopPct: null }, now());
+      }
+      return;
+    }
+    const set = res.none ? null : res;
+    const ex = set ? today.find(t => t.athleteId === athleteId)?.exercises.find(e => e.workoutInstanceId === set.workoutInstanceId && e.routineExerciseId === set.routineExerciseId) : undefined;
+    const next = {
+      workoutInstanceId: set?.workoutInstanceId ?? null,
+      routineExerciseId: set?.routineExerciseId ?? null,
+      exerciseId: set?.exerciseId ?? null,
+      setNumber: set?.setNumber ?? null,
+    };
+    if (
+      cur && cur.athleteId === athleteId && cur.resolved &&
+      cur.workoutInstanceId === next.workoutInstanceId && cur.routineExerciseId === next.routineExerciseId &&
+      cur.exerciseId === next.exerciseId && cur.setNumber === next.setNumber
+    ) return;
+    apply(
+      {
+        type: 'localContext',
+        athleteId,
+        resolved: true,
+        ...next,
+        loadLb: null,
+        zoneMin: ex?.zoneMin ?? null,
+        zoneMax: ex?.zoneMax ?? null,
+        dropStopPct: ex?.dropStopPct ?? null,
+      },
+      now(),
+    );
+  };
+
+  /** Between sets: the active athlete's exercise + set from the resolver. */
+  let resolving = false;
+  const reresolve = () => {
+    if (state.mode !== 'rack' || resolving) return;
+    const id = state.activeAthleteId;
+    if (!id || state.setState === 'lifting') return;
+    resolving = true;
+    try {
+      applyResolution(id, resolveFor(id));
+    } finally {
+      resolving = false;
+    }
+  };
+
+  /**
+   * Right before a rep starts a set: resolve again. When the resolver moved
+   * off the athlete's last rack exercise only because it is finished, reps
+   * still coming on it (≤ CONTINUE_MS after its last rep) with nothing else
+   * open on the phone or picked by the coach = lifting continues → an extra
+   * set is appended instead of jumping exercises mid-lift.
+   */
+  const prepareStart = (athleteId: string, at: number) => {
+    resolving = true;
+    try {
+      let res = resolveFor(athleteId);
+      const last = lastRackExerciseOf(athleteId);
+      const lastSet = state.lastEndByAthlete[athleteId]?.set;
+      const onLast = !!res && !res.none && !!last && res.workoutInstanceId === last.workoutInstanceId && res.routineExerciseId === last.routineExerciseId;
+      const ov = override && override.athleteId === athleteId ? override.ex : null;
+      const somethingElseOpen = !!phoneRef() || (!!ov && !(last && ov.workoutInstanceId === last.workoutInstanceId && ov.routineExerciseId === last.routineExerciseId));
+      if (res && last && lastSet && !onLast && !somethingElseOpen && at - lastSet.lastRepAtMs <= CONTINUE_MS) {
+        const extra = resolveFor(athleteId, true);
+        if (extra && !extra.none && extra.reason === 'extra-set') res = extra;
+      }
+      applyResolution(athleteId, res);
+    } finally {
+      resolving = false;
+    }
+  };
+
+  /** Would this rep start a new set (not a continuation, late rep or switch)? */
+  const startsSet = (at: number): boolean => {
+    const s = state;
+    if (s.mode !== 'rack' || !s.activeAthleteId || s.switchingTo) return false;
+    if (s.setState === 'lifting' && s.live) return false;
+    const just = s.lastEnded;
+    return !(just && just.endedAtMs != null && at - just.endedAtMs <= LATE_REP_MS);
+  };
+
+  /** The live set just started: put its context in the row before rack_start_set. */
+  const publishStart = () => {
+    const live = state.live;
+    const r = state.session;
+    const rackId = state.rackId;
+    if (!live || live.free || !rackId || !api.setIpadContext || !r || r.active_athlete_id !== live.athleteId) return;
+    const c = live.context;
+    if (r.workout_instance_id === c.workoutInstanceId && r.routine_exercise_id === c.routineExerciseId && r.set_number === c.setNumber) return;
+    const want: Pub = {
+      athleteId: live.athleteId,
+      workoutInstanceId: c.workoutInstanceId!,
+      routineExerciseId: c.routineExerciseId!,
+      setNumber: c.setNumber,
+      loadLb: c.loadLb,
+    };
+    published = want;
+    lastAttemptKey = `${want.athleteId}:${want.workoutInstanceId}:${want.routineExerciseId}:${want.setNumber}:${want.loadLb}`;
+    const setIpadContext = api.setIpadContext;
+    // Same serial chain as the RPCs: this goes out before the rpcStartSet the
+    // engine just emitted (its effect chain runs later).
+    rpcChain = rpcChain.then(async () => {
+      try {
+        const row = await withTimeout(
+          setIpadContext(rackId, want.athleteId, { workoutInstanceId: want.workoutInstanceId, routineExerciseId: want.routineExerciseId, setNumber: want.setNumber, loadLb: want.loadLb }),
+          RPC_TIMEOUT_MS,
+          'setIpadContext',
+        );
+        if (row) dispatch({ type: 'sessionSync', row });
+      } catch (e) {
+        log('setIpadContext (set start) failed', e);
+      }
+    });
+  };
+
+  // ---------------------------------------------------------------- first-rep freshness hold
+
+  let held: { athleteId: string; reps: { event: RackEvent; at: number }[]; timer: ReturnType<typeof setTimeout>; done: Promise<void> } | null = null;
+  let releasing = false;
+
+  const logsFresh = (athleteId: string) => {
+    const c = logsByAthlete.get(athleteId);
+    return !!c && now() - c.at <= LOG_FRESH_MS;
+  };
+
+  const releaseHold = () => {
+    const h = held;
+    if (!h) return;
+    held = null;
+    clearTimeout(h.timer);
+    releasing = true;
+    try {
+      for (const r of h.reps) dispatch(r.event, r.at);
+    } finally {
+      releasing = false;
+    }
+  };
+
+  /** Re-read the athlete's logs before the set starts (bounded; reps keep their times). */
+  const beginHold = (athleteId: string, event: RackEvent, at: number) => {
+    let finish!: () => void;
+    const done = new Promise<void>(res => (finish = res));
+    held = {
+      athleteId,
+      reps: [{ event, at }],
+      timer: setTimeout(() => {
+        log('log re-read slow; starting the set with cached logs');
+        releaseHold();
+        finish();
+      }, LOG_HOLD_MAX_MS),
+      done,
+    };
+    withTimeout(api.todaysSetLogs([athleteId]), LOG_HOLD_MAX_MS, 'todaysSetLogs')
+      .then(rows => storeLogs([athleteId], rows))
+      .catch(e => log('log re-read failed; starting the set with cached logs', e))
+      .finally(() => {
+        releaseHold();
+        finish();
+      });
+  };
+
   // ---------------------------------------------------------------- reduce
 
   const apply = (event: RackEvent, at: number) => {
@@ -352,6 +607,20 @@ export function createRackExecutor(opts: {
     const targetBefore = repTarget();
     const res = reduce(state, event, at);
     state = res.state;
+    // A set the rack just ended counts as complete for the resolver at once —
+    // before this event's re-resolve (the log read lags the write queue).
+    for (const fx of res.effects) {
+      if ((fx.type !== 'endSet' && fx.type !== 'amendSet') || fx.summary.free) continue;
+      const sm = fx.summary;
+      if (!sm.workoutInstanceId || !sm.routineExerciseId || sm.setNumber == null) continue;
+      rackWritten.set(`${sm.athleteId}:${sm.workoutInstanceId}:${sm.routineExerciseId}:${sm.setNumber}`, {
+        athleteId: sm.athleteId,
+        workoutInstanceId: sm.workoutInstanceId,
+        routineExerciseId: sm.routineExerciseId,
+        setNumber: sm.setNumber,
+        isComplete: true,
+      });
+    }
     if (res.effects.length) {
       const effects = res.effects;
       effectChain = effectChain.then(() => runEffects(effects)).catch(e => log('effects failed', e));
@@ -366,11 +635,13 @@ export function createRackExecutor(opts: {
       if (override && override.athleteId !== state.activeAthleteId) override = null;
       published = null;
       lastAttemptKey = null;
-      pushLocalContext();
-    } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow()) {
-      // The phone moved the athlete on: its pick wins over an older coach override.
+    } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow() && refSig(phoneRef()) !== override.phoneSig) {
+      // The phone moved the athlete on: its newer pick wins over the coach override.
       override = null;
     }
+    // Every rack_sessions row: the phone may have logged / moved — re-read.
+    if (event.type === 'sessionSync' && state.activeAthleteId) preloadSeeds();
+    if (event.type !== 'localContext') reresolve();
     const changed = event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore;
     if (event.type !== 'loadChanged' && changed) deriveLoad();
     if (event.type !== 'loadChanged' && (changed || (publishFailedAt != null && now() - publishFailedAt >= PUBLISH_RETRY_MS))) {
@@ -425,6 +696,7 @@ export function createRackExecutor(opts: {
     const id = state.activeAthleteId;
     const local = state.localContext;
     if (!id || !local || local.athleteId !== id || local.workoutInstanceId == null || local.routineExerciseId == null) return;
+    if (state.setState === 'lifting') return; // the live set's context was published at its start
     const r = state.session;
     if (!r || r.active_athlete_id !== id) return;
     const coach = !!override && override.athleteId === id && override.ex.workoutInstanceId === local.workoutInstanceId && override.ex.routineExerciseId === local.routineExerciseId;
@@ -432,14 +704,15 @@ export function createRackExecutor(opts: {
     const n = rowNext();
     const sameEx = !!n && n.wi === local.workoutInstanceId && n.re === local.routineExerciseId;
     const mine = published && published.athleteId === id ? published : null;
-    // Fields the phone changed after the iPad's publish stay the phone's.
-    const phoneSet = sameEx && n!.set != null && mine && n!.set !== mine.setNumber ? n!.set : null;
-    const phoneLoad = sameEx && n!.load != null && mine && n!.load !== mine.loadLb ? Number(n!.load) : null;
+    // The set number is the resolver's (via the engine's guard / idle hold);
+    // a load the phone changed after the iPad's publish stays the phone's.
+    const setNumber = nextSetNumber(state, id);
+    const phoneLoad = sameEx && n!.set === setNumber && n!.load != null && mine && n!.load !== mine.loadLb ? Number(n!.load) : null;
     const want: Pub = {
       athleteId: id,
       workoutInstanceId: local.workoutInstanceId,
       routineExerciseId: local.routineExerciseId,
-      setNumber: phoneSet ?? nextSetNumberFor(state, id, { ...local, setNumber: sameEx ? n!.set : null, loadLb: null }),
+      setNumber,
       loadLb: phoneLoad ?? derivedLb,
     };
     if (sameEx && n!.set === want.setNumber && (n!.load == null ? null : Number(n!.load)) === want.loadLb) {
@@ -613,58 +886,43 @@ export function createRackExecutor(opts: {
     if (lb !== state.loadOverrideLb) apply({ type: 'loadChanged', lb }, now());
   };
 
-  const dispatch = (event: RackEvent, atMs?: number) => apply(event, atMs ?? now());
+  const dispatch = (event: RackEvent, atMs?: number) => {
+    const at = atMs ?? now();
+    if (held) {
+      if (event.type === 'rep') {
+        held.reps.push({ event, at });
+        return;
+      }
+      releaseHold(); // any other event: the held reps go first (order kept)
+    }
+    let starting = false;
+    if (event.type === 'rep' && startsSet(at)) {
+      const id = state.activeAthleteId!;
+      if (!releasing && !logsFresh(id)) {
+        beginHold(id, event, at);
+        return;
+      }
+      prepareStart(id, at);
+      starting = true;
+    }
+    apply(event, at);
+    if (starting) publishStart();
+  };
 
   // ---------------------------------------------------------------- today
 
-  const pushLocalContext = () => {
-    if (state.mode !== 'rack') return;
-    const id = state.activeAthleteId;
-    if (!id) return;
-    const a = today.find(t => t.athleteId === id);
-    if (!a) return;
-    const row = state.session;
-    const picked =
-      override && override.athleteId === id && a.remaining.some(r => sameExercise(r, override!.ex)) ? override.ex : null;
-    // Auto-pick only RACK LIFTS (weight-tracked or zoned); a coach can pick anything.
-    const ex = picked ?? pickRackLift(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
-    if (!ex) {
-      // Nothing to auto-pick: clear any older pick (reps go in as a free set;
-      // the card prompts "Pick an exercise").
-      if (state.localContext && state.localContext.athleteId === id && state.localContext.workoutInstanceId != null) {
-        apply(
-          { type: 'localContext', athleteId: id, workoutInstanceId: null, routineExerciseId: null, exerciseId: null, setNumber: null, loadLb: null, zoneMin: null, zoneMax: null, dropStopPct: null },
-          now(),
-        );
-      }
-      return;
-    }
-    // The engine uses it only while the server row has no workout context;
-    // publishIfNeeded puts it in the row (unison with the phone).
-    apply(
-      {
-        type: 'localContext',
-        athleteId: id,
-        workoutInstanceId: ex.workoutInstanceId,
-        routineExerciseId: ex.routineExerciseId,
-        exerciseId: ex.exerciseId,
-        setNumber: null,
-        loadLb: null,
-        zoneMin: ex.zoneMin,
-        zoneMax: ex.zoneMax,
-        dropStopPct: ex.dropStopPct,
-      },
-      now(),
-    );
-  };
-
-  const sameExercise = (x: TodayExercise, y: TodayExercise) =>
-    x.workoutInstanceId === y.workoutInstanceId && x.routineExerciseId === y.routineExerciseId;
-  let override: { athleteId: string; ex: TodayExercise } | null = null;
+  /** The coach's pick + the phone context it was made over (phoneSig). */
+  let override: { athleteId: string; ex: TodayExercise; phoneSig: string } | null = null;
 
   const setOverride = (athleteId: string, ex: TodayExercise | null) => {
-    override = ex ? { athleteId, ex } : override?.athleteId === athleteId ? null : override;
-    if (athleteId === state.activeAthleteId) pushLocalContext();
+    override = ex
+      ? { athleteId, ex, phoneSig: athleteId === state.activeAthleteId ? refSig(phoneRef()) : '' }
+      : override?.athleteId === athleteId ? null : override;
+    if (athleteId === state.activeAthleteId) {
+      reresolve();
+      deriveLoad();
+      publishIfNeeded();
+    }
     notify();
   };
 
@@ -688,7 +946,7 @@ export function createRackExecutor(opts: {
         );
       }
     }
-    pushLocalContext();
+    reresolve();
     preloadSeeds();
   };
 
@@ -706,6 +964,7 @@ export function createRackExecutor(opts: {
     setOverride,
     flush: () => flushSoon(true),
     async endLive() {
+      releaseHold();
       if (state.setState === 'lifting') dispatch({ type: 'ipadDone' });
       // Wait for the EFFECT chain only (the set row is queued there); the
       // rpcEndSet round trip can take its full timeout offline.
@@ -727,6 +986,7 @@ export function createRackExecutor(opts: {
       preloadSeeds();
     },
     stop() {
+      releaseHold();
       running = false;
       timers.forEach(clearInterval);
       timers = [];
@@ -734,13 +994,15 @@ export function createRackExecutor(opts: {
       seedRetry = null;
     },
     async idle() {
-      // Effects can enqueue RPCs and RPCs can dispatch more effects: settle both.
+      // Effects can enqueue RPCs and RPCs can dispatch more effects: settle both
+      // (and a first rep waiting for its log re-read).
       for (let i = 0; i < 20; i++) {
+        if (held) await held.done;
         const e = effectChain;
         const r = rpcChain;
         await e;
         await r;
-        if (e === effectChain && r === rpcChain) return;
+        if (!held && e === effectChain && r === rpcChain) return;
       }
     },
   };

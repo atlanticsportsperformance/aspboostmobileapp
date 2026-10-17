@@ -483,6 +483,13 @@ export interface FollowInput {
   openExerciseId: string | null;
   /** Exact echo test against what the phone sent. */
   isEcho: (ctx: RackCtx) => boolean;
+  /**
+   * The iPad's own auto-pick for this phone's state: resolveRackSet with no
+   * phone context and no override (routine exercise id; null = none). A
+   * null→X change to exactly this is the iPad following the phone, not a
+   * coach override.
+   */
+  autoPickExerciseId?: string | null;
 }
 
 /**
@@ -490,7 +497,10 @@ export interface FollowInput {
  * Only on a CHANGE of the rack's exercise within one activation (the first
  * read is the baseline — the phone's open exercise wins then), only while this
  * athlete is active, only for this workout, never an exact echo of the
- * phone's own context, and never null→X once the phone has sent its context.
+ * phone's own context. Once the phone has sent its context, a null→X change
+ * is ignored only when X is the iPad's auto-pick for the phone's own state
+ * (the shared resolver) — a real coach override after an empty context
+ * (finished exercise) is still followed (N4).
  */
 export function followTarget(i: FollowInput): string | null {
   const s = i.session;
@@ -500,7 +510,7 @@ export function followTarget(i: FollowInput): string | null {
   if (ctx.workoutInstanceId && ctx.workoutInstanceId !== i.workoutInstanceId) return null;
   if (i.prevRackExercise === undefined) return null;
   if (ctx.routineExerciseId === i.prevRackExercise) return null;
-  if (i.prevRackExercise === null && i.sentThisActivation) return null;
+  if (i.prevRackExercise === null && i.sentThisActivation && ctx.routineExerciseId === (i.autoPickExerciseId ?? null)) return null;
   if (ctx.routineExerciseId === i.openExerciseId) return null;
   if (i.isEcho(ctx)) return null;
   return ctx.routineExerciseId;

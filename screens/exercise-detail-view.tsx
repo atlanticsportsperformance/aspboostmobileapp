@@ -674,13 +674,14 @@ export default function ExerciseDetailView({
   const handleCheckboxToggle = (setIndex: number) => {
     const isCompleted = isSetCompleted(setIndex);
     // Rack VBT: the live row's circle ends the set on the rack (no phone
-    // save); a set the rack is writing can't be ticked meanwhile.
-    if (!isCompleted && rack && rackLive?.lifting && isLiveRow(setIndex)) {
+    // save) — also on a row the phone already shows complete (a stray rep
+    // right after a manual save, N1): never a local un-check.
+    if (rack && rackLive?.lifting && isLiveRow(setIndex)) {
       rack.onLiveDone();
       return;
     }
-    // Rack-owned (ended, row not landed): no phone save — a tap after 10 s re-reads.
-    if (!isCompleted && rack && rackSaving(setIndex)) {
+    // Rack-owned (ended, row not landed): no phone save or un-check — a tap after 10 s re-reads.
+    if (rack && rackSaving(setIndex)) {
       if (rackSaving(setIndex) === 'timeout') rack.onPullRefresh();
       return;
     }
@@ -712,8 +713,9 @@ export default function ExerciseDetailView({
   const handleNextButtonPress = () => {
     const currentSetCompleted = isSetCompleted(currentSetIndex);
 
-    // A rack set being lifted on this exercise: Done ends it (any open row).
-    if (rack && rackLive?.lifting && !isSetCompleted(rackLive.setIndex)) {
+    // A rack set being lifted on this exercise: Done ends it (any open row,
+    // even when the phone shows that row complete — N1).
+    if (rack && rackLive?.lifting) {
       rack.onLiveDone();
       return;
     }
@@ -1531,14 +1533,16 @@ export default function ExerciseDetailView({
               const isDone = nextText === 'DONE' && currentSetCompleted;
               // Rack: a lift in progress → "✓ Done · N reps" (any open row); a
               // rack-owned set waiting for its row → "Saving…" (Done disabled).
-              const rackLabel = rackLive?.lifting && !isSetCompleted(rackLive.setIndex)
+              const rackLabel = rackLive?.lifting
                 ? liveDoneLabel(rackLive.fullReps)
                 : currentSetCompleted
                   ? null
                   : rackSaving(currentSetIndex)
                     ? 'Saving…'
                     : null;
-              const label = isDone
+              const label = rackLive?.lifting && rackLabel
+                ? rackLabel
+                : isDone
                 ? '✓ DONE'
                 : rackLabel
                   ? rackLabel

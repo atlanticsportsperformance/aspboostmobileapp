@@ -226,9 +226,10 @@ describe('rack view model', () => {
     expect(view(r.s, T0 + 4100).summary?.drop).toBe('—');
   });
 
-  it('next set number honours the high-water mark', () => {
+  it('next set number never lands on a set known complete', () => {
     const r = rig();
     r.sync();
+    r.send({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 1 });
     r.send({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 2 });
     expect(view(r.s).setNumber).toBe(3);
     expect(view(r.s).exerciseLine).toBe('Back Squat · Set 3 of 3');

@@ -94,7 +94,7 @@ describe('todaysAthletesForRack', () => {
     });
     const ex = createRackExecutor({
       engine: createRackEngine('rack-3'),
-      api: { startSet: jest.fn(), setActive: jest.fn(), endSet: jest.fn(), todaysWrittenSets: jest.fn(async () => []) } as any,
+      api: { startSet: jest.fn(), setActive: jest.fn(), endSet: jest.fn(), todaysSetLogs: jest.fn(async () => []) } as any,
       persist: { writeRep: jest.fn(), endSet: jest.fn(), amendSet: jest.fn(), flush: jest.fn(async () => {}) },
       sensor: { writeLoad: jest.fn(async () => {}) },
       log: () => {},
@@ -143,7 +143,7 @@ describe('realtime topics', () => {
 });
 
 describe('Task 9 fix round 3: api', () => {
-  it('todaysWrittenSets counts only is_complete=true sets', async () => {
+  it('todaysSetLogs returns every set row of today with its is_complete flag', async () => {
     const calls: any[][] = [];
     const client = {
       rpc: jest.fn(),
@@ -152,15 +152,23 @@ describe('Task 9 fix round 3: api', () => {
         return builder(
           t === 'workout_instances'
             ? { data: [{ id: 'wi-1', athlete_id: 'tyler' }], error: null }
-            : { data: [{ athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2 }], error: null },
+            : {
+                data: [
+                  { athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2, is_complete: true },
+                  { athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 3, is_complete: false },
+                ],
+                error: null,
+              },
           calls,
         );
       }),
     };
-    const out = await createRackApi(client as any).todaysWrittenSets(['tyler'], '2026-10-17');
-    const logsAt = calls.findIndex(c => c[0] === 'from' && c[1] === 'exercise_logs');
-    expect(calls.slice(logsAt)).toContainEqual(['eq', 'is_complete', true]);
-    expect(out).toEqual([{ athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2 }]);
+    const out = await createRackApi(client as any).todaysSetLogs(['tyler'], '2026-10-17');
+    expect(calls).toContainEqual(['eq', 'scheduled_date', '2026-10-17']);
+    expect(out).toEqual([
+      { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2, isComplete: true },
+      { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 3, isComplete: false },
+    ]);
   });
 
   it('setIpadContext calls rack_set_ipad_context with every field', async () => {

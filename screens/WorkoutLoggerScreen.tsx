@@ -64,6 +64,7 @@ import {
   zoneOf,
   type EndedSet,
 } from '../lib/rack/phoneView';
+import { rackInstanceFromLogger, rackLogsFromCompleted, resolveRackSet } from '../lib/rack/resolveRackSet';
 import type { ExerciseRackProps } from './exercise-detail-view';
 import type { RackScreenProps } from '../components/logger/RackBanner';
 
@@ -1071,6 +1072,9 @@ export default function WorkoutLoggerScreen() {
 
     const inFlightKey = `${activeExerciseId}:${setIndex}`;
     if (completionInFlightRef.current.has(inFlightKey)) return;
+    // Rack VBT: a set the rack owns (being lifted, or its row not landed) is
+    // never checked or un-checked from the phone — the rack's row decides.
+    if (rackOwnsSetRef.current(activeExerciseId, setIndex)) return;
 
     const currentlyCompleted = completeForEdit(completedRef.current[activeExerciseId], setIndex);
 
@@ -1255,6 +1259,29 @@ export default function WorkoutLoggerScreen() {
     if (Object.keys(rackPendingRef.current).length > 0) void readPendingRackWrites();
   };
 
+  // N3: left the rack or bumped off it — one more read of the rack's pending
+  // rows now and after RACK_WRITE_TIMEOUT_MS, then the phone owns those sets
+  // again (manual logging works). Back on the rack first → nothing is released.
+  const rackWasActiveRef = useRef(false);
+  useEffect(() => {
+    if (rackActive) {
+      rackWasActiveRef.current = true;
+      return;
+    }
+    if (!rackWasActiveRef.current) return;
+    rackWasActiveRef.current = false;
+    void readPendingRackWrites();
+    const release = setTimeout(() => {
+      void readPendingRackWrites().finally(() => {
+        if (rackWasActiveRef.current) return; // active again
+        rackPendingRef.current = {};
+        setRackSavingState(prev => (Object.keys(prev).length ? {} : prev));
+      });
+    }, RACK_WRITE_TIMEOUT_MS);
+    return () => clearTimeout(release);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rackActive]);
+
   // Real pull-to-refresh: my rack state + every pending set row.
   const handleRackPullRefresh = useCallback(async () => {
     setRackRefreshing(true);
@@ -1275,16 +1302,44 @@ export default function WorkoutLoggerScreen() {
   rackOnSetEndedRef.current = (e: EndedSet) => {
     if (e.workoutInstanceId && e.workoutInstanceId !== workoutInstanceId) return;
     if (!e.routineExerciseId || e.setNumber == null) return;
-    if (!allExercises.some(x => x.id === e.routineExerciseId)) return;
+    const ex = allExercises.find(x => x.id === e.routineExerciseId);
+    // An extra set past the prescription has no row on the phone to wait on.
+    if (!ex || e.setNumber > ex.sets) return;
     awaitRackWrite(e.routineExerciseId, e.setNumber);
   };
 
-  // Phone → rack: open exercise, current set (= first incomplete set) and the
-  // athlete's own LB (typed / stepped / logged — never the prescription),
-  // debounced 300 ms; only while active and on the exercise screen. A finished
-  // exercise sends an empty context so the iPad auto-picks the next lift.
+  // Phone → rack: open exercise, current set and the athlete's own LB (typed /
+  // stepped / logged — never the prescription), debounced 300 ms (immediate
+  // when the set advances); only while active and on the exercise screen. A
+  // finished exercise sends an empty context so the iPad auto-picks the next
+  // lift. The current set comes from resolveRackSet — the same function, over
+  // the same logs, that the iPad runs — with the open exercise as the phone
+  // context, so the two can't disagree.
+  const rackInstance = useMemo(
+    () => (rack.hasRacks && workout ? rackInstanceFromLogger(workoutInstanceId, workout.routines) : null),
+    [rack.hasRacks, workout, workoutInstanceId],
+  );
+  const rackLogs = useMemo(() => rackLogsFromCompleted(workoutInstanceId, completedSets), [workoutInstanceId, completedSets]);
   const ctxExercise = viewMode === 'exercise' ? allExercises.find(ex => ex.id === activeExerciseId) : undefined;
-  const ctxSetIndex = ctxExercise ? firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets) : null;
+  const phoneRackSet =
+    rackInstance && ctxExercise
+      ? resolveRackSet({ instances: [rackInstance], logs: rackLogs, phone: { workoutInstanceId, routineExerciseId: ctxExercise.id } })
+      : null;
+  // The resolver's set when it serves the open exercise; otherwise (a superset
+  // partner, a row the iPad doesn't serve) the open exercise's own first
+  // incomplete set — the same rule — so the row still says what's open.
+  const ctxSetIndex = ctxExercise
+    ? phoneRackSet && !phoneRackSet.none && phoneRackSet.routineExerciseId === ctxExercise.id
+      ? phoneRackSet.setNumber - 1
+      : firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets)
+    : null;
+  // The iPad's auto-pick for this phone's state (no phone context): a null→X
+  // to exactly this is not a coach override (followTarget, N4).
+  const rackAutoPick = useMemo(() => {
+    if (!rackInstance) return null;
+    const r = resolveRackSet({ instances: [rackInstance], logs: rackLogs });
+    return r.none ? null : r.routineExerciseId;
+  }, [rackInstance, rackLogs]);
   const ctxKey = ctxExercise && ctxSetIndex != null ? `${ctxExercise.id}:${ctxSetIndex}` : null;
   const ctxOwnWeight =
     ctxExercise && ctxSetIndex != null && ctxKey &&
@@ -1302,17 +1357,25 @@ export default function WorkoutLoggerScreen() {
       : null;
   const rackActivation = rack.activation;
   const rackActivationSentRef = useRef(0);
+  const rackLastCtxRef = useRef<{ reId: string; setIndex: number | null } | null>(null);
   useEffect(() => {
     if (!rackActive) {
       rack.setContext(null);
+      rackLastCtxRef.current = null;
       return;
     }
     if (!ctxExercise || !ctxExercise.exercise_id) {
       rack.setContext(null); // overview / text block: send nothing
+      rackLastCtxRef.current = null;
       return;
     }
     // I3: on becoming active the phone's open exercise wins — send at once.
-    const immediate = rackActivationSentRef.current !== rackActivation;
+    // N1: so does a set advancing on the open exercise (manual Done, or the
+    // rack's row landing) — the iPad must never start the set just saved.
+    const prev = rackLastCtxRef.current;
+    const advanced = !!prev && prev.reId === ctxExercise.id && prev.setIndex !== ctxSetIndex;
+    rackLastCtxRef.current = { reId: ctxExercise.id, setIndex: ctxSetIndex };
+    const immediate = rackActivationSentRef.current !== rackActivation || advanced;
     rackActivationSentRef.current = rackActivation;
     rack.setContext(
       ctxSetIndex == null
@@ -1371,6 +1434,7 @@ export default function WorkoutLoggerScreen() {
       workoutInstanceId,
       openExerciseId: viewMode === 'exercise' ? activeExerciseId : null,
       isEcho: rack.isEcho,
+      autoPickExerciseId: rackAutoPick,
     });
     // Load: the rack's LB → the phone's LB cell for the SAME (exercise, set) the
     // rack is set up for (pending group mid-set → the next set's row).

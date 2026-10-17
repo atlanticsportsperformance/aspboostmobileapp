@@ -1,0 +1,370 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import {
+  rackInstanceFromLogger,
+  rackLogsFromCompleted,
+  resolveRackSet,
+  type RackSetExercise,
+  type RackSetInstance,
+  type RackSetLog,
+  type ResolveRackSetInput,
+} from '../lib/rack/resolveRackSet';
+import { createRackEngine, type RackSessionRow } from '../lib/rack/engine';
+import { createRackExecutor, CONTINUE_MS, LOG_HOLD_MAX_MS, type ExecutorApi } from '../lib/rack/executor';
+import type { SetLogRow, TodayAthlete, TodayExercise } from '../lib/rack/api';
+import type { OvrRep } from '../lib/ovr/protocol';
+
+// ---------------------------------------------------------------- pure resolver
+
+const lift = (re: string, sets = 3, over: Partial<RackSetExercise> = {}): RackSetExercise => ({
+  routineExerciseId: re,
+  exerciseId: `ex-${re}`,
+  sets,
+  rackLift: true,
+  group: null,
+  ...over,
+});
+const nonLift = (re: string, sets = 3, over: Partial<RackSetExercise> = {}) => lift(re, sets, { rackLift: false, ...over });
+const inst = (wi: string, exercises: RackSetExercise[]): RackSetInstance => ({ workoutInstanceId: wi, exercises });
+const done = (wi: string, re: string, ...ns: number[]): RackSetLog[] =>
+  ns.map(n => ({ workoutInstanceId: wi, routineExerciseId: re, setNumber: n, isComplete: true }));
+const draft = (wi: string, re: string, n: number): RackSetLog => ({ workoutInstanceId: wi, routineExerciseId: re, setNumber: n, isComplete: false });
+
+// Simulator workout: Back Squat (3) → DB Bulgarian (3) → Box Jump (3) → RDL (3).
+const W = inst('wi', [lift('squat'), lift('bulgarian'), nonLift('box'), lift('rdl')]);
+const resolve = (over: Partial<ResolveRackSetInput>) => resolveRackSet({ instances: [W], logs: [], ...over });
+const at = (r: ReturnType<typeof resolveRackSet>) => (r.none ? 'none' : `${r.routineExerciseId}#${r.setNumber}`);
+
+describe('resolveRackSet — rules', () => {
+  it('rule 1: exercise = phone-open, then coach override, then first unfinished rack lift', () => {
+    expect(at(resolve({ phone: { workoutInstanceId: 'wi', routineExerciseId: 'rdl' }, override: { workoutInstanceId: 'wi', routineExerciseId: 'bulgarian' } }))).toBe('rdl#1');
+    expect(at(resolve({ override: { workoutInstanceId: 'wi', routineExerciseId: 'bulgarian' } }))).toBe('bulgarian#1');
+    expect(at(resolve({}))).toBe('squat#1');
+    expect(resolve({ override: { workoutInstanceId: 'wi', routineExerciseId: 'bulgarian' } })).toMatchObject({ reason: 'override' });
+  });
+
+  it('rule 1: auto-pick takes only rack lifts (isRackLift), in workout order', () => {
+    const logs = [...done('wi', 'squat', 1, 2, 3), ...done('wi', 'bulgarian', 1, 2, 3)];
+    expect(resolve({ logs })).toMatchObject({ routineExerciseId: 'rdl', setNumber: 1, reason: 'next-rack-lift' });
+  });
+
+  it('rule 2: set = lowest set in 1..prescribed that is not complete (drafts are not complete)', () => {
+    expect(at(resolve({ logs: [...done('wi', 'squat', 1), draft('wi', 'squat', 2)] }))).toBe('squat#2');
+  });
+
+  it('rule 2: logged-ahead — 1 and 2 done on the phone → set 3', () => {
+    expect(at(resolve({ logs: done('wi', 'squat', 1, 2) }))).toBe('squat#3');
+  });
+
+  it('rule 2: skipped — set 2 done, set 1 empty → set 1', () => {
+    expect(at(resolve({ logs: done('wi', 'squat', 2) }))).toBe('squat#1');
+  });
+
+  it("rule 2: the phone's open set means every set below it is done on the phone (outbox not landed)", () => {
+    expect(at(resolve({ logs: done('wi', 'squat', 1), phone: { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 3 } }))).toBe('squat#3');
+  });
+
+  it('rule 3: never an is_complete set — every candidate skips complete numbers', () => {
+    for (let mask = 0; mask < 8; mask++) {
+      const ns = [1, 2, 3].filter(n => mask & (1 << (n - 1)));
+      const r = resolve({ logs: done('wi', 'squat', ...ns), phone: { workoutInstanceId: 'wi', routineExerciseId: 'squat' } });
+      if (!r.none && r.routineExerciseId === 'squat') expect(ns).not.toContain(r.setNumber);
+    }
+  });
+
+  it('rule 4: finished + the phone moved to another exercise → follow the phone', () => {
+    const logs = done('wi', 'squat', 1, 2, 3);
+    const r = resolve({ logs, phone: { workoutInstanceId: 'wi', routineExerciseId: 'rdl' }, lastRackExercise: { workoutInstanceId: 'wi', routineExerciseId: 'squat' }, liftingContinues: true });
+    expect(at(r)).toBe('rdl#1');
+  });
+
+  it('rule 4: finished + lifting continues on it → extra set prescribed + 1 (appended)', () => {
+    const last = { workoutInstanceId: 'wi', routineExerciseId: 'squat' };
+    expect(resolve({ logs: done('wi', 'squat', 1, 2, 3), lastRackExercise: last, liftingContinues: true })).toMatchObject({
+      routineExerciseId: 'squat', setNumber: 4, reason: 'extra-set',
+    });
+    // a 4th already logged → 5 (never a complete number)
+    expect(at(resolve({ logs: done('wi', 'squat', 1, 2, 3, 4), lastRackExercise: last, liftingContinues: true }))).toBe('squat#5');
+  });
+
+  it('rule 4: finished, nothing continuing → next unfinished rack lift', () => {
+    expect(at(resolve({ logs: done('wi', 'squat', 1, 2, 3), lastRackExercise: { workoutInstanceId: 'wi', routineExerciseId: 'squat' } }))).toBe('bulgarian#1');
+  });
+
+  it('rule 4: no rack lift left → none (the iPad asks "Pick an exercise"; reps = free set)', () => {
+    const logs = [...done('wi', 'squat', 1, 2, 3), ...done('wi', 'bulgarian', 1, 2, 3), ...done('wi', 'rdl', 1, 2, 3)];
+    expect(resolve({ logs })).toEqual({ none: true, reason: 'nothing-left' });
+  });
+
+  it('rule 5: supersets — a phone on A2 (not a lift) resolves to A1, the rack lift', () => {
+    const SS = inst('wi', [lift('a1', 3, { group: 'A' }), nonLift('a2', 3, { group: 'A' }), lift('b1')]);
+    const r = resolveRackSet({ instances: [SS], logs: [...done('wi', 'a1', 1), ...done('wi', 'a2', 1)], phone: { workoutInstanceId: 'wi', routineExerciseId: 'a2' } });
+    expect(r).toMatchObject({ routineExerciseId: 'a1', setNumber: 2, reason: 'superset-lift' });
+  });
+
+  it('rule 5: A1 finished while the phone is on A2 → the rack never serves A2', () => {
+    const SS = inst('wi', [lift('a1', 2, { group: 'A' }), nonLift('a2', 3, { group: 'A' }), lift('b1')]);
+    const r = resolveRackSet({ instances: [SS], logs: done('wi', 'a1', 1, 2), phone: { workoutInstanceId: 'wi', routineExerciseId: 'a2' } });
+    expect(at(r)).toBe('b1#1');
+  });
+
+  it('rule 6: two instances — the phone-open instance wins, else the first with unfinished rack lifts', () => {
+    const throwing = inst('wi-throw', [nonLift('throw', 1)]);
+    const lifting = inst('wi-lift', [lift('squat')]);
+    const later = inst('wi-pm', [lift('bench')]);
+    expect(at(resolveRackSet({ instances: [throwing, lifting, later], logs: [] }))).toBe('squat#1');
+    expect(resolveRackSet({ instances: [throwing, lifting, later], logs: [], phone: { workoutInstanceId: 'wi-pm', routineExerciseId: 'bench' } })).toMatchObject({ workoutInstanceId: 'wi-pm', routineExerciseId: 'bench' });
+    // phone on the throwing instance (no lift there) → first instance with a lift
+    expect(resolveRackSet({ instances: [throwing, lifting, later], logs: done('wi-throw', 'throw', 1), phone: { workoutInstanceId: 'wi-throw', routineExerciseId: 'throw' } })).toMatchObject({ workoutInstanceId: 'wi-lift' });
+  });
+});
+
+describe('resolveRackSet — scenarios', () => {
+  it('SIMULATOR BUG: Back Squat 3/3 done, phone on DB Bulgarian → DB Bulgarian set 1, never Back Squat set 4', () => {
+    const logs = done('wi', 'squat', 1, 2, 3);
+    const last = { workoutInstanceId: 'wi', routineExerciseId: 'squat' };
+    const onPhone = resolve({ logs, lastRackExercise: last, phone: { workoutInstanceId: 'wi', routineExerciseId: 'bulgarian', setNumber: 1 } });
+    expect(onPhone).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    // phone on the overview (sends nothing) → the next rack lift, DB Bulgarian
+    expect(at(resolve({ logs, lastRackExercise: last }))).toBe('bulgarian#1');
+    // DB Bulgarian not a rack lift → the next rack lift (RDL), still never squat #4
+    const noBulg = inst('wi', [lift('squat'), nonLift('bulgarian'), nonLift('box'), lift('rdl')]);
+    expect(at(resolveRackSet({ instances: [noBulg], logs, lastRackExercise: last }))).toBe('rdl#1');
+  });
+
+  it('superset A1/A2: the returning athlete gets A1’s next set', () => {
+    const SS = inst('wi', [lift('a1', 3, { group: 'A' }), nonLift('a2', 3, { group: 'A' })]);
+    const logs = [...done('wi', 'a1', 1, 2), ...done('wi', 'a2', 1, 2)];
+    expect(at(resolveRackSet({ instances: [SS], logs, phone: { workoutInstanceId: 'wi', routineExerciseId: 'a2', setNumber: 3 } }))).toBe('a1#3');
+    expect(at(resolveRackSet({ instances: [SS], logs }))).toBe('a1#3');
+  });
+
+  it('the phone and the iPad agree: the phone’s own inputs (logger shape) give the iPad’s answer', () => {
+    const routines: any[] = [
+      { id: 'r-a', scheme: 'superset', routine_exercises: [
+        { id: 'a1', exercise_id: 'ex-a1', sets: 3, velocity_min_mps: 0.6, velocity_max_mps: 0.9, exercises: { is_placeholder: false } },
+        { id: 'a2', exercise_id: 'ex-a2', sets: 3, velocity_min_mps: null, velocity_max_mps: null, enabled_measurements: ['reps'], exercises: { is_placeholder: false } },
+      ] },
+      { id: 'r-warm', scheme: 'warm_up', routine_exercises: [{ id: 'w', exercise_id: null, notes_only: true, sets: 0 }] },
+      { id: 'r-b', scheme: 'straight', routine_exercises: [
+        { id: 'b1', exercise_id: 'ex-b1', sets: 2, metric_targets: { weight: 185 }, velocity_min_mps: null, velocity_max_mps: null, exercises: { is_placeholder: false } },
+      ] },
+    ];
+    const phoneInst = rackInstanceFromLogger('wi', routines);
+    expect(phoneInst.exercises.map(e => [e.routineExerciseId, e.rackLift, e.group])).toEqual([
+      ['a1', true, 'r-a'], ['a2', false, 'r-a'], ['b1', true, null],
+    ]);
+    const logs = rackLogsFromCompleted('wi', { a1: [true, true, true], b1: [true, false] });
+    expect(at(resolveRackSet({ instances: [phoneInst], logs }))).toBe('b1#2');
+  });
+});
+
+// ---------------------------------------------------------------- executor wiring (iPad)
+
+const RACK = 'rack-3';
+const T0 = 1_760_000_000_000;
+const iso = (t: number) => new Date(t).toISOString();
+const ovr = (v: number): OvrRep => ({ concentricS: 0.5, romIn: 20, meanV: v, peakV: v + 0.3, meanPowerW: 900, peakPowerW: 1800 });
+const settle = async () => {
+  for (let i = 0; i < 4; i++) {
+    for (let k = 0; k < 10; k++) await Promise.resolve();
+    await new Promise(res => setTimeout(res, 0));
+  }
+};
+
+const row = (over: Partial<RackSessionRow> = {}): RackSessionRow => ({
+  rack_id: RACK, active_athlete_id: 'tyler', workout_instance_id: null, routine_exercise_id: null, exercise_id: null,
+  set_number: null, load_lb: null, state: 'idle', queue: [], set_started_at: null,
+  pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null,
+  leave_requested: false, pending_end: false, updated_at: iso(T0), ...over,
+});
+const tEx = (re: string, lifted = true): TodayExercise => ({
+  workoutInstanceId: 'wi', routineExerciseId: re, exerciseId: `ex-${re}`, name: re, sets: 3, completedSets: 0,
+  zoneMin: null, zoneMax: null, dropStopPct: null,
+  plan: { exercise_id: `ex-${re}`, enabled_measurements: lifted ? ['weight', 'reps'] : ['reps'] },
+});
+const tyler = (exs: TodayExercise[]): TodayAthlete => ({
+  athleteId: 'tyler', firstName: 'Tyler', lastName: 'B',
+  instances: [{ workoutInstanceId: 'wi', status: 'in_progress', createdAt: iso(T0), exercises: exs, remaining: exs }],
+  exercises: exs, remaining: exs,
+});
+const logRows = (re: string, ...ns: number[]): SetLogRow[] =>
+  ns.map(n => ({ athleteId: 'tyler', workoutInstanceId: 'wi', routineExerciseId: re, setNumber: n, isComplete: true }));
+
+/** The executor over a tiny fake server: every RPC edits one rack_sessions row. */
+function rig(initialLogs: SetLogRow[] = []) {
+  let t = T0;
+  let logs = initialLogs;
+  let updated = T0;
+  let server = row();
+  const put = (over: Partial<RackSessionRow>) => (server = { ...server, ...over, updated_at: iso((updated += 1)) });
+  const api: ExecutorApi = {
+    startSet: jest.fn(async (_r, a, st) => put({ active_athlete_id: a, state: 'lifting', set_started_at: st, pending_end: false })),
+    setActive: jest.fn(async (_r, a) => put({ active_athlete_id: a })),
+    endSet: jest.fn(async () => put({ state: 'idle', set_started_at: null, pending_end: false })),
+    todaysSetLogs: jest.fn(async () => logs),
+    setIpadContext: jest.fn(async (_r, a, c) =>
+      server.state === 'lifting'
+        ? put({ pending_workout_instance_id: c.workoutInstanceId, pending_routine_exercise_id: c.routineExerciseId, pending_set_number: c.setNumber, pending_load_lb: c.loadLb })
+        : put({ active_athlete_id: a, workout_instance_id: c.workoutInstanceId, routine_exercise_id: c.routineExerciseId, set_number: c.setNumber, load_lb: c.loadLb }),
+    ),
+  };
+  const persist = { writeRep: jest.fn(async () => {}), endSet: jest.fn(async () => {}), amendSet: jest.fn(async () => {}), flush: jest.fn(async () => {}) };
+  const ex = createRackExecutor({ engine: createRackEngine(RACK), api, persist, sensor: { writeLoad: jest.fn(async () => {}) }, now: () => t, log: () => {} });
+  return {
+    ex, api, persist,
+    advance: (ms: number) => (t += ms),
+    setLogs: (l: SetLogRow[]) => (logs = l),
+    /** The phone (or the DB) changes the row; realtime delivers it. */
+    sync: (over: Partial<RackSessionRow>, at?: number) => ex.dispatch({ type: 'sessionSync', row: put(over) }, at),
+    get t() { return t; },
+  };
+}
+
+const SIM = () => tyler([tEx('squat'), tEx('bulgarian'), tEx('box', false), tEx('rdl')]);
+
+describe('iPad wiring (executor → engine)', () => {
+  it('SIMULATOR BUG on the iPad: squat 3/3 done by phone Done, phone on DB Bulgarian → DB Bulgarian set 1, not "Set 4 of 3"', async () => {
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 3 });
+    await settle();
+    // set 3 on the rack, ended by phone Done (pending_end on that set)
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    r.sync({ pending_end: true }, r.advance(2000)); // phone Done → rack_request_end_set
+    await settle();
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    // the phone moves on to DB Bulgarian
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'bulgarian', set_number: 1 }, r.advance(500));
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1, resolved: true });
+    const { nextSetNumber, nextContext } = require('../lib/rack/engine');
+    expect(nextContext(r.ex.getState())).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    expect(nextSetNumber(r.ex.getState(), 'tyler')).toBe(1);
+    // the phone on the overview instead (empty context) → still DB Bulgarian, published
+    r.sync({ workout_instance_id: null, routine_exercise_id: null, set_number: null }, r.advance(500));
+    await settle();
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'bulgarian', set_number: 1 });
+  });
+
+  it('rule 7: a phone context change mid-set never splits the live set; it applies at the next set start', async () => {
+    const r = rig();
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 1 });
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    await settle();
+    r.sync({ pending_workout_instance_id: 'wi', pending_routine_exercise_id: 'rdl', pending_set_number: 1 }, r.advance(500));
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.68) }, r.advance(1500));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 1 });
+    expect((r.persist.writeRep as jest.Mock).mock.calls.map(c => c[0].routineExerciseId)).toEqual(['squat', 'squat']);
+  });
+
+  it('extra set: reps keep coming on a finished exercise (nothing else open) → set 4, appended', async () => {
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    // at once — never a flash of "Back Squat · Set 4 of 3"
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    await settle();
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    expect((r.api.setIpadContext as jest.Mock).mock.calls.map(c => `${c[2].routineExerciseId}#${c[2].setNumber}`)).not.toContain('squat#4');
+    // idle: the iPad moves on (published) …
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    // … but reps keep coming on the rack 20 s later with nothing else open → squat set 4
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.66) }, r.advance(20_000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 4 });
+    // the phone's live row is the rack's set: published before rack_start_set
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'squat', set_number: 4 });
+  });
+
+  it('no extra set once the athlete rested past CONTINUE_MS → the next rack lift', async () => {
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.66) }, r.advance(CONTINUE_MS + 5000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+  });
+
+  it('nothing remaining → none: no exercise, reps go in as a free set', async () => {
+    const r = rig([...logRows('squat', 1, 2, 3), ...logRows('bulgarian', 1, 2, 3), ...logRows('rdl', 1, 2, 3)]);
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ resolved: true, routineExerciseId: null });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    await settle();
+    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0]).toMatchObject({ workoutInstanceId: null, routineExerciseId: null, setNumber: null });
+  });
+
+  it('N1: a stray rep right after a manual phone Done never lifts the set the phone just completed', async () => {
+    const r = rig(logRows('squat', 1));
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 });
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    // The phone saves set 2 by hand (it lands in the DB); its context for set 3 hasn't arrived yet.
+    r.setLogs(logRows('squat', 1, 2));
+    r.advance(5000); // cached logs now older than LOG_FRESH_MS
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    expect((r.persist.writeRep as jest.Mock).mock.calls[0][0].setNumber).toBe(3);
+  });
+
+  it('N1: the re-read is bounded — a slow read starts the set after LOG_HOLD_MAX_MS with cached logs; reps keep their order', async () => {
+    jest.useFakeTimers();
+    try {
+      const r = rig();
+      r.ex.setToday([SIM()]);
+      r.sync({});
+      await jest.advanceTimersByTimeAsync(0);
+      (r.api.todaysSetLogs as jest.Mock).mockImplementation(() => new Promise(() => {}));
+      r.advance(5000);
+      r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
+      r.ex.dispatch({ type: 'rep', rep: ovr(0.69) });
+      expect(r.ex.getState().live).toBeNull();
+      await jest.advanceTimersByTimeAsync(LOG_HOLD_MAX_MS + 10);
+      expect(r.ex.getState().live?.reps.map(x => x.v)).toEqual([0.7, 0.69]);
+      expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 1 });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('wiring: no bare high-water + 1', () => {
+  const E = readFileSync(join(__dirname, '..', 'lib/rack/engine.ts'), 'utf8');
+  const X = readFileSync(join(__dirname, '..', 'lib/rack/executor.ts'), 'utf8');
+  it('the engine/executor never number a set as high-water + 1', () => {
+    for (const src of [E, X]) {
+      expect(src).not.toMatch(/floor\s*\+\s*1/);
+      expect(src).not.toMatch(/[Hh]igh[Ww]ater[^\n]*\+\s*1/);
+      expect(src).not.toContain('setHighWater');
+      expect(src).not.toContain('nextSetNumberFor');
+    }
+    expect(X).toContain('resolveRackSet({');
+    expect(X).toContain("resolved: true");
+  });
+
+  it('behaviour: only set 3 complete (1, 2 skipped), phone on set 1 → set 1, not 4', () => {
+    const { reduce } = require('../lib/rack/engine');
+    let s = createRackEngine(RACK);
+    s = reduce(s, { type: 'sessionSync', row: row({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 1 }) }, T0).state;
+    s = reduce(s, { type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 3 }, T0).state;
+    s = reduce(s, { type: 'rep', rep: ovr(0.7) }, T0 + 1000).state;
+    expect(s.live?.context.setNumber).toBe(1);
+  });
+});

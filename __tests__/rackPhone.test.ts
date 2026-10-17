@@ -304,10 +304,21 @@ describe('phone ↔ iPad in unison', () => {
     expect(contextSig({ workoutInstanceId: 'wi', routineExerciseId: 'bench', setNumber: 1, loadLb: 135 })).toBe('bench|1|135');
   });
 
-  it('first read of an activation is the baseline; null→X after the phone sent is not an override (I3)', () => {
+  it('first read of an activation is the baseline; null→X (the iPad’s auto-pick) after the phone sent is not an override (I3)', () => {
     expect(follow({ prevRackExercise: undefined })).toBeNull();
-    expect(follow({ prevRackExercise: null })).toBeNull();
+    expect(follow({ prevRackExercise: null, autoPickExerciseId: 'bench' })).toBeNull();
     expect(follow({ prevRackExercise: null, sentThisActivation: false, openExerciseId: null })).toBe('bench');
+  });
+
+  it('N4: after an empty context (finished exercise), a real coach override null→Y is still followed', () => {
+    // The phone finished squat and sent an empty context; its own resolver says the iPad's auto-pick is RDL.
+    expect(follow({ prevRackExercise: null, openExerciseId: 'squat', autoPickExerciseId: 'rdl' })).toBe('bench');
+    // The iPad publishing exactly that auto-pick is not an override.
+    expect(
+      follow({ prevRackExercise: null, openExerciseId: 'squat', autoPickExerciseId: 'rdl', session: session({ routine_exercise_id: 'rdl', set_number: 1 }) }),
+    ).toBeNull();
+    // Nothing left to auto-pick (none) → any null→Y is the coach.
+    expect(follow({ prevRackExercise: null, openExerciseId: null, autoPickExerciseId: null })).toBe('bench');
   });
 
   it('only on a change, only while active, only for this workout', () => {
