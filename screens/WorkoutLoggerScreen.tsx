@@ -32,6 +32,8 @@ import type {
   LoggerRoutine as Routine,
   LoggerWorkout as Workout,
 } from '../types/logger';
+import { buildSequence, nextStep } from '../lib/logger/sequence';
+import { normalizeScheme } from '../lib/logger/scheme';
 type RootStackParamList = {
   WorkoutLogger: { workoutInstanceId: string; athleteId: string };
   Dashboard: undefined;
@@ -865,7 +867,11 @@ export default function WorkoutLoggerScreen() {
     }
   }, [activeExerciseId, allExercises, exerciseInputs]);
 
-  // Handle next set / done - behavior changes based on routine scheme
+  // Whole-workout set order (lib/logger/sequence.ts) — the single source of
+  // "which exercise/set comes next" for both handleNextSet and the Next label.
+  const sequence = useMemo(() => (workout ? buildSequence(workout.routines) : []), [workout]);
+
+  // Handle next set / done - the set order comes from the sequence engine
   const handleNextSet = useCallback(() => {
     if (!activeExerciseId || !workout) return;
 
@@ -878,102 +884,60 @@ export default function WorkoutLoggerScreen() {
     );
     if (!currentRoutine) return;
 
-    const isSuperset = currentRoutine.scheme === 'superset' || currentRoutine.scheme === 'circuit';
-    const routineExercises = currentRoutine.routine_exercises;
-    const exerciseIndexInRoutine = routineExercises.findIndex(re => re.id === exercise.id);
-
+    const isStraight = normalizeScheme(currentRoutine.scheme) === 'straight';
     const currentSetIndex = currentSetIndexes[activeExerciseId] || 0;
     const currentSetData = exerciseInputs[activeExerciseId]?.[currentSetIndex] || {};
 
     // Mark current set as completed
-    setCompletedSets(prev => {
-      const exerciseSets = prev[activeExerciseId] || Array(exercise.sets).fill(false);
-      const updatedSets = [...exerciseSets];
+    const markDone = (sets: boolean[] | undefined) => {
+      const updatedSets = [...(sets || Array(exercise.sets).fill(false))];
       updatedSets[currentSetIndex] = true;
-      return { ...prev, [activeExerciseId]: updatedSets };
-    });
+      return updatedSets;
+    };
+    setCompletedSets(prev => ({ ...prev, [activeExerciseId]: markDone(prev[activeExerciseId]) }));
 
-    if (isSuperset) {
-      // SUPERSET/CIRCUIT: Alternate between exercises until one finishes, then continue the rest
-      // Example: A1 has 2 sets, A2 has 9 sets
-      // Order: A1(1) -> A2(1) -> A1(2) -> A2(2) -> A2(3) -> A2(4) -> ... -> A2(9)
+    const goToOverview = () => {
+      setViewMode('overview');
+      setActiveExerciseId(null);
+    };
 
-      // Increment current exercise's set index
-      const newCurrentSetIndex = currentSetIndex + 1;
-
-      // Update indexes - always update the current exercise's index
-      const newIndexes = { ...currentSetIndexes };
-      newIndexes[activeExerciseId] = newCurrentSetIndex;
-
-      // Find next exercise in rotation that still has sets remaining
-      let nextExerciseId: string | null = null;
-
-      // Look for the next exercise in rotation order
-      for (let i = 1; i <= routineExercises.length; i++) {
-        const idx = (exerciseIndexInRoutine + i) % routineExercises.length;
-        const candidateExercise = routineExercises[idx];
-
-        // Get the candidate's current set index from newIndexes
-        const candidateSetIndex = newIndexes[candidateExercise.id] || 0;
-
-        // Check if this exercise still has sets to do
-        if (candidateSetIndex < candidateExercise.sets) {
-          nextExerciseId = candidateExercise.id;
-          break;
-        }
-      }
-
-      setCurrentSetIndexes(newIndexes);
-
-      if (nextExerciseId) {
-        setActiveExerciseId(nextExerciseId);
+    // Notes-only rows / text blocks have no sets in the sequence: step to the
+    // next row in the list (what their button label shows).
+    if (!sequence.some(s => s.reId === activeExerciseId)) {
+      const currentExerciseIndex = allExercises.findIndex(ex => ex.id === activeExerciseId);
+      if (currentExerciseIndex < allExercises.length - 1) {
+        setActiveExerciseId(allExercises[currentExerciseIndex + 1].id);
       } else {
-        // All exercises in routine done, go to next routine or overview
-        const routineIndex = workout.routines.findIndex(r => r.id === currentRoutine.id);
-        if (routineIndex < workout.routines.length - 1) {
-          const nextRoutine = workout.routines[routineIndex + 1];
-          if (nextRoutine.routine_exercises.length > 0) {
-            setActiveExerciseId(nextRoutine.routine_exercises[0].id);
-          } else {
-            setViewMode('overview');
-            setActiveExerciseId(null);
-          }
-        } else {
-          setViewMode('overview');
-          setActiveExerciseId(null);
-        }
+        goToOverview();
       }
-    } else {
-      // STRAIGHT SETS: Complete all sets of current exercise before moving on
-      if (currentSetIndex >= exercise.sets - 1) {
-        // Done with this exercise, go to next exercise
-        const currentExerciseIndex = allExercises.findIndex(ex => ex.id === activeExerciseId);
-        if (currentExerciseIndex < allExercises.length - 1) {
-          const nextExercise = allExercises[currentExerciseIndex + 1];
-          setActiveExerciseId(nextExercise.id);
-          setCurrentSetIndexes(prev => ({ ...prev, [nextExercise.id]: 0 }));
-        } else {
-          setViewMode('overview');
-          setActiveExerciseId(null);
-        }
-      } else {
-        // Move to next set of same exercise
-        const nextSetIndex = currentSetIndex + 1;
-
-        // Auto-fill from previous set
-        Object.keys(currentSetData).forEach(field => {
-          if (field !== 'notes' && currentSetData[field] != null && currentSetData[field] !== '') {
-            handleInputChange(nextSetIndex, field, currentSetData[field], activeExerciseId, true);
-          }
-        });
-
-        setCurrentSetIndexes(prev => ({
-          ...prev,
-          [activeExerciseId]: nextSetIndex,
-        }));
-      }
+      return;
     }
-  }, [activeExerciseId, workout, allExercises, currentSetIndexes, exerciseInputs, completedSets, handleInputChange]);
+
+    const done = { ...completedSets, [activeExerciseId]: markDone(completedSets[activeExerciseId]) };
+    const next = nextStep(sequence, done, { reId: activeExerciseId, setIndex: currentSetIndex });
+
+    if (!next) {
+      goToOverview();
+      return;
+    }
+
+    // Straight sets staying on the same exercise: auto-fill from previous set
+    if (isStraight && next.reId === activeExerciseId) {
+      Object.keys(currentSetData).forEach(field => {
+        if (field !== 'notes' && currentSetData[field] != null && currentSetData[field] !== '') {
+          handleInputChange(next.setIndex, field, currentSetData[field], activeExerciseId, true);
+        }
+      });
+    }
+
+    setCurrentSetIndexes(prev => ({
+      ...prev,
+      // Grouped blocks advance the exercise being left past the set just done
+      ...(isStraight ? {} : { [activeExerciseId]: currentSetIndex + 1 }),
+      [next.reId]: next.setIndex,
+    }));
+    setActiveExerciseId(next.reId);
+  }, [activeExerciseId, workout, allExercises, sequence, currentSetIndexes, exerciseInputs, completedSets, handleInputChange]);
 
   // Navigation handlers
   const handleExercisePress = (exerciseId: string) => {
@@ -1154,6 +1118,7 @@ export default function WorkoutLoggerScreen() {
         currentSetIndex={currentSetIndexes[currentExercise.id] || 0}
         currentSetIndexes={currentSetIndexes}
         allExercises={allExercises}
+        sequence={sequence}
         hasPrev={currentExerciseIndex > 0}
         hasNext={currentExerciseIndex < allExercises.length - 1}
         blockLabel={blockLabel}

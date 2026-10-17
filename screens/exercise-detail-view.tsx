@@ -35,6 +35,7 @@ import type {
   LoggerRoutine as Routine,
   LoggerWorkout as Workout,
 } from '../types/logger';
+import { nextStep, type SeqStep } from '../lib/logger/sequence';
 interface PRAlert {
   metric: string;
   value: number;
@@ -68,6 +69,8 @@ interface ExerciseDetailViewProps {
   currentSetIndex: number;
   currentSetIndexes: Record<string, number>;
   allExercises: RoutineExercise[];
+  // Whole-workout set order from buildSequence (lib/logger/sequence.ts)
+  sequence: SeqStep[];
   hasPrev: boolean;
   hasNext: boolean;
   blockLabel?: string;
@@ -464,6 +467,7 @@ export default function ExerciseDetailView({
   currentSetIndex,
   currentSetIndexes,
   allExercises,
+  sequence,
   hasPrev,
   hasNext,
   blockLabel,
@@ -1317,9 +1321,6 @@ export default function ExerciseDetailView({
     return sets;
   };
 
-  const isLastSetOfExercise = currentSetIndex >= exercise.sets - 1;
-  const isSuperset = routine.scheme === 'superset' || routine.scheme === 'circuit';
-
   // Helper to truncate exercise name for button
   const truncateName = (name: string, maxLength: number = 14): string => {
     if (name.length <= maxLength) return name;
@@ -1327,79 +1328,28 @@ export default function ExerciseDetailView({
   };
 
   // Dynamic button text based on workout type and progress
-  // Shows "Next Set" when staying on same exercise, or the actual exercise name when switching
+  // Shows "Next Set" when staying on same exercise, or the actual exercise name when switching.
+  // The next step comes from the sequence engine, as if the current set were done.
   const getNextButtonText = () => {
-    const routineExercises = routine.routine_exercises;
-    const exerciseIndexInRoutine = routineExercises.findIndex(re => re.id === exercise.id);
-
-    if (isSuperset) {
-      // SUPERSET/CIRCUIT: Determine what exercise comes next in rotation
-      // After pressing next, the current exercise's set index will be incremented
-
-      const newCurrentSetIndex = currentSetIndex + 1;
-
-      // Simulate what the new indexes would be after pressing next
-      const simulatedIndexes = { ...currentSetIndexes };
-      simulatedIndexes[exercise.id] = newCurrentSetIndex;
-
-      // Find next exercise in rotation that still has sets remaining
-      let nextExercise: RoutineExercise | null = null;
-
-      for (let i = 1; i <= routineExercises.length; i++) {
-        const idx = (exerciseIndexInRoutine + i) % routineExercises.length;
-        const candidateExercise = routineExercises[idx];
-        const candidateSetIndex = simulatedIndexes[candidateExercise.id] || 0;
-
-        if (candidateSetIndex < candidateExercise.sets) {
-          nextExercise = candidateExercise;
-          break;
-        }
-      }
-
-      if (!nextExercise) {
-        // No more exercises in this routine have sets - check next routine
-        const currentExerciseGlobalIndex = allExercises.findIndex(ex => ex.id === exercise.id);
-        const isLastExerciseGlobally = currentExerciseGlobalIndex >= allExercises.length - 1;
-
-        if (isLastExerciseGlobally) {
-          return 'DONE';
-        }
-
-        // Find next exercise from a different routine
-        const nextGlobalExercise = allExercises[currentExerciseGlobalIndex + 1];
-        if (nextGlobalExercise) {
-          return truncateName(nextGlobalExercise.exercises.name) + ' →';
-        }
-        return 'DONE';
-      }
-
-      // If next exercise is the same as current, show "Next Set"
-      if (nextExercise.id === exercise.id) {
-        return 'Next Set →';
-      }
-
-      // Otherwise show the next exercise's name
-      return truncateName(nextExercise.exercises.name) + ' →';
-
-    } else {
-      // STRAIGHT SETS: Complete all sets of current exercise before moving on
-      if (isLastSetOfExercise) {
-        // Done with this exercise, check what's next
-        const currentExerciseIndex = allExercises.findIndex(ex => ex.id === exercise.id);
-        const isLastExercise = currentExerciseIndex >= allExercises.length - 1;
-
-        if (isLastExercise) {
-          return 'DONE';
-        }
-
-        // Show next exercise's name
-        const nextExercise = allExercises[currentExerciseIndex + 1];
-        return truncateName(nextExercise.exercises.name) + ' →';
-      }
-
-      // Not on last set, show "Next Set"
-      return 'Next Set →';
+    // Rows outside the sequence (notes-only, text blocks) step to the next row
+    // in the list — same as the parent's handleNextSet.
+    if (!sequence.some(s => s.reId === exercise.id)) {
+      const currentExerciseIndex = allExercises.findIndex(ex => ex.id === exercise.id);
+      const following = allExercises[currentExerciseIndex + 1];
+      return following ? truncateName(following.exercises?.name ?? following.placeholder_name ?? '') + ' →' : 'DONE';
     }
+
+    const done = { ...completedSets };
+    const updatedSets = [...(done[exercise.id] || Array(exercise.sets).fill(false))];
+    updatedSets[currentSetIndex] = true;
+    done[exercise.id] = updatedSets;
+
+    const next = nextStep(sequence, done, { reId: exercise.id, setIndex: currentSetIndex });
+    if (!next) return 'DONE';
+    if (next.reId === exercise.id) return 'Next Set →';
+
+    const nextExercise = allExercises.find(ex => ex.id === next.reId);
+    return nextExercise ? truncateName(nextExercise.exercises.name) + ' →' : 'DONE';
   };
 
   return (
