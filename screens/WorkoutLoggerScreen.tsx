@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import type { LogRow } from '../lib/logger/lastWeek';
 import {
   View,
   ActivityIndicator,
@@ -94,6 +95,8 @@ export default function WorkoutLoggerScreen() {
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
+  // Raw completed-log rows for the "last week" reference (lib/logger/lastWeek).
+  const [lastWeekRows, setLastWeekRows] = useState<LogRow[]>([]);
   // Org id for pulse monitor (separate fetch; keeps the existing athlete query untouched)
   const [orgId, setOrgId] = useState<string | null>(null);
   // Per-athlete preference for showing the workload tracker (Pulse Monitor +
@@ -441,6 +444,21 @@ export default function WorkoutLoggerScreen() {
         });
       }
       setExerciseHistory(historyMap);
+      setLastWeekRows(
+        (historyData ?? []).flatMap((log: any): LogRow[] => {
+          const exId = log.routine_exercises?.exercise_id;
+          const instId = log.workout_instances?.id;
+          if (!exId || !instId) return [];
+          return [{
+            workout_instance_id: instId,
+            exercise_id: exId,
+            set_number: log.set_number,
+            actual_weight: log.actual_weight ?? null,
+            actual_reps: log.actual_reps ?? null,
+            completed_at: log.workout_instances?.completed_at ?? null,
+          }];
+        }),
+      );
 
       // Auto-start the workout if it's still not_started. Mirrors how Strong /
       // Hevy / Apple Fitness work: tap a workout from the day card → straight
@@ -1110,6 +1128,7 @@ export default function WorkoutLoggerScreen() {
         hasNext={currentExerciseIndex < allExercises.length - 1}
         blockLabel={blockLabel}
         exerciseHistory={exerciseHistory[currentExercise.exercise_id]}
+        lastWeekRows={lastWeekRows}
         onInputChange={handleInputChange}
         onToggleSetComplete={handleToggleSetComplete}
         onNextSet={handleNextSet}

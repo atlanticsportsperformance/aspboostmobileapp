@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import type { LogRow } from '../lib/logger/lastWeek';
 import {
   View,
   Text,
@@ -75,6 +76,8 @@ interface ExerciseDetailViewProps {
   hasNext: boolean;
   blockLabel?: string;
   exerciseHistory?: ExerciseHistory[];
+  /** Raw completed logs for lastSession() (Task 11 renders the line). */
+  lastWeekRows?: LogRow[];
   onInputChange: (
     setIndex: number,
     field: string,
