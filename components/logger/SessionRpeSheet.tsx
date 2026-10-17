@@ -8,14 +8,16 @@ type Props = {
   visible: boolean;
   onSelect: (value: number) => void;
   onSkip: () => void;
+  // Android back: leave the sheet without finishing.
+  onCancel: () => void;
 };
 
 // "How hard was today overall?" — shown at finish only when the workout asks
 // for session RPE. Skip finishes without touching session_rpe.
-export default function SessionRpeSheet({ visible, onSelect, onSkip }: Props) {
+export default function SessionRpeSheet({ visible, onSelect, onSkip, onCancel }: Props) {
   const [picked, setPicked] = useState<number | null>(null);
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onSkip}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.backdrop} onPress={() => {}}>
         <View style={styles.panel}>
           <Text style={styles.label}>SESSION RPE</Text>

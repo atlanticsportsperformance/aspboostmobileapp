@@ -38,7 +38,7 @@ import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { normalizeScheme } from '../lib/logger/scheme';
 import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
 import { loggerOutbox } from '../lib/logger/outbox';
-import { sendCompletion, queueCompletion } from '../lib/logger/pendingComplete';
+import { pendingCompletions } from '../lib/logger/pendingComplete';
 import SessionRpeSheet from '../components/logger/SessionRpeSheet';
 import { restAfter } from '../lib/logger/rest';
 import { useRestTimer } from '../hooks/useRestTimer';
@@ -586,6 +586,8 @@ export default function WorkoutLoggerScreen() {
     setShowSessionRpe(false);
     void finalizeWorkout(value);
   };
+  // Android back / dismiss: cancel — stay on the logger, don't complete.
+  const handleCancelSessionRpe = () => setShowSessionRpe(false);
   const handleSkipSessionRpe = () => {
     setShowSessionRpe(false);
     void finalizeWorkout();
@@ -608,10 +610,12 @@ export default function WorkoutLoggerScreen() {
         completedAt: new Date().toISOString(),
         ...(sessionRpe != null ? { sessionRpe } : {}),
       };
-      const { error } = await sendCompletion(intent);
-      if (error) {
-        console.error('[WorkoutLogger] complete failed, queued for retry', error);
-        await queueCompletion(intent);
+      const outcome = await pendingCompletions.complete(intent);
+      if (outcome.status === 'rejected') {
+        // Server said no — don't queue, keep the athlete here.
+        console.error('[WorkoutLogger] complete failed', outcome.message);
+        Alert.alert('Could not save workout', outcome.message || 'Please try again.');
+        return;
       }
 
       // Signal the dashboard that its workout list is stale so the next
@@ -620,7 +624,7 @@ export default function WorkoutLoggerScreen() {
 
       Alert.alert(
         'Workout Complete!',
-        error
+        outcome.status === 'queued'
           ? 'Saved on this device. It will sync when you are back online.'
           : 'Great job! Your workout has been saved.',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
@@ -1191,6 +1195,7 @@ export default function WorkoutLoggerScreen() {
       visible={showSessionRpe}
       onSelect={handleSessionRpe}
       onSkip={handleSkipSessionRpe}
+      onCancel={handleCancelSessionRpe}
     />
   ) : null;
 

@@ -13,6 +13,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import { LOGGER_COLORS } from '../lib/logger/theme';
+import { pendingCompletions } from '../lib/logger/pendingComplete';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 interface ExerciseLog {
@@ -226,6 +228,8 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
         return;
       }
 
+      await pendingCompletions.clear(workoutInstanceId);
+
       // Signal the dashboard/workload that the list is stale so the card
       // re-renders as in_progress on the next focus.
       markWorkoutListDirty();
@@ -259,9 +263,13 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
         .from('workout_instances')
         .update({
           status: 'not_started',
-          completed_at: null
+          completed_at: null,
+          session_rpe: null,
         })
         .eq('id', workoutInstanceId);
+
+      // A queued offline completion must not re-complete the reset workout.
+      await pendingCompletions.clear(workoutInstanceId);
 
       setShowResetModal(false);
 
@@ -450,7 +458,7 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
             {workout.session_rpe != null && (
               <View style={styles.summaryItem}>
                 <Text style={styles.summaryLabel}>Session RPE</Text>
-                <Text style={[styles.summaryValue, { color: '#D9A441' }]}>{workout.session_rpe}</Text>
+                <Text style={[styles.summaryValue, { color: LOGGER_COLORS.rpe }]}>{workout.session_rpe}</Text>
               </View>
             )}
           </View>
