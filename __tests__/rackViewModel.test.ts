@@ -3,6 +3,7 @@ import type { OvrRep } from '../lib/ovr/protocol';
 import type { TodayAthlete, TodayExercise } from '../lib/rack/api';
 import {
   buildRackView,
+  filterAddable,
   initialsOf,
   phoneContextOfRow,
   rackLayout,
@@ -193,6 +194,38 @@ describe('rack view model', () => {
     expect(view(r.s, T0 + 2000 + SUMMARY_MS + 1).summary).toBeNull();
   });
 
+  it('Done → summary up with the saved set → after it expires: bars/dial reset and SET advances', () => {
+    const r = rig();
+    r.sync({ set_number: 3, queue: [] });
+    r.send({ type: 'rep', rep: ovr(0.55) }, T0 + 1000);
+    r.send({ type: 'rep', rep: ovr(0.52) }, T0 + 3000);
+    expect(view(r.s, r.now).exerciseLine).toBe('Back Squat · Set 3 of 3');
+    r.send({ type: 'ipadDone' }, T0 + 5000);
+    // The server's rack_end_set row: same athlete, idle, phone still says set 3.
+    r.sync({ set_number: 3, queue: [], state: 'idle' }, T0 + 5200);
+    // nowMs may lag (minute clock): the summary is still up.
+    const during = view(r.s, T0);
+    expect(during.summary).toMatchObject({ title: 'SET 3 SAVED · DONE ON IPAD', big: '205 lb × 2', avg: '0.54', best: '0.55', drop: '5%' });
+    expect(during.bars).toHaveLength(2);
+    const after = view(r.s, T0 + 5000 + SUMMARY_MS + 1);
+    expect(after.summary).toBeNull();
+    expect(after.bars).toEqual([]);
+    expect(after.lastRep).toBeNull();
+    expect(after.setNumber).toBe(4);
+    expect(after.exerciseLine).toBe('Back Squat · Set 4 of 3');
+    expect(after.fullReps).toBe(0);
+  });
+
+  it('no zone → SPEED DROP and the summary drop read "—"', () => {
+    const r = rig();
+    r.sync({ routine_exercise_id: 're-box', exercise_id: 'ex-box', queue: [] });
+    r.send({ type: 'rep', rep: ovr(0.9) }, T0 + 1000);
+    r.send({ type: 'rep', rep: ovr(0.43) }, T0 + 3000); // 52% "drop"
+    expect(view(r.s, r.now).dropPct).toBeNull();
+    r.send({ type: 'ipadDone' }, T0 + 4000);
+    expect(view(r.s, T0 + 4100).summary?.drop).toBe('—');
+  });
+
   it('next set number honours the high-water mark', () => {
     const r = rig();
     r.sync();
@@ -298,12 +331,31 @@ describe('rack layout', () => {
     expect(l.dial).toBeLessThan(300);
     expect(row2 - 72).toBeGreaterThanOrEqual(l.barsMin);
   });
+  it('mini landscape uses the compact athlete card so row 1 never squeezes row 2', () => {
+    const l = rackLayout(1133, 744, ipadLandscape);
+    expect(l.compactCard).toBe(true);
+    const H = 700;
+    const row1 = Math.max(l.dial + 72, 290);
+    expect(H - 32 - 44 - 48 - l.tilesH - row1 - 72).toBeGreaterThanOrEqual(l.barsMin);
+    expect(rackLayout(1180, 820, ipadLandscape).compactCard).toBe(false);
+  });
   it('portrait is chosen when height > width (820×1180): dial 300, compact tiles 88, replay 230', () => {
     const l = rackLayout(820, 1180, { top: 24, bottom: 20, left: 0, right: 0 });
     expect(l).toMatchObject({ mode: 'portrait', dial: 300, bubble: 124, tilesH: 88, sideW: 230 });
     const row3 = 1136 - 32 - 44 - 64 - l.tilesH - (72 + l.dial) - 190;
     expect(row3 - 72).toBeGreaterThanOrEqual(l.barsMin);
     expect(rackLayout(1024, 1366, { top: 24, bottom: 20, left: 0, right: 0 }).mode).toBe('portrait');
+  });
+});
+
+describe('"+ Add" sheet list', () => {
+  it('stable name order; filters by first or last name, case-insensitive', () => {
+    const list = [TODAY[3], TODAY[0], TODAY[2], TODAY[1]];
+    expect(filterAddable(list, '').map(a => a.firstName)).toEqual(['Cole', 'Jake', 'Mason', 'Tyler']);
+    expect(filterAddable(list, 'zz').map(a => a.firstName)).toEqual([]);
+    expect(filterAddable(list, 'reed').map(a => a.firstName)).toEqual(['Tyler']);
+    expect(filterAddable(list, 'ja').map(a => a.firstName)).toEqual(['Jake']);
+    expect(filterAddable(list, '  BU ').map(a => a.firstName)).toEqual(['Cole']);
   });
 });
 

@@ -1,20 +1,21 @@
 /**
  * Bottom row: one tile per athlete on the rack (UP NOW / NEXT / #n IN LINE,
  * or dimmed "On Box Jump" when their phone is on a non-rack exercise), plus
- * "+ Add", which opens a sheet of today's athletes not yet on the rack.
+ * "+ Add", which opens AddAthleteSheet (search, scroll-safe taps, confirm).
  */
 
 import React, { memo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { TodayAthlete } from '../../lib/rack/api';
-import { initialsOf, RACK_COLORS, type TileView } from '../../lib/rack/viewModel';
+import { RACK_COLORS, type TileView } from '../../lib/rack/viewModel';
+import AddAthleteSheet from './AddAthleteSheet';
 
 export interface AthleteTilesProps {
   tiles: TileView[];
   addable: TodayAthlete[];
   /** Tile tap → engine `selectAthlete`. */
   onSelect: (athleteId: string) => void;
-  /** "+" sheet pick → `selectAthlete` (rack_set_active). */
+  /** "+" sheet "Put <name> up" → `selectAthlete` (rack_set_active). */
   onAdd: (athleteId: string) => void;
   /** Row height (layout scales it). */
   height?: number;
@@ -52,39 +53,7 @@ function AthleteTiles({ tiles, addable, onSelect, onAdd, height = 96, compact = 
         <Text style={styles.addTxt}>Add</Text>
       </TouchableOpacity>
 
-      <Modal visible={sheet} transparent animationType="fade" supportedOrientations={['landscape', 'landscape-left', 'landscape-right']} onRequestClose={() => setSheet(false)}>
-        <Pressable style={styles.scrim} onPress={() => setSheet(false)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
-            <Text style={styles.sheetK}>ADD TO THE RACK</Text>
-            <Text style={styles.sheetS}>Today's athletes not on the rack. They go up now.</Text>
-            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 8 }}>
-              {addable.length === 0 && <Text style={styles.none}>Everyone with a workout today is already on the rack.</Text>}
-              {addable.map(a => (
-                <TouchableOpacity
-                  key={a.athleteId}
-                  style={styles.pick}
-                  onPress={() => {
-                    setSheet(false);
-                    onAdd(a.athleteId);
-                  }}
-                >
-                  <View style={styles.av}>
-                    <Text style={styles.avTxt}>{initialsOf(a.firstName, a.lastName)}</Text>
-                  </View>
-                  <View style={styles.txt}>
-                    <Text style={styles.name}>
-                      {a.firstName} {a.lastName}
-                    </Text>
-                    <Text style={styles.sub} numberOfLines={1}>
-                      {a.remaining[0] ? `Next: ${a.remaining[0].name}` : 'No sets left today'}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <AddAthleteSheet visible={sheet} addable={addable} onClose={() => setSheet(false)} onAdd={onAdd} />
     </View>
   );
 }
@@ -126,27 +95,4 @@ const styles = StyleSheet.create({
   add: { flex: 0, width: 96, flexDirection: 'column', justifyContent: 'center', gap: 4, paddingHorizontal: 0 },
   plus: { fontSize: 20, color: RACK_COLORS.mut },
   addTxt: { fontSize: 12, color: RACK_COLORS.mut },
-  scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
-  sheet: {
-    width: 520,
-    borderRadius: 18,
-    backgroundColor: RACK_COLORS.card,
-    borderWidth: 1,
-    borderColor: RACK_COLORS.line,
-    padding: 20,
-    gap: 6,
-  },
-  sheetK: { fontSize: 11, fontWeight: '900', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)' },
-  sheetS: { fontSize: 13, color: RACK_COLORS.mut, marginBottom: 10 },
-  none: { fontSize: 14, color: RACK_COLORS.mut, paddingVertical: 20, textAlign: 'center' },
-  pick: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: RACK_COLORS.line,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
 });

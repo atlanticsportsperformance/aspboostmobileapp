@@ -239,6 +239,10 @@ export function createRackExecutor(opts: {
           break;
         case 'endSet':
         case 'amendSet': {
+          // The weight just saved is the athlete's newest "last logged weight".
+          if (fx.summary.loadLb != null && fx.summary.exerciseId) {
+            lastWeight.set(`${fx.summary.athleteId}:${fx.summary.exerciseId}`, fx.summary.loadLb);
+          }
           if (fx.summary.free) break; // free sets: vbt_reps only
           const s = withExercise(fx.summary);
           const kind = fx.type;
@@ -488,7 +492,13 @@ export function createRackExecutor(opts: {
     flush: () => flushSoon(true),
     async endLive() {
       if (state.setState === 'lifting') dispatch({ type: 'ipadDone' });
-      await this.idle();
+      // Wait for the EFFECT chain only (the set row is queued there); the
+      // rpcEndSet round trip can take its full timeout offline.
+      for (let i = 0; i < 20; i++) {
+        const e = effectChain;
+        await e;
+        if (e === effectChain) return;
+      }
     },
     unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length }),
     start() {

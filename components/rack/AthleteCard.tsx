@@ -18,16 +18,19 @@ export interface AthleteCardProps {
   view: RackView;
   rackName: string;
   layout?: 'column' | 'row';
+  /** Short iPads (mini landscape): tighter padding, smaller values, 56-pt Done. */
+  compact?: boolean;
   /** Big Done → engine `ipadDone`. */
   onDone: () => void;
   onPickExercise: (ex: TodayExercise) => void;
 }
 
-export default function AthleteCard({ view, rackName, layout = 'column', onDone, onPickExercise }: AthleteCardProps) {
+export default function AthleteCard({ view, rackName, layout = 'column', compact = false, onDone, onPickExercise }: AthleteCardProps) {
   const a = view.athlete;
   const row = layout === 'row';
+  const c = compact && !row;
   return (
-    <View style={[styles.card, row ? styles.cardRow : styles.cardCol]}>
+    <View style={[styles.card, row ? styles.cardRow : styles.cardCol, c && styles.cardC]}>
       <View style={[styles.ah, row && styles.ahRow]}>
         <View style={styles.av}>
           <Text style={styles.avTxt}>{a?.initials ?? ''}</Text>
@@ -48,24 +51,24 @@ export default function AthleteCard({ view, rackName, layout = 'column', onDone,
       </View>
 
       <View style={[styles.kv, row && styles.kvRow]}>
-        <View style={styles.kvb}>
+        <View style={[styles.kvb, c && styles.kvbC]}>
           <Text style={styles.k}>{view.contextSource === 'phone' ? 'BAR · SET ON PHONE' : 'BAR'}</Text>
-          <Text style={styles.x}>{view.loadLb != null ? `${view.loadLb} lb` : '—'}</Text>
+          <Text style={[styles.x, c && styles.xC]}>{view.loadLb != null ? `${view.loadLb} lb` : '—'}</Text>
         </View>
-        <View style={styles.kvb}>
+        <View style={[styles.kvb, c && styles.kvbC]}>
           <Text style={styles.k}>REPS</Text>
-          <Text style={styles.x}>{view.repsTarget != null ? view.repsTarget : '—'}</Text>
+          <Text style={[styles.x, c && styles.xC]}>{view.repsTarget != null ? view.repsTarget : '—'}</Text>
         </View>
-        <View style={[styles.kvb, styles.wide]}>
+        <View style={[styles.kvb, styles.wide, c && styles.kvbC]}>
           <Text style={styles.k}>TARGET SPEED</Text>
-          <Text style={[styles.x, styles.wideX]}>
+          <Text style={[styles.x, styles.wideX, c && styles.wideXC]}>
             {view.zone ? `${view.zone[0].toFixed(2)}–${view.zone[1].toFixed(2)} m/s` : 'No target'}
           </Text>
         </View>
       </View>
 
       <TouchableOpacity style={[styles.doneWrap, row && styles.doneWrapRow]} activeOpacity={0.85} onPress={onDone}>
-        <LinearGradient colors={['#A6E3FF', '#6BBCE8']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.done, row && styles.doneRow]}>
+        <LinearGradient colors={['#A6E3FF', '#6BBCE8']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.done, row && styles.doneRow, c && styles.doneC]}>
           <Text style={styles.doneTxt}>✓ Done</Text>
         </LinearGradient>
       </TouchableOpacity>
@@ -113,6 +116,11 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   cardCol: { width: 360, gap: 14 },
+  cardC: { padding: 16, gap: 10 },
+  kvbC: { paddingVertical: 7 },
+  xC: { fontSize: 20 },
+  wideXC: { fontSize: 18 },
+  doneC: { height: 56 },
   cardRow: { flexDirection: 'row', alignItems: 'stretch', gap: 16 },
   ah: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   ahRow: { width: 220, flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center' },

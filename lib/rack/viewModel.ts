@@ -79,7 +79,13 @@ export interface RackLayout {
   barsMin: number;
   /** Right column: athlete card (landscape) / replay panel (portrait). */
   sideW: number;
+  /** Tighter athlete card (short iPads, e.g. a mini in landscape). */
+  compactCard: boolean;
 }
+
+/** Natural athlete-card height in the landscape column (normal / compact). */
+export const ATHLETE_CARD_H = 356;
+export const ATHLETE_CARD_COMPACT_H = 290;
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -105,10 +111,14 @@ export function rackLayout(width: number, height: number, insets: SafeInsets): R
     const tilesH = Math.round(96 * Math.min(k, 1.15));
     // pad 32 + header 44 + 3 gaps 48 + tiles; then row gap 16 + row 2 min.
     const fixed = 32 + 44 + 48 + tilesH;
-    const dialByH = H - fixed - 16 - row2Min - cardChrome;
+    // Row 1 is max(dial card, athlete card): whatever is left after row 2's
+    // minimum must hold the athlete card too — else use the compact card.
+    const row1Room = H - fixed - 16 - row2Min;
+    const compactCard = row1Room < ATHLETE_CARD_H;
+    const dialByH = row1Room - cardChrome;
     const dialByW = (W - 32 - 16 - 360 - 40 - 28 - 14) / (across(1) as number);
     const dial = Math.floor(Math.max(160, Math.min(300 * k, dialByH, dialByW)));
-    return { mode: 'landscape', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 360 };
+    return { mode: 'landscape', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 360, compactCard };
   }
 
   const k = clamp(H / 1136, 0.7, 1.3);
@@ -119,7 +129,7 @@ export function rackLayout(width: number, height: number, insets: SafeInsets): R
   const dialByH = H - fixed - cardChrome;
   const dialByW = (W - 32 - 40 - 36 - 14) / (across(1) as number);
   const dial = Math.floor(Math.max(160, Math.min(300 * k, dialByH, dialByW)));
-  return { mode: 'portrait', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 230 };
+  return { mode: 'portrait', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 230, compactCard: false };
 }
 
 // ---------------------------------------------------------------- sensor pill
@@ -293,6 +303,37 @@ function possessive(first: string): string {
 const sameEx = (a: Pick<RackContext, 'workoutInstanceId' | 'routineExerciseId'>, b: Pick<RackContext, 'workoutInstanceId' | 'routineExerciseId'>) =>
   a.workoutInstanceId === b.workoutInstanceId && a.routineExerciseId === b.routineExerciseId;
 
+/** null = sticky (idle end: stays until the engine leaves summary). */
+function summaryExpiry(ended: LiveSet): number | null {
+  if (ended.endedBy === 'idle' || ended.endedAtMs == null) return null;
+  return ended.endedAtMs + SUMMARY_MS;
+}
+
+/**
+ * Summary overlay up: the engine is in 'summary' and (idle end, or less than
+ * SUMMARY_MS since the end). `nowMs` may lag real time (minute clock), which
+ * only keeps the summary up a little longer; the screen sets a timeout at the
+ * expiry so it re-renders on time.
+ */
+export function summaryVisible(s: RackEngineState, nowMs: number): boolean {
+  const ended = s.lastEnded;
+  if (s.setState !== 'summary' || !ended || !ended.endedBy || ended.endedAtMs == null) return false;
+  const exp = summaryExpiry(ended);
+  return exp == null || nowMs < exp;
+}
+
+/** "+" sheet list: filter by first or last name (case-insensitive), stable name order. */
+export function filterAddable(list: TodayAthlete[], query: string): TodayAthlete[] {
+  const q = query.trim().toLowerCase();
+  const sorted = [...list].sort(
+    (a, b) =>
+      `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`) || a.athleteId.localeCompare(b.athleteId),
+  );
+  if (!q) return sorted;
+  return sorted.filter(a => a.firstName.toLowerCase().startsWith(q) || a.lastName.toLowerCase().startsWith(q) ||
+    `${a.firstName} ${a.lastName}`.toLowerCase().includes(q));
+}
+
 export interface RackViewInput {
   state: RackEngineState;
   today: TodayAthlete[];
@@ -309,9 +350,12 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   const lifting = s.setState === 'lifting' && !!s.live;
 
   // Which set is on screen: live, else the just-ended one of the active athlete.
+  // The ended set stays on screen only while its summary is up; after that
+  // the screen moves to the NEXT set (bars + dial reset, SET advances).
+  const summaryUp = summaryVisible(s, nowMs);
   const shownSet: LiveSet | null = lifting
     ? s.live
-    : s.setState === 'summary' && s.lastEnded && s.lastEnded.athleteId === activeId
+    : summaryUp && s.lastEnded && s.lastEnded.athleteId === activeId
       ? s.lastEnded
       : null;
 
@@ -362,7 +406,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   const full = reps.filter(r => !r.partial);
   const bestV = full.length ? Math.max(...full.map(r => r.v)) : null;
   const lastFull = full[full.length - 1];
-  const dropPct = lastFull?.dropPct ?? null;
+  // Without a zone there is no drop rule: SPEED DROP reads "—" (like the bars and the cue).
+  const dropPct = zone ? lastFull?.dropPct ?? null : null;
   const dropCue = lifting && !!zone && !!lastFull?.dropCue;
   const dropLineV = zone && dropStopPct != null && bestV != null ? bestV * (1 - dropStopPct / 100) : null;
   const newest = reps[reps.length - 1];
@@ -379,9 +424,9 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   // Summary overlay.
   let summary: SummaryView | null = null;
   const ended = s.lastEnded;
-  if (s.setState === 'summary' && ended && ended.endedBy && ended.endedAtMs != null) {
-    const expiresAtMs = ended.endedBy === 'idle' ? null : ended.endedAtMs + SUMMARY_MS;
-    if (expiresAtMs == null || nowMs < expiresAtMs) {
+  if (summaryUp && ended && ended.endedBy && ended.endedAtMs != null) {
+    const expiresAtMs = summaryExpiry(ended);
+    {
       const efull = ended.reps.filter(r => !r.partial);
       const ebest = efull.length ? Math.max(...efull.map(r => r.v)) : null;
       const eavg = efull.length ? efull.reduce((a, r) => a + r.v, 0) / efull.length : null;
@@ -396,7 +441,7 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
         big: lb != null ? `${lb} lb × ${efull.length}` : `${efull.length} rep${efull.length === 1 ? '' : 's'}`,
         avg: fmtV(eavg),
         best: fmtV(ebest),
-        drop: elast?.dropPct != null ? `${elast.dropPct}%` : '—',
+        drop: ended.zone && elast?.dropPct != null ? `${elast.dropPct}%` : '—',
         footer:
           ended.endedBy === 'idle'
             ? 'Saved · tap to edit on the phone'

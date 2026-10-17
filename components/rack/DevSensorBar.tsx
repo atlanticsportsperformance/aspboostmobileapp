@@ -1,5 +1,5 @@
 /**
- * DEV ONLY: floating controls for the fake OVR sensor (simulator / dev
+ * DEV ONLY: header-docked controls for the fake OVR sensor (simulator / dev
  * toggle). Never rendered in production builds — the screen guards it with
  * `__DEV__`, and so does this component.
  */
@@ -22,11 +22,11 @@ export default function DevSensorBar({ device, zone }: DevSensorBarProps) {
     ['Rep', () => device.emitRep({ meanV: jitter() })],
     ['Slow rep', () => device.emitRep({ meanV: slow })],
     ['Partial', () => device.emitRep({ meanV: jitter(), romIn: 4 })],
-    ['Drop connection', () => device.simulateDrop(3000)],
+    ['Drop conn', () => device.simulateDrop(3000)],
   ];
   return (
-    <View style={styles.bar} pointerEvents="box-none">
-      <Text style={styles.tag}>DEV SENSOR</Text>
+    <View style={styles.bar}>
+      <Text style={styles.tag}>DEV</Text>
       {buttons.map(([label, fn]) => (
         <TouchableOpacity key={label} style={styles.btn} onPress={fn}>
           <Text style={styles.txt}>{label}</Text>
@@ -37,20 +37,9 @@ export default function DevSensorBar({ device, zone }: DevSensorBarProps) {
 }
 
 const styles = StyleSheet.create({
-  bar: {
-    position: 'absolute',
-    left: 24,
-    bottom: 124,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 8,
-    borderRadius: 12,
-    backgroundColor: 'rgba(20,21,24,0.92)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  tag: { fontSize: 9, fontWeight: '900', letterSpacing: 1.2, color: 'rgba(255,255,255,0.4)', marginHorizontal: 4 },
-  btn: { borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingVertical: 8, paddingHorizontal: 11 },
-  txt: { fontSize: 12, fontWeight: '600', color: '#cfd3d8' },
+  // Docked in the header row as small pills (never over the THIS SET bars).
+  bar: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tag: { fontSize: 9, fontWeight: '900', letterSpacing: 1.2, color: 'rgba(255,255,255,0.4)' },
+  btn: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', paddingVertical: 5, paddingHorizontal: 9 },
+  txt: { fontSize: 11, fontWeight: '600', color: '#cfd3d8' },
 });

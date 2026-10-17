@@ -92,11 +92,16 @@ let activeEnder: (() => Promise<void> | void) | null = null;
 export function setActiveRackEnder(fn: (() => Promise<void> | void) | null): void {
   activeEnder = fn;
 }
-/** End the live set now (e.g. before handing the iPad to the Login screen). */
+/** End the live set now (ipadDone, its write queued) and flush, e.g. before
+ *  handing the iPad to the Login screen or leaving on a non-staff login.
+ *  Bounded: never blocks more than END_TIMEOUT_MS. */
+export const END_TIMEOUT_MS = 3_000;
 export async function endActiveRackSet(): Promise<void> {
-  if (!activeEnder) return;
+  const end = activeEnder;
+  const flush = activeFlusher;
   try {
-    await activeEnder();
+    if (end) await bounded(Promise.resolve().then(end), END_TIMEOUT_MS);
+    if (flush) await bounded(Promise.resolve().then(flush), END_TIMEOUT_MS);
   } catch (e) {
     console.warn('[rack] ending the live set failed', e);
   }

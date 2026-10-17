@@ -22,7 +22,7 @@ describe('Rack mode entry is staff + tablet only', () => {
     for (const f of ['screens/rack/RackModeScreen.tsx', 'screens/rack/RackPinExit.tsx']) {
       expect(read(f)).toContain('useRackStaffGuard();');
     }
-    expect(read('hooks/useRackStaffGuard.ts')).toContain('if (session && rolesResolved && !isStaff)');
+    expect(read('hooks/useRackStaffGuard.ts')).toContain("return a.hasSession && a.rolesResolved && a.staffStatus === 'not_staff';");
   });
   it('the setup screen re-checks staff + tablet', () => {
     expect(read('screens/rack/RackSetupScreen.tsx')).toContain('const allowed = isStaff && !!staffOrgId && isTabletDevice();');

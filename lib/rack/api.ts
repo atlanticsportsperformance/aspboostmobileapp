@@ -309,7 +309,8 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         .eq('athlete_id', athleteId)
         .eq('exercise_id', exerciseId)
         .not('actual_weight', 'is', null)
-        .order('created_at', { ascending: false })
+        // idx_exercise_logs_athlete_exercise_date = (athlete_id, exercise_id, logged_at DESC)
+        .order('logged_at', { ascending: false })
         .limit(1);
       if (error) throw new RackRpcError('exercise_logs', error);
       const w = num(((data as any[]) ?? [])[0]?.actual_weight);

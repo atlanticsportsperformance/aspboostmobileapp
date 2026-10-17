@@ -273,6 +273,7 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
         </Text>
       </View>
       <View style={{ flex: 1 }} />
+      {__DEV__ && fake && <DevSensorBar device={fake} zone={view.zone} />}
       {syncing && <Pill tone="syncing" label="Syncing…" />}
       <SensorPill pill={pill} />
       <TouchableOpacity style={styles.btn2} onPress={onLock} accessibilityLabel="Lock — exit Rack mode">
@@ -320,6 +321,7 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
       view={view}
       rackName={rack.rackName}
       layout={portrait ? 'row' : 'column'}
+      compact={layout.compactCard}
       onDone={() => dispatch({ type: 'ipadDone' })}
       onPickExercise={pickExercise}
     />
@@ -366,31 +368,22 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom', 'left', 'right']}>
-      {portrait ? (
-        <View style={styles.ip}>
-          {header}
+      {/* One tree for both orientations (rotation never remounts the dial,
+          the card or an open sheet): only row 1's direction flips. */}
+      <View style={styles.ip}>
+        {header}
+        <View style={portrait ? styles.row1Portrait : styles.row1}>
           {gauge}
           {athleteCard}
-          {setAndReplay}
-          {tiles}
         </View>
-      ) : (
-        <View style={styles.ip}>
-          {header}
-          <View style={styles.row1}>
-            {gauge}
-            {athleteCard}
-          </View>
-          {setAndReplay}
-          {tiles}
-        </View>
-      )}
+        {setAndReplay}
+        {tiles}
+      </View>
       {!!toast && (
         <View style={styles.toast} pointerEvents="none">
           <Text style={styles.toastTxt}>{toast}</Text>
         </View>
       )}
-      {__DEV__ && fake && <DevSensorBar device={fake} zone={view.zone} />}
     </SafeAreaView>
   );
 }
@@ -407,6 +400,7 @@ const styles = StyleSheet.create({
   wkS: { fontSize: 12, color: RACK_COLORS.mut },
   btn2: { borderWidth: 1, borderColor: RACK_COLORS.line, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
   row1: { flexDirection: 'row', gap: 16 },
+  row1Portrait: { flexDirection: 'column', gap: 16 },
   row2: { flex: 1, flexDirection: 'row', gap: 16, minHeight: 0 },
   card: {
     backgroundColor: RACK_COLORS.card,

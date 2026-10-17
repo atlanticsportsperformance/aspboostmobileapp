@@ -9,6 +9,7 @@ import React, { useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { TodayExercise } from '../../lib/rack/api';
 import { RACK_COLORS } from '../../lib/rack/viewModel';
+import { ALL_MODAL_ORIENTATIONS } from '../../lib/rack/orientation';
 
 export interface ExercisePickerProps {
   label: string;
@@ -33,7 +34,7 @@ export default function ExercisePicker({ label, remaining, currentRoutineExercis
         </Text>
         {can && <Text style={styles.chev}>▾</Text>}
       </TouchableOpacity>
-      <Modal visible={open} transparent animationType="fade" supportedOrientations={['landscape', 'landscape-left', 'landscape-right']} onRequestClose={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" supportedOrientations={[...ALL_MODAL_ORIENTATIONS]} onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.scrim} onPress={() => setOpen(false)}>
           <Pressable style={styles.sheet} onPress={() => {}}>
             <Text style={styles.k}>EXERCISE ON THIS RACK</Text>

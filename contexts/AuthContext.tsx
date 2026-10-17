@@ -11,6 +11,10 @@ interface AuthContextType {
   isStaff: boolean;
   staffRole: string | null;
   staffOrgId: string | null;
+  /** Result of the last staff check: 'unknown' when it FAILED (network /
+   *  query error) or hasn't run — never read a failed check as "not staff"
+   *  (Rack mode only leaves on a confirmed 'not_staff'). */
+  staffStatus: StaffStatus;
   /** True once account-type + staff status have BOTH resolved for the current
    *  session. Navigation must wait for this before routing, otherwise a staff
    *  user can briefly land on the athlete dashboard (which force-signs-out
@@ -20,6 +24,8 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
+
+export type StaffStatus = 'unknown' | 'staff' | 'not_staff';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -31,6 +37,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isStaff, setIsStaff] = useState(false);
   const [staffRole, setStaffRole] = useState<string | null>(null);
   const [staffOrgId, setStaffOrgId] = useState<string | null>(null);
+  const [staffStatus, setStaffStatus] = useState<StaffStatus>('unknown');
+  /** User whose staff status was last CONFIRMED (a failed re-check keeps it). */
+  const confirmedStaffUserRef = useRef<string | null>(null);
   const [rolesResolved, setRolesResolved] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
@@ -73,24 +82,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const checkStaffStatus = async (userId: string) => {
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('staff')
           .select('role, org_id, is_active')
           .eq('user_id', userId)
           .maybeSingle();
+        if (error) throw error;
         if (data && mountedRef.current && data.is_active !== false) {
           setIsStaff(true);
           setStaffRole((data.role as string) ?? null);
           setStaffOrgId((data.org_id as string) ?? null);
+          setStaffStatus('staff');
+          confirmedStaffUserRef.current = userId;
         } else if (mountedRef.current) {
           setIsStaff(false);
           setStaffRole(null);
           setStaffOrgId(null);
+          setStaffStatus('not_staff');
+          confirmedStaffUserRef.current = null;
         }
       } catch (e) {
         console.log('[Auth] checkStaffStatus error:', e);
-        // Never keep a previous user's staff flag (it gates Rack mode).
-        if (mountedRef.current) {
+        if (!mountedRef.current) return;
+        // A failed check is UNKNOWN, not "not staff". The same user keeps the
+        // flags last confirmed (Rack mode stays up); a different user never
+        // inherits a previous user's staff flag.
+        setStaffStatus('unknown');
+        if (confirmedStaffUserRef.current !== userId) {
           setIsStaff(false);
           setStaffRole(null);
           setStaffOrgId(null);
@@ -129,6 +147,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setIsStaff(false);
             setStaffRole(null);
             setStaffOrgId(null);
+            setStaffStatus('unknown');
+            confirmedStaffUserRef.current = null;
             setRolesResolved(false);
           }
           return null;
@@ -205,6 +225,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsStaff(false);
         setStaffRole(null);
         setStaffOrgId(null);
+        setStaffStatus('unknown');
+        confirmedStaffUserRef.current = null;
         setRolesResolved(false);
       } else if (newSession) {
         setSession(newSession);
@@ -300,8 +322,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // re-render when auth state actually changes, not on every provider re-render.
   // signIn/signOut are already stable (useCallback).
   const value = useMemo(
-    () => ({ session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut }),
-    [session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, rolesResolved, isReady, signIn, signOut]
+    () => ({ session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, staffStatus, rolesResolved, isReady, signIn, signOut }),
+    [session, user, isParentAccount, appRole, isStaff, staffRole, staffOrgId, staffStatus, rolesResolved, isReady, signIn, signOut]
   );
 
   return (

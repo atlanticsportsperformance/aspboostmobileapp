@@ -48,7 +48,36 @@ describe('Rack screen wiring', () => {
     expect(S).toContain("const selectAthlete = useCallback((athleteId: string) => dispatch({ type: 'selectAthlete', athleteId }), [dispatch]);");
     expect(S).toContain('onSelect={selectAthlete} onAdd={selectAthlete}');
     expect(TILES).toContain('onPress={() => onSelect(t.athleteId)}');
-    expect(TILES).toContain('onAdd(a.athleteId);');
+    expect(TILES).toContain('<AddAthleteSheet visible={sheet} addable={addable} onClose={() => setSheet(false)} onAdd={onAdd} />');
+  });
+
+  it('"+ Add" sheet: search, snapshot list, scroll-guarded taps, and a two-step confirm', () => {
+    const A = read('components/rack/AddAthleteSheet.tsx');
+    expect(A).toContain('<TextInput');
+    expect(A).toContain('autoFocus={false}');
+    expect(A).toContain('filterAddable(snapshot, query)');
+    expect(A).toMatch(/if \(visible\) \{\s*setSnapshot\(addable\);/);
+    for (const h of ['onScrollBeginDrag={startScroll}', 'onMomentumScrollBegin={startScroll}', 'onScrollEndDrag={endScroll}', 'onMomentumScrollEnd={endScroll}']) {
+      expect(A).toContain(h);
+    }
+    expect(A).toContain('if (scrolling.current) return;');
+    // A row tap only selects; the ONLY onAdd call is the confirm button.
+    expect(A).toContain('onPress={() => tapRow(a.athleteId)}');
+    expect((A.match(/onAdd\(/g) || []).length).toBe(1);
+    const confirm = A.slice(A.indexOf('const confirm = () =>'), A.indexOf('return (', A.indexOf('const confirm = () =>')));
+    expect(confirm).toContain('onAdd(chosen.athleteId);');
+    expect(A).toContain('onPress={confirm}');
+    expect(A).toContain('`Put ${chosen.firstName} up`');
+  });
+
+  it('every rack Modal allows all four orientations', () => {
+    const files = readdirSync(join(__dirname, '..', 'components/rack')).map(f => read(`components/rack/${f}`));
+    files.push(S, read('screens/rack/RackSetupScreen.tsx'), read('screens/rack/RackPinExit.tsx'));
+    for (const f of files) {
+      const modals = f.match(/<Modal[\s\S]*?>/g) || [];
+      for (const m of modals) expect(m).toContain('supportedOrientations={[...ALL_MODAL_ORIENTATIONS]}');
+    }
+    expect(ORIENT).toContain("export const ALL_MODAL_ORIENTATIONS = ['portrait', 'portrait-upside-down', 'landscape-left', 'landscape-right'] as const;");
   });
 
   it('big Done calls ipadDone', () => {
@@ -62,9 +91,12 @@ describe('Rack screen wiring', () => {
     expect(CARD).toContain('onPick={onPickExercise}');
   });
 
-  it('the fake-sensor dev bar is guarded by __DEV__', () => {
+  it('the fake-sensor dev bar is guarded by __DEV__ and docked in the header (not over the bars)', () => {
     expect(S).toContain('{__DEV__ && fake && <DevSensorBar');
     expect(DEV).toContain('if (!__DEV__) return null;');
+    const header = S.slice(S.indexOf('const header = ('), S.indexOf('const gauge = ('));
+    expect(header).toContain('<DevSensorBar');
+    expect(DEV).not.toContain("position: 'absolute'");
   });
 
   it('lock → RackPinExit; no sign-out in Rack mode', () => {
@@ -104,7 +136,9 @@ describe('Rack screen wiring', () => {
     expect(S).toContain('const { width, height } = useWindowDimensions();');
     expect(S).toContain('const layout = rackLayout(width, height, insets);');
     expect(S).toContain("const portrait = layout.mode === 'portrait';");
-    expect(S).toMatch(/\{portrait \? \(\s*<View style=\{styles\.ip\}>/);
+    // one tree for both orientations; only row 1's direction flips
+    expect(S).toContain('<View style={portrait ? styles.row1Portrait : styles.row1}>');
+    expect((S.match(/<View style=\{styles\.ip\}>/g) || []).length).toBe(1);
     expect(S).toContain("layout={portrait ? 'row' : 'column'}");
     expect(S).toContain('compact={portrait}');
   });
@@ -118,30 +152,45 @@ describe('Rack screen wiring', () => {
   });
 });
 
-describe('orientation: iPad never forced, phones portrait', () => {
-  it('no landscape lock anywhere; App applies the base policy', () => {
+describe('orientation: iPad rack screens unlocked, everything else portrait', () => {
+  it('no landscape lock anywhere; unlock = DEFAULT; App applies the portrait base', () => {
     expect(ORIENT).not.toMatch(/OrientationLock\.LANDSCAPE/);
-    expect(ORIENT).toContain('ScreenOrientation.OrientationLock.ALL');
+    expect(ORIENT).not.toMatch(/OrientationLock\.ALL/);
+    expect(ORIENT).toContain('ScreenOrientation.OrientationLock.DEFAULT');
     expect(APP).toMatch(/\napplyBaseOrientation\(\);/);
+  });
+
+  it('Info.plist: iPhone portrait only; iPad all four orientations', () => {
+    const ios = JSON.parse(read('app.json')).expo.ios.infoPlist;
+    expect(ios.UISupportedInterfaceOrientations).toEqual(['UIInterfaceOrientationPortrait']);
+    expect(ios['UISupportedInterfaceOrientations~ipad']).toEqual([
+      'UIInterfaceOrientationPortrait',
+      'UIInterfaceOrientationPortraitUpsideDown',
+      'UIInterfaceOrientationLandscapeLeft',
+      'UIInterfaceOrientationLandscapeRight',
+    ]);
   });
 
   const load = (tablet: boolean) => {
     jest.resetModules();
     const lockAsync = jest.fn(async () => {});
-    jest.doMock('expo-screen-orientation', () => ({ lockAsync, OrientationLock: { ALL: 'ALL', PORTRAIT_UP: 'PORTRAIT_UP', LANDSCAPE: 'LANDSCAPE' } }), { virtual: true });
+    jest.doMock('expo-screen-orientation', () => ({ lockAsync, OrientationLock: { DEFAULT: 'DEFAULT', ALL: 'ALL', PORTRAIT_UP: 'PORTRAIT_UP', LANDSCAPE: 'LANDSCAPE' } }), { virtual: true });
     jest.doMock('../lib/rack/device', () => ({ isTabletDevice: () => tablet }));
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const o = require('../lib/rack/orientation') as typeof import('../lib/rack/orientation');
     return { o, lockAsync };
   };
 
-  it('iPad: every orientation on rack AND non-rack routes', async () => {
+  it('iPad: rack routes unlock (DEFAULT); other routes lock portrait', async () => {
     const { o, lockAsync } = load(true);
     await o.applyBaseOrientation();
     o.syncOrientationForRoute('RackSetup');
+    await Promise.resolve();
+    o.syncOrientationForRoute('RackMode');
+    await Promise.resolve();
     o.syncOrientationForRoute('CoachDashboard');
     await Promise.resolve();
-    expect(lockAsync.mock.calls.map(c => (c as unknown[])[0])).toEqual(['ALL']);
+    expect(lockAsync.mock.calls.map(c => (c as unknown[])[0])).toEqual(['PORTRAIT_UP', 'DEFAULT', 'PORTRAIT_UP']);
   });
 
   it('phone: portrait everywhere, rack routes included', async () => {
@@ -191,5 +240,36 @@ describe('PIN-exit drain ends the live set first and counts memory-held writes',
     };
     const res = await d.drainRackQueues(persist, 10_000, () => t);
     expect(res).toEqual({ drained: false, reps: 1, sets: 1 });
+  });
+});
+
+describe('staff-check guard (N-2)', () => {
+  const G = read('hooks/useRackStaffGuard.ts');
+  const AUTH = read('contexts/AuthContext.tsx');
+  it('a failed staff check is unknown, not "not staff"; the same user keeps their flags', () => {
+    expect(AUTH).toContain("if (error) throw error;");
+    const c = AUTH.slice(AUTH.indexOf("console.log('[Auth] checkStaffStatus error:'"), AUTH.indexOf('const resolveRoles'));
+    expect(c).toContain("setStaffStatus('unknown');");
+    expect(c).toContain('if (confirmedStaffUserRef.current !== userId) {');
+    expect(AUTH).toContain("setStaffStatus('not_staff');");
+  });
+  it('leaves only on a confirmed non-staff result, ending the live set first', () => {
+    jest.resetModules();
+    jest.doMock('@react-navigation/native', () => ({ useNavigation: () => ({}) }), { virtual: true });
+    jest.doMock('../contexts/AuthContext', () => ({ useAuth: () => ({}) }));
+    jest.doMock('../lib/rack/device', () => ({ endActiveRackSet: async () => {} }));
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { shouldLeaveRack } = require('../hooks/useRackStaffGuard') as typeof import('../hooks/useRackStaffGuard');
+    expect(shouldLeaveRack({ hasSession: true, rolesResolved: true, staffStatus: 'unknown' })).toBe(false);
+    expect(shouldLeaveRack({ hasSession: true, rolesResolved: true, staffStatus: 'staff' })).toBe(false);
+    expect(shouldLeaveRack({ hasSession: true, rolesResolved: false, staffStatus: 'not_staff' })).toBe(false);
+    expect(shouldLeaveRack({ hasSession: true, rolesResolved: true, staffStatus: 'not_staff' })).toBe(true);
+    jest.dontMock('../lib/rack/device');
+    expect(G).toMatch(/await endActiveRackSet\(\);\s*if \(!cancelled\) navigation\.reset/);
+  });
+  it('endActiveRackSet ends (ipadDone) then flushes, bounded', () => {
+    const D = read('lib/rack/device.ts');
+    const fn = D.slice(D.indexOf('export async function endActiveRackSet'), D.indexOf('/** Writes the executor holds'));
+    expect(fn.indexOf('if (end) await bounded(')).toBeLessThan(fn.indexOf('if (flush) await bounded('));
   });
 });
