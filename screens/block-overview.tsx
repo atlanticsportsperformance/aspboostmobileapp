@@ -18,78 +18,12 @@ import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 
 // Types
-interface Measurement {
-  id: string;
-  name: string;
-  category: 'single' | 'paired';
-  primary_metric_id?: string;
-  primary_metric_name?: string;
-  primary_metric_type?: string;
-  secondary_metric_id?: string;
-  secondary_metric_name?: string;
-  secondary_metric_type?: string;
-}
-
-interface Exercise {
-  id: string;
-  name: string;
-  video_url?: string;
-  description?: string;
-  category?: string;
-  tags?: string[];
-  is_placeholder?: boolean;
-}
-
-interface SetConfiguration {
-  metric_values?: Record<string, number>;
-  is_amrap?: boolean;
-  notes?: string;
-  intensity_targets?: Array<{
-    metric: string;
-    percent: number;
-  }>;
-}
-
-interface RoutineExercise {
-  id: string;
-  exercise_id: string;
-  sets: number;
-  reps?: string;
-  weight?: string;
-  tempo?: string;
-  notes?: string;
-  order_index: number;
-  tracked_max_metrics?: string[];
-  metric_targets?: Record<string, number>;
-  intensity_targets?: Array<{ metric: string; percent: number }>;
-  enabled_measurements?: string[];
-  is_amrap?: boolean;
-  set_configurations?: SetConfiguration[];
-  selected_variation?: string | null;
-  exercises: Exercise;
-}
-
-interface Routine {
-  id: string;
-  name: string;
-  description?: string;
-  notes?: string;
-  text_info?: string;
-  order_index: number;
-  scheme: 'straight_sets' | 'superset' | 'circuit' | 'emom' | 'amrap';
-  routine_exercises: RoutineExercise[];
-}
-
-interface Workout {
-  id: string;
-  name: string;
-  category: string;
-  notes?: string;
-  description?: string;
-  estimated_duration_minutes?: number;
-  routines: Routine[];
-}
-
+import type {
+  Measurement,
+  LoggerRoutineExercise as RoutineExercise,
+  LoggerRoutine as Routine,
+  LoggerWorkout as Workout,
+} from '../types/logger';
 interface BlockOverviewProps {
   workout: Workout;
   customMeasurements: Measurement[];

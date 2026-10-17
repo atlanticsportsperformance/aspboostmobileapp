@@ -23,6 +23,15 @@ import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 // Types
+import type {
+  Measurement,
+  Exercise,
+  IntensityTarget,
+  SetConfiguration,
+  LoggerRoutineExercise as RoutineExercise,
+  LoggerRoutine as Routine,
+  LoggerWorkout as Workout,
+} from '../types/logger';
 type RootStackParamList = {
   WorkoutLogger: { workoutInstanceId: string; athleteId: string };
   Dashboard: undefined;
@@ -39,92 +48,6 @@ interface WorkoutInstance {
   status: 'not_started' | 'in_progress' | 'completed';
   started_at?: string;
   completed_at?: string;
-}
-
-interface Workout {
-  id: string;
-  name: string;
-  category: string;
-  notes?: string;
-  description?: string;
-  estimated_duration_minutes?: number;
-  routines: Routine[];
-}
-
-interface Routine {
-  id: string;
-  name: string;
-  description?: string;
-  notes?: string;
-  text_info?: string;
-  order_index: number;
-  scheme: 'straight_sets' | 'superset' | 'circuit' | 'emom' | 'amrap';
-  routine_exercises: RoutineExercise[];
-}
-
-interface IntensityTarget {
-  id?: string;
-  metric: string;
-  metric_label?: string;
-  percent: number;
-  // Cross-exercise intensity fields
-  source_exercise_id?: string | null;
-  source_exercise_name?: string | null;
-  source_metric_id?: string | null;
-}
-
-interface SetConfiguration {
-  metric_values?: Record<string, number>;
-  is_amrap?: boolean;
-  notes?: string;
-  intensity_targets?: IntensityTarget[];
-}
-
-interface Measurement {
-  id: string;
-  name: string;
-  category: 'single' | 'paired';
-  primary_metric_id?: string;
-  primary_metric_name?: string;
-  primary_metric_type?: string;
-  secondary_metric_id?: string;
-  secondary_metric_name?: string;
-  secondary_metric_type?: string;
-}
-
-interface Exercise {
-  id: string;
-  name: string;
-  video_url?: string;
-  description?: string;
-  categories?: string[];
-  tags?: string[];
-  is_placeholder?: boolean;
-}
-
-interface RoutineExercise {
-  id: string;
-  exercise_id: string;
-  sets: number;
-  reps?: string;
-  weight?: string;
-  tempo?: string;
-  notes?: string;
-  order_index: number;
-  tracked_max_metrics?: string[];
-  metric_targets?: Record<string, number>;
-  intensity_targets?: IntensityTarget[];
-  enabled_measurements?: string[];
-  is_amrap?: boolean;
-  set_configurations?: SetConfiguration[];
-  selected_variation?: string | null;
-  // Notes-only / placeholder rows hold warm-up text (and similar) — they have
-  // no joined exercise. Typing them so they survive the prop boundary into
-  // ExerciseDetailView, where they're already handled.
-  is_placeholder?: boolean;
-  notes_only?: boolean;
-  placeholder_name?: string | null;
-  exercises: Exercise;
 }
 
 interface PRAlert {
