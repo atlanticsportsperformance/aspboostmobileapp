@@ -664,17 +664,6 @@ export default function ExerciseDetailView({
     return setIndex === 0 || !isBackoffSet(setIndex) ? lastWeek?.best ?? null : null;
   };
 
-  // "N of M" — this exercise's position among the workout's loggable
-  // exercises (sequence order). Rows outside the sequence show nothing.
-  const exercisePosition = useMemo(() => {
-    const ids: string[] = [];
-    sequence.forEach((s) => {
-      if (!ids.includes(s.reId)) ids.push(s.reId);
-    });
-    const index = ids.indexOf(exercise.id);
-    return index === -1 ? null : { index: index + 1, total: ids.length };
-  }, [sequence, exercise.id]);
-
   // Prescribed as "% of set K" for an earlier K — a back-off set.
   function isBackoffSet(setIndex: number): boolean {
     const targets = exercise.set_configurations?.[setIndex]?.intensity_targets || exercise.intensity_targets;
@@ -1270,13 +1259,6 @@ export default function ExerciseDetailView({
           <Text style={styles.exerciseName} numberOfLines={2}>
             {exerciseName}
           </Text>
-
-          {/* Position in the workout — "4 of 7" */}
-          {exercisePosition && (
-            <Text style={styles.exercisePosition}>
-              {`${exercisePosition.index} of ${exercisePosition.total}`}
-            </Text>
-          )}
 
           {/* PR Trophy — now tappable, opens the PR popover. */}
           {exercise.tracked_max_metrics && exercise.tracked_max_metrics.length > 0 && (
@@ -1995,11 +1977,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1.6,
     color: LOGGER_COLORS.text,
-  },
-  exercisePosition: {
-    color: LOGGER_COLORS.muted,
-    fontSize: 11,
-    fontVariant: ['tabular-nums'],
   },
   variationText: {
     color: '#C084FC',

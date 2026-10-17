@@ -43,7 +43,7 @@ describe('exercise screen v2 wiring', () => {
   });
 
   it('back-off sets never fall back to last week\'s top set; today is excluded', () => {
-    const fn = D.slice(D.indexOf('const lastWeekFor'), D.indexOf('const exercisePosition'));
+    const fn = D.slice(D.indexOf('const lastWeekFor'), D.indexOf('function isBackoffSet'));
     expect(fn).toContain('setIndex === 0 || !isBackoffSet(setIndex)');
     expect(D).toMatch(/lastSession\(lastWeekRows \?\? \[\], exercise\.exercise_id, workoutInstanceId/);
     const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'utf8');
@@ -58,8 +58,8 @@ describe('exercise screen v2 wiring', () => {
     expect(D).not.toMatch(/<Ionicons[^>]*accessibilityLabel/);
   });
 
-  it('header shows the exercise position in the workout and the set card marks the top set', () => {
-    expect(D).toContain('of ${exercisePosition.total}');
+  it('header has no exercise counter and the set card marks the top set', () => {
+    expect(D).not.toContain('exercisePosition');
     expect(D).toContain('· top set');
     expect(D).toMatch(/% of \$\{/);
   });
