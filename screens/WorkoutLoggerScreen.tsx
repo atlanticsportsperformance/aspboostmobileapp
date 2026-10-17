@@ -21,6 +21,7 @@ import { PulseWizardModal } from '../components/pulse/PulseWizardModal';
 import { PulseHeaderChip } from '../components/pulse/PulseHeaderChip';
 import PulseLiveBar from '../components/pulse/PulseLiveBar';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
+import { isSetDoneFromLog, isValidSetIndex } from '../lib/loggerResume';
 
 // Types
 import type {
@@ -87,6 +88,9 @@ export default function WorkoutLoggerScreen() {
   // meant typing reps then weight inside 500 ms cancelled the reps write —
   // the value survived in local state and vanished on reload.
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Sets whose completion toggle is still saving — a fast double-tap on Log
+  // Set is ignored instead of flipping the set back locally.
+  const completionInFlightRef = useRef<Set<string>>(new Set());
   const [timer, setTimer] = useState(0); // seconds elapsed
   // Exercise history keyed by exercise_id
   const [exerciseHistory, setExerciseHistory] = useState<Record<string, any[]>>({});
@@ -344,14 +348,9 @@ export default function WorkoutLoggerScreen() {
               ...(log.metric_data || {}),
             };
 
-            // Mark as completed if has data
-            const setDataObj = setsData[setIndex];
-            const hasData = Object.keys(setDataObj).some(
-              key => setDataObj[key as keyof typeof setDataObj] != null &&
-                     setDataObj[key as keyof typeof setDataObj] !== '' &&
-                     key !== 'notes'
-            );
-            completedArray[setIndex] = hasData;
+            // Done if is_complete was saved (value-less completions) or the
+            // row has any logged value (legacy rows).
+            completedArray[setIndex] = isSetDoneFromLog(log);
           }
         });
 
@@ -579,63 +578,31 @@ export default function WorkoutLoggerScreen() {
       [exerciseId]: newSetsArray,
     }));
 
-    // If marking as complete, save empty logs to database for each set
-    if (newStatus) {
-      try {
-        for (let setIndex = 0; setIndex < totalSets; setIndex++) {
-          // Check if log already exists
-          const { data: existingLog } = await supabase
-            .from('exercise_logs')
-            .select('id')
-            .eq('workout_instance_id', workoutInstanceId)
-            .eq('routine_exercise_id', exerciseId)
-            .eq('set_number', setIndex + 1)
-            .maybeSingle();
-
-          if (!existingLog) {
-            // exercise_logs requires athlete_id + exercise_id NOT NULL. The
-            // completion column is `is_complete` (not `completed`). Look up
-            // the routine_exercise to grab its exercise_id and emit a
-            // schema-correct insert; without these the row is silently
-            // rejected and the athlete's completion never persists.
-            const rExercise = allExercises.find(ex => ex.id === exerciseId);
-            if (!rExercise?.exercise_id) continue;
-            const { error: insErr } = await supabase
-              .from('exercise_logs')
-              .insert({
-                workout_instance_id: workoutInstanceId,
-                routine_exercise_id: exerciseId,
-                exercise_id: rExercise.exercise_id,
-                athlete_id: athleteId,
-                set_number: setIndex + 1,
-                is_complete: true,
-              });
-            if (insErr) console.error('Quick-complete insert failed:', insErr);
-          } else {
-            // Update existing to mark completed
-            const { error: updErr } = await supabase
-              .from('exercise_logs')
-              .update({ is_complete: true })
-              .eq('id', existingLog.id);
-            if (updErr) console.error('Quick-complete update failed:', updErr);
-          }
-        }
-      } catch (error) {
-        console.error('Error quick-completing exercise:', error);
-      }
+    // Persist each set's completion. Un-completing must write
+    // is_complete:false too — resume trusts is_complete.
+    for (let setIndex = 0; setIndex < totalSets; setIndex++) {
+      await saveSetData(exerciseId, setIndex, null, null, newStatus);
     }
   };
 
   // Save set data to database (debounced)
+  // field === null persists completion only (set checkbox / Log Set / quick-
+  // complete): isComplete=true writes the row, false un-marks an existing row.
   const saveSetData = async (
     exerciseId: string,
     setIndex: number,
-    field: string,
-    value: any
+    field: string | null,
+    value: any,
+    isComplete: boolean = true
   ) => {
     try {
       const exercise = allExercises.find(ex => ex.id === exerciseId);
       if (!exercise) return;
+      // Notes-only rows have no exercise_id (NOT NULL) — nothing to persist.
+      if (field === null && !exercise.exercise_id) return;
+      // A finished superset exercise leaves its set index at `sets`; never
+      // persist a phantom set_number past the prescribed sets.
+      if (field === null && !isValidSetIndex(setIndex, exercise.sets)) return;
 
       // exercise_logs schema:
       //   actual_reps INT, actual_weight NUMERIC, actual_duration_seconds INT,
@@ -652,6 +619,16 @@ export default function WorkoutLoggerScreen() {
         .eq('routine_exercise_id', exerciseId)
         .eq('set_number', setIndex + 1)
         .maybeSingle();
+
+      if (field === null && !isComplete) {
+        if (!existingLog) return;
+        const { error: updErr } = await supabase
+          .from('exercise_logs')
+          .update({ is_complete: false })
+          .eq('id', existingLog.id);
+        if (updErr) console.error('saveSetData un-complete failed:', updErr);
+        return;
+      }
 
       const logData: any = {
         workout_instance_id: workoutInstanceId,
@@ -673,7 +650,7 @@ export default function WorkoutLoggerScreen() {
       else if (field === 'time_seconds') logData.actual_duration_seconds = value === '' || value == null ? null : Number(value);
       else if (field === 'distance') logData.actual_distance = value === '' || value == null ? null : Number(value);
       else if (field === 'notes') logData.notes = value || null;
-      else {
+      else if (field !== null) {
         const existingMetrics = (existingLog as any)?.metric_data || {};
         logData.metric_data = {
           ...existingMetrics,
@@ -895,6 +872,7 @@ export default function WorkoutLoggerScreen() {
       return updatedSets;
     };
     setCompletedSets(prev => ({ ...prev, [activeExerciseId]: markDone(prev[activeExerciseId]) }));
+    saveSetData(activeExerciseId, currentSetIndex, null, null, true);
 
     const goToOverview = () => {
       setViewMode('overview');
@@ -973,6 +951,9 @@ export default function WorkoutLoggerScreen() {
     const exercise = allExercises.find(ex => ex.id === activeExerciseId);
     if (!exercise) return;
 
+    const inFlightKey = `${activeExerciseId}:${setIndex}`;
+    if (completionInFlightRef.current.has(inFlightKey)) return;
+
     const currentlyCompleted = completedSets[activeExerciseId]?.[setIndex] === true;
 
     // If checking (not unchecking) and we have auto-fill values, apply them
@@ -988,6 +969,12 @@ export default function WorkoutLoggerScreen() {
       updatedSets[setIndex] = !updatedSets[setIndex]; // Toggle
       return { ...prev, [activeExerciseId]: updatedSets };
     });
+
+    // Persist the check/uncheck — with nothing typed and no auto-fill this
+    // was local-only and lost on exit.
+    completionInFlightRef.current.add(inFlightKey);
+    saveSetData(activeExerciseId, setIndex, null, null, !currentlyCompleted)
+      .finally(() => completionInFlightRef.current.delete(inFlightKey));
   }, [activeExerciseId, allExercises, completedSets, handleInputChange]);
 
   // Get current exercise and routine
