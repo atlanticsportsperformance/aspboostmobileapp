@@ -80,6 +80,8 @@ export interface MyRackSubscription {
   sets: () => Map<string, ChipSet>;
   /** Chips of one set (empty when none yet). */
   chipsFor: (workoutInstanceId: string, routineExerciseId: string, setNumber: number) => RepChip[];
+  /** Re-read today's reps (a dropped socket loses INSERT events). */
+  backfill: () => Promise<void>;
   unsubscribe: () => void;
 }
 
@@ -124,6 +126,7 @@ export function subscribeMyRack(
   return {
     sets: () => sets,
     chipsFor: (wi, re, n) => sets.get(chipKey(wi, re, n))?.chips ?? [],
+    backfill,
     unsubscribe: () => {
       closed = true;
       client.removeChannel(channel);

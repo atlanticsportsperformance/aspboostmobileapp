@@ -50,21 +50,20 @@ import {
   RACK_WRITE_TIMEOUT_MS,
   applyRackLog,
   chipViews,
+  contextLoad,
   firstIncompleteSet,
   followTarget,
   fullRepCount,
-  isRackWrittenLog,
-  liveSetNumber,
+  liveRackSet,
   loadFromInput,
   loadSyncValue,
   pressDone,
-  rackExerciseOf,
-  rackLoadOf,
+  rackContextOf,
+  rackSafeWrite,
   speedDropCue,
   zoneOf,
   type EndedSet,
 } from '../lib/rack/phoneView';
-import { uniqueTopic } from '../lib/rack/phone';
 import type { ExerciseRackProps } from './exercise-detail-view';
 import type { RackScreenProps } from '../components/logger/RackBanner';
 
@@ -128,7 +127,11 @@ export default function WorkoutLoggerScreen() {
   const restTimer = useRestTimer();
   // Rack VBT refs (see the rack block below handleRpeChange).
   const rackWeightEditAtRef = useRef<Record<string, number>>({});
-  const rackHoldsDraftRef = useRef<(reId: string, setIndex: number) => boolean>(() => false);
+  // Weight cells holding a logged value (`reId:setIndex`) — sent to the rack as the athlete's LB.
+  const rackLoggedWeightRef = useRef<Record<string, true>>({});
+  // Set the rack owns (being lifted, or ended and its row not landed yet):
+  // the phone never writes is_complete / reps for it (rackSafeWrite).
+  const rackOwnsSetRef = useRef<(reId: string, setIndex: number) => boolean>(() => false);
   // Sets whose completion toggle is still saving — a fast double-tap on Log
   // Set is ignored instead of flipping the set back locally.
   const completionInFlightRef = useRef<Set<string>>(new Set());
@@ -401,6 +404,7 @@ export default function WorkoutLoggerScreen() {
           const setIndex = log.set_number - 1; // Convert to 0-indexed
           if (setIndex >= 0 && setIndex < ex.sets) {
             setsData[setIndex] = logToSetInputs(log);
+            if (log.actual_weight != null) rackLoggedWeightRef.current[`${ex.id}:${setIndex}`] = true;
 
             // Done only if is_complete — drafts resume not-done with values.
             completedArray[setIndex] = isSetDoneFromLog(log);
@@ -713,8 +717,11 @@ export default function WorkoutLoggerScreen() {
   const persistSet = useCallback(async (
     exerciseId: string,
     setIndex: number,
-    write: { complete?: boolean; fields?: string[]; rpe?: boolean },
+    requested: { complete?: boolean; fields?: string[]; rpe?: boolean },
   ): Promise<boolean> => {
+    // Rack VBT: a set the rack owns never gets is_complete / reps from the phone.
+    const write = rackSafeWrite(requested, rackOwnsSetRef.current(exerciseId, setIndex));
+    if (write.complete === undefined && !write.rpe && (write.fields ?? []).length === 0) return true;
     const exercise = allExercises.find(ex => ex.id === exerciseId);
     if (!exercise) return false;
     // Notes-only rows have no exercise_id (NOT NULL) — nothing to persist.
@@ -908,10 +915,6 @@ export default function WorkoutLoggerScreen() {
     if (pending) clearTimeout(pending);
     if (!draftFieldsRef.current[timerKey]) draftFieldsRef.current[timerKey] = new Set();
     draftFieldsRef.current[timerKey].add(field);
-    // Rack VBT: while this athlete is the active lifter, an open set's draft is
-    // held (the LB goes to the rack in the phone context; the rack writes the
-    // set). The fields stay in draftFieldsRef, so a manual Done still carries them.
-    if (rackHoldsDraftRef.current(targetExerciseId, setIndex)) return;
     draftTimersRef.current[timerKey] = setTimeout(() => {
       delete draftTimersRef.current[timerKey];
       const fields = [...(draftFieldsRef.current[timerKey] ?? [])];
@@ -1110,29 +1113,48 @@ export default function WorkoutLoggerScreen() {
   }, [activeExerciseId, persistSet]);
 
 
-  // ── Rack VBT (phone side). Everything here is inert unless the org has an
-  // active rack (rack.hasRacks) AND this athlete is the active lifter.
-  // rack_sessions + exercise_logs are the one shared record: the phone sends
-  // its open exercise / set / LB, follows the rack's exercise + load, and
-  // fills a set in from the row the rack writes (never writing vbt or reps).
+  // ── Rack VBT (phone side). Self-only (the hook checks athletes.user_id =
+  // auth.uid()) and inert unless the org has an active rack. rack_sessions +
+  // exercise_logs are the one shared record: the phone sends its open
+  // exercise / set / LB, follows the rack's exercise + load, and fills a set
+  // in from the row the rack writes (never writing vbt, reps or is_complete
+  // for a set the rack owns).
   const [rackSaving, setRackSaving] = useState<Record<string, 'saving' | 'timeout'>>({});
+  const rackSavingRef = useRef<Record<string, 'saving' | 'timeout'>>({});
   const [rackIdleSaved, setRackIdleSaved] = useState<Record<string, true>>({});
   const [rackFocus, setRackFocus] = useState<{ reId: string; setIndex: number } | null>(null);
   const [rackToast, setRackToast] = useState<string | null>(null);
+  const [rackRefreshing, setRackRefreshing] = useState(false);
   const rackEditingRef = useRef(false);
   const rackPendingFollowRef = useRef<string | null>(null);
-  const rackWaitersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Pending rack writes: key `reId:setIndex` → { setNumber, started }.
+  const rackPendingRef = useRef<Record<string, { setNumber: number; started: number }>>({});
+  const rackFastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rackSeenRef = useRef<{ exercise: string | null | undefined; load: number | null | undefined }>({
     exercise: undefined,
     load: undefined,
   });
   const rackToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rackOnSetEndedRef = useRef<(e: EndedSet) => void>(() => undefined);
+  const rackOnTickRef = useRef<() => void>(() => undefined);
 
-  const rack = useRackPhone({ athleteId, onSetEnded: e => rackOnSetEndedRef.current(e) });
+  const rack = useRackPhone({
+    athleteId,
+    onSetEnded: e => rackOnSetEndedRef.current(e),
+    onTick: () => rackOnTickRef.current(),
+  });
   const rackActive = rack.hasRacks && !!rack.activeSession;
-  rackHoldsDraftRef.current = (reId, setIndex) =>
-    rackActive && completedRef.current[reId]?.[setIndex] !== true;
+  const rackLive = rack.hasRacks ? liveRackSet(rack.activeSession, athleteId, workoutInstanceId) : null;
+
+  const setRackSavingState = (update: (prev: Record<string, 'saving' | 'timeout'>) => Record<string, 'saving' | 'timeout'>) => {
+    const next = update(rackSavingRef.current);
+    if (next === rackSavingRef.current) return;
+    rackSavingRef.current = next;
+    setRackSaving(next);
+  };
+  rackOwnsSetRef.current = (reId, setIndex) =>
+    !!rackSavingRef.current[`${reId}:${setIndex}`] ||
+    (!!rackLive && rackLive.routineExerciseId === reId && rackLive.setNumber === setIndex + 1);
 
   const showRackToast = useCallback((text: string) => {
     if (rackToastTimerRef.current) clearTimeout(rackToastTimerRef.current);
@@ -1154,18 +1176,17 @@ export default function WorkoutLoggerScreen() {
     });
     if (!res) return;
     const key = `${reId}:${res.setIndex}`;
-    const waiter = rackWaitersRef.current[key];
-    if (waiter) clearTimeout(waiter);
-    delete rackWaitersRef.current[key];
-    setRackSaving(prev => {
+    delete rackPendingRef.current[key];
+    setRackSavingState(prev => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
       return next;
     });
-    // The rack's row is the truth for this set: drop any held phone draft
-    // (e.g. a prefilled reps value) so a later Next tap can't overwrite it.
+    // The rack's row is the truth for this set: drop any pending phone draft
+    // (e.g. a prefilled reps value) so it can't overwrite the rack's reps.
     cancelDraft(reId, res.setIndex);
+    if (log.actual_weight != null) rackLoggedWeightRef.current[key] = true;
     commitInputs({ ...inputsRef.current, [reId]: res.inputs });
     commitCompleted(reId, () => res.completed, ex.sets);
     if (res.idle) setRackIdleSaved(prev => ({ ...prev, [key]: true }));
@@ -1183,115 +1204,136 @@ export default function WorkoutLoggerScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- commit* read refs
   }, [allExercises, startRestAfter]);
 
-  // Wait for the rack's write of one set (after phone Done, or a set that
-  // stopped being lifted): refetch until the row is complete, ≤ 10 s.
-  const awaitRackWrite = useCallback((reId: string, setNumber: number, fromDone: boolean) => {
-    const key = `${reId}:${setNumber - 1}`;
-    if (fromDone) setRackSaving(prev => ({ ...prev, [key]: 'saving' }));
-    if (rackWaitersRef.current[key]) return;
-    const started = Date.now();
-    const tick = async () => {
+  // Re-read every pending rack write once; past 10 s the copy switches to
+  // "pull to refresh" but the 10 s tick keeps re-reading until the row lands.
+  const readPendingRackWrites = useCallback(async () => {
+    const entries = Object.entries(rackPendingRef.current);
+    for (const [key, p] of entries) {
+      const reId = key.split(':')[0];
       try {
         const { data } = await supabase
           .from('exercise_logs')
           .select('*')
           .eq('workout_instance_id', workoutInstanceId)
           .eq('routine_exercise_id', reId)
-          .eq('set_number', setNumber)
+          .eq('set_number', p.setNumber)
           .maybeSingle();
-        if (!(key in rackWaitersRef.current)) return; // already applied (realtime)
+        if (!(key in rackPendingRef.current)) continue;
         if (data && (data as any).is_complete === true) {
           applyRackWrittenLog(data as Record<string, any>);
-          return;
+          continue;
         }
       } catch (e) {
         console.warn('[rack phone] set read failed', e);
       }
-      if (!(key in rackWaitersRef.current)) return;
-      if (Date.now() - started >= RACK_WRITE_TIMEOUT_MS) {
-        delete rackWaitersRef.current[key];
-        setRackSaving(prev => (prev[key] === 'saving' ? { ...prev, [key]: 'timeout' } : prev));
-        return;
+      if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {
+        setRackSavingState(prev => (prev[key] === 'saving' ? { ...prev, [key]: 'timeout' } : prev));
       }
-      rackWaitersRef.current[key] = setTimeout(tick, 1000);
-    };
-    rackWaitersRef.current[key] = setTimeout(tick, 600);
+    }
   }, [workoutInstanceId, applyRackWrittenLog]);
 
+  // Wait for the rack's write of one set (phone Done, or any set that stopped
+  // being lifted): the set is rack-owned ("Saving…") until its row lands.
+  // Fast re-reads (1 s) for the first 10 s, then the 10 s tick.
+  const awaitRackWrite = useCallback((reId: string, setNumber: number) => {
+    const key = `${reId}:${setNumber - 1}`;
+    if (!rackPendingRef.current[key]) rackPendingRef.current[key] = { setNumber, started: Date.now() };
+    setRackSavingState(prev => (prev[key] === 'saving' ? prev : { ...prev, [key]: 'saving' }));
+    const fast = () => {
+      rackFastTimerRef.current = null;
+      const live = Object.values(rackPendingRef.current).some(p => Date.now() - p.started < RACK_WRITE_TIMEOUT_MS + 1000);
+      void readPendingRackWrites().finally(() => {
+        if (live && Object.keys(rackPendingRef.current).length > 0 && !rackFastTimerRef.current) {
+          rackFastTimerRef.current = setTimeout(fast, 1000);
+        }
+      });
+    };
+    if (!rackFastTimerRef.current) rackFastTimerRef.current = setTimeout(fast, 600);
+  }, [readPendingRackWrites]);
+
+  rackOnTickRef.current = () => {
+    if (Object.keys(rackPendingRef.current).length > 0) void readPendingRackWrites();
+  };
+
+  // Real pull-to-refresh: my rack state + every pending set row.
+  const handleRackPullRefresh = useCallback(async () => {
+    setRackRefreshing(true);
+    try {
+      await Promise.all([rack.refresh(), readPendingRackWrites()]);
+    } finally {
+      setRackRefreshing(false);
+    }
+  }, [rack.refresh, readPendingRackWrites]);
+
   useEffect(() => () => {
-    Object.values(rackWaitersRef.current).forEach(clearTimeout);
-    rackWaitersRef.current = {};
+    if (rackFastTimerRef.current) clearTimeout(rackFastTimerRef.current);
     if (rackToastTimerRef.current) clearTimeout(rackToastTimerRef.current);
   }, []);
 
   // A set this athlete was lifting stopped (phone Done, iPad Done, 60 s idle,
-  // switch): refetch its row.
+  // switch, leave): it is rack-owned until the rack's row lands.
   rackOnSetEndedRef.current = (e: EndedSet) => {
     if (e.workoutInstanceId && e.workoutInstanceId !== workoutInstanceId) return;
-    const reId = e.routineExerciseId ?? activeExerciseId;
-    if (!reId) return;
-    const ex = allExercises.find(x => x.id === reId);
-    if (!ex) return;
-    const setNumber = e.setNumber ?? (firstIncompleteSet(completedRef.current[reId], ex.sets) ?? 0) + 1;
-    awaitRackWrite(reId, setNumber, false);
+    if (!e.routineExerciseId || e.setNumber == null) return;
+    if (!allExercises.some(x => x.id === e.routineExerciseId)) return;
+    awaitRackWrite(e.routineExerciseId, e.setNumber);
   };
 
-  // Live: rack-written exercise_logs rows for this workout (iPad Done, idle,
-  // amend) land without reopening the exercise. Only while racks exist.
-  useEffect(() => {
-    if (!rack.hasRacks) return;
-    const channel = supabase
-      .channel(uniqueTopic(`exercise_logs:${workoutInstanceId}`))
-      .on(
-        'postgres_changes' as any,
-        { event: '*', schema: 'public', table: 'exercise_logs', filter: `workout_instance_id=eq.${workoutInstanceId}` },
-        (payload: { new?: Record<string, any> }) => {
-          const row = payload.new;
-          if (row && row.routine_exercise_id && isRackWrittenLog(row)) applyRackWrittenLog(row);
-        },
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [rack.hasRacks, workoutInstanceId, applyRackWrittenLog]);
-
-  // Phone → rack: open exercise, current set (= first incomplete set) and LB,
-  // debounced 300 ms in the hook; only while active, only on the exercise screen.
+  // Phone → rack: open exercise, current set (= first incomplete set) and the
+  // athlete's own LB (typed / stepped / logged — never the prescription),
+  // debounced 300 ms; only while active and on the exercise screen. A finished
+  // exercise sends an empty context so the iPad auto-picks the next lift.
   const ctxExercise = viewMode === 'exercise' ? allExercises.find(ex => ex.id === activeExerciseId) : undefined;
   const ctxSetIndex = ctxExercise ? firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets) : null;
-  const ctxWeight =
-    ctxExercise && ctxSetIndex != null
-      ? exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight ?? prescribedValue(ctxExercise, ctxSetIndex, 'weight')
+  const ctxKey = ctxExercise && ctxSetIndex != null ? `${ctxExercise.id}:${ctxSetIndex}` : null;
+  const ctxOwnWeight =
+    ctxExercise && ctxSetIndex != null && ctxKey &&
+    (rackWeightEditAtRef.current[ctxKey] != null || rackLoggedWeightRef.current[ctxKey])
+      ? exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.weight ?? null
       : null;
-  const ctxLoad = loadFromInput(ctxWeight);
+  const ctxLoad =
+    ctxExercise && ctxSetIndex != null
+      ? contextLoad({
+          ownWeight: ctxOwnWeight,
+          rack: rackContextOf(rack.activeSession),
+          routineExerciseId: ctxExercise.id,
+          setNumber: ctxSetIndex + 1,
+        })
+      : null;
+  const rackActivation = rack.activation;
+  const rackActivationSentRef = useRef(0);
   useEffect(() => {
-    if (!rackActive || !ctxExercise || !ctxExercise.exercise_id) {
+    if (!rackActive) {
       rack.setContext(null);
       return;
     }
-    rack.setContext({
-      workoutInstanceId,
-      routineExerciseId: ctxExercise.id,
-      // Every set done → no set number; the rack numbers past its high-water.
-      setNumber: ctxSetIndex != null ? ctxSetIndex + 1 : null,
-      loadLb: ctxLoad,
-    });
+    if (!ctxExercise || !ctxExercise.exercise_id) {
+      rack.setContext(null); // overview / text block: send nothing
+      return;
+    }
+    // I3: on becoming active the phone's open exercise wins — send at once.
+    const immediate = rackActivationSentRef.current !== rackActivation;
+    rackActivationSentRef.current = rackActivation;
+    rack.setContext(
+      ctxSetIndex == null
+        ? { workoutInstanceId: null, routineExerciseId: null, setNumber: null, loadLb: null }
+        : { workoutInstanceId, routineExerciseId: ctxExercise.id, setNumber: ctxSetIndex + 1, loadLb: ctxLoad },
+      { immediate },
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rackActive, ctxExercise?.id, ctxSetIndex, ctxLoad, workoutInstanceId, rack.setContext]);
+  }, [rackActive, rackActivation, ctxExercise?.id, ctxSetIndex, ctxLoad, workoutInstanceId, rack.setContext]);
 
   // Rack → phone: follow the rack's exercise (coach override on the iPad).
   const followRackExercise = useCallback((reId: string) => {
     const ex = allExercises.find(x => x.id === reId);
     if (!ex) return;
-    const s = rack.activeSession;
+    const ctx = rackContextOf(rack.activeSession);
     const done = completedRef.current[reId];
-    const sNo = s?.routine_exercise_id === reId && s.set_number != null ? s.set_number - 1 : null;
+    const sNo = ctx.routineExerciseId === reId && ctx.setNumber != null ? ctx.setNumber - 1 : null;
     const setIndex =
       sNo != null && sNo >= 0 && sNo < ex.sets && done?.[sNo] !== true
         ? sNo
         : firstIncompleteSet(done, ex.sets) ?? 0;
-    showRackToast(`${rack.activeRackName ?? 'The rack'} switched you to ${ex.exercises?.name ?? ex.placeholder_name ?? 'the next exercise'}`);
     if (viewMode === 'exercise') {
       setCurrentSetIndexes(prev => ({ ...prev, [reId]: setIndex }));
       setActiveExerciseId(reId);
@@ -1299,47 +1341,63 @@ export default function WorkoutLoggerScreen() {
     } else {
       setRackFocus({ reId, setIndex });
     }
-  }, [allExercises, rack.activeSession, rack.activeRackName, viewMode, showRackToast]);
+  }, [allExercises, rack.activeSession, viewMode]);
+
+  const rackExerciseName = (reId: string) => {
+    const ex = allExercises.find(x => x.id === reId);
+    return ex?.exercises?.name ?? ex?.placeholder_name ?? 'the next exercise';
+  };
+
+  // A new activation: the first read is the baseline, not an override (I3).
+  useEffect(() => {
+    rackSeenRef.current = { exercise: undefined, load: undefined };
+  }, [rackActivation]);
 
   useEffect(() => {
     if (!rack.hasRacks) return;
     const s = rack.activeSession;
+    if (!s) {
+      rackSeenRef.current = { exercise: undefined, load: undefined };
+      setRackFocus(null);
+      return;
+    }
     const now = Date.now();
-    const rackEx = s ? rackExerciseOf(s).routineExerciseId : null;
+    const ctx = rackContextOf(s);
     const target = followTarget({
       session: s,
       prevRackExercise: rackSeenRef.current.exercise,
+      sentThisActivation: rack.sentThisActivation(),
       athleteId,
       workoutInstanceId,
       openExerciseId: viewMode === 'exercise' ? activeExerciseId : null,
-      lastSentExerciseId: rack.lastSent().reId,
-      lastSentAt: rack.lastSent().at,
-      now,
+      isEcho: rack.isEcho,
     });
-    // Load: the rack's LB for the set it is on → the phone's LB cell.
-    const rackLoad = rackLoadOf(s);
-    if (s && rackEx && (!s.workout_instance_id || s.workout_instance_id === workoutInstanceId)) {
-      const ex = allExercises.find(x => x.id === rackEx);
-      const idx = ex ? (s.set_number != null ? s.set_number - 1 : firstIncompleteSet(completedRef.current[rackEx], ex.sets)) : null;
-      if (ex && idx != null && idx >= 0 && idx < ex.sets && completedRef.current[rackEx]?.[idx] !== true) {
-        const phoneLoad = loadFromInput(inputsRef.current[rackEx]?.[idx]?.weight);
+    // Load: the rack's LB → the phone's LB cell for the SAME (exercise, set) the
+    // rack is set up for (pending group mid-set → the next set's row).
+    if (ctx.routineExerciseId && (!ctx.workoutInstanceId || ctx.workoutInstanceId === workoutInstanceId)) {
+      const reId = ctx.routineExerciseId;
+      const ex = allExercises.find(x => x.id === reId);
+      const idx = ex ? (ctx.setNumber != null ? ctx.setNumber - 1 : firstIncompleteSet(completedRef.current[reId], ex.sets)) : null;
+      if (ex && idx != null && idx >= 0 && idx < ex.sets && completedRef.current[reId]?.[idx] !== true) {
         const v = loadSyncValue({
-          rackLoad,
+          rackLoad: ctx.loadLb,
           prevRackLoad: rackSeenRef.current.load,
-          phoneLoad,
-          lastEditAt: rackWeightEditAtRef.current[`${rackEx}:${idx}`] ?? 0,
+          phoneLoad: loadFromInput(inputsRef.current[reId]?.[idx]?.weight),
+          lastEditAt: rackWeightEditAtRef.current[`${reId}:${idx}`] ?? 0,
           now,
+          editing: rackEditingRef.current,
         });
         if (v != null) {
-          const data = [...(inputsRef.current[rackEx] || [])];
+          const data = [...(inputsRef.current[reId] || [])];
           while (data.length <= idx) data.push({});
           data[idx] = { ...data[idx], weight: String(v) };
-          commitInputs({ ...inputsRef.current, [rackEx]: data });
+          commitInputs({ ...inputsRef.current, [reId]: data });
         }
       }
     }
-    rackSeenRef.current = { exercise: s ? rackEx : null, load: s ? rackLoad : null };
+    rackSeenRef.current = { exercise: ctx.routineExerciseId, load: ctx.loadLb };
     if (!target) return;
+    showRackToast(`${rack.activeRackName ?? 'The rack'} switched you to ${rackExerciseName(target)}`);
     if (rackEditingRef.current) {
       rackPendingFollowRef.current = target; // never while typing — after blur
       return;
@@ -1355,22 +1413,14 @@ export default function WorkoutLoggerScreen() {
     const target = rackPendingFollowRef.current;
     rackPendingFollowRef.current = null;
     if (!target) return;
-    const s = rack.activeSession;
-    if (s && s.active_athlete_id === athleteId && rackExerciseOf(s).routineExerciseId === target) {
-      followRackExercise(target);
-    }
-  }, [rack.activeSession, athleteId, followRackExercise]);
+    if (rackContextOf(rack.activeSession).routineExerciseId === target) followRackExercise(target);
+  }, [rack.activeSession, followRackExercise]);
 
   // The exercise screen unmounts with its keypad: not typing any more.
   useEffect(() => {
     if (viewMode !== 'exercise') handleRackEditingChange(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode]);
-
-  // Leaving the rack (or the follow no longer applies) drops the overview focus.
-  useEffect(() => {
-    if (!rackActive) setRackFocus(null);
-  }, [rackActive]);
 
   // Get current exercise and routine
   const currentExercise = useMemo(() => {
@@ -1485,23 +1535,22 @@ export default function WorkoutLoggerScreen() {
   const rackExerciseProps: ExerciseRackProps | null = (() => {
     if (!rack.hasRacks || !currentExercise) return null;
     const reId = currentExercise.id;
-    const curIdx = currentSetIndexes[reId] || 0;
     const s = rack.activeSession;
-    const liveNo =
-      s && completedSets[reId]?.[curIdx] !== true
-        ? liveSetNumber({ session: s, athleteId, workoutInstanceId, routineExerciseId: reId, currentSetIndex: curIdx })
-        : null;
+    // I1: the live set comes from rack_sessions (exercise + set_number), never
+    // the phone's open row.
     let live: ExerciseRackProps['live'] = null;
-    if (s && liveNo != null) {
-      const chips = rack.chipsFor(workoutInstanceId, reId, liveNo);
+    if (s && rackLive && rackLive.routineExerciseId === reId && rackLive.setNumber <= currentExercise.sets) {
+      const chips = rack.chipsFor(workoutInstanceId, reId, rackLive.setNumber);
       const zone = zoneOf(currentExercise.velocity_min_mps, currentExercise.velocity_max_mps);
+      const target = prescribedValue(currentExercise, rackLive.setNumber - 1, 'reps');
       live = {
-        setIndex: liveNo - 1,
+        setIndex: rackLive.setNumber - 1,
         source: 'rack',
         rackName: rack.activeRackName,
         chips: chipViews(chips, zone),
         fullReps: fullRepCount(chips),
-        lifting: s.state === 'lifting',
+        repsTarget: typeof target === 'number' ? target : null,
+        lifting: true,
         dropCue: speedDropCue(chips, zone, currentExercise.speed_drop_stop_pct),
       };
     }
@@ -1518,16 +1567,20 @@ export default function WorkoutLoggerScreen() {
       live,
       saving,
       idleSaved,
+      refreshing: rackRefreshing,
+      onPullRefresh: handleRackPullRefresh,
       onEditingChange: handleRackEditingChange,
       onLiveDone: () => {
-        if (!s || !live) return;
+        if (!s || !rackLive) return;
+        const liveRe = rackLive.routineExerciseId;
+        const liveNo = rackLive.setNumber;
         // Done while live: the rack ends the set and writes the row; the phone
-        // waits for it (no local save of reps / metric_data.vbt).
+        // waits for it (no local save of reps / is_complete / metric_data.vbt).
         pressDone(
-          { rackId: s.rack_id, lifting: live.lifting },
+          { rackId: s.rack_id, lifting: true },
           {
             requestEndSet: rack.requestEndSet,
-            awaitRackWrite: () => awaitRackWrite(reId, liveNo as number, true),
+            awaitRackWrite: () => awaitRackWrite(liveRe, liveNo),
             saveSet: () => undefined,
           },
         );
@@ -1559,6 +1612,8 @@ export default function WorkoutLoggerScreen() {
         throwsTabContent={throwingThrowsContent}
         rack={rackScreen}
         rackFocus={rack.hasRacks ? rackFocus : null}
+        rackRefreshing={rackRefreshing}
+        onRackRefresh={handleRackPullRefresh}
       />
     ) : viewMode === 'exercise' && currentExercise && currentRoutine ? (
       <ExerciseDetailView

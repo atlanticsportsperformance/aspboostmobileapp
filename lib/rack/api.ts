@@ -32,6 +32,8 @@ export interface RackListItem {
   rackId: string;
   name: string;
   activeAthleteFirstName: string | null;
+  /** Queue head's first name ("Jake is next"); null when nobody waits. */
+  nextAthleteFirstName?: string | null;
   state: string;
   /** 1-based; null when the caller is not queued. */
   queuePositionOfCaller: number | null;
@@ -233,6 +235,7 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         rackId: r.rack_id,
         name: r.name,
         activeAthleteFirstName: r.active_athlete_first_name ?? null,
+        nextAthleteFirstName: r.next_athlete_first_name ?? null,
         state: r.state,
         queuePositionOfCaller: r.queue_position_of_caller ?? null,
       }));

@@ -118,6 +118,7 @@ export function liveDoneLabel(reps: number): string {
   return `✓ Done · ${reps} ${reps === 1 ? 'rep' : 'reps'}`;
 }
 
+
 // ---- banner
 
 export type BannerMode = 'active' | 'queued' | 'browse';
@@ -144,8 +145,8 @@ function rackStatus(item: RackListItem): string {
 }
 
 /**
- * The banner from rack_list_for_me + the rack_sessions rows RLS lets the
- * athlete read (active or queued). null = the org has no active rack → no banner.
+ * The banner from rack_list_for_me + the rack_sessions rows this athlete is
+ * active / queued on. null = the org has no active rack → no banner.
  */
 export function bannerState(
   list: RackListItem[],
@@ -153,28 +154,29 @@ export function bannerState(
   athleteId: string,
 ): BannerState | null {
   if (list.length === 0) return null;
-  const nameOf = (id: string) => list.find(r => r.rackId === id)?.name ?? 'Rack';
+  const itemOf = (id: string) => list.find(r => r.rackId === id);
 
-  const active = sessions.find(s => s.active_athlete_id === athleteId && list.some(r => r.rackId === s.rack_id));
+  const active = sessions.find(s => s.active_athlete_id === athleteId && itemOf(s.rack_id));
   if (active) {
+    const item = itemOf(active.rack_id)!;
     const waiting = (active.queue ?? []).filter(q => q !== athleteId).length;
     return {
       mode: 'active',
       rackId: active.rack_id,
-      title: `${nameOf(active.rack_id)} · you’re up`,
-      subtitle: waiting === 0 ? 'Nobody waiting' : `${waiting} waiting`,
+      title: `${item.name} · you’re up`,
+      subtitle: item.nextAthleteFirstName
+        ? `${item.nextAthleteFirstName} is next`
+        : waiting === 0
+          ? 'Nobody waiting'
+          : `${waiting} waiting`,
       racks: [],
     };
   }
 
-  const queuedSession = sessions.find(s => (s.queue ?? []).includes(athleteId) && list.some(r => r.rackId === s.rack_id));
-  const queuedItem = queuedSession
-    ? list.find(r => r.rackId === queuedSession.rack_id)
-    : list.find(r => r.queuePositionOfCaller != null);
+  const queuedSession = sessions.find(s => (s.queue ?? []).includes(athleteId) && itemOf(s.rack_id));
+  const queuedItem = queuedSession ? itemOf(queuedSession.rack_id) : list.find(r => r.queuePositionOfCaller != null);
   if (queuedItem) {
-    const pos = queuedSession
-      ? (queuedSession.queue ?? []).indexOf(athleteId) + 1
-      : queuedItem.queuePositionOfCaller ?? 1;
+    const pos = queuedSession ? (queuedSession.queue ?? []).indexOf(athleteId) + 1 : queuedItem.queuePositionOfCaller ?? 1;
     return {
       mode: 'queued',
       rackId: queuedItem.rackId,
@@ -203,44 +205,87 @@ export function rackErrorText(e: unknown): string {
   return 'Couldn’t reach the rack — try again';
 }
 
-// ---- live row placement
+// ---- the rack's context (rack_sessions = the shared record)
 
-export interface LiveRowInput {
-  session: Pick<RackSessionRow, 'active_athlete_id' | 'workout_instance_id' | 'routine_exercise_id' | 'state' | 'set_number'> | null;
-  athleteId: string;
-  workoutInstanceId: string;
-  /** The exercise shown on the phone. */
-  routineExerciseId: string;
-  currentSetIndex: number;
-}
+type SessionLike = Pick<
+  RackSessionRow,
+  | 'active_athlete_id'
+  | 'workout_instance_id'
+  | 'routine_exercise_id'
+  | 'state'
+  | 'set_number'
+  | 'load_lb'
+  | 'pending_workout_instance_id'
+  | 'pending_routine_exercise_id'
+  | 'pending_set_number'
+  | 'pending_load_lb'
+>;
 
-/**
- * Which set (1-based) of this exercise is live on the rack, or null. Live only
- * while the athlete is the active lifter and only on the current open row of
- * the exercise the rack is using (its routine_exercise_id, or — none set — the
- * phone's own open exercise).
- */
-export function liveSetNumber(i: LiveRowInput): number | null {
-  const s = i.session;
-  if (!s || s.active_athlete_id !== i.athleteId) return null;
-  if (s.workout_instance_id && s.workout_instance_id !== i.workoutInstanceId) return null;
-  if (s.routine_exercise_id && s.routine_exercise_id !== i.routineExerciseId) return null;
-  return i.currentSetIndex + 1;
-}
-
-// ---- phone context (debounced, active only)
-
-export interface PhoneContext {
-  workoutInstanceId: string;
-  routineExerciseId: string;
+export interface RackCtx {
+  workoutInstanceId: string | null;
+  routineExerciseId: string | null;
   setNumber: number | null;
   loadLb: number | null;
 }
 
+const numOrNull = (v: unknown) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/**
+ * What the rack is set up for NEXT: mid-set the pending context (it applies to
+ * the next set), else the live context. Exercise, set and load always come
+ * from the same group, so a mid-set override lands on the right row.
+ */
+export function rackContextOf(s: SessionLike | null): RackCtx {
+  if (!s) return { workoutInstanceId: null, routineExerciseId: null, setNumber: null, loadLb: null };
+  if (s.state === 'lifting' && s.pending_routine_exercise_id) {
+    return {
+      workoutInstanceId: s.pending_workout_instance_id ?? s.workout_instance_id,
+      routineExerciseId: s.pending_routine_exercise_id,
+      setNumber: s.pending_set_number ?? null,
+      loadLb: numOrNull(s.pending_load_lb),
+    };
+  }
+  return {
+    workoutInstanceId: s.workout_instance_id,
+    routineExerciseId: s.routine_exercise_id,
+    setNumber: s.set_number ?? null,
+    loadLb: numOrNull(s.load_lb),
+  };
+}
+
+/** The set being lifted right now (state 'lifting'), keyed off rack_sessions — never the phone's open row. */
+export function liveRackSet(
+  s: SessionLike | null,
+  athleteId: string,
+  workoutInstanceId: string,
+): { routineExerciseId: string; setNumber: number } | null {
+  if (!s || s.active_athlete_id !== athleteId || s.state !== 'lifting') return null;
+  if (!s.routine_exercise_id || s.set_number == null) return null;
+  if (s.workout_instance_id && s.workout_instance_id !== workoutInstanceId) return null;
+  return { routineExerciseId: s.routine_exercise_id, setNumber: s.set_number };
+}
+
+// ---- phone context (debounced, active only, exact echo guard)
+
+export interface PhoneContext {
+  workoutInstanceId: string | null;
+  routineExerciseId: string | null;
+  setNumber: number | null;
+  loadLb: number | null;
+}
+
+export function contextSig(c: RackCtx | PhoneContext): string {
+  return `${c.routineExerciseId ?? ''}|${c.setNumber ?? ''}|${c.loadLb ?? ''}`;
+}
+
 export interface ContextSender {
-  /** Latest context; null = not active (cancels anything pending, sends nothing). */
-  update: (rackId: string | null, ctx: PhoneContext | null) => void;
+  /** Latest context. rackId null = not active (resets); ctx null = paused (sends nothing). */
+  update: (rackId: string | null, ctx: PhoneContext | null, opts?: { immediate?: boolean }) => void;
   cancel: () => void;
+  /** The row's context is exactly one the phone sent (last sent, or still in flight). */
+  isEcho: (ctx: RackCtx) => boolean;
+  /** Whether a context was sent since the last deactivation. */
+  sentThisActivation: () => boolean;
 }
 
 export const CONTEXT_DEBOUNCE_MS = 300;
@@ -251,7 +296,7 @@ type Timers = {
 };
 
 export function createContextSender(
-  send: (rackId: string, ctx: PhoneContext) => unknown,
+  send: (rackId: string, ctx: PhoneContext) => PromiseLike<unknown> | unknown,
   delayMs: number = CONTEXT_DEBOUNCE_MS,
   timers: Timers = {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -260,26 +305,48 @@ export function createContextSender(
 ): ContextSender {
   let handle: unknown = null;
   let lastSent: string | null = null;
+  const inFlight = new Map<string, number>();
   const cancel = () => {
     if (handle != null) timers.clearTimeout(handle);
     handle = null;
   };
+  const fire = (rackId: string, ctx: PhoneContext, sig: string) => {
+    handle = null;
+    lastSent = sig;
+    inFlight.set(sig, (inFlight.get(sig) ?? 0) + 1);
+    const done = () => {
+      const n = (inFlight.get(sig) ?? 1) - 1;
+      if (n <= 0) inFlight.delete(sig);
+      else inFlight.set(sig, n);
+    };
+    try {
+      const r = send(rackId, ctx) as PromiseLike<unknown> | undefined;
+      if (r && typeof (r as any).then === 'function') (r as PromiseLike<unknown>).then(done, done);
+      else done();
+    } catch {
+      done();
+    }
+  };
   return {
-    update(rackId, ctx) {
+    update(rackId, ctx, opts) {
       cancel();
-      if (!rackId || !ctx) {
-        lastSent = null; // next activation sends again
+      if (!rackId) {
+        lastSent = null; // not active: the next activation sends again
+        inFlight.clear();
         return;
       }
-      const sig = `${rackId}|${ctx.workoutInstanceId}|${ctx.routineExerciseId}|${ctx.setNumber}|${ctx.loadLb ?? ''}`;
-      if (sig === lastSent) return;
-      handle = timers.setTimeout(() => {
-        handle = null;
-        lastSent = sig;
-        send(rackId, ctx);
-      }, delayMs);
+      if (!ctx) return; // active but nothing open (overview): send nothing, keep the echo memory
+      const sig = contextSig(ctx);
+      if (sig === lastSent && inFlight.size === 0) return;
+      if (opts?.immediate) fire(rackId, ctx, sig);
+      else handle = timers.setTimeout(() => fire(rackId, ctx, sig), delayMs);
     },
     cancel,
+    isEcho(ctx) {
+      const sig = contextSig(ctx);
+      return sig === lastSent || inFlight.has(sig);
+    },
+    sentThisActivation: () => lastSent != null,
   };
 }
 
@@ -290,7 +357,25 @@ export function loadFromInput(v: unknown): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-// ---- Done while live
+/**
+ * The load the phone sends: only the athlete's own LB (typed / stepped, or a
+ * logged value) — never the prescription. Otherwise it passes the rack's
+ * current load for that same set back unchanged, so a context send never
+ * clobbers a load the iPad published.
+ */
+export function contextLoad(i: {
+  ownWeight: unknown | null;
+  rack: RackCtx;
+  routineExerciseId: string;
+  setNumber: number | null;
+}): number | null {
+  const own = loadFromInput(i.ownWeight);
+  if (own != null) return own;
+  if (i.rack.routineExerciseId === i.routineExerciseId && i.rack.setNumber === i.setNumber) return i.rack.loadLb;
+  return null;
+}
+
+// ---- Done while live / rack-owned sets
 
 export interface DoneDeps {
   requestEndSet: (rackId: string) => Promise<unknown>;
@@ -315,19 +400,31 @@ export function pressDone(live: { rackId: string; lifting: boolean } | null, dep
   return 'save';
 }
 
+/**
+ * A phone write for a set the rack owns (being lifted, or ended and not yet
+ * landed): never is_complete, never reps — the rack's row carries them.
+ * Other fields (LB, notes, RPE) still go through.
+ */
+export function rackSafeWrite<W extends { complete?: boolean; fields?: string[]; rpe?: boolean }>(write: W, owned: boolean): W {
+  if (!owned) return write;
+  const { complete: _c, ...rest } = write;
+  return { ...(rest as W), fields: (write.fields ?? []).filter(f => f !== 'reps') };
+}
+
 /** The rack ended the set on its own (60 s with no rep). */
 export function endedByIdle(log: { metric_data?: any } | null | undefined): boolean {
   return log?.metric_data?.vbt?.ended_by === 'idle';
 }
 
+/** UI copy switches to "pull to refresh" after this; polling continues. */
 export const RACK_WRITE_TIMEOUT_MS = 10_000;
+/** While on a rack (active or queued): rack_sessions + pending set rows. */
 export const RACK_POLL_MS = 10_000;
 
 // ---- set ended on the rack (phone Done, iPad Done, idle, switch)
 
 export interface EndedSet {
   rackId: string;
-  /** null when the rack had no phone context (the caller uses its open set). */
   workoutInstanceId: string | null;
   routineExerciseId: string | null;
   setNumber: number | null;
@@ -338,11 +435,7 @@ export interface EndedSet {
  * `next` (state left 'lifting', another set started, or the row is gone).
  * The phone then waits for the rack's exercise_logs write for that set.
  */
-export function endedSets(
-  prev: RackSessionRow[],
-  next: RackSessionRow[],
-  athleteId: string,
-): EndedSet[] {
+export function endedSets(prev: RackSessionRow[], next: RackSessionRow[], athleteId: string): EndedSet[] {
   const out: EndedSet[] = [];
   for (const p of prev) {
     if (p.active_athlete_id !== athleteId || p.state !== 'lifting') continue;
@@ -367,82 +460,57 @@ export function endedSets(
   return out;
 }
 
-// ---- phone ↔ iPad in unison (rack_sessions + exercise_logs = one record)
+/** Newer-or-equal row wins (updated_at); a late realtime event never rolls state back. */
+export function newerRow(prev: RackSessionRow | undefined, next: RackSessionRow): boolean {
+  if (!prev) return true;
+  return String(next.updated_at ?? '') >= String(prev.updated_at ?? '');
+}
 
-/** Ignore rack_sessions changes this soon after the phone's own context write. */
-export const ECHO_WINDOW_MS = 1000;
+// ---- iPad → phone (follow + load)
+
 /** A phone LB edit this recent wins over the rack's load. */
 export const LOAD_EDIT_GUARD_MS = 3000;
 
-type SessionLike = Pick<
-  RackSessionRow,
-  | 'active_athlete_id'
-  | 'workout_instance_id'
-  | 'routine_exercise_id'
-  | 'state'
-  | 'set_number'
-  | 'load_lb'
-  | 'pending_workout_instance_id'
-  | 'pending_routine_exercise_id'
-  | 'pending_set_number'
-  | 'pending_load_lb'
->;
-
-/** The exercise the rack is on next: mid-set the pending context wins (it applies to the next set). */
-export function rackExerciseOf(s: SessionLike | null): { workoutInstanceId: string | null; routineExerciseId: string | null } {
-  if (!s) return { workoutInstanceId: null, routineExerciseId: null };
-  if (s.state === 'lifting' && s.pending_routine_exercise_id) {
-    return { workoutInstanceId: s.pending_workout_instance_id ?? s.workout_instance_id, routineExerciseId: s.pending_routine_exercise_id };
-  }
-  return { workoutInstanceId: s.workout_instance_id, routineExerciseId: s.routine_exercise_id };
-}
-
-/** The rack's load for the set it is on (pending mid-set). */
-export function rackLoadOf(s: SessionLike | null): number | null {
-  if (!s) return null;
-  const v = s.state === 'lifting' && s.pending_load_lb != null ? s.pending_load_lb : s.load_lb;
-  return v == null ? null : Number(v);
-}
-
 export interface FollowInput {
   session: SessionLike | null;
-  /** The rack exercise seen on the previous rack_sessions read (undefined = first read). */
+  /** The rack exercise on the previous read of THIS activation (undefined = first read = baseline). */
   prevRackExercise: string | null | undefined;
+  /** The phone already sent a context in this activation. */
+  sentThisActivation: boolean;
   athleteId: string;
   workoutInstanceId: string;
   /** Exercise open on the phone (null on the overview). */
   openExerciseId: string | null;
-  /** Last routine exercise the phone sent in its context, and when. */
-  lastSentExerciseId: string | null;
-  lastSentAt: number;
-  now: number;
+  /** Exact echo test against what the phone sent. */
+  isEcho: (ctx: RackCtx) => boolean;
 }
 
 /**
  * iPad → phone: the routine exercise the phone should switch to, or null.
- * Only on a CHANGE of the rack's exercise (never the first read), only while
- * this athlete is active, only for this workout, never an echo of the
- * phone's own context write (same exercise as last sent, or within 1 s of a send).
+ * Only on a CHANGE of the rack's exercise within one activation (the first
+ * read is the baseline — the phone's open exercise wins then), only while this
+ * athlete is active, only for this workout, never an exact echo of the
+ * phone's own context, and never null→X once the phone has sent its context.
  */
 export function followTarget(i: FollowInput): string | null {
   const s = i.session;
   if (!s || s.active_athlete_id !== i.athleteId) return null;
-  const { workoutInstanceId, routineExerciseId } = rackExerciseOf(s);
-  if (!routineExerciseId) return null;
-  if (workoutInstanceId && workoutInstanceId !== i.workoutInstanceId) return null;
+  const ctx = rackContextOf(s);
+  if (!ctx.routineExerciseId) return null;
+  if (ctx.workoutInstanceId && ctx.workoutInstanceId !== i.workoutInstanceId) return null;
   if (i.prevRackExercise === undefined) return null;
-  if (routineExerciseId === i.prevRackExercise) return null;
-  if (routineExerciseId === i.openExerciseId) return null;
-  if (routineExerciseId === i.lastSentExerciseId) return null;
-  if (i.now - i.lastSentAt < ECHO_WINDOW_MS) return null;
-  return routineExerciseId;
+  if (ctx.routineExerciseId === i.prevRackExercise) return null;
+  if (i.prevRackExercise === null && i.sentThisActivation) return null;
+  if (ctx.routineExerciseId === i.openExerciseId) return null;
+  if (i.isEcho(ctx)) return null;
+  return ctx.routineExerciseId;
 }
 
 /**
  * iPad → phone load: the LB to put in the phone's cell, or null. Only on a
- * change of the rack's load, only when it differs from the phone's, and never
- * within 3 s of the athlete editing that cell (the phone's edit wins and is
- * sent back through the context).
+ * change of the rack's load, only when it differs from the phone's, never
+ * while the athlete is typing and never within 3 s of an LB edit (the phone's
+ * edit wins and is sent back through the context).
  */
 export function loadSyncValue(i: {
   rackLoad: number | null;
@@ -450,7 +518,9 @@ export function loadSyncValue(i: {
   phoneLoad: number | null;
   lastEditAt: number;
   now: number;
+  editing?: boolean;
 }): number | null {
+  if (i.editing) return null;
   if (i.rackLoad == null) return null;
   if (i.prevRackLoad === undefined || i.prevRackLoad === i.rackLoad) return null;
   if (i.phoneLoad === i.rackLoad) return null;
@@ -464,10 +534,14 @@ export function firstIncompleteSet(completed: boolean[] | undefined, sets: numbe
   return null;
 }
 
-/** A row the rack wrote (only the device that ends a set writes metric_data.vbt). */
-export function isRackWrittenLog(log: { metric_data?: any } | null | undefined): boolean {
-  const v = log?.metric_data?.vbt;
-  return !!v && typeof v === 'object' && (v.source === 'rack' || v.rack != null);
+/** "RACK · avg 0.78 · best 0.84 m/s" under a rack-saved row (null when not rack-saved). */
+export function rackSummaryLine(vbt: any): string | null {
+  if (!vbt || typeof vbt !== 'object') return null;
+  const avg = numOrNull(vbt.avg_v);
+  const best = numOrNull(vbt.best_v);
+  if (avg == null && best == null) return null;
+  const parts = [avg != null ? `avg ${avg.toFixed(2)}` : null, best != null ? `best ${best.toFixed(2)}` : null].filter(Boolean);
+  return `${parts.join(' · ')} m/s`;
 }
 
 /**

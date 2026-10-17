@@ -9,6 +9,7 @@ import {
   Modal,
   Pressable,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -72,6 +73,9 @@ interface BlockOverviewProps {
   rack?: RackScreenProps | null;
   /** The rack switched this athlete to an exercise: highlight it + Continue to it. */
   rackFocus?: { reId: string; setIndex: number } | null;
+  /** Pull-to-refresh for the rack banner (only when the org has racks). */
+  rackRefreshing?: boolean;
+  onRackRefresh?: () => void;
 }
 
 // Helper: Get exercise code badge (A1, A2, B1, etc.)
@@ -159,6 +163,8 @@ export default function BlockOverview({
   throwsTabContent,
   rack,
   rackFocus,
+  rackRefreshing = false,
+  onRackRefresh,
 }: BlockOverviewProps) {
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [showIncompleteModal, setShowIncompleteModal] = useState(false);
@@ -336,6 +342,11 @@ export default function BlockOverview({
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.contentContainer}
+        refreshControl={
+          rack?.hasRacks && onRackRefresh ? (
+            <RefreshControl refreshing={rackRefreshing} onRefresh={onRackRefresh} tintColor={LOGGER_COLORS.accent} />
+          ) : undefined
+        }
       >
         {/* Optional top slot — throwing workload monitor mounts here */}
         {headerSlot}

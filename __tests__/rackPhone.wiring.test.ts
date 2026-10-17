@@ -22,10 +22,36 @@ describe('rack phone wiring', () => {
     expect(L).toContain('if (!rack.hasRacks || !currentExercise) return null;');
   });
 
-  it('no racks → no poll, no realtime (hook gates on hasRacks)', () => {
-    expect(H).toMatch(/useEffect\(\(\) => \{\s*if \(!hasRacks\) return;/);
+  it('I2: realtime + 10 s poll only while on a rack, filtered per rack; browse = focus / foreground / pull only', () => {
+    expect(H).toContain('if (!hasRacks || !onRackIds) return;');
+    expect(H).toContain("filter: `rack_id=eq.${rackId}`");
     expect(H).toContain('RACK_POLL_MS');
-    expect(L).toMatch(/useEffect\(\(\) => \{\s*if \(!rack\.hasRacks\) return;\s*const channel = supabase/);
+    expect(H).toContain('useFocusEffect(');
+    expect(H).toContain("AppState.addEventListener('change'");
+    expect(H).toContain(".or(`active_athlete_id.eq.${athleteId},queue.cs.{${athleteId}}`)");
+    // the dead exercise_logs channel is gone
+    expect(L).not.toContain("table: 'exercise_logs'");
+    expect(H).not.toContain("table: 'exercise_logs'");
+  });
+
+  it('I5: self only — the hook is inert unless athletes.user_id = auth.uid() is this athlete', () => {
+    expect(H).toContain('supabase.auth.getUser()');
+    expect(H).toContain(".from('athletes').select('id').eq('user_id', uid)");
+    expect(H).toContain('const hasRacks = isSelf && list.length > 0;');
+    expect(H).toMatch(/const refresh = useCallback\(async \(\) => \{\s*if \(!isSelf\) return;/);
+  });
+
+  it('R1: no draft hold — drafts write as before', () => {
+    expect(L).not.toContain('rackHoldsDraft');
+  });
+
+  it('C1: rack-owned sets never get is_complete / reps from the phone', () => {
+    expect(L).toContain('const write = rackSafeWrite(requested, rackOwnsSetRef.current(exerciseId, setIndex));');
+    expect(L).toContain('awaitRackWrite(e.routineExerciseId, e.setNumber);');
+    const toggle = D.slice(D.indexOf('const handleCheckboxToggle'), D.indexOf('// Done button — two-phase'));
+    expect(toggle).toContain("if (!isCompleted && rack && rackSaving(setIndex)) {");
+    expect(D).toContain("disabled={rackLabel === 'Saving…' && rackSaving(currentSetIndex) === 'saving'}");
+    expect(D).toContain('<RefreshControl refreshing={rack.refreshing} onRefresh={rack.onPullRefresh}');
   });
 
   it('live row only on the live set; REPS = full reps; Done hands off to the rack', () => {
@@ -36,6 +62,9 @@ describe('rack phone wiring', () => {
     expect(D).toContain('Saved · tap to edit');
     expect(D).toContain('Saved on the rack · pull to refresh');
     expect(D).toContain('`Speed dropped ${rackLive.dropCue}% — rack it`');
+    expect(L).toContain('liveRackSet(rack.activeSession, athleteId, workoutInstanceId)');
+    expect(L).toContain('rack.chipsFor(workoutInstanceId, reId, rackLive.setNumber)');
+    expect(L).toContain('awaitRackWrite: () => awaitRackWrite(liveRe, liveNo)');
     const toggle = D.slice(D.indexOf('const handleCheckboxToggle'), D.indexOf('// Done button — two-phase'));
     expect(toggle.indexOf('rack.onLiveDone()')).toBeLessThan(toggle.indexOf('onToggleSetComplete'));
     expect(L).toContain('saveSet: () => undefined');
@@ -49,23 +78,25 @@ describe('rack phone wiring', () => {
       expect(src).not.toMatch(/\.vbt\s*=/);
       expect(src).not.toMatch(/upsert_exercise_log/);
     }
-    // rack-written rows are only read (realtime + refetch), never upserted here
+    // rack-written rows are only read (refetch), never upserted here
     const rackBlock = L.slice(L.indexOf('// ── Rack VBT (phone side)'), L.indexOf('// Get current exercise and routine'));
     expect(rackBlock).not.toContain('persistSet(');
     expect(rackBlock).not.toContain('loggerOutbox');
     expect(rackBlock).toContain(".from('exercise_logs')");
-    expect(rackBlock).toContain("table: 'exercise_logs'");
   });
 
   it('context: debounced sender, active only, set = first incomplete', () => {
     expect(H).toContain('createContextSender(');
-    expect(H).toContain('sender.update(activeRackId, activeRackId ? ctx : null)');
+    expect(H).toContain('sender.update(activeRackId, activeRackId ? ctx : null, o)');
     expect(L).toContain('firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets)');
+    expect(L).toContain('{ immediate }');
+    expect(L).toContain('contextLoad({');
   });
 
   it('follow waits for blur; echo guard uses the last sent context', () => {
     expect(L).toContain('rackPendingFollowRef.current = target; // never while typing — after blur');
-    expect(L).toContain('lastSentExerciseId: rack.lastSent().reId');
+    expect(L).toContain('isEcho: rack.isEcho,');
+    expect(L).toContain('sentThisActivation: rack.sentThisActivation(),');
     expect(D).toContain('rackOnEditingChange?.(activeInput != null);');
     expect(L).toContain('switched you to');
   });

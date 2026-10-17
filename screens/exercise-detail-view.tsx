@@ -11,6 +11,7 @@ import {
   PanResponder,
   Modal,
   Pressable,
+  RefreshControl,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -48,7 +49,7 @@ import { LOGGER_COLORS } from '../lib/logger/theme';
 import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logger/setLine';
 import RackBanner, { type RackScreenProps } from '../components/logger/RackBanner';
 import LiveRepRow from '../components/logger/LiveRepRow';
-import { RACK_COLORS, liveDoneLabel, type ChipView, type LiveSource } from '../lib/rack/phoneView';
+import { RACK_COLORS, liveDoneLabel, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -67,13 +68,15 @@ interface ExerciseHistory {
 
 /** The live set on this exercise (rack VBT; Task 10b reuses it with source 'sensor'). */
 export interface ExerciseLiveSet {
-  /** 0-based row that is live (always the current open set). */
+  /** 0-based row being lifted — from rack_sessions.set_number, NOT the phone's open row. */
   setIndex: number;
   source: LiveSource;
   rackName: string | null;
   chips: ChipView[];
   /** REPS cell = full reps only. */
   fullReps: number;
+  /** Prescribed reps for that set ("3 / 5"); null when none. */
+  repsTarget: number | null;
   /** A set is being lifted now (Done ends it on the rack). */
   lifting: boolean;
   /** "Speed dropped N% — rack it" threshold crossed (zone exercises only). */
@@ -82,14 +85,17 @@ export interface ExerciseLiveSet {
 
 export interface ExerciseRackProps extends RackScreenProps {
   live: ExerciseLiveSet | null;
-  /** Rack writes this phone is waiting for, by 0-based set of THIS exercise. */
+  /** Rack-owned sets waiting for the rack's row, by 0-based set of THIS exercise. */
   saving: Record<number, 'saving' | 'timeout'>;
   /** Sets the rack saved after 60 s with no rep. */
   idleSaved: number[];
-  /** Done (or the circle) on the live row while lifting. */
+  /** Done (or the circle) while a rack set is being lifted. */
   onLiveDone: () => void;
   /** Keypad open/closed — the phone never follows the rack while typing. */
   onEditingChange?: (editing: boolean) => void;
+  /** Real pull-to-refresh: rack state + pending set rows. */
+  onPullRefresh: () => void;
+  refreshing: boolean;
 }
 
 interface ExerciseDetailViewProps {
@@ -341,6 +347,15 @@ export default function ExerciseDetailView({
     }, 100);
     return () => clearTimeout(t);
   }, [currentSetIndex, exercise.id]);
+
+  // Rack VBT: the rack's live row scrolls into view when it isn't the open row.
+  const rackLiveIndex = rackLive?.setIndex ?? null;
+  useEffect(() => {
+    if (rackLiveIndex == null || rackLiveIndex === currentSetIndex) return;
+    const y = setYRef.current[rackLiveIndex];
+    if (y != null) scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rackLiveIndex]);
 
   // Rack VBT: tell the parent when a field is being typed in (follow waits for blur).
   const rackOnEditingChange = rack?.hasRacks ? rack.onEditingChange : undefined;
@@ -664,7 +679,11 @@ export default function ExerciseDetailView({
       rack.onLiveDone();
       return;
     }
-    if (!isCompleted && rackSaving(setIndex) === 'saving') return;
+    // Rack-owned (ended, row not landed): no phone save — a tap after 10 s re-reads.
+    if (!isCompleted && rack && rackSaving(setIndex)) {
+      if (rackSaving(setIndex) === 'timeout') rack.onPullRefresh();
+      return;
+    }
     const setData = exerciseInputs[exercise.id]?.[setIndex] || {};
 
     if (!isCompleted) {
@@ -693,8 +712,13 @@ export default function ExerciseDetailView({
   const handleNextButtonPress = () => {
     const currentSetCompleted = isSetCompleted(currentSetIndex);
 
+    // A rack set being lifted on this exercise: Done ends it (any open row).
+    if (rack && rackLive?.lifting && !isSetCompleted(rackLive.setIndex)) {
+      rack.onLiveDone();
+      return;
+    }
     if (!currentSetCompleted) {
-      // Live rack set → handleCheckboxToggle hands Done to the rack.
+      // A rack-owned set → handleCheckboxToggle never saves it from the phone.
       handleCheckboxToggle(currentSetIndex);
     } else {
       onNextSet();
@@ -864,6 +888,11 @@ export default function ExerciseDetailView({
     const setData = exerciseInputs[exercise.id]?.[setIndex] || {};
     const value = setData[metricId];
     const unit = unitFor(metricId);
+    // Live rack row: REPS = full reps from the rack ("3 / 5"; read-only, never written here).
+    if (rackLive && isLiveRow(setIndex) && metricId === 'reps') {
+      const text = rackLive.repsTarget != null ? `${rackLive.fullReps} / ${rackLive.repsTarget}` : String(rackLive.fullReps);
+      return renderCell(text, null, 'plain', false, metricId);
+    }
     if (!open) {
       if (!isEmptyValue(value)) return renderCell(String(value), unit, done ? 'done' : 'dim', false, metricId);
       if (done) {
@@ -875,10 +904,6 @@ export default function ExerciseDetailView({
       }
       const target = targetCell(setIndex, metricId);
       return renderCell(target?.text ?? '—', unit, 'dim', !!target?.amrap, metricId);
-    }
-    // Live rack row: REPS = full reps from the rack (read-only, never written here).
-    if (rackLive && isLiveRow(setIndex) && metricId === 'reps') {
-      return renderCell(String(rackLive.fullReps), unit, 'plain', false, metricId);
     }
     const empty = isEmptyValue(value);
     const target = empty ? targetCell(setIndex, metricId) : null;
@@ -1099,6 +1124,9 @@ export default function ExerciseDetailView({
           {rack?.hasRacks && rack.idleSaved.includes(i) && !isOpen && (
             <Text style={styles.caption}>Saved · tap to edit</Text>
           )}
+          {rack?.hasRacks && isCompleted && !isLiveRow(i) && rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt) && (
+            <Text style={styles.rackSummary}>{`RACK · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt)}`}</Text>
+          )}
           {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
           {!!caption && <Text style={styles.caption}>{caption}</Text>}
           {isOpen && exercise.ask_rpe && onRpeChange && (
@@ -1139,7 +1167,7 @@ export default function ExerciseDetailView({
             activeOpacity={0.7}
             accessibilityRole="button"
             accessibilityLabel={`Open set ${i + 1}`}
-            style={styles.set}
+            style={[styles.set, isLiveRow(i) && styles.setCur]}
           >
             {body}
           </TouchableOpacity>
@@ -1147,16 +1175,14 @@ export default function ExerciseDetailView({
       );
     }
 
-    if (rackLive?.dropCue != null) {
-      sets.push(
-        <Text key="drop" style={styles.rackDrop}>{`Speed dropped ${rackLive.dropCue}% — rack it`}</Text>,
-      );
-    }
-
-    if (footerRest || restSecondsLeft != null) {
+    // While the rack's speed has dropped, its cue takes the rest footer's place.
+    const rackDropText = rackLive?.dropCue != null ? `Speed dropped ${rackLive.dropCue}% — rack it` : null;
+    if (footerRest || restSecondsLeft != null || rackDropText) {
       sets.push(
         <View key="foot" style={styles.foot}>
-          <Text style={styles.footText}>{footerRest ?? ''}</Text>
+          {rackDropText
+            ? <Text style={[styles.footText, styles.rackDrop]}>{rackDropText}</Text>
+            : <Text style={styles.footText}>{footerRest ?? ''}</Text>}
           {restSecondsLeft != null && (
             <Text style={styles.footTimer}>{`Rest ${formatRest(restSecondsLeft)}`}</Text>
           )}
@@ -1345,6 +1371,11 @@ export default function ExerciseDetailView({
           style={styles.setsScrollView}
           contentContainerStyle={[styles.setsContent, { paddingBottom: bottomBarHeight + 80 }]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            rack?.hasRacks ? (
+              <RefreshControl refreshing={rack.refreshing} onRefresh={rack.onPullRefresh} tintColor={LOGGER_COLORS.accent} />
+            ) : undefined
+          }
         >
           {rack?.hasRacks && rack.banner && (
             <RackBanner
@@ -1498,12 +1529,14 @@ export default function ExerciseDetailView({
 
               const nextText = getNextButtonText();
               const isDone = nextText === 'DONE' && currentSetCompleted;
-              const rackLabel = currentSetCompleted
-                ? null
-                : rackSaving(currentSetIndex) === 'saving'
-                  ? 'Saving…'
-                  : rackLive?.lifting && isLiveRow(currentSetIndex)
-                    ? liveDoneLabel(rackLive.fullReps)
+              // Rack: a lift in progress → "✓ Done · N reps" (any open row); a
+              // rack-owned set waiting for its row → "Saving…" (Done disabled).
+              const rackLabel = rackLive?.lifting && !isSetCompleted(rackLive.setIndex)
+                ? liveDoneLabel(rackLive.fullReps)
+                : currentSetCompleted
+                  ? null
+                  : rackSaving(currentSetIndex)
+                    ? 'Saving…'
                     : null;
               const label = isDone
                 ? '✓ DONE'
@@ -1514,8 +1547,9 @@ export default function ExerciseDetailView({
                     : nextText;
               return (
                 <TouchableOpacity
-                  style={styles.lb}
+                  style={[styles.lb, rackLabel === 'Saving…' && styles.lbDisabled]}
                   onPress={handleNextButtonPress}
+                  disabled={rackLabel === 'Saving…' && rackSaving(currentSetIndex) === 'saving'}
                   activeOpacity={0.85}
                   accessibilityRole="button"
                   accessibilityLabel={label}
@@ -1973,11 +2007,16 @@ const styles = StyleSheet.create({
   },
   rackDrop: {
     color: RACK_COLORS.slow,
-    fontSize: 12,
     fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingTop: 10,
   },
+  rackSummary: {
+    paddingLeft: 48,
+    paddingRight: 16,
+    paddingBottom: 8,
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 11,
+  },
+  lbDisabled: { opacity: 0.6 },
   foot: {
     flexDirection: 'row',
     justifyContent: 'space-between',
