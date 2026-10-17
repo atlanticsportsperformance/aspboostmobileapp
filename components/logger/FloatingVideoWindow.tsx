@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer, { type YoutubeIframeRef } from 'react-native-youtube-iframe';
 import { LOGGER_COLORS } from '../../lib/logger/theme';
 
@@ -33,7 +34,6 @@ export default function FloatingVideoWindow({
   title,
   bottom,
   keypadOpen,
-  keypadHeight,
   onClose,
   onExpand,
 }: {
@@ -41,11 +41,10 @@ export default function FloatingVideoWindow({
   title: string;
   /** Initial distance from the bottom of the screen (sits above the bar). */
   bottom: number;
-  /** While the numeric keypad is open the window lifts above it if it
-   *  fits (fully on-screen), otherwise hides, pauses and mutes. */
+  /** While the numeric keypad is open the window collapses (hidden, paused,
+   *  muted) so it never covers Log Set or the set rows; it comes back where
+   *  it was when the keypad closes. */
   keypadOpen: boolean;
-  /** Last measured keypad height; 0 = not measured yet (treated as no fit). */
-  keypadHeight: number;
   onClose: () => void;
   onExpand: () => void;
 }) {
@@ -67,13 +66,9 @@ export default function FloatingVideoWindow({
     minY: MARGIN + topInset,
     maxY: bounds.h - WIN_H - MARGIN - insets.bottom,
   }), [bounds.w, bounds.h, insets.bottom, topInset]);
-  // Lowest y that keeps the whole window above the keypad.
-  const liftMaxY = bounds.h - keypadHeight - WIN_H - MARGIN;
-  const fitsAboveKeypad = keypadHeight > 0 && liftMaxY >= limits.minY;
-  const hidden = keypadOpen && !fitsAboveKeypad;
-  const lifted = keypadOpen && fitsAboveKeypad;
+  const hidden = keypadOpen;
   const limitsRef = useRef(limits);
-  limitsRef.current = lifted ? { ...limits, maxY: Math.min(limits.maxY, liftMaxY) } : limits;
+  limitsRef.current = limits;
 
   const pos = useRef({ x: bounds.w - WIN_W - 12, y: bounds.h - bottom - WIN_H });
   const pan = useRef(new Animated.ValueXY(pos.current)).current;
@@ -83,18 +78,13 @@ export default function FloatingVideoWindow({
   const dragged = useRef(false);
 
   // pos = the athlete's (or docked) home spot, clamped to the screen.
-  // While lifted for the keypad only the shown y moves; home is restored
-  // when the keypad closes.
-  const shownMaxYRef = useRef(Infinity);
-  shownMaxYRef.current = lifted ? liftMaxY : Infinity;
   const place = useCallback((x: number, y: number) => {
     const l = limitsRef.current;
     pos.current = { x: clamp(x, l.minX, l.maxX), y: clamp(y, l.minY, l.maxY) };
-    pan.setValue({ x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) });
+    pan.setValue(pos.current);
   }, [pan]);
 
-  // Keep the window on screen when the bounds change (layout, rotation) and
-  // when the keypad opens/closes.
+  // Keep the window on screen when the bounds change (layout, rotation).
   useEffect(() => {
     if (!dragged.current) {
       const x = bounds.w - WIN_W - 12;
@@ -105,8 +95,8 @@ export default function FloatingVideoWindow({
       const l = limits;
       pos.current = { x: clamp(pos.current.x, l.minX, l.maxX), y: clamp(pos.current.y, l.minY, l.maxY) };
     }
-    pan.setValue({ x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) });
-  }, [limits, pan, bounds.w, bounds.h, bottom, lifted, liftMaxY]);
+    pan.setValue(pos.current);
+  }, [limits, pan, bounds.w, bounds.h, bottom]);
 
   const [videoError, setVideoError] = useState(false);
   // Gym audio: demos start muted; the header toggle unmutes.
@@ -124,7 +114,7 @@ export default function FloatingVideoWindow({
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
-      start.current = { x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) };
+      start.current = { x: pos.current.x, y: pos.current.y };
       moved.current = false;
     },
     onPanResponderMove: (_e, g) => {
@@ -141,15 +131,25 @@ export default function FloatingVideoWindow({
   const [shouldRenderPlayer, setShouldRenderPlayer] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
   const [progress, setProgress] = useState(0);
+  // Flipped on a beat after the player is ready, so the library posts
+  // mute first and then a fresh playVideo — autoplay (muted) on iOS.
+  const [playing, setPlaying] = useState(false);
   const playerRef = useRef<YoutubeIframeRef | null>(null);
   useEffect(() => {
     setVideoError(false);
     setVideoReady(false);
+    setPlaying(false);
     setProgress(0);
     setShouldRenderPlayer(false);
     const t = setTimeout(() => setShouldRenderPlayer(true), 100);
     return () => clearTimeout(t);
   }, [videoId]);
+
+  useEffect(() => {
+    if (!videoReady) return;
+    const t = setTimeout(() => setPlaying(true), 150);
+    return () => clearTimeout(t);
+  }, [videoReady]);
 
   // Progress line — poll the player while it's up.
   useEffect(() => {
@@ -191,11 +191,20 @@ export default function FloatingVideoWindow({
               ref={playerRef}
               height={VIDEO_H}
               width={WIN_W}
-              play={!hidden}
+              play={playing && !hidden}
               mute={muted || hidden}
               videoId={videoId}
               playList={playList}
-              initialPlayerParams={{ loop: true, controls: false, modestbranding: true, rel: false }}
+              // Library-typed params only (the branding flag is deprecated by
+              // YouTube and not in InitialPlayerParams). Looping a single
+              // video needs loop + a one-item playlist.
+              initialPlayerParams={{
+                loop: true,
+                controls: false,
+                rel: false,
+                iv_load_policy: 3,
+                preventFullScreen: true,
+              }}
               onReady={() => setVideoReady(true)}
               onError={() => setVideoError(true)}
               onChangeState={onChangeState}
@@ -211,7 +220,14 @@ export default function FloatingVideoWindow({
             </View>
           )}
 
-          {/* Shade + drag surface over the (control-less) player. */}
+          {/* Top shade dims YouTube's own title/channel strip under ours. */}
+          <LinearGradient
+            colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0)']}
+            style={styles.topShade}
+            pointerEvents="none"
+          />
+          {/* Shade + drag surface over the (control-less) player. Taps land
+              here, never on the iframe, so YouTube's overlay doesn't wake. */}
           <View style={styles.surface} {...responder.panHandlers}>
             {videoError && <Text style={styles.watchText}>▶ Watch on YouTube</Text>}
           </View>
@@ -290,6 +306,13 @@ const styles = StyleSheet.create({
   loadingText: {
     color: '#737373',
     fontSize: 11,
+  },
+  topShade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 44,
   },
   surface: {
     ...StyleSheet.absoluteFillObject,

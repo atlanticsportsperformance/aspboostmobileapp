@@ -81,6 +81,8 @@ interface ExerciseDetailViewProps {
   exerciseHistory?: ExerciseHistory[];
   /** Raw completed logs for lastSession() (Task 11 renders the line). */
   lastWeekRows?: LogRow[];
+  /** Today's workout instance — excluded from "last week". */
+  workoutInstanceId?: string;
   onInputChange: (
     setIndex: number,
     field: string,
@@ -465,6 +467,7 @@ export default function ExerciseDetailView({
   blockLabel,
   exerciseHistory,
   lastWeekRows,
+  workoutInstanceId,
   onInputChange,
   onToggleSetComplete,
   rpeValues,
@@ -534,9 +537,6 @@ export default function ExerciseDetailView({
   const [fullVideoId, setFullVideoId] = useState<string | null>(null);
   // Measured bottom-bar height so the ▶ / window sit just above it.
   const [bottomBarHeight, setBottomBarHeight] = useState(80);
-  // Last measured numeric-keypad height (0 until it first opens) — the
-  // floating window lifts above it, or hides if it can't fit.
-  const [keypadHeight, setKeypadHeight] = useState(0);
 
   // Custom keypad state
   const [activeInput, setActiveInput] = useState<{
@@ -785,13 +785,20 @@ export default function ExerciseDetailView({
     return completedSets[exercise.id]?.[setIndex] === true;
   };
 
-  // Last completed session of this exercise (history already excludes the
-  // current instance). bySet is keyed by 1-indexed set_number.
+  // Last completed session of this exercise, never today's instance.
+  // bySet is keyed by 1-indexed set_number.
   const lastWeek = useMemo(
-    () => lastSession(lastWeekRows ?? [], exercise.exercise_id, ''),
-    [lastWeekRows, exercise.exercise_id],
+    () => lastSession(lastWeekRows ?? [], exercise.exercise_id, workoutInstanceId ?? ''),
+    [lastWeekRows, exercise.exercise_id, workoutInstanceId],
   );
-  const lastWeekFor = (setIndex: number) => lastWeek?.bySet[setIndex + 1] ?? lastWeek?.best ?? null;
+  // Same set number from last session. Only a set that isn't a back-off
+  // (set 1, or no "% of set K" target) may fall back to last session's top
+  // set — a back-off compared with last week's top set reads as a big drop.
+  const lastWeekFor = (setIndex: number) => {
+    const same = lastWeek?.bySet[setIndex + 1];
+    if (same) return same;
+    return setIndex === 0 || !isBackoffSet(setIndex) ? lastWeek?.best ?? null : null;
+  };
 
   // "N of M" — this exercise's position among the workout's loggable
   // exercises (sequence order). Rows outside the sequence show nothing.
@@ -803,6 +810,14 @@ export default function ExerciseDetailView({
     const index = ids.indexOf(exercise.id);
     return index === -1 ? null : { index: index + 1, total: ids.length };
   }, [sequence, exercise.id]);
+
+  // Prescribed as "% of set K" for an earlier K — a back-off set.
+  function isBackoffSet(setIndex: number): boolean {
+    const targets = exercise.set_configurations?.[setIndex]?.intensity_targets || exercise.intensity_targets;
+    return !!targets?.some(
+      (t) => t.relative_to === 'set' && t.reference_set != null && t.reference_set - 1 >= 0 && t.reference_set - 1 < setIndex,
+    );
+  }
 
   // A set other sets are prescribed as a % of ("90% of set 1") — the top set.
   const isTopSet = (setIndex: number): boolean => {
@@ -952,32 +967,27 @@ export default function ExerciseDetailView({
     },
   }), [hasPrev, hasNext, onPrevExercise, onNextExercise, activeInput]);
 
-  // Render set cards
-  // Build a one-line summary of a set for the collapsed row. Shows the
-  // primary input values (or targets when not yet logged) joined with a
-  // dot, e.g. "4 reps · 50 lb" or "target 4 reps × 100 lb".
-  const formatSetSummary = (
-    setIndex: number,
-    setData: Record<string, any>,
-    isCompleted: boolean,
-  ): string => {
-    if (metricFields.length === 0) return '';
+  // One compact line for a collapsed set: "220 × 2", then every other
+  // metric ("40 ft", "30s", "85 red ball velo") — at most 3 parts. `valueOf`
+  // returns the logged value (done rows) or value-else-target (upcoming).
+  const formatSetMetrics = (valueOf: (metricId: string) => unknown): string => {
+    const has = (v: unknown) => v != null && v !== '';
     const parts: string[] = [];
-    const max = Math.min(3, metricFields.length);
-    for (let m = 0; m < max; m++) {
-      const metricId = metricFields[m];
-      const label = getMetricLabel(metricId, customMeasurements);
-      const v = setData[metricId];
-      if (isCompleted && v != null && v !== '') {
-        parts.push(`${v} ${label.toLowerCase()}`);
-      } else {
-        const targetValue = getTargetValue(setIndex, metricId);
-        const intensityTarget = getIntensityTarget(setIndex, metricId);
-        const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-        if (placeholderValue != null) parts.push(`${placeholderValue} ${label.toLowerCase()}`);
-      }
+    const wr = formatWeightReps(
+      metricFields.includes('weight') ? valueOf('weight') : null,
+      metricFields.includes('reps') ? valueOf('reps') : null,
+    );
+    if (wr) parts.push(wr);
+    for (const metricId of metricFields) {
+      if (parts.length >= 3) break;
+      if (metricId === 'weight' || metricId === 'reps') continue;
+      const v = valueOf(metricId);
+      if (!has(v)) continue;
+      if (metricId === 'time_seconds') parts.push(`${v}s`);
+      else if (metricId === 'distance') parts.push(`${v} ft`);
+      else parts.push(`${v} ${getMetricLabel(metricId, customMeasurements).toLowerCase()}`);
     }
-    return parts.join('  ·  ');
+    return parts.join(' · ');
   };
 
   const renderSetCards = () => {
@@ -1038,7 +1048,6 @@ export default function ExerciseDetailView({
     const order: number[] = [];
     if (currentSetIndex >= 0 && currentSetIndex < setCount) order.push(currentSetIndex);
     for (let k = 0; k < setCount; k++) if (k !== currentSetIndex) order.push(k);
-    const hasWeightReps = metricFields.includes('weight') || metricFields.includes('reps');
     for (const i of order) {
       const setData = exerciseInputs[exercise.id]?.[i] || {};
       const setConfig = getSetConfig(i);
@@ -1055,9 +1064,7 @@ export default function ExerciseDetailView({
         let line: string;
         if (isCompleted) {
           const parts: string[] = [];
-          const base = hasWeightReps
-            ? formatWeightReps(setData.weight, setData.reps)
-            : formatSetSummary(i, setData, true);
+          const base = formatSetMetrics((m) => setData[m]);
           if (base) parts.push(base);
           const rpe = rpeValues?.[`${exercise.id}:${i}`];
           if (rpe != null) parts.push(`RPE ${rpe}`);
@@ -1072,12 +1079,7 @@ export default function ExerciseDetailView({
             return resolveTarget(targetArgs(i, m));
           };
           const parts: string[] = [];
-          const base = hasWeightReps
-            ? formatWeightReps(
-                metricFields.includes('weight') ? valueOrTarget('weight') : null,
-                metricFields.includes('reps') ? valueOrTarget('reps') : null,
-              )
-            : formatSetSummary(i, setData, false);
+          const base = formatSetMetrics(valueOrTarget);
           if (base) parts.push(base);
           if (caption) parts.push(caption);
           line = parts.join(' · ') || '—';
@@ -1545,10 +1547,15 @@ export default function ExerciseDetailView({
           const routineTextInfo = trim((routine as any).text_info);
           const exerciseCoachNote = trim((exercise as any).notes);
           const exerciseDescription = trim((exercise.exercises as any)?.description);
-          const hasAnything =
-            !!routineNote || !!routineTextInfo || !!exerciseCoachNote || !!exerciseDescription;
-          if (!hasAnything) return null;
           const parsedNote = exerciseCoachNote ? parseInstructionBlock(exerciseCoachNote) : null;
+          // A coach note counts only if it parses to cues or callouts (a
+          // headers-only note would leave an empty card).
+          const noteHasContent =
+            !!parsedNote &&
+            (parsedNote.sections.some((sec) => sec.items.length > 0) || parsedNote.callouts.length > 0);
+          const hasAnything =
+            !!routineNote || !!routineTextInfo || noteHasContent || !!exerciseDescription;
+          if (!hasAnything) return null;
           // Collapsed preview: the coach's first two cues, else the first
           // note we have. "more" appears only when there is more to read.
           const allCues = parsedNote ? parsedNote.sections.flatMap((sec) => sec.items) : [];
@@ -1744,12 +1751,13 @@ export default function ExerciseDetailView({
               style={[styles.historyButton, showHistory && styles.historyButtonActive]}
               onPress={() => setShowHistory(!showHistory)}
               activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="History"
             >
               <Ionicons
                 name="stats-chart"
                 size={18}
                 color={showHistory ? LOGGER_COLORS.accent : 'rgba(255,255,255,0.7)'}
-                accessibilityLabel="History"
               />
             </TouchableOpacity>
 
@@ -1846,8 +1854,10 @@ export default function ExerciseDetailView({
               style={styles.overviewButton}
               onPress={onBackToOverview}
               activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Overview"
             >
-              <Ionicons name="menu" size={20} color="rgba(255,255,255,0.7)" accessibilityLabel="Overview" />
+              <Ionicons name="menu" size={20} color="rgba(255,255,255,0.7)" />
             </TouchableOpacity>
           </View>
         </View>
@@ -1855,7 +1865,8 @@ export default function ExerciseDetailView({
       </KeyboardAvoidingView>
 
       {/* Floating demo video — overlays the screen without blocking logging;
-          the ▶ hides while the numeric keypad is open. */}
+          while the numeric keypad is open the ▶ hides and an open window
+          collapses (paused), coming back when the keypad closes. */}
       {hasVideo(videoUrl) && !activeInput && !floatingVideoOpen && (
         <FloatingVideoButton url={videoUrl} bottom={bottomBarHeight + 14} onPress={openVideo} />
       )}
@@ -1865,7 +1876,6 @@ export default function ExerciseDetailView({
           title={exercise.exercises.name}
           bottom={bottomBarHeight + 12}
           keypadOpen={!!activeInput}
-          keypadHeight={keypadHeight}
           onClose={() => setFloatingVideoOpen(false)}
           onExpand={() => {
             setFloatingVideoOpen(false);
@@ -1877,15 +1887,13 @@ export default function ExerciseDetailView({
 
       {/* Custom Numeric Keypad */}
       {activeInput && (
-        <View onLayout={(e) => setKeypadHeight(e.nativeEvent.layout.height)}>
-          <NumericKeypad
-            onKeyPress={handleKeypadPress}
-            onBackspace={handleKeypadBackspace}
-            onDone={handleKeypadDone}
-            showDecimal={true}
-            hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
-          />
-        </View>
+        <NumericKeypad
+          onKeyPress={handleKeypadPress}
+          onBackspace={handleKeypadBackspace}
+          onDone={handleKeypadDone}
+          showDecimal={true}
+          hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
+        />
       )}
 
       {/* PR popover — opens when the trophy in the header is tapped.
@@ -2624,7 +2632,7 @@ const styles = StyleSheet.create({
     borderColor: LOGGER_COLORS.hairline,
   },
   setRowCollapsedDone: {
-    backgroundColor: 'rgba(34,197,94,0.04)',
+    backgroundColor: 'rgba(16,185,129,0.04)',
   },
   setRowCheck: {
     width: 22,
@@ -2654,7 +2662,7 @@ const styles = StyleSheet.create({
   // Done set: "220 × 2 · RPE 8.5 · +5 lb over last week" in green.
   setResultLine: {
     marginTop: 2,
-    color: '#6EE7B7',
+    color: LOGGER_COLORS.green,
     fontSize: 12,
     fontVariant: ['tabular-nums'],
   },

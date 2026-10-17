@@ -1126,6 +1126,7 @@ export default function WorkoutLoggerScreen() {
         blockLabel={blockLabel}
         exerciseHistory={exerciseHistory[currentExercise.exercise_id]}
         lastWeekRows={lastWeekRows}
+        workoutInstanceId={workoutInstanceId}
         onInputChange={handleInputChange}
         onToggleSetComplete={handleToggleSetComplete}
         rpeValues={rpeValues}

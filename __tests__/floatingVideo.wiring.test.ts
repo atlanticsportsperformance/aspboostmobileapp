@@ -50,17 +50,30 @@ describe('floating video wiring', () => {
     // overlay never blocks logging: the wrapper passes touches through
     expect(Win).toContain('pointerEvents="box-none"');
   });
-  it('window yields to the keypad: lifted above it when it fits, else hidden + paused + muted', () => {
+  it('window collapses while the keypad is open (hidden + paused + muted) and comes back after', () => {
     const i = D.indexOf('<FloatingVideoWindow');
     const tag = D.slice(i, D.indexOf('/>', i));
     expect(tag).toContain('keypadOpen={!!activeInput}');
-    expect(tag).toContain('keypadHeight={keypadHeight}');
-    expect(D).toContain('setKeypadHeight(e.nativeEvent.layout.height)');
-    expect(Win).toContain('const hidden = keypadOpen && !fitsAboveKeypad');
-    expect(Win).toContain('play={!hidden}');
+    expect(tag).not.toContain('keypadHeight');
+    expect(D).not.toContain('setKeypadHeight');
+    expect(Win).not.toContain('fitsAboveKeypad');
+    expect(Win).toContain('const hidden = keypadOpen;');
+    expect(Win).toContain('play={playing && !hidden}');
     expect(Win).toContain('mute={muted || hidden}');
     expect(Win).toMatch(/opacity: hidden \? 0 : 1/);
     expect(Win).toContain("pointerEvents={hidden ? 'none' : 'auto'}");
+  });
+  it('keypad renders directly (no measuring wrapper that re-lays out on open)', () => {
+    expect(D).toMatch(/\{activeInput && \(\s*<NumericKeypad/);
+  });
+  it('player autoplays muted once ready, with chrome-free params typed by the library', () => {
+    expect(Win).toContain('setPlaying(true)');
+    expect(Win).toContain('controls: false');
+    expect(Win).toContain('rel: false');
+    expect(Win).toContain('iv_load_policy: 3');
+    expect(Win).toContain('loop: true');
+    expect(Win).toContain('playList={playList}');
+    expect(Win).not.toContain('modestbranding');
   });
   it('starts muted with a tap-to-unmute control; openURL rejections are caught', () => {
     expect(Win).toContain('useState(true); // muted');
