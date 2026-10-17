@@ -1,21 +1,40 @@
-/** Header pills: sensor status (connected / reconnecting / not paired) and "Syncing…". */
+/**
+ * Header pills: sensor status and "Syncing…". Logger v2 restraint — no warm
+ * hues: connected = green, reconnecting = blue with a pulsing dot, not paired
+ * = dim white.
+ */
 
-import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { RACK_COLORS, type SensorPill as SensorPillModel } from '../../lib/rack/viewModel';
 
 const TONE = {
-  connected: { border: 'rgba(16,185,129,0.35)', text: RACK_COLORS.greenText, dot: RACK_COLORS.green },
-  reconnecting: { border: 'rgba(240,136,62,0.4)', text: RACK_COLORS.amberText, dot: RACK_COLORS.amber },
-  notPaired: { border: 'rgba(255,255,255,0.15)', text: 'rgba(255,255,255,0.55)', dot: 'rgba(255,255,255,0.35)' },
-  syncing: { border: 'rgba(155,221,255,0.35)', text: RACK_COLORS.acc, dot: RACK_COLORS.acc },
+  connected: { border: 'rgba(16,185,129,0.35)', text: RACK_COLORS.greenText, dot: RACK_COLORS.green, pulse: false },
+  reconnecting: { border: 'rgba(155,221,255,0.35)', text: RACK_COLORS.acc, dot: RACK_COLORS.acc, pulse: true },
+  notPaired: { border: 'rgba(255,255,255,0.15)', text: 'rgba(255,255,255,0.55)', dot: 'rgba(255,255,255,0.35)', pulse: false },
+  syncing: { border: 'rgba(155,221,255,0.35)', text: RACK_COLORS.acc, dot: RACK_COLORS.acc, pulse: true },
 } as const;
 
 export function Pill({ tone, label }: { tone: keyof typeof TONE; label: string }) {
   const t = TONE[tone];
+  const op = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!t.pulse) {
+      op.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(op, { toValue: 0.3, duration: 600, useNativeDriver: true }),
+        Animated.timing(op, { toValue: 1, duration: 600, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [t.pulse, op]);
   return (
     <View style={[styles.pill, { borderColor: t.border }]}>
-      <View style={[styles.dot, { backgroundColor: t.dot }]} />
+      <Animated.View style={[styles.dot, { backgroundColor: t.dot, opacity: op }]} />
       <Text style={[styles.txt, { color: t.text }]} numberOfLines={1}>
         {label}
       </Text>

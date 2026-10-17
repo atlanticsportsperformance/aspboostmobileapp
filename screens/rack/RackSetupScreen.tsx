@@ -44,7 +44,7 @@ export default function RackSetupScreen() {
 
   const finish = useCallback(
     async (r: Rack) => {
-      await saveRackDevice({ rackId: r.id, rackName: r.name });
+      await saveRackDevice({ rackId: r.id, rackName: r.name, ovrDeviceName: r.ovrDeviceName });
       navigation.reset({ index: 0, routes: [{ name: 'RackMode' }] });
     },
     [navigation],

@@ -25,9 +25,9 @@
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
 
-import { reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
-import type { RackSessionRow, SetSummary, RepWrite } from './engine';
-import { pickLocalExercise, type TodayAthlete, type WrittenSet } from './api';
+import { nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
+import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
+import { pickLocalExercise, prescribedWeightFor, type TodayAthlete, type TodayExercise, type WrittenSet } from './api';
 import { withTimeout, type RackPersist } from './persist';
 
 export const TICK_MS = 1_000;
@@ -35,12 +35,17 @@ export const FLUSH_MS = 15_000;
 export const SEED_RETRY_MS = 5_000;
 export const SEED_REFRESH_MS = 60_000;
 export const RPC_TIMEOUT_MS = 10_000;
+/** A failed last-logged-weight read is retried after this long. */
+export const WEIGHT_RETRY_MS = 30_000;
 
 export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
   setActive(rackId: string, athleteId: string): Promise<RackSessionRow>;
   endSet(rackId: string, athleteId: string): Promise<RackSessionRow>;
   todaysWrittenSets(athleteIds: string[]): Promise<WrittenSet[]>;
+  /** Last logged weight for (athlete, exercise) — the load fallback when
+   *  neither the phone nor the plan gives one. Optional (tests). */
+  lastLoggedWeight?(athleteId: string, exerciseId: string): Promise<number | null>;
 }
 
 export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet'> & {
@@ -62,8 +67,17 @@ export interface RackExecutor {
   /** Today's athletes: dispatches contextMeta for every exercise and the
    *  iPad's localContext pick for the active athlete. */
   setToday(athletes: TodayAthlete[]): void;
-  /** Flush both queues now, ignoring back-off (e.g. realtime reconnect). */
-  flush(): void;
+  /** Flush both queues now, ignoring back-off (e.g. realtime reconnect).
+   *  Resolves when that flush pass is done. */
+  flush(): Promise<void>;
+  /** iPad exercise pick for an athlete (null clears). Applied as the engine's
+   *  localContext by the executor itself, after its own pick, so the two
+   *  never alternate. Cleared when the active athlete changes. */
+  setOverride(athleteId: string, ex: TodayExercise | null): void;
+  /** End any live set (iPad Done) and wait until its writes are queued. */
+  endLive(): Promise<void>;
+  /** Writes held in memory because their enqueue failed. */
+  unsavedCount(): { reps: number; sets: number };
   start(): void;
   stop(): void;
   /** Resolves when every effect and RPC queued so far has run (tests). */
@@ -139,13 +153,13 @@ export function createRackExecutor(opts: {
     flushForce = false;
     await persist.flush(force ? { force } : undefined);
   };
-  const flushSoon = (force = false) => {
+  const flushSoon = (force = false): Promise<void> => {
     if (force) flushForce = true;
     if (flushing) {
       flushAgain = true;
-      return;
+      return flushing;
     }
-    flushing = (async () => {
+    const p = (async () => {
       do {
         flushAgain = false;
         try {
@@ -157,6 +171,8 @@ export function createRackExecutor(opts: {
     })().finally(() => {
       flushing = null;
     });
+    flushing = p;
+    return p;
   };
 
   // ---------------------------------------------------------------- effects
@@ -306,6 +322,7 @@ export function createRackExecutor(opts: {
 
   const apply = (event: RackEvent, at: number) => {
     const before = state.activeAthleteId;
+    const ctxBefore = state.mode === 'rack' ? `${state.setState}|${ctxKey(nextContext(state))}` : '';
     const targetBefore = repTarget();
     const res = reduce(state, event, at);
     state = res.state;
@@ -319,8 +336,77 @@ export function createRackExecutor(opts: {
     if ((target !== targetBefore || state.activeAthleteId !== before) && (target || state.activeAthleteId)) {
       preloadSeeds();
     }
-    if (state.activeAthleteId !== before) pushLocalContext();
+    if (state.activeAthleteId !== before) {
+      if (override && override.athleteId !== state.activeAthleteId) override = null;
+      pushLocalContext();
+    }
+    if (event.type !== 'loadChanged' && (event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore)) deriveLoad();
     notify();
+  };
+
+  // ---------------------------------------------------------------- derived load
+
+  const ctxKey = (c: RackContext) => `${c.workoutInstanceId}:${c.routineExerciseId}:${c.exerciseId}:${c.setNumber}:${c.loadLb}`;
+  /** Last logged weight per `${athleteId}:${exerciseId}` (null = none logged). */
+  const lastWeight = new Map<string, number | null>();
+  const weightInFlight = new Set<string>();
+  const weightFailedAt = new Map<string, number>();
+
+  const findExercise = (athleteId: string, c: RackContext): TodayExercise | undefined => {
+    const a = today.find(t => t.athleteId === athleteId);
+    if (!a) return undefined;
+    if (c.routineExerciseId) {
+      const e = a.exercises.find(
+        x => x.routineExerciseId === c.routineExerciseId && (!c.workoutInstanceId || x.workoutInstanceId === c.workoutInstanceId),
+      );
+      if (e) return e;
+    }
+    return c.exerciseId ? a.exercises.find(x => x.exerciseId === c.exerciseId) : undefined;
+  };
+
+  const cachedLastWeight = (athleteId: string, exerciseId: string): number | null => {
+    const k = `${athleteId}:${exerciseId}`;
+    if (lastWeight.has(k)) return lastWeight.get(k) ?? null;
+    const failed = weightFailedAt.get(k);
+    if (!api.lastLoggedWeight || weightInFlight.has(k) || (failed != null && now() - failed < WEIGHT_RETRY_MS)) return null;
+    weightInFlight.add(k);
+    withTimeout(api.lastLoggedWeight(athleteId, exerciseId), RPC_TIMEOUT_MS, 'lastLoggedWeight')
+      .then(w => {
+        lastWeight.set(k, w);
+        weightFailedAt.delete(k);
+      })
+      .catch(e => {
+        weightFailedAt.set(k, now());
+        log('last logged weight failed', e);
+      })
+      .finally(() => {
+        weightInFlight.delete(k);
+        deriveLoad();
+        notify();
+      });
+    return null;
+  };
+
+  /**
+   * Load when the phone gave none (spec §3): the plan's prescribed weight for
+   * that routine exercise / set, else the athlete's last logged weight for the
+   * exercise. Dispatched as `loadChanged` (sensor + the set row's weight). A
+   * phone load always wins (the engine prefers the context's load).
+   */
+  const deriveLoad = () => {
+    if (state.mode !== 'rack' || state.setState === 'lifting') return;
+    const id = state.activeAthleteId;
+    let lb: number | null = null;
+    if (id) {
+      const c = nextContext(state);
+      if (c.loadLb == null && (c.routineExerciseId || c.exerciseId)) {
+        const ex = findExercise(id, c);
+        lb = ex ? prescribedWeightFor(ex, nextSetNumber(state, id)) : null;
+        const exerciseId = c.exerciseId ?? ex?.exerciseId ?? null;
+        if (lb == null && exerciseId) lb = cachedLastWeight(id, exerciseId);
+      }
+    }
+    if (lb !== state.loadOverrideLb) apply({ type: 'loadChanged', lb }, now());
   };
 
   const dispatch = (event: RackEvent, atMs?: number) => apply(event, atMs ?? now());
@@ -334,7 +420,9 @@ export function createRackExecutor(opts: {
     const a = today.find(t => t.athleteId === id);
     if (!a) return;
     const row = state.session;
-    const ex = pickLocalExercise(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
+    const picked =
+      override && override.athleteId === id && a.remaining.some(r => sameExercise(r, override!.ex)) ? override.ex : null;
+    const ex = picked ?? pickLocalExercise(a, [row?.workout_instance_id, row?.pending_workout_instance_id]);
     if (!ex) return;
     // The engine uses it only while the server row has no workout context.
     apply(
@@ -352,6 +440,16 @@ export function createRackExecutor(opts: {
       },
       now(),
     );
+  };
+
+  const sameExercise = (x: TodayExercise, y: TodayExercise) =>
+    x.workoutInstanceId === y.workoutInstanceId && x.routineExerciseId === y.routineExerciseId;
+  let override: { athleteId: string; ex: TodayExercise } | null = null;
+
+  const setOverride = (athleteId: string, ex: TodayExercise | null) => {
+    override = ex ? { athleteId, ex } : override?.athleteId === athleteId ? null : override;
+    if (athleteId === state.activeAthleteId) pushLocalContext();
+    notify();
   };
 
   const setToday = (athletes: TodayAthlete[]) => {
@@ -386,7 +484,13 @@ export function createRackExecutor(opts: {
       return () => listeners.delete(l);
     },
     setToday,
+    setOverride,
     flush: () => flushSoon(true),
+    async endLive() {
+      if (state.setState === 'lifting') dispatch({ type: 'ipadDone' });
+      await this.idle();
+    },
+    unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length }),
     start() {
       if (running) return;
       running = true;

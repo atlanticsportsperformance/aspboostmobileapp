@@ -18,6 +18,9 @@ export const RACK_DEVICE_KEY = 'rack_device_v1';
 export interface RackDevice {
   rackId: string;
   rackName: string;
+  /** Cached racks.ovr_device_name (null = no sensor paired), so an offline
+   *  boot still connects to the right sensor. Absent in older entries. */
+  ovrDeviceName?: string | null;
 }
 
 /** An iPad. Rack mode is offered only here (the Android rack is out of scope). */
@@ -39,7 +42,13 @@ export async function readRackDevice(): Promise<RackDevice | null> {
     const parsed = raw ? JSON.parse(raw) : null;
     current =
       parsed && typeof parsed.rackId === 'string' && typeof parsed.rackName === 'string'
-        ? { rackId: parsed.rackId, rackName: parsed.rackName }
+        ? {
+            rackId: parsed.rackId,
+            rackName: parsed.rackName,
+            ...(parsed.ovrDeviceName !== undefined
+              ? { ovrDeviceName: typeof parsed.ovrDeviceName === 'string' ? parsed.ovrDeviceName : null }
+              : {}),
+          }
         : null;
   } catch (e) {
     console.warn('[rack] read rack_device_v1 failed', e);
@@ -49,7 +58,10 @@ export async function readRackDevice(): Promise<RackDevice | null> {
 }
 
 export async function saveRackDevice(d: RackDevice): Promise<void> {
-  await AsyncStorage.setItem(RACK_DEVICE_KEY, JSON.stringify({ rackId: d.rackId, rackName: d.rackName }));
+  await AsyncStorage.setItem(
+    RACK_DEVICE_KEY,
+    JSON.stringify({ rackId: d.rackId, rackName: d.rackName, ovrDeviceName: d.ovrDeviceName ?? null }),
+  );
   current = { ...d };
   listeners.forEach(l => l(current ?? null));
 }
@@ -74,6 +86,39 @@ export function setActiveRackFlusher(fn: (() => Promise<void> | void) | null): v
   activeFlusher = fn;
 }
 
+/** Rack mode registers "end any live set (ipadDone) and wait for its writes"
+ *  here; the PIN-exit drain runs it first, so the set row is written. */
+let activeEnder: (() => Promise<void> | void) | null = null;
+export function setActiveRackEnder(fn: (() => Promise<void> | void) | null): void {
+  activeEnder = fn;
+}
+/** End the live set now (e.g. before handing the iPad to the Login screen). */
+export async function endActiveRackSet(): Promise<void> {
+  if (!activeEnder) return;
+  try {
+    await activeEnder();
+  } catch (e) {
+    console.warn('[rack] ending the live set failed', e);
+  }
+}
+
+/** Writes the executor holds in memory (storage enqueue failed) — counted
+ *  by the drain so it never reports drained while they exist. */
+let activeUnsaved: (() => { reps: number; sets: number }) | null = null;
+export function setActiveRackUnsaved(fn: (() => { reps: number; sets: number }) | null): void {
+  activeUnsaved = fn;
+}
+
+function withUnsaved(left: { reps: number; sets: number }): { reps: number; sets: number } {
+  if (!activeUnsaved || left.reps < 0) return left;
+  try {
+    const u = activeUnsaved();
+    return { reps: left.reps + u.reps, sets: left.sets + u.sets };
+  } catch {
+    return left;
+  }
+}
+
 export const DRAIN_TIMEOUT_MS = 10_000;
 const DRAIN_POLL_MS = 500;
 
@@ -94,6 +139,12 @@ export async function drainRackQueues(
 ): Promise<DrainResult> {
   const deadline = now() + timeoutMs;
   let left = { reps: 0, sets: 0 };
+  if (activeEnder) {
+    const end = activeEnder;
+    await bounded(Promise.resolve().then(end), deadline - now()).catch(e =>
+      console.warn('[rack] ending the live set failed during drain', e),
+    );
+  }
   for (;;) {
     if (activeFlusher) {
       const fn = activeFlusher;
@@ -105,7 +156,7 @@ export async function drainRackQueues(
     if (remaining <= 0) break;
     await bounded(persist.flush({ force: true }), remaining);
     try {
-      left = await persist.pending();
+      left = withUnsaved(await persist.pending());
     } catch (e) {
       console.warn('[rack] pending() failed during drain', e);
       left = { reps: -1, sets: -1 };
@@ -115,7 +166,7 @@ export async function drainRackQueues(
     await sleep(DRAIN_POLL_MS);
   }
   try {
-    left = await persist.pending();
+    left = withUnsaved(await persist.pending());
   } catch {
     // keep the last count
   }

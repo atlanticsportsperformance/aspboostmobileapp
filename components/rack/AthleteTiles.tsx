@@ -4,7 +4,7 @@
  * "+ Add", which opens a sheet of today's athletes not yet on the rack.
  */
 
-import React, { useState } from 'react';
+import React, { memo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { TodayAthlete } from '../../lib/rack/api';
 import { initialsOf, RACK_COLORS, type TileView } from '../../lib/rack/viewModel';
@@ -16,34 +16,38 @@ export interface AthleteTilesProps {
   onSelect: (athleteId: string) => void;
   /** "+" sheet pick → `selectAthlete` (rack_set_active). */
   onAdd: (athleteId: string) => void;
+  /** Row height (layout scales it). */
+  height?: number;
+  /** Portrait: 38 px avatar, tighter padding, 72 px Add. */
+  compact?: boolean;
 }
 
-export default function AthleteTiles({ tiles, addable, onSelect, onAdd }: AthleteTilesProps) {
+function AthleteTiles({ tiles, addable, onSelect, onAdd, height = 96, compact = false }: AthleteTilesProps) {
   const [sheet, setSheet] = useState(false);
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, { height }]}>
       {tiles.map(t => (
         <TouchableOpacity
           key={t.athleteId}
           activeOpacity={0.8}
-          style={[styles.tile, t.active && styles.on, t.away && styles.away, t.switching && styles.switching]}
+          style={[styles.tile, compact && styles.tileC, t.active && styles.on, t.away && styles.away, t.switching && styles.switching]}
           onPress={() => onSelect(t.athleteId)}
         >
-          <View style={[styles.av, t.active && styles.avOn]}>
-            <Text style={[styles.avTxt, t.active && styles.avTxtOn]}>{t.initials}</Text>
+          <View style={[styles.av, compact && styles.avC, t.active && styles.avOn]}>
+            <Text style={[styles.avTxt, compact && styles.avTxtC, t.active && styles.avTxtOn]}>{t.initials}</Text>
           </View>
           <View style={styles.txt}>
-            <Text style={styles.name} numberOfLines={1}>
+            <Text style={[styles.name, compact && styles.nameC]} numberOfLines={1}>
               {t.name}
             </Text>
-            <Text style={styles.sub} numberOfLines={1}>
+            <Text style={[styles.sub, compact && styles.subC]} numberOfLines={1} ellipsizeMode="tail">
               {t.subtitle}
             </Text>
             {!!t.status && <Text style={[styles.em, t.active && styles.emOn]}>{t.status}</Text>}
           </View>
         </TouchableOpacity>
       ))}
-      <TouchableOpacity activeOpacity={0.8} style={[styles.tile, styles.add]} onPress={() => setSheet(true)}>
+      <TouchableOpacity activeOpacity={0.8} style={[styles.tile, styles.add, compact && styles.addC]} onPress={() => setSheet(true)}>
         <Text style={styles.plus}>+</Text>
         <Text style={styles.addTxt}>Add</Text>
       </TouchableOpacity>
@@ -85,8 +89,10 @@ export default function AthleteTiles({ tiles, addable, onSelect, onAdd }: Athlet
   );
 }
 
+export default memo(AthleteTiles);
+
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: 16, height: 96 },
+  row: { flexDirection: 'row', gap: 16 },
   tile: {
     flex: 1,
     minWidth: 0,
@@ -99,6 +105,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
   },
+  tileC: { paddingHorizontal: 12, gap: 10 },
+  avC: { width: 38, height: 38 },
+  avTxtC: { fontSize: 13 },
+  nameC: { fontSize: 15 },
+  subC: { fontSize: 11 },
+  addC: { width: 72 },
   on: { borderColor: RACK_COLORS.acc, backgroundColor: 'rgba(155,221,255,0.07)' },
   away: { opacity: 0.5 },
   switching: { borderColor: 'rgba(155,221,255,0.45)', borderStyle: 'dashed' },

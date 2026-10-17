@@ -1,16 +1,17 @@
 /**
  * Rack iPad view model: pure mapping from the engine state (+ today's
- * athletes) to what the rack screen draws. No React / RN imports, so it is
- * unit-tested in node (`__tests__/rackViewModel.test.ts`).
+ * athletes) to what the rack screen draws, plus the layout math. No React /
+ * RN imports, so it is unit-tested in node (`__tests__/rackViewModel.test.ts`).
  */
 
 import type { Zone } from '../ovr/protocol';
 import type { OvrConnState } from '../ovr/ovr-device';
-import { nextContext, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
+import { nextContext, nextSetNumber, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
 import { pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
 
 // ---------------------------------------------------------------- colours
 
+/** Logger v2 restraint: zone blue, slow red, fast faint white. No warm hues. */
 export const RACK_COLORS = {
   bg: '#08090a',
   card: '#101113',
@@ -22,8 +23,6 @@ export const RACK_COLORS = {
   fast: 'rgba(255,255,255,0.9)',
   green: '#10B981',
   greenText: '#6EE7B7',
-  amber: '#F0883E',
-  amberText: '#F7B27A',
 } as const;
 
 /** Zone → colour: in = blue, slow = red, fast = faint white; no zone = white. */
@@ -32,6 +31,18 @@ export function zoneColor(z: Zone | null | undefined): string {
   if (z === 'slow') return RACK_COLORS.red;
   if (z === 'fast') return RACK_COLORS.fast;
   return '#ffffff';
+}
+
+/**
+ * A rep's colour (bars + the dial's landed arc). With a zone: a rep at or past
+ * the speed-drop stop is red even when it is in the zone (spec §3); otherwise
+ * the zone colour. Without a zone: neutral white. Partial: faint.
+ */
+export function repColor(r: { zone: Zone | null; partial: boolean; dropCue: boolean }, hasZone: boolean): string {
+  if (r.partial) return 'rgba(255,255,255,0.12)';
+  if (!hasZone) return '#ffffff';
+  if (r.dropCue) return RACK_COLORS.red;
+  return zoneColor(r.zone);
 }
 
 export function zoneWord(z: Zone | null | undefined): string {
@@ -46,6 +57,69 @@ export function velocityScale(...vs: (number | null | undefined)[]): number {
   const max = Math.max(0, ...vs.filter((v): v is number => typeof v === 'number' && isFinite(v)));
   if (max <= 1) return 1;
   return Math.ceil(max * 2) / 2;
+}
+
+// ---------------------------------------------------------------- layout
+
+export interface SafeInsets {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+export interface RackLayout {
+  mode: 'landscape' | 'portrait';
+  /** Safe-area height scale vs the design canvas (1180×820 / 820×1180). */
+  k: number;
+  dial: number;
+  bubble: number;
+  tilesH: number;
+  /** Minimum THIS SET bars height (the bars fill their card above this). */
+  barsMin: number;
+  /** Right column: athlete card (landscape) / replay panel (portrait). */
+  sideW: number;
+}
+
+const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+
+/**
+ * Layout from the window + safe area. Landscape when width > height (the
+ * approved rack-live.html), portrait otherwise (rack-portrait.html). Sizes
+ * scale from the SAFE-AREA height; the dial is capped so row 2 keeps at least
+ * `barsMin` of bars, and so dial + bubbles fit across.
+ *
+ * Fixed chrome (pt): outer padding 2×16, header 44, card padding 2×20 +
+ * border 2, card header 30 (16 line + 14 gap), gaps 16.
+ */
+export function rackLayout(width: number, height: number, insets: SafeInsets): RackLayout {
+  const H = height - insets.top - insets.bottom;
+  const W = width - insets.left - insets.right;
+  const cardChrome = 42 + 30; // padding + border + card header
+  const barsMin = 90;
+  const row2Min = cardChrome + barsMin;
+  const across = (dial: number) => dial + (2 * dial * 124) / 300; // dial + 2 bubbles
+
+  if (width > height) {
+    const k = clamp(H / 776, 0.7, 1.3);
+    const tilesH = Math.round(96 * Math.min(k, 1.15));
+    // pad 32 + header 44 + 3 gaps 48 + tiles; then row gap 16 + row 2 min.
+    const fixed = 32 + 44 + 48 + tilesH;
+    const dialByH = H - fixed - 16 - row2Min - cardChrome;
+    const dialByW = (W - 32 - 16 - 360 - 40 - 28 - 14) / (across(1) as number);
+    const dial = Math.floor(Math.max(160, Math.min(300 * k, dialByH, dialByW)));
+    return { mode: 'landscape', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 360 };
+  }
+
+  const k = clamp(H / 1136, 0.7, 1.3);
+  const tilesH = Math.round(88 * Math.min(k, 1.15));
+  const athleteH = 190; // kv grid (2 rows × ~67 + 10) + card padding/border
+  // pad 32 + header 44 + 4 gaps 64 + tiles + athlete card + row 3 min.
+  const fixed = 32 + 44 + 64 + tilesH + athleteH + row2Min;
+  const dialByH = H - fixed - cardChrome;
+  const dialByW = (W - 32 - 40 - 36 - 14) / (across(1) as number);
+  const dial = Math.floor(Math.max(160, Math.min(300 * k, dialByH, dialByW)));
+  return { mode: 'portrait', k, dial, bubble: Math.round((dial * 124) / 300), tilesH, barsMin, sideW: 230 };
 }
 
 // ---------------------------------------------------------------- sensor pill
@@ -63,16 +137,22 @@ export function shortSensorName(name: string | null | undefined): string {
   return name.replace(/^OVR_Velocity-?/, 'OVR-').replace(/-$/, '');
 }
 
+/**
+ * `pairedName` null + not the fake = no sensor paired: the iPad does NOT
+ * connect (it could take another rack's sensor) and says so.
+ */
 export function sensorPillOf(
   state: OvrConnState,
   deviceName: string | null | undefined,
   pairedName: string | null | undefined,
+  fake = false,
 ): SensorPill {
+  if (!pairedName && !fake) return { kind: 'notPaired', label: 'Sensor not paired · pair in setup' };
   if (state === 'connected') return { kind: 'connected', label: `${shortSensorName(deviceName ?? pairedName)} connected` };
   if (state === 'scanning' || state === 'connecting' || state === 'reconnecting') {
-    return { kind: 'reconnecting', label: pairedName ? `Reconnecting ${shortSensorName(pairedName)}…` : 'Looking for sensor…' };
+    return { kind: 'reconnecting', label: `Reconnecting ${shortSensorName(pairedName ?? deviceName)}…` };
   }
-  return { kind: 'notPaired', label: pairedName ? `${shortSensorName(pairedName)} not connected` : 'Sensor not paired' };
+  return { kind: 'notPaired', label: `${shortSensorName(pairedName ?? deviceName)} not connected` };
 }
 
 // ---------------------------------------------------------------- names
@@ -101,10 +181,7 @@ export function exerciseFor(
   return undefined;
 }
 
-/** A "rack exercise" is one the coach gave a velocity target. */
-export function isRackExercise(ex: Pick<TodayExercise, 'zoneMin' | 'zoneMax'> | undefined): boolean {
-  return !!ex && (ex.zoneMin != null || ex.zoneMax != null);
-}
+const exLabel = (e: TodayExercise) => (e.code ? `${e.code} · ${e.name}` : e.name);
 
 // ---------------------------------------------------------------- view types
 
@@ -113,6 +190,8 @@ export interface RepBarView {
   v: number;
   partial: boolean;
   zone: Zone | null;
+  /** At/past the speed-drop stop (only meaningful with a zone). */
+  dropCue: boolean;
   /** "0.52", or "—" for a partial rep. */
   label: string;
 }
@@ -125,16 +204,16 @@ export interface SummaryView {
   drop: string;
   footer: string;
   endedBy: EndedBy;
+  /** When the summary stops showing (null = until the engine leaves summary). */
+  expiresAtMs: number | null;
 }
-
-export type TileStatus = 'UP NOW' | 'NEXT' | string;
 
 export interface TileView {
   athleteId: string;
   initials: string;
   name: string;
   subtitle: string;
-  status: TileStatus;
+  status: string;
   active: boolean;
   away: boolean;
   switching: boolean;
@@ -145,14 +224,20 @@ export interface RackView {
   statusText: string;
   dropCue: boolean;
   athlete: { id: string; name: string; firstName: string; initials: string } | null;
+  /** Header bold line: the active athlete's workout name. */
+  workoutName: string | null;
   exerciseName: string;
   setNumber: number | null;
   setsPrescribed: number | null;
+  /** Prescribed reps (plan), null when not prescribed. */
+  repsTarget: number | null;
   /** "Back Squat · Set 1 of 3". */
   exerciseLine: string;
   /** "FROM TYLER'S PHONE" / "PICKED ON THE IPAD" / "FREE LIFT". */
   sourceLine: string;
   contextSource: 'phone' | 'ipad' | 'none';
+  /** Routine exercise the card is showing (picker highlight). */
+  routineExerciseId: string | null;
   loadLb: number | null;
   zone: [number, number] | null;
   dropStopPct: number | null;
@@ -165,7 +250,7 @@ export interface RackView {
   /** Drop line height (m/s): best × (1 − stop%), only with a zone + stop %. */
   dropLineV: number | null;
   /** Newest rep (drives the dial count-up); null when no set is on screen. */
-  lastRep: { key: string; v: number; partial: boolean; zone: Zone | null } | null;
+  lastRep: { key: string; v: number; partial: boolean; zone: Zone | null; dropCue: boolean } | null;
   lifting: boolean;
   summary: SummaryView | null;
   tiles: TileView[];
@@ -195,25 +280,18 @@ export function repBars(reps: EngineRep[], prefix: string): RepBarView[] {
     v: r.v,
     partial: r.partial,
     zone: r.partial ? null : r.zone,
+    dropCue: !r.partial && r.dropCue,
     label: r.partial ? '—' : r.v.toFixed(2),
   }));
-}
-
-/** Number shown for the next set: max(phone number, high-water + 1); held after an idle end. */
-function nextSetNumber(s: RackEngineState, athleteId: string, ctx: RackContext): number | null {
-  if (ctx.workoutInstanceId == null || ctx.routineExerciseId == null) return null;
-  const rec = s.lastEndByAthlete[athleteId];
-  if (rec?.hold && rec.rawContext.workoutInstanceId === ctx.workoutInstanceId && rec.rawContext.routineExerciseId === ctx.routineExerciseId) {
-    return rec.setNumber;
-  }
-  const hw = s.setHighWater[`${athleteId}:${ctx.workoutInstanceId}:${ctx.routineExerciseId}`] ?? 0;
-  return Math.max(ctx.setNumber ?? 0, hw + 1);
 }
 
 function possessive(first: string): string {
   const up = first.toUpperCase();
   return up.endsWith('S') ? `${up}'` : `${up}'S`;
 }
+
+const sameEx = (a: Pick<RackContext, 'workoutInstanceId' | 'routineExerciseId'>, b: Pick<RackContext, 'workoutInstanceId' | 'routineExerciseId'>) =>
+  a.workoutInstanceId === b.workoutInstanceId && a.routineExerciseId === b.routineExerciseId;
 
 export interface RackViewInput {
   state: RackEngineState;
@@ -238,8 +316,7 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
       : null;
 
   // Context: the live set's frozen one, else the ended set's, else the next one.
-  const next = nextContext(s);
-  const ctx: RackContext = shownSet ? shownSet.context : next;
+  const ctx: RackContext = shownSet ? shownSet.context : nextContext(s);
   const ex = exerciseFor(active, ctx);
   const meta = ctx.exerciseId ? s.metaByExercise[ctx.exerciseId] : undefined;
   const zone: [number, number] | null = shownSet
@@ -250,15 +327,23 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
         ? [ex.zoneMin, ex.zoneMax]
         : null;
   const dropStopPct = shownSet ? shownSet.dropStopPct : meta?.dropStopPct ?? ex?.dropStopPct ?? null;
-  const setNumber = shownSet ? shownSet.context.setNumber : activeId ? nextSetNumber(s, activeId, ctx) : null;
+  const setNumber = shownSet ? shownSet.context.setNumber : activeId ? nextSetNumber(s, activeId) : null;
   const loadLb = shownSet ? shownSet.context.loadLb : ctx.loadLb ?? s.loadOverrideLb;
 
-  // Where the context came from.
-  const serverHasWorkout =
-    s.session != null &&
-    (s.session.workout_instance_id != null || s.session.pending_workout_instance_id != null);
-  const contextSource: RackView['contextSource'] =
-    ctx.workoutInstanceId == null ? 'none' : serverHasWorkout ? 'phone' : 'ipad';
+  // Where the context came from. A shown set keeps its own origin: it came
+  // from the iPad when it matches the iPad pick and the row's LIVE context is
+  // empty (a later phone pick only fills pending_*).
+  const row = s.session;
+  const local = s.localContext && s.localContext.athleteId === activeId ? s.localContext : null;
+  let contextSource: RackView['contextSource'];
+  if (ctx.workoutInstanceId == null) contextSource = 'none';
+  else if (shownSet) {
+    contextSource =
+      local && sameEx(local, shownSet.rawContext) && (row == null || row.workout_instance_id == null) ? 'ipad' : 'phone';
+  } else {
+    const serverHasWorkout = row != null && (row.workout_instance_id != null || row.pending_workout_instance_id != null);
+    contextSource = serverHasWorkout ? 'phone' : 'ipad';
+  }
   const sourceLine =
     contextSource === 'phone' ? `FROM ${possessive(firstName)} PHONE` : contextSource === 'ipad' ? 'PICKED ON THE IPAD' : 'FREE LIFT';
 
@@ -269,12 +354,16 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
       ? `${exerciseName} · Set ${setNumber}${setsPrescribed ? ` of ${setsPrescribed}` : ''}`
       : exerciseName;
 
+  const workoutName = active
+    ? (active.instances.find(i => i.workoutInstanceId === ctx.workoutInstanceId) ?? active.instances[0])?.workoutName ?? null
+    : null;
+
   const reps = shownSet?.reps ?? [];
   const full = reps.filter(r => !r.partial);
   const bestV = full.length ? Math.max(...full.map(r => r.v)) : null;
   const lastFull = full[full.length - 1];
   const dropPct = lastFull?.dropPct ?? null;
-  const dropCue = lifting && !!lastFull?.dropCue;
+  const dropCue = lifting && !!zone && !!lastFull?.dropCue;
   const dropLineV = zone && dropStopPct != null && bestV != null ? bestV * (1 - dropStopPct / 100) : null;
   const newest = reps[reps.length - 1];
   const setKey = shownSet ? `${shownSet.athleteId}:${shownSet.startedAtMs}` : 'none';
@@ -290,38 +379,36 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   // Summary overlay.
   let summary: SummaryView | null = null;
   const ended = s.lastEnded;
-  if (
-    s.setState === 'summary' &&
-    ended &&
-    ended.endedBy &&
-    ended.endedAtMs != null &&
-    (ended.endedBy === 'idle' || nowMs - ended.endedAtMs < SUMMARY_MS)
-  ) {
-    const efull = ended.reps.filter(r => !r.partial);
-    const ebest = efull.length ? Math.max(...efull.map(r => r.v)) : null;
-    const eavg = efull.length ? efull.reduce((a, r) => a + r.v, 0) / efull.length : null;
-    const elast = efull[efull.length - 1];
-    const n = ended.context.setNumber;
-    const what = ended.free ? 'REPS SAVED' : n != null ? `SET ${n} SAVED` : 'SET SAVED';
-    const lb = ended.context.loadLb;
-    const nextUp = s.queue.find(id => id !== ended.athleteId);
-    const nextName = nextUp ? findAthlete(today, nextUp)?.firstName ?? 'next athlete' : null;
-    summary = {
-      title: `${what} · ${END_LABEL[ended.endedBy]}`,
-      big: lb != null ? `${lb} lb × ${efull.length}` : `${efull.length} rep${efull.length === 1 ? '' : 's'}`,
-      avg: fmtV(eavg),
-      best: fmtV(ebest),
-      drop: elast?.dropPct != null ? `${elast.dropPct}%` : '—',
-      footer:
-        ended.endedBy === 'idle'
-          ? 'Saved · tap to edit on the phone'
-          : ended.athleteId !== activeId && activeId
-            ? `${findAthlete(today, activeId)?.firstName ?? 'Next athlete'} is up`
-            : nextName
-              ? `Next up: ${nextName}`
-              : 'Same lifter · next set',
-      endedBy: ended.endedBy,
-    };
+  if (s.setState === 'summary' && ended && ended.endedBy && ended.endedAtMs != null) {
+    const expiresAtMs = ended.endedBy === 'idle' ? null : ended.endedAtMs + SUMMARY_MS;
+    if (expiresAtMs == null || nowMs < expiresAtMs) {
+      const efull = ended.reps.filter(r => !r.partial);
+      const ebest = efull.length ? Math.max(...efull.map(r => r.v)) : null;
+      const eavg = efull.length ? efull.reduce((a, r) => a + r.v, 0) / efull.length : null;
+      const elast = efull[efull.length - 1];
+      const n = ended.context.setNumber;
+      const what = ended.free ? 'REPS SAVED' : n != null ? `SET ${n} SAVED` : 'SET SAVED';
+      const lb = ended.context.loadLb;
+      const nextUp = s.queue.find(id => id !== ended.athleteId);
+      const nextName = nextUp ? findAthlete(today, nextUp)?.firstName ?? 'next athlete' : null;
+      summary = {
+        title: `${what} · ${END_LABEL[ended.endedBy]}`,
+        big: lb != null ? `${lb} lb × ${efull.length}` : `${efull.length} rep${efull.length === 1 ? '' : 's'}`,
+        avg: fmtV(eavg),
+        best: fmtV(ebest),
+        drop: elast?.dropPct != null ? `${elast.dropPct}%` : '—',
+        footer:
+          ended.endedBy === 'idle'
+            ? 'Saved · tap to edit on the phone'
+            : ended.athleteId !== activeId && activeId
+              ? `${findAthlete(today, activeId)?.firstName ?? 'Next athlete'} is up`
+              : nextName
+                ? `Next up: ${nextName}`
+                : 'Same lifter · next set',
+        endedBy: ended.endedBy,
+        expiresAtMs,
+      };
+    }
   }
 
   // Tiles: active first, then the queue (server order).
@@ -333,12 +420,14 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     const isActive = id === activeId;
     const qpos = queue.indexOf(id);
     const status = isActive ? 'UP NOW' : qpos === 0 ? 'NEXT' : qpos > 0 ? `#${qpos + 1} IN LINE` : '';
-    // Away: a queued athlete whose phone is on a non-rack exercise (only when known).
+    // Away: a queued athlete whose phone moved on from the exercise of their
+    // last set on this rack (known only from rows seen while they were up).
     const pc = !isActive ? phoneContexts[id] : undefined;
-    const pcEx = pc ? exerciseFor(a, pc) : undefined;
-    const away = !!pcEx && !isRackExercise(pcEx);
+    const lastSet = s.lastEndByAthlete[id]?.set;
+    const away = !!pc && !!lastSet && pc.routineExerciseId != null && !sameEx(pc, lastSet.context);
+    const pcEx = away && pc ? exerciseFor(a, pc) : undefined;
     let subtitle: string;
-    if (away && pcEx) subtitle = `On ${pcEx.name}`;
+    if (away) subtitle = pcEx ? `On ${exLabel(pcEx)}` : 'On another exercise';
     else if (isActive) subtitle = exerciseLine;
     else {
       const pick = a ? pickLocalExercise(a) : null;
@@ -385,12 +474,15 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     athlete: activeId
       ? { id: activeId, name: active ? `${active.firstName} ${active.lastName}`.trim() : 'Athlete', firstName, initials: active ? initialsOf(active.firstName, active.lastName) : '?' }
       : null,
+    workoutName,
     exerciseName,
     setNumber,
     setsPrescribed,
+    repsTarget: ex?.repsTarget ?? null,
     exerciseLine,
     sourceLine,
     contextSource,
+    routineExerciseId: ctx.routineExerciseId,
     loadLb,
     zone,
     dropStopPct,
@@ -399,7 +491,9 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     bestV,
     dropPct,
     dropLineV,
-    lastRep: newest ? { key: `${setKey}:${newest.repIndex}`, v: newest.v, partial: newest.partial, zone: newest.partial ? null : newest.zone } : null,
+    lastRep: newest
+      ? { key: `${setKey}:${newest.repIndex}`, v: newest.v, partial: newest.partial, zone: newest.partial ? null : newest.zone, dropCue: !newest.partial && newest.dropCue }
+      : null,
     lifting,
     summary,
     tiles,
@@ -435,20 +529,4 @@ export function phoneContextOfRow(s: RackEngineState): { athleteId: string; ctx:
       };
   if (ctx.workoutInstanceId == null) return null;
   return { athleteId: row.active_athlete_id, ctx };
-}
-
-/** The `localContext` event for an iPad exercise pick. */
-export function localContextFor(athleteId: string, ex: TodayExercise) {
-  return {
-    type: 'localContext' as const,
-    athleteId,
-    workoutInstanceId: ex.workoutInstanceId,
-    routineExerciseId: ex.routineExerciseId,
-    exerciseId: ex.exerciseId,
-    setNumber: null,
-    loadLb: null,
-    zoneMin: ex.zoneMin,
-    zoneMax: ex.zoneMax,
-    dropStopPct: ex.dropStopPct,
-  };
 }

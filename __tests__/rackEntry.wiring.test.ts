@@ -42,7 +42,7 @@ describe('Rack setup', () => {
     expect(S).toContain("update({ ovr_device_name: deviceName })");
     expect(S).toContain('Skip — pair later');
     expect(S).toContain('isSet = await api.pinIsSet();');
-    const save = S.indexOf('await saveRackDevice({ rackId: r.id, rackName: r.name });');
+    const save = S.indexOf('await saveRackDevice({ rackId: r.id, rackName: r.name, ovrDeviceName: r.ovrDeviceName });');
     const enter = S.indexOf("routes: [{ name: 'RackMode' }]");
     expect(save).toBeGreaterThan(-1);
     expect(enter).toBeGreaterThan(save);
@@ -100,9 +100,9 @@ describe('Rack PIN exit', () => {
     const body = S.slice(S.indexOf('const drainThenLeave'), S.indexOf('const submit'));
     expect(body.indexOf('drainRackQueues(persist)')).toBeLessThan(body.indexOf('await leave()'));
   });
-  it('re-locks portrait on the way out', () => {
+  it('restores the base orientation on the way out (phone portrait; iPad never forced)', () => {
     const leave = S.slice(S.indexOf('const leave = async'), S.indexOf('const drainThenLeave'));
-    expect(leave).toContain('await lockPortrait();');
+    expect(leave).toContain('await applyBaseOrientation();');
   });
   it('Rack mode has no sign-out', () => {
     expect(read('screens/rack/RackModeScreen.tsx')).not.toMatch(/signOut/);
@@ -116,9 +116,10 @@ describe('boot to rack', () => {
     expect(A).toContain('if (!navReady || !rolesResolved || !isStaff || !rackDevice) return;');
     expect(A).toContain("nav.reset({ index: 0, routes: [{ name: 'RackMode' }] });");
   });
-  it('registers the rack routes and locks portrait at start', () => {
+  it('registers the rack routes and applies the base orientation at start', () => {
     for (const r of ['RackSetup', 'RackMode', 'RackPinExit']) expect(A).toContain(`name="${r}"`);
-    expect(A).toMatch(/\nlockPortrait\(\);/);
+    expect(A).toMatch(/\napplyBaseOrientation\(\);/);
+    expect(A).not.toMatch(/lockPortrait|lockRackLandscape/);
     expect(A).toContain('onStateChange={() => syncOrientationForRoute(');
   });
   it('the stored key is rack_device_v1', () => {

@@ -1,7 +1,7 @@
 import * as engineModule from '../lib/rack/engine';
 import { createRackEngine, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
 import { createRackExecutor, SEED_RETRY_MS, SEED_REFRESH_MS, type ExecutorApi } from '../lib/rack/executor';
-import type { TodayAthlete } from '../lib/rack/api';
+import type { TodayAthlete, TodayExercise } from '../lib/rack/api';
 import type { WrittenSet } from '../lib/rack/api';
 import type { OvrRep } from '../lib/ovr/protocol';
 
@@ -345,3 +345,158 @@ describe('ticks and flushes', () => {
   });
 });
 
+
+// ---------------------------------------------------------------- Task 9 fix round 1
+
+const tEx = (over: Partial<TodayExercise>): TodayExercise => ({
+  workoutInstanceId: 'wi-9',
+  routineExerciseId: 're-a',
+  exerciseId: 'ex-a',
+  name: 'A',
+  sets: 3,
+  completedSets: 0,
+  zoneMin: null,
+  zoneMax: null,
+  dropStopPct: null,
+  ...over,
+});
+const todayOf = (athleteId: string, exs: TodayExercise[]): TodayAthlete => ({
+  athleteId,
+  firstName: athleteId,
+  lastName: '',
+  instances: [{ workoutInstanceId: 'wi-9', status: 'not_started', createdAt: '2026-10-17T10:00:00Z', exercises: exs, remaining: exs }],
+  exercises: exs,
+  remaining: exs,
+});
+const noPhone = { workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null };
+
+describe('exercise override lives in the executor', () => {
+  it('override → idle end → setToday keeps the idle hold (no executor pick in between)', async () => {
+    // rack_end_set leaves Tyler up (nobody queued).
+    const r = rig({
+      api: {
+        startSet: jest.fn(async (_r, a, st) => row({ ...noPhone, active_athlete_id: a, state: 'lifting', set_started_at: st, queue: [], updated_at: iso(T0 + 1) })),
+        endSet: jest.fn(async () => row({ ...noPhone, queue: [], updated_at: iso(T0 + 61_001) })),
+      },
+    });
+    r.ex.dispatch({ type: 'sessionSync', row: row(noPhone) });
+    await r.ex.idle();
+    const A = tEx({});
+    const B = tEx({ routineExerciseId: 're-b', exerciseId: 'ex-b', name: 'B' });
+    r.ex.setToday([todayOf('tyler', [A, B])]);
+    r.ex.setOverride('tyler', B);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.advance(61_000);
+    r.ex.dispatch({ type: 'tick' });
+    await r.ex.idle();
+    expect(r.ex.getState().lastEndByAthlete.tyler).toMatchObject({ hold: true, endedBy: 'idle' });
+    const before = events.length;
+    r.ex.setToday([todayOf('tyler', [A, B])]);
+    const pushed = events.slice(before).filter(e => e.type === 'localContext');
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(pushed.every(e => (e as any).routineExerciseId === 're-b')).toBe(true);
+    expect(r.ex.getState().lastEndByAthlete.tyler.hold).toBe(true);
+    // The next rep (past the 3 s late-rep window) reopens the same set.
+    r.advance(5_000);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.78) });
+    expect(r.ex.getState().live).toMatchObject({ context: { routineExerciseId: 're-b', setNumber: 1 } });
+  });
+
+  it('the override is cleared when the active athlete changes', async () => {
+    const r = rig();
+    r.ex.dispatch({ type: 'sessionSync', row: row(noPhone) });
+    const A = tEx({});
+    const B = tEx({ routineExerciseId: 're-b', exerciseId: 'ex-b', name: 'B' });
+    r.ex.setToday([todayOf('tyler', [A, B]), todayOf('jake', [A, B])]);
+    r.ex.setOverride('tyler', B);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, active_athlete_id: 'jake', updated_at: iso(T0 + 1) }) });
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, active_athlete_id: 'tyler', updated_at: iso(T0 + 2) }) });
+    expect(r.ex.getState().localContext).toMatchObject({ athleteId: 'tyler', routineExerciseId: 're-a' });
+  });
+});
+
+describe('derived load (no phone load)', () => {
+  it("uses the plan's weight for that set and writes it to the sensor + set row", async () => {
+    const r = rig({
+      api: {
+        startSet: jest.fn(async (_r, a, st) => row({ ...noPhone, active_athlete_id: a, state: 'lifting', set_started_at: st, queue: [], updated_at: iso(T0 + 1) })),
+        endSet: jest.fn(async () => row({ ...noPhone, queue: [], updated_at: iso(T0 + 2) })),
+      },
+    });
+    r.ex.dispatch({ type: 'sessionSync', row: row(noPhone) });
+    r.ex.setToday([todayOf('tyler', [tEx({ prescribedWeights: [185, 195, 205], prescribedWeight: 175 })])]);
+    expect(r.ex.getState().loadOverrideLb).toBe(185);
+    await r.ex.idle();
+    expect(r.sensor.writeLoad).toHaveBeenCalledWith(185);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ setNumber: 1, loadLb: 185 });
+    // Next set → set 2's weight.
+    expect(r.ex.getState().loadOverrideLb).toBe(195);
+  });
+
+  it('falls back to the last logged weight (one query, cached per athlete+exercise)', async () => {
+    const lastLoggedWeight = jest.fn(async () => 225);
+    const r = rig({ api: { lastLoggedWeight } });
+    r.ex.dispatch({ type: 'sessionSync', row: row(noPhone) });
+    r.ex.setToday([todayOf('tyler', [tEx({})])]);
+    await flushMicro();
+    await r.ex.idle();
+    expect(lastLoggedWeight).toHaveBeenCalledTimes(1);
+    expect(lastLoggedWeight).toHaveBeenCalledWith('tyler', 'ex-a');
+    expect(r.ex.getState().loadOverrideLb).toBe(225);
+    expect(r.sensor.writeLoad).toHaveBeenCalledWith(225);
+    r.ex.setToday([todayOf('tyler', [tEx({})])]);
+    r.ex.dispatch({ type: 'tick' });
+    await flushMicro();
+    expect(lastLoggedWeight).toHaveBeenCalledTimes(1);
+  });
+
+  it('a phone load always wins', async () => {
+    const lastLoggedWeight = jest.fn(async () => 225);
+    const r = rig({ api: { lastLoggedWeight } });
+    r.ex.setToday([todayOf('tyler', [tEx({ workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat', prescribedWeight: 175 })])]);
+    r.ex.dispatch({ type: 'sessionSync', row: row() }); // phone: 205
+    await flushMicro();
+    expect(r.ex.getState().loadOverrideLb).toBeNull();
+    expect(lastLoggedWeight).not.toHaveBeenCalled();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    expect(r.ex.getState().live?.context.loadLb).toBe(205);
+  });
+
+  it('no athlete → the derived load is cleared', () => {
+    const r = rig();
+    r.ex.dispatch({ type: 'sessionSync', row: row(noPhone) });
+    r.ex.setToday([todayOf('tyler', [tEx({ prescribedWeight: 175 })])]);
+    expect(r.ex.getState().loadOverrideLb).toBe(175);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ ...noPhone, active_athlete_id: null, queue: [], updated_at: iso(T0 + 1) }) });
+    expect(r.ex.getState().loadOverrideLb).toBeNull();
+  });
+});
+
+describe('PIN-exit helpers', () => {
+  it('endLive ends a live set with ipadDone and waits for its write', async () => {
+    const r = rig({ api: { endSet: jest.fn(async () => row({ queue: [], updated_at: iso(T0 + 1) })) } });
+    r.ex.dispatch({ type: 'sessionSync', row: row() });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.endLive();
+    expect(events).toContainEqual({ type: 'ipadDone' });
+    expect(r.persist.endSet).toHaveBeenCalledTimes(1);
+    expect(r.ex.getState().setState).toBe('summary');
+  });
+  it('endLive does nothing when not lifting', async () => {
+    const r = rig();
+    r.ex.dispatch({ type: 'sessionSync', row: row() });
+    await r.ex.endLive();
+    expect(events).not.toContainEqual({ type: 'ipadDone' });
+  });
+  it('flush() returns the flush promise; unsavedCount reports memory-held writes', async () => {
+    const r = rig({ persist: { writeRep: jest.fn(async () => { throw new Error('disk full'); }) } });
+    r.ex.dispatch({ type: 'sessionSync', row: row() });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.idle();
+    expect(r.ex.unsavedCount()).toEqual({ reps: 1, sets: 0 });
+    await expect(r.ex.flush()).resolves.toBeUndefined();
+  });
+});

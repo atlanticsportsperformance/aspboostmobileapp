@@ -56,6 +56,22 @@ export interface TodayExercise {
   zoneMin: number | null;
   zoneMax: number | null;
   dropStopPct: number | null;
+  /** Block code as the logger shows it ("A2"); null when unknown. */
+  code?: string | null;
+  /** Prescribed reps for set 1 (per-set metric_values.reps, else metric_targets.reps). */
+  repsTarget?: number | null;
+  /** Prescribed weight (lb) per 0-indexed set (set_configurations[n].metric_values.weight). */
+  prescribedWeights?: (number | null)[];
+  /** Exercise-level prescribed weight (metric_targets.weight). */
+  prescribedWeight?: number | null;
+}
+
+/** The plan's weight for a 1-based set: per-set value, else the exercise's. */
+export function prescribedWeightFor(ex: TodayExercise, setNumber: number | null): number | null {
+  const i = (setNumber ?? 1) - 1;
+  const perSet = ex.prescribedWeights?.[i];
+  if (perSet != null) return perSet;
+  return ex.prescribedWeight ?? null;
 }
 
 /** One of today's workout instances for an athlete (not skipped/completed). */
@@ -63,6 +79,8 @@ export interface TodayInstance {
   workoutInstanceId: string;
   status: string;
   createdAt: string;
+  /** workouts.name (header). */
+  workoutName?: string | null;
   /** Every (non-placeholder) exercise, in workout order. */
   exercises: TodayExercise[];
   /** Exercises with sets still to do, in workout order. */
@@ -208,8 +226,9 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         .select(
           `id, athlete_id, scheduled_date, status, created_at,
            athletes!inner ( id, org_id, first_name, last_name ),
-           workouts ( id, routines ( id, order_index, routine_exercises (
+           workouts ( id, name, routines ( id, order_index, routine_exercises (
              id, order_index, sets, exercise_id, is_placeholder, notes_only,
+             metric_targets, set_configurations,
              velocity_min_mps, velocity_max_mps, speed_drop_stop_pct,
              exercises ( id, name, is_placeholder ) ) ) )`,
         )
@@ -228,9 +247,14 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       for (const wi of ordered) {
         const routines = [...(wi.workouts?.routines ?? [])].sort(byOrder);
         const exercises: TodayExercise[] = [];
-        for (const r of routines) {
-          for (const re of [...(r.routine_exercises ?? [])].sort(byOrder)) {
-            if (re.notes_only || re.is_placeholder || re.exercises?.is_placeholder || !re.exercise_id) continue;
+        routines.forEach((r: any, ri: number) => {
+          // Code index counts the rows the logger lists (true placeholders dropped).
+          const listed = [...(r.routine_exercises ?? [])]
+            .sort(byOrder)
+            .filter((re: any) => !((re.is_placeholder || re.exercises?.is_placeholder) && !re.notes_only));
+          listed.forEach((re: any, ei: number) => {
+            if (re.notes_only || re.is_placeholder || re.exercises?.is_placeholder || !re.exercise_id) return;
+            const cfg: any[] = Array.isArray(re.set_configurations) ? re.set_configurations : [];
             exercises.push({
               workoutInstanceId: wi.id,
               routineExerciseId: re.id,
@@ -241,13 +265,18 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
               zoneMin: num(re.velocity_min_mps),
               zoneMax: num(re.velocity_max_mps),
               dropStopPct: num(re.speed_drop_stop_pct),
+              code: `${String.fromCharCode(65 + ri)}${ei + 1}`,
+              repsTarget: num(cfg[0]?.metric_values?.reps) ?? num(re.metric_targets?.reps),
+              prescribedWeights: cfg.map(c => num(c?.metric_values?.weight)),
+              prescribedWeight: num(re.metric_targets?.weight),
             });
-          }
-        }
+          });
+        });
         const inst: TodayInstance = {
           workoutInstanceId: wi.id,
           status: wi.status,
           createdAt: wi.created_at,
+          workoutName: wi.workouts?.name ?? null,
           exercises,
           remaining: exercises.filter(e => e.completedSets < (e.sets ?? 1)),
         };
@@ -270,6 +299,21 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       return [...byAthlete.values()].sort((a, b) =>
         `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`),
       );
+    },
+
+    /** The athlete's most recent logged weight (lb) for an exercise, or null. */
+    async lastLoggedWeight(athleteId: string, exerciseId: string): Promise<number | null> {
+      const { data, error } = await client
+        .from('exercise_logs')
+        .select('actual_weight')
+        .eq('athlete_id', athleteId)
+        .eq('exercise_id', exerciseId)
+        .not('actual_weight', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (error) throw new RackRpcError('exercise_logs', error);
+      const w = num(((data as any[]) ?? [])[0]?.actual_weight);
+      return w != null && w > 0 ? w : null;
     },
 
     /**

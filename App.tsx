@@ -47,10 +47,10 @@ import LoadingScreen from './screens/LoadingScreen';
 import { StatusBar } from 'expo-status-bar';
 import { useOutboxForegroundSync } from './hooks/useOutboxForegroundSync';
 import { readRackDevice, subscribeRackDevice, type RackDevice } from './lib/rack/device';
-import { isRackRoute, lockPortrait, syncOrientationForRoute } from './lib/rack/orientation';
+import { applyBaseOrientation, isRackRoute, syncOrientationForRoute } from './lib/rack/orientation';
 
-// Everything is portrait except the Rack screens on an iPad (lib/rack/orientation).
-lockPortrait();
+// Phones are portrait-only; the iPad is never orientation-forced (lib/rack/orientation).
+applyBaseOrientation();
 
 const Stack = createNativeStackNavigator();
 
@@ -281,7 +281,7 @@ function AppContent() {
             <Stack.Screen name="LeagueStats" getComponent={() => require('./screens/LeagueStatsScreen').default} />
             <Stack.Screen name="LeagueGameLog" getComponent={() => require('./screens/LeagueGameLogScreen').default} />
             <Stack.Screen name="LeagueGameDetail" getComponent={() => require('./screens/LeagueGameDetailScreen').default} />
-            {/* Rack mode (staff, iPad only) — landscape via lib/rack/orientation */}
+            {/* Rack mode (staff, iPad only) — iPad follows the device orientation (lib/rack/orientation) */}
             <Stack.Screen name="RackSetup" getComponent={() => require('./screens/rack/RackSetupScreen').default} />
             <Stack.Screen name="RackMode" options={{ gestureEnabled: false }} getComponent={() => require('./screens/rack/RackModeScreen').default} />
             <Stack.Screen name="RackPinExit" getComponent={() => require('./screens/rack/RackPinExit').default} />

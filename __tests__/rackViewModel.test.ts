@@ -4,8 +4,9 @@ import type { TodayAthlete, TodayExercise } from '../lib/rack/api';
 import {
   buildRackView,
   initialsOf,
-  localContextFor,
   phoneContextOfRow,
+  rackLayout,
+  repColor,
   sensorPillOf,
   shortSensorName,
   SUMMARY_MS,
@@ -54,7 +55,7 @@ const ex = (over: Partial<TodayExercise>): TodayExercise => ({
 });
 
 const SQUAT = ex({});
-const BOX = ex({ routineExerciseId: 're-box', exerciseId: 'ex-box', name: 'Box Jump', zoneMin: null, zoneMax: null, dropStopPct: null });
+const BOX = ex({ routineExerciseId: 're-box', exerciseId: 'ex-box', name: 'Box Jump', code: 'A2', zoneMin: null, zoneMax: null, dropStopPct: null });
 const athlete = (id: string, first: string, last: string, exercises: TodayExercise[]): TodayAthlete => ({
   athleteId: id,
   firstName: first,
@@ -204,7 +205,7 @@ describe('rack view model', () => {
     const r = rig();
     r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null });
     expect(view(r.s).sourceLine).toBe('FREE LIFT');
-    r.send(localContextFor('tyler', BOX));
+    r.send({ type: 'localContext', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-box', exerciseId: 'ex-box', setNumber: null, loadLb: null, zoneMin: null, zoneMax: null, dropStopPct: null });
     const v = view(r.s);
     expect(v.sourceLine).toBe('PICKED ON THE IPAD');
     expect(v.exerciseName).toBe('Box Jump');
@@ -220,13 +221,45 @@ describe('rack view model', () => {
     expect(v.tiles.find(t => t.athleteId === 'cole')?.switching).toBe(true);
   });
 
-  it('a queued athlete whose phone is on a non-rack exercise is dimmed "On Box Jump"', () => {
+  it('a queued athlete whose phone moved on from their last rack exercise is dimmed "On A2 · Box Jump"', () => {
     const r = rig();
-    r.sync();
-    const v = view(r.s, T0, { phoneContexts: { jake: { workoutInstanceId: 'wi-1', routineExerciseId: 're-box', exerciseId: 'ex-box', setNumber: 1, loadLb: null } } });
-    const jake = v.tiles.find(t => t.athleteId === 'jake')!;
-    expect(jake).toMatchObject({ away: true, subtitle: 'On Box Jump', status: 'NEXT' });
-    expect(v.tiles.find(t => t.athleteId === 'tyler')!.away).toBe(false);
+    // Jake squats a set on this rack, then Tyler goes up.
+    r.sync({ active_athlete_id: 'jake', queue: ['tyler'] });
+    r.send({ type: 'rep', rep: ovr(0.55) }, T0 + 1000);
+    r.send({ type: 'ipadDone' }, T0 + 2000);
+    r.sync({ active_athlete_id: 'tyler', queue: ['jake', 'cole'] }, T0 + 3000);
+    const boxCtx = { workoutInstanceId: 'wi-1', routineExerciseId: 're-box', exerciseId: 'ex-box', setNumber: 1, loadLb: null };
+    const squatCtx = { ...boxCtx, routineExerciseId: 're-squat', exerciseId: 'ex-squat' };
+    const away = view(r.s, T0, { phoneContexts: { jake: boxCtx } }).tiles.find(t => t.athleteId === 'jake')!;
+    expect(away).toMatchObject({ away: true, subtitle: 'On A2 · Box Jump', status: 'NEXT' });
+    // Same exercise as the last rack set → not away (zone or no zone).
+    expect(view(r.s, T0, { phoneContexts: { jake: squatCtx } }).tiles.find(t => t.athleteId === 'jake')!.away).toBe(false);
+    // Never on this rack → just the queue state.
+    expect(view(r.s, T0, { phoneContexts: { cole: boxCtx } }).tiles.find(t => t.athleteId === 'cole')!.away).toBe(false);
+  });
+
+  it('a rep at/past the speed-drop stop is red even when in the zone (bars + dial rep)', () => {
+    const r = rig();
+    r.sync({ queue: [] });
+    r.send({ type: 'contextMeta', exerciseId: 'ex-squat', routineExerciseId: 're-squat', zoneMin: 0.3, zoneMax: 0.6, dropStopPct: 20 });
+    r.send({ type: 'rep', rep: ovr(0.58) }, T0 + 1000);
+    r.send({ type: 'rep', rep: ovr(0.45) }, T0 + 3000); // in zone, 22% drop
+    const v = view(r.s, r.now);
+    expect(v.bars[1]).toMatchObject({ zone: 'in', dropCue: true });
+    expect(repColor(v.bars[1], true)).toBe('#E5534B');
+    expect(repColor(v.bars[0], true)).toBe('#9BDDFF');
+    expect(v.lastRep).toMatchObject({ dropCue: true });
+    // No zone → neutral white, never red.
+    expect(repColor({ zone: null, partial: false, dropCue: true }, false)).toBe('#ffffff');
+  });
+
+  it('a live set started from the iPad pick keeps "PICKED ON THE IPAD" after the phone sends a pending context', () => {
+    const r = rig();
+    r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null });
+    r.send({ type: 'localContext', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat', setNumber: null, loadLb: null, zoneMin: 0.45, zoneMax: 0.6, dropStopPct: 20 });
+    r.send({ type: 'rep', rep: ovr(0.55) }, T0 + 1000);
+    r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null, pending_workout_instance_id: 'wi-1', pending_routine_exercise_id: 're-box' }, T0 + 2000);
+    expect(view(r.s, r.now).sourceLine).toBe('PICKED ON THE IPAD');
   });
 
   it('phoneContextOfRow prefers the pending (newest) phone context', () => {
@@ -236,6 +269,41 @@ describe('rack view model', () => {
       athleteId: 'tyler',
       ctx: { workoutInstanceId: 'wi-1', routineExerciseId: 're-box', exerciseId: 'ex-box', setNumber: 1, loadLb: null },
     });
+  });
+});
+
+describe('rack layout', () => {
+  const ipadLandscape = { top: 24, bottom: 20, left: 0, right: 0 };
+  it('11" landscape 1180×820: dial 300, bubbles 124, tiles 96, bars keep ≥ 90', () => {
+    const l = rackLayout(1180, 820, ipadLandscape);
+    expect(l).toMatchObject({ mode: 'landscape', dial: 300, bubble: 124, tilesH: 96, sideW: 360 });
+    // row 2 = H − pad − header − gaps − tiles − dial card
+    const row2 = 776 - 32 - 44 - 48 - l.tilesH - (72 + l.dial);
+    expect(row2 - 72).toBeGreaterThanOrEqual(l.barsMin);
+  });
+  it('13" landscape 1366×1024: scales up from the safe-area height and still fits', () => {
+    const l = rackLayout(1366, 1024, ipadLandscape);
+    expect(l.mode).toBe('landscape');
+    expect(l.dial).toBe(378);
+    expect(l.bubble).toBe(156);
+    expect(l.tilesH).toBe(110);
+    const row2 = 980 - 32 - 44 - 48 - l.tilesH - (72 + l.dial);
+    expect(row2 - 72).toBeGreaterThanOrEqual(l.barsMin);
+    expect(l.dial + 28 + 2 * l.bubble + 14).toBeLessThanOrEqual(1366 - 32 - 16 - 360 - 40);
+  });
+  it('mini landscape 1133×744 shrinks the dial so row 2 keeps its bars', () => {
+    const l = rackLayout(1133, 744, ipadLandscape);
+    const H = 744 - 44;
+    const row2 = H - 32 - 44 - 48 - l.tilesH - (72 + l.dial);
+    expect(l.dial).toBeLessThan(300);
+    expect(row2 - 72).toBeGreaterThanOrEqual(l.barsMin);
+  });
+  it('portrait is chosen when height > width (820×1180): dial 300, compact tiles 88, replay 230', () => {
+    const l = rackLayout(820, 1180, { top: 24, bottom: 20, left: 0, right: 0 });
+    expect(l).toMatchObject({ mode: 'portrait', dial: 300, bubble: 124, tilesH: 88, sideW: 230 });
+    const row3 = 1136 - 32 - 44 - 64 - l.tilesH - (72 + l.dial) - 190;
+    expect(row3 - 72).toBeGreaterThanOrEqual(l.barsMin);
+    expect(rackLayout(1024, 1366, { top: 24, bottom: 20, left: 0, right: 0 }).mode).toBe('portrait');
   });
 });
 
@@ -253,10 +321,11 @@ describe('rack view helpers', () => {
   });
   it('sensor pill: connected / reconnecting / not paired', () => {
     expect(shortSensorName('OVR_Velocity-6C8E')).toBe('OVR-6C8E');
-    expect(sensorPillOf('connected', 'OVR_Velocity-6C8E', null)).toEqual({ kind: 'connected', label: 'OVR-6C8E connected' });
+    expect(sensorPillOf('connected', 'OVR_Velocity-6C8E', 'OVR_Velocity-6C8E')).toEqual({ kind: 'connected', label: 'OVR-6C8E connected' });
     expect(sensorPillOf('reconnecting', undefined, 'OVR_Velocity-6C8E').kind).toBe('reconnecting');
-    expect(sensorPillOf('scanning', undefined, null).kind).toBe('reconnecting');
-    expect(sensorPillOf('idle', undefined, null)).toEqual({ kind: 'notPaired', label: 'Sensor not paired' });
+    expect(sensorPillOf('idle', undefined, null)).toEqual({ kind: 'notPaired', label: 'Sensor not paired · pair in setup' });
+    // The dev / simulator fake is exempt from pairing.
+    expect(sensorPillOf('connected', 'OVR_Velocity-FAKE', null, true).kind).toBe('connected');
   });
   it('initials', () => {
     expect(initialsOf('Tyler', 'Reed')).toBe('TR');

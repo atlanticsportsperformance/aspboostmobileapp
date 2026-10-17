@@ -16,7 +16,7 @@ import { supabase } from '../../lib/supabase';
 import { createRackApi, type RackClient } from '../../lib/rack/api';
 import { createRackPersist } from '../../lib/rack/persist';
 import { clearRackDevice, drainRackQueues, type DrainResult } from '../../lib/rack/device';
-import { lockPortrait } from '../../lib/rack/orientation';
+import { applyBaseOrientation } from '../../lib/rack/orientation';
 import { useRackStaffGuard } from '../../hooks/useRackStaffGuard';
 
 type Phase = 'pin' | 'checking' | 'draining' | 'leftover';
@@ -44,7 +44,7 @@ export default function RackPinExit() {
 
   const leave = async () => {
     await clearRackDevice();
-    await lockPortrait();
+    await applyBaseOrientation();
     navigation.reset({ index: 0, routes: [{ name: 'CoachDashboard' }] });
   };
 

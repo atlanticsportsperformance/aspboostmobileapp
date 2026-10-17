@@ -582,21 +582,35 @@ function addRep(
   return { set: next, write };
 }
 
+/**
+ * Set number the athlete's NEXT set gets (what startSet will use): an
+ * idle-hold reopen keeps the held number; otherwise max(phone, high-water + 1).
+ * Free sets keep the raw (null) number.
+ */
+export function nextSetNumber(s: RackEngineState, athleteId: string): number | null {
+  return numberFor(s, athleteId, nextContext(s)).setNumber;
+}
+
+function numberFor(
+  s: RackEngineState,
+  athleteId: string,
+  raw: RackContext,
+): { setNumber: number | null; reopen: boolean } {
+  if (isFree(raw)) return { setNumber: raw.setNumber, reopen: false };
+  const prev = s.lastEndByAthlete[athleteId];
+  if (prev && prev.hold && sameCtx(prev.rawContext, raw)) {
+    // Idle end, unchanged context: same set_number, reps carried forward.
+    return { setNumber: prev.setNumber, reopen: true };
+  }
+  const floor = s.setHighWater[hwKey(athleteId, raw)] ?? 0;
+  return { setNumber: Math.max(raw.setNumber ?? 0, floor + 1), reopen: false };
+}
+
 function startSet(s: RackEngineState, athleteId: string, now: number): LiveSet {
   const raw = nextContext(s);
   const free = isFree(raw);
   const prev = s.lastEndByAthlete[athleteId];
-  const reopen = !!prev && prev.hold && sameCtx(prev.rawContext, raw);
-  let setNumber = raw.setNumber;
-  if (!free) {
-    if (reopen) {
-      // Idle end, unchanged context: same set_number, reps carried forward.
-      setNumber = prev.setNumber;
-    } else {
-      const floor = s.setHighWater[hwKey(athleteId, raw)] ?? 0;
-      setNumber = Math.max(raw.setNumber ?? 0, floor + 1);
-    }
-  }
+  const { setNumber, reopen } = numberFor(s, athleteId, raw);
   const carried: EngineRep[] = reopen ? prev.set.reps.map((r) => ({ ...r, carried: true })) : [];
   const meta = raw.exerciseId ? s.metaByExercise[raw.exerciseId] : undefined;
   const zone: [number, number] | null =
