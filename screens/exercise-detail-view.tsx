@@ -21,7 +21,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import NumericKeypad from '../components/NumericKeypad';
-import { calculateThrowingTarget, isThrowingVelocityMetric } from '../lib/throwingConversions';
+import { backoffFills, intensityFor, prescribedValue, resolveTarget, type IntensityResult, type LoggedSets } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { getSupersetContext } from '../lib/supersetContext';
 
@@ -512,6 +512,14 @@ export default function ExerciseDetailView({
   // were just auto-filled by the placeholder logic. Inputs with a key
   // here briefly flash green so the athlete sees the auto-fill happened.
   const [autoFilledKeys, setAutoFilledKeys] = useState<Set<string>>(new Set());
+  // Sets the athlete changed by hand (keypad), per routine exercise. A
+  // hand-edited back-off is never overwritten by back-off auto-fill.
+  const editedSetsRef = useRef<Record<string, Set<number>>>({});
+  const markSetEdited = (setIndex: number) => {
+    const sets = editedSetsRef.current[exercise.id] ?? new Set<number>();
+    sets.add(setIndex);
+    editedSetsRef.current[exercise.id] = sets;
+  };
   const flashAutoFill = useCallback((setIndex: number, metricId: string) => {
     const key = `${setIndex}:${metricId}`;
     setAutoFilledKeys((prev) => {
@@ -631,6 +639,7 @@ export default function ExerciseDetailView({
     if (key === '.' && currentValue.includes('.')) return;
 
     const newValue = currentValue + key;
+    markSetEdited(setIndex);
     onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
@@ -641,6 +650,7 @@ export default function ExerciseDetailView({
     const setData = currentInputs[setIndex] || {};
     const currentValue = setData[metricId]?.toString() || '';
     const newValue = currentValue.slice(0, -1);
+    markSetEdited(setIndex);
     onInputChangeWithTick(setIndex, metricId, newValue);
   };
 
@@ -772,30 +782,21 @@ export default function ExerciseDetailView({
     return null;
   };
 
-  // Get target value for a metric in a specific set
-  const getTargetValue = (setIndex: number, metricId: string): number | undefined => {
-    const setConfig = getSetConfig(setIndex);
-    // `!= null`, not truthiness: a prescribed 0 for a set (e.g. bodyweight
-    // "0 lb" or a deliberate 0-rep marker) used to fall through to the
-    // exercise-level target.
-    if (setConfig?.metric_values?.[metricId] != null) {
-      return setConfig.metric_values[metricId];
-    }
-    if (exercise.metric_targets?.[metricId] != null) {
-      return exercise.metric_targets[metricId];
-    }
-    return undefined;
-  };
+  // Target logic lives in lib/logger/targets.ts (pure); these closures bind
+  // it to this exercise's props.
+  const targetArgs = (setIndex: number, metricId: string) => ({
+    re: exercise,
+    setIndex,
+    metric: metricId,
+    maxes: athleteMaxes,
+    logged: exerciseInputs[exercise.id] || [],
+    moundVelocity,
+  });
 
-  // Helper to get max value from athleteMaxes
-  const getMaxValue = (exerciseId: string, metricId: string): number | null => {
-    return athleteMaxes[exerciseId]?.[metricId] ?? null;
-  };
-
-  // Round a computed load to something that goes on a bar: weight → nearest
-  // 5 lb (80% of 227 is 180, not 182); everything else → whole number.
-  const roundLoad = (value: number, metricId: string): number =>
-    metricId === 'weight' ? Math.round(value / 5) * 5 : Math.round(value);
+  // Get target value for a metric in a specific set (per-set metric_values,
+  // else exercise metric_targets).
+  const getTargetValue = (setIndex: number, metricId: string): number | undefined =>
+    prescribedValue(exercise, setIndex, metricId);
 
   // Reps-type metric flagged AMRAP for this set (per-set flag OR the
   // exercise-level flag). Per-set is_amrap was typed but never rendered.
@@ -805,97 +806,11 @@ export default function ExerciseDetailView({
     return !!(getSetConfig(setIndex)?.is_amrap || exercise.is_amrap);
   };
 
-  // Get intensity target for a metric in a specific set
-  // Supports cross-exercise intensity (e.g., DB Bench at 50% of Barbell Bench max)
-  // For throwing velocity metrics, falls back to mound velocity conversion if no specific PR
-  const getIntensityTarget = (setIndex: number, metricId: string): {
-    percent: number;
-    calculatedValue?: number;
-    sourceExerciseName?: string | null;
-  } | null => {
-    const setConfig = getSetConfig(setIndex);
-    const intensityTargets = setConfig?.intensity_targets || exercise.intensity_targets;
-
-    if (intensityTargets) {
-      const target = intensityTargets.find(t => t.metric === metricId);
-      if (target) {
-        // Set-relative intensity: "90% of Set 1" anchors on the prior set's
-        // actually-logged value, not on an all-time max. This is how wave
-        // loading with `set<N>:intensity_of_set` was imported from the CSV.
-        if (target.relative_to === 'set' && target.reference_set != null) {
-          const refIdx = target.reference_set - 1; // 1-indexed → 0-indexed
-          if (refIdx >= 0 && refIdx < setIndex) {
-            const refSetInputs = exerciseInputs[exercise.id]?.[refIdx] || {};
-            const refValue = refSetInputs[metricId];
-            const refNum = typeof refValue === 'string' ? Number(refValue) : refValue;
-            if (refNum != null && Number.isFinite(refNum) && refNum > 0) {
-              const calculatedValue = roundLoad((refNum as number) * (target.percent / 100), metricId);
-              return {
-                percent: target.percent,
-                calculatedValue,
-                sourceExerciseName: `Set ${target.reference_set}`,
-              };
-            }
-            // Reference set not yet logged — surface the percentage so
-            // athlete sees the prescription, but no calculated value yet.
-            return {
-              percent: target.percent,
-              sourceExerciseName: `Set ${target.reference_set} (not logged yet)`,
-            };
-          }
-        }
-
-        // Determine source exercise for max lookup
-        // If source_exercise_id is set, use that exercise's max
-        // Otherwise, use the current exercise's max
-        const sourceExerciseId = target.source_exercise_id || exercise.exercise_id;
-        const sourceMetricId = target.source_metric_id || metricId;
-
-        const maxValue = getMaxValue(sourceExerciseId, sourceMetricId);
-
-        // For throwing velocity metrics, use calculateThrowingTarget which handles:
-        // 1. Using athlete's specific max if available
-        // 2. Falling back to mound velocity conversion if not
-        if (isThrowingVelocityMetric(metricId)) {
-          const calculatedValue = calculateThrowingTarget(
-            maxValue,
-            moundVelocity ?? null,
-            metricId,
-            target.percent
-          );
-
-          if (calculatedValue !== null) {
-            return {
-              percent: target.percent,
-              calculatedValue,
-              sourceExerciseName: target.source_exercise_name,
-            };
-          }
-          // Return intensity even without calculated value
-          return {
-            percent: target.percent,
-            sourceExerciseName: target.source_exercise_name,
-          };
-        }
-
-        // Non-throwing metrics: simple percentage calculation
-        if (maxValue) {
-          const calculatedValue = roundLoad(maxValue * (target.percent / 100), metricId);
-          return {
-            percent: target.percent,
-            calculatedValue,
-            sourceExerciseName: target.source_exercise_name,
-          };
-        }
-        // Return intensity even without a max value (so we show the percentage)
-        return {
-          percent: target.percent,
-          sourceExerciseName: target.source_exercise_name,
-        };
-      }
-    }
-    return null;
-  };
+  // Get intensity target for a metric in a specific set — "% of set K"
+  // from what was logged for set K, % of max (cross-exercise aware), or the
+  // mound-velocity fallback for throwing velocity.
+  const getIntensityTarget = (setIndex: number, metricId: string): IntensityResult | null =>
+    intensityFor(targetArgs(setIndex, metricId));
 
   // Check if set is completed
   const isSetCompleted = (setIndex: number): boolean => {
@@ -906,15 +821,46 @@ export default function ExerciseDetailView({
   const getPlaceholderValuesForSet = (setIndex: number): Record<string, any> => {
     const values: Record<string, any> = {};
     metricFields.forEach(metricId => {
-      const targetValue = getTargetValue(setIndex, metricId);
-      const intensityTarget = getIntensityTarget(setIndex, metricId);
-      const placeholderValue = intensityTarget?.calculatedValue ?? targetValue;
-      if (placeholderValue !== undefined) {
+      const placeholderValue = resolveTarget(targetArgs(setIndex, metricId));
+      if (placeholderValue != null) {
         values[metricId] = placeholderValue;
       }
     });
     return values;
   };
+
+  // Back-off sets ("90% of set 1") that were already logged follow their
+  // reference set when it changes (spec §7) — unless the athlete edited the
+  // back-off by hand. Sets not logged yet need nothing: their placeholder is
+  // computed live from the reference set and auto-fills on completion.
+  // Runs when the keypad closes or moves to another set and when a set is
+  // checked, not per keystroke. A back-off is only moved while it still
+  // holds the value auto-fill gave it last time, so a hand-typed value
+  // survives even after this view remounts (which forgets `edited`).
+  const completedKey = (completedSets[exercise.id] || []).join(',');
+  const prevLoggedRef = useRef<Record<string, LoggedSets>>({});
+  useEffect(() => {
+    const logged = exerciseInputs[exercise.id] || [];
+    const prevLogged = prevLoggedRef.current[exercise.id];
+    prevLoggedRef.current[exercise.id] = logged;
+    if (!prevLogged) return; // first look at this exercise — nothing changed yet
+    const edited = editedSetsRef.current[exercise.id] ?? new Set<number>();
+    metricFields.forEach((metricId) => {
+      const base = { re: exercise, metric: metricId, maxes: athleteMaxes, edited, moundVelocity };
+      const before = backoffFills({ ...base, logged: prevLogged });
+      const fills = backoffFills({ ...base, logged });
+      Object.entries(fills).forEach(([key, value]) => {
+        const setIndex = Number(key);
+        if (activeInput?.setIndex === setIndex) return;
+        const current = logged[setIndex]?.[metricId];
+        if (current == null || current === '' || Number(current) === value) return;
+        if (Number(current) !== before[setIndex]) return; // not the old auto-fill → athlete's own value
+        onInputChangeWithTick(setIndex, metricId, value, undefined, true);
+        flashAutoFill(setIndex, metricId);
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exercise.id, activeInput?.setIndex, activeInput == null, completedKey]);
 
   // Handle checkbox toggle - compute auto-fill values if checking
   const handleCheckboxToggle = (setIndex: number) => {
