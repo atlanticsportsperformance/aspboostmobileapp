@@ -151,7 +151,8 @@ export function createRackExecutor(opts: {
   /** Athletes whose logs have landed at least once. */
   const seeded = new Set<string>();
   let readInFlight = false;
-  let readAgain = false;
+  /** Athletes asked for while a read was in flight (each is read next — none dropped). */
+  const readPending = new Set<string>();
   let readRetry: ReturnType<typeof setTimeout> | null = null;
   /** Orders writes and read requests (a read only confirms writes made before it). */
   let seq = 0;
@@ -331,7 +332,7 @@ export function createRackExecutor(opts: {
   const readLogs = (athleteId: string | null = repTarget()): Promise<void> => {
     if (!athleteId || !state.rackId) return Promise.resolve();
     if (readInFlight) {
-      readAgain = true;
+      readPending.add(athleteId);
       return Promise.resolve();
     }
     if (readRetry) clearTimeout(readRetry);
@@ -345,13 +346,14 @@ export function createRackExecutor(opts: {
       .then(() => notify())
       .catch(e => {
         log(`log read failed; retrying in ${SEED_RETRY_MS} ms`, e);
-        if (running) readRetry = setTimeout(() => ((readRetry = null), void readLogs()), SEED_RETRY_MS);
+        if (running) readRetry = setTimeout(() => ((readRetry = null), void readLogs(athleteId)), SEED_RETRY_MS);
       })
       .finally(() => {
         readInFlight = false;
-        if (readAgain) {
-          readAgain = false;
-          void readLogs();
+        const next = readPending.values().next().value as string | undefined;
+        if (next) {
+          readPending.delete(next);
+          void readLogs(next);
         }
       });
   };
@@ -437,7 +439,17 @@ export function createRackExecutor(opts: {
   /** resolveRackSet for the athlete; null = their workout isn't loaded (the engine falls back to the row). */
   const resolveFor = (athleteId: string, liftingContinues = false): ResolvedRackSet | null => {
     const a = today.find(t => t.athleteId === athleteId);
-    if (!a) return null;
+    if (!a) {
+      // No today entry: the engine falls back to the row's context (a phone
+      // "done through N" hint there could number an extra set) — say so, and
+      // re-read today's list.
+      if (now() - staleTodayAt > 10_000) {
+        staleTodayAt = now();
+        log('no workout loaded for the active athlete; using the row context', athleteId);
+        opts.onStaleToday?.();
+      }
+      return null;
+    }
     const ovr = override && override.athleteId === athleteId ? override : null;
     const ov = ovr?.ex ?? null;
     const instances = rackInstancesOf(a);

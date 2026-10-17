@@ -68,6 +68,7 @@ import {
   rackStripLine,
   withRackSet,
   type OpenState,
+  type OpenTrack,
   zoneOf,
   type EndedSet,
 } from '../lib/rack/phoneView';
@@ -1491,19 +1492,20 @@ export default function WorkoutLoggerScreen() {
 
   // Follow on finish: the open exercise just finished while active → go where
   // the rack is (exercise screen) with a toast; the overview's Continue points there.
-  const rackOpenPrevRef = useRef<OpenState | null>(null);
+  const rackOpenPrevRef = useRef<OpenTrack | null>(null);
   const rackOpenId = viewMode === 'exercise' ? activeExerciseId : null;
   const rackOpenEx = rackOpenId ? allExercises.find(x => x.id === rackOpenId) : undefined;
   const rackOpenFinished = !!rackOpenEx && firstIncompleteSet(completedSets[rackOpenEx.id], rackOpenEx.sets ?? 1) == null;
   useEffect(() => {
     const cur: OpenState = { openId: rackOpenId, finished: rackOpenFinished, active: rackActive };
-    const target = followOnFinish({
+    // N2: only a finish DURING this open of an exercise opened unfinished.
+    const { track, follow: target } = followOnFinish({
       ...cur,
       prev: rackOpenPrevRef.current,
       rackNow,
       blockHasMore: !!rackOpenId && blockHasMore(rackOpenId, completedRef.current),
     });
-    rackOpenPrevRef.current = cur;
+    rackOpenPrevRef.current = track;
     if (!target || !rackNow || rackEditingRef.current) return;
     const ex = allExercises.find(x => x.id === target);
     if (!ex) return;

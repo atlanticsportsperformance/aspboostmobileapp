@@ -172,7 +172,7 @@ describe('rack phone wiring — fix round 1 (review 10c + owner sync)', () => {
   });
 
   it('owner ruling 1: the open exercise finishing while active follows the rack (navigate + toast), and Next goes there', () => {
-    expect(L).toContain('const target = followOnFinish({');
+    expect(L).toContain('const { track, follow: target } = followOnFinish({');
     expect(L).toContain('showRackToast(rackFollowToast(rack.activeRackName,');
     const next = L.slice(L.indexOf('const handleNextSet = useCallback'), L.indexOf('// Navigation handlers'));
     expect(next.indexOf('rackNextAfterRef.current(activeExerciseId, currentSetIndex)')).toBeLessThan(next.indexOf('nextStep(sequence, done'));

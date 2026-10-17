@@ -72,7 +72,7 @@
  * EXCEPTION — idle end: after a 60 s idle end the number is held until the
  * exercise changes, the active athlete changes, the phone moves to a later
  * set / another exercise (`releaseHold`, from the executor), or REOPEN_MS
- * (3 min) passes since the idle end. A later rep on the same
+ * (30 s) passes since the idle end. A rep inside that window on the same
  * exercise starts a new set with the SAME set_number that carries
  * the idle-ended set's reps forward, so the upsert rewrites the set with all
  * its reps — the server-side "reopen" of spec §3. Carried reps are not
@@ -111,8 +111,12 @@ import {
 
 export const IDLE_END_MS = 60_000;
 export const LATE_REP_MS = 3_000;
-/** The idle-reopen hold lasts at most this long after the idle end. */
-export const REOPEN_MS = 180_000;
+/**
+ * The idle-reopen window: a rep within 30 s of the idle end (≈ 90 s after the
+ * last rep) reopens the set; later reps start the next set — a normal rest
+ * never merges sets, phone or not.
+ */
+export const REOPEN_MS = 30_000;
 
 // ---------------------------------------------------------------- types
 

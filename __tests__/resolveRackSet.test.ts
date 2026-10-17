@@ -379,7 +379,7 @@ describe('fix round 1 (review 10c)', () => {
     expect(r.ex.getState().live?.reps.some(x => x.carried)).toBe(false);
   });
 
-  it('C1: no phone at all — the hold ends 3 min after the idle end (a rep then starts set 3)', async () => {
+  it('C1: no phone at all — long after the 30 s window, a rep starts set 3', async () => {
     const r = rig(logRows('squat', 1));
     await idleEndedSet2(r);
     r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(180_000));
@@ -387,10 +387,19 @@ describe('fix round 1 (review 10c)', () => {
     expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
   });
 
-  it('C1: a pause inside the window still reopens the set (spec §3)', async () => {
+  it('C1 (30 s window, no phone): a rep 60 s after the idle end starts set 3 — a normal rest never merges', async () => {
     const r = rig(logRows('squat', 1));
     await idleEndedSet2(r);
-    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(30_000));
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(60_000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    expect(r.ex.getState().live?.reps.some(x => x.carried)).toBe(false);
+  });
+
+  it('C1: a rep 20 s after the idle end (inside the window) reopens the set (spec §3)', async () => {
+    const r = rig(logRows('squat', 1));
+    await idleEndedSet2(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(20_000));
     await settle();
     expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
     expect(r.ex.getState().live?.reps.filter(x => x.carried)).toHaveLength(1);
@@ -492,10 +501,8 @@ describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "
     expect(nowBefore).toMatchObject({ routineExerciseId: 'squat', setNumber: 3, source: 'phone' });
     const now = phoneRackNow({ instance, logs: after, session, athleteId: 'tyler', workoutInstanceId: 'wi', openExerciseId: 'squat', isEcho });
     expect(now).toMatchObject({ routineExerciseId: 'rdl', setNumber: 1, source: 'rack' });
-    const follow = followOnFinish({
-      prev: { openId: 'squat', finished: false, active: true },
-      openId: 'squat', finished: true, active: true, rackNow: now, blockHasMore: false,
-    });
+    const opened = followOnFinish({ prev: null, openId: 'squat', finished: false, active: true, rackNow: nowBefore, blockHasMore: false });
+    const { follow } = followOnFinish({ prev: opened.track, openId: 'squat', finished: true, active: true, rackNow: now, blockHasMore: false });
     expect(follow).toBe('rdl');
     expect(rackFollowToast('Rack 1', 'Romanian Deadlift', 1)).toBe('Rack 1 → Romanian Deadlift · set 1');
     const phoneStrip = rackStripLine('Rack 1', 'Romanian Deadlift', now.setNumber, 3);
@@ -518,6 +525,24 @@ describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "
     const v2 = buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
     expect(v2.exerciseLine).toBe('Romanian Deadlift · Set 1 of 3');
     expect(v2.sourceLine).toBe("FROM TYLER'S PHONE");
+  });
+
+  it('N1 (reviewer repro): open DB Bulgarian, back to the overview → the strip shows Bulgarian set 1 on BOTH', async () => {
+    const instance = rackInstanceFromLogger('wi', routines);
+    const logs = rackLogsFromCompleted('wi', { squat: [true, true, false] });
+    const session = row({ workout_instance_id: 'wi', routine_exercise_id: 'bulgarian', set_number: 1 });
+    const isEcho = (c: any) => c.routineExerciseId === 'bulgarian' && c.setNumber === 1; // what the phone sent
+    const onOverview = phoneRackNow({ instance, logs, session, athleteId: 'tyler', workoutInstanceId: 'wi', openExerciseId: null, isEcho });
+    expect(onOverview).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    const phoneStrip = rackStripLine('Rack 1', 'DB Bulgarian', onOverview.setNumber, 3);
+
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([today()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'bulgarian', set_number: 1 });
+    await settle();
+    const v = buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(phoneStrip).toBe(`Rack 1 · ${v.exerciseLine}`);
+    expect(v.exerciseLine).toBe('DB Bulgarian · Set 1 of 3');
   });
 
   it('truthful source: a coach pick reads PICKED ON IPAD', async () => {

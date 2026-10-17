@@ -636,9 +636,16 @@ export function phoneRackNow(i: {
   const rowHere = !!row.routineExerciseId && (!row.workoutInstanceId || row.workoutInstanceId === i.workoutInstanceId);
   const rowFromIpad = rowHere && !i.isEcho(row);
   const coach = rowFromIpad && (auto.none || auto.routineExerciseId !== row.routineExerciseId);
+  // Nothing open (overview): the phone's own last-sent context, still in the
+  // row — exactly the iPad's phone input (its phoneRef), set hint included.
+  const lastSent = !i.openExerciseId && rowHere && !rowFromIpad ? row : null;
   const res = resolveRackSet({
     ...base,
-    phone: i.openExerciseId ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.openExerciseId } : null,
+    phone: i.openExerciseId
+      ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.openExerciseId }
+      : lastSent
+        ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: lastSent.routineExerciseId, setNumber: lastSent.setNumber }
+        : null,
     override: coach ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: row.routineExerciseId } : null,
   });
   if (res.none) return null;
@@ -666,18 +673,41 @@ export interface OpenState {
   active: boolean;
 }
 
+/** One open of an exercise screen, as far as follow-on-finish is concerned. */
+export interface OpenTrack {
+  openId: string | null;
+  /** It was already finished when opened (a deliberate edit). */
+  openedFinished: boolean;
+  /** It became finished at some point during this open. */
+  finishedOnce: boolean;
+  /** Finished during this open; the follow is still owed (e.g. finished while queued). */
+  pending: boolean;
+}
+
 /**
- * The phone FOLLOWS the rack when its open exercise is finished while the
- * athlete is active: right when the last set completes (or on becoming active
- * on a finished exercise), to the rack's resolved exercise. Not while the
- * open exercise's superset/circuit block still has sets (the athlete does the
- * partner next), and never when the rack is already on the open exercise.
+ * The phone FOLLOWS the rack only when the open exercise was UNFINISHED when
+ * opened and became finished during this open — once. Never when the kid
+ * opened a finished exercise to edit it, nor on an un-check/re-check. A finish
+ * while not active (queued) is followed once the athlete becomes active, if
+ * still finished. Not while the superset/circuit block still has sets (the
+ * partner is next), and never to the open exercise itself.
  */
-export function followOnFinish(i: OpenState & { prev: OpenState | null; rackNow: PhoneRackNow | null; blockHasMore: boolean }): string | null {
-  if (!i.active || !i.openId || !i.finished || !i.rackNow || i.blockHasMore) return null;
-  if (i.rackNow.routineExerciseId === i.openId) return null;
+export function followOnFinish(i: OpenState & { prev: OpenTrack | null; rackNow: PhoneRackNow | null; blockHasMore: boolean }): {
+  track: OpenTrack;
+  follow: string | null;
+} {
   const p = i.prev;
-  const justFinished = !!p && p.openId === i.openId && !p.finished;
-  const justActive = !!p && p.openId === i.openId && !p.active;
-  return justFinished || justActive ? i.rackNow.routineExerciseId : null;
+  if (!p || p.openId !== i.openId) {
+    return { track: { openId: i.openId, openedFinished: i.finished, finishedOnce: i.finished, pending: false }, follow: null };
+  }
+  const t: OpenTrack = { ...p };
+  if (i.finished && !t.finishedOnce && !t.openedFinished) {
+    t.finishedOnce = true;
+    t.pending = true;
+  }
+  if (!i.finished || i.blockHasMore) t.pending = false;
+  if (!t.pending || !i.active) return { track: t, follow: null };
+  t.pending = false; // owed once: follow now (or nothing to follow to)
+  const to = i.rackNow && i.openId && i.rackNow.routineExerciseId !== i.openId ? i.rackNow.routineExerciseId : null;
+  return { track: t, follow: to };
 }

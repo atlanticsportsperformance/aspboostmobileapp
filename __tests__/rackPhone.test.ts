@@ -446,17 +446,67 @@ describe('phoneRackNow / followOnFinish / banner strip', () => {
 
   it('a coach pick in the row (not the phone’s echo, not the auto-pick) is the override; lifting = the row’s live set', () => {
     expect(now({ session: sess({ routine_exercise_id: 'box', set_number: 1 }) })).toMatchObject({ routineExerciseId: 'box', source: 'ipad' });
-    expect(now({ session: sess({ routine_exercise_id: 'box', set_number: 1 }), isEcho: () => true })).toMatchObject({ routineExerciseId: 'rdl' });
+    // the phone's own echo is its last-sent context (N1) → the phone's exercise, not a coach pick
+    expect(now({ session: sess({ routine_exercise_id: 'box', set_number: 1 }), isEcho: () => true })).toMatchObject({ routineExerciseId: 'box', source: 'phone' });
     expect(now({ session: sess({ state: 'lifting', routine_exercise_id: 'squat', set_number: 4 }) })).toEqual({ routineExerciseId: 'squat', setNumber: 4, source: 'live' });
   });
 
-  it('followOnFinish: only on the transition, not inside a block with sets left, never to the open exercise', () => {
-    const base = { openId: 'squat', finished: true, active: true, rackNow: { routineExerciseId: 'rdl', setNumber: 1, source: 'rack' as const }, blockHasMore: false };
-    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true } })).toBe('rdl');
-    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: true, active: false } })).toBe('rdl');
-    expect(followOnFinish({ ...base, prev: { openId: 'box', finished: false, active: true } })).toBeNull(); // opened a finished one by hand
-    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true }, blockHasMore: true })).toBeNull();
-    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true }, active: false })).toBeNull();
+  /** Drive followOnFinish through a sequence of screen states; returns every follow. */
+  const run = (steps: { openId: string | null; finished: boolean; active: boolean; blockHasMore?: boolean }[]) => {
+    const rackNow = { routineExerciseId: 'rdl', setNumber: 1, source: 'rack' as const };
+    let prev: any = null;
+    return steps.map(st => {
+      const { track, follow } = followOnFinish({ ...st, blockHasMore: !!st.blockHasMore, prev, rackNow });
+      prev = track;
+      return follow;
+    });
+  };
+
+  it('N2: follows once when an exercise opened UNFINISHED becomes finished during this open', () => {
+    expect(run([
+      { openId: 'squat', finished: false, active: true },
+      { openId: 'squat', finished: true, active: true },
+      { openId: 'squat', finished: true, active: true },
+    ])).toEqual([null, 'rdl', null]);
+  });
+
+  it('N2: finished while queued → followed when the athlete becomes active', () => {
+    expect(run([
+      { openId: 'squat', finished: false, active: false },
+      { openId: 'squat', finished: true, active: false },
+      { openId: 'squat', finished: true, active: true },
+    ])).toEqual([null, null, 'rdl']);
+  });
+
+  it('N2: a kid who opens a FINISHED exercise to edit it is never pulled away — promotion, un-check/re-check included', () => {
+    expect(run([
+      { openId: 'squat', finished: true, active: false }, // opened finished to fix a weight, queued
+      { openId: 'squat', finished: true, active: true }, // promoted by the queue
+      { openId: 'squat', finished: false, active: true }, // un-checks the last set
+      { openId: 'squat', finished: true, active: true }, // re-checks it
+    ])).toEqual([null, null, null, null]);
+  });
+
+  it('N2: an un-check/re-check after the first finish never follows again; a block with sets left never follows', () => {
+    expect(run([
+      { openId: 'squat', finished: false, active: false },
+      { openId: 'squat', finished: true, active: false },
+      { openId: 'squat', finished: false, active: false },
+      { openId: 'squat', finished: true, active: true },
+    ])).toEqual([null, null, null, null]);
+    expect(run([
+      { openId: 'a1', finished: false, active: true },
+      { openId: 'a1', finished: true, active: true, blockHasMore: true },
+    ])).toEqual([null, null]);
+  });
+
+  it('N1: on the overview the phone resolves from its own last-sent context (the iPad’s phone input)', () => {
+    // opened DB-Bulgarian-like "box" (sent box:1), back on the overview
+    const s = sess({ routine_exercise_id: 'box', set_number: 1 });
+    expect(now({ session: s, isEcho: (c: any) => c.routineExerciseId === 'box' && c.setNumber === 1 })).toEqual({ routineExerciseId: 'box', setNumber: 1, source: 'phone' });
+    // after finishing squat it sent squat:4 → the next rack lift
+    const s4 = sess({ routine_exercise_id: 'squat', set_number: 4 });
+    expect(now({ session: s4, isEcho: () => true })).toMatchObject({ routineExerciseId: 'rdl', setNumber: 1 });
   });
 
   it('the strip is the iPad card’s wording; only the active banner carries it', () => {
