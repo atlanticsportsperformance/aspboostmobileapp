@@ -15,6 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
+import { loggerOutbox } from '../lib/logger/outbox';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 interface ExerciseLog {
@@ -254,6 +255,11 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
   async function handleResetWorkout() {
     try {
       setResetting(true);
+
+      // Drop this workout's unsynced set writes first — a queued row would
+      // otherwise re-insert a set into the reset workout and overlay it on
+      // the next open.
+      await loggerOutbox.drop(workoutInstanceId);
 
       // Delete all exercise logs for this workout
       await supabase

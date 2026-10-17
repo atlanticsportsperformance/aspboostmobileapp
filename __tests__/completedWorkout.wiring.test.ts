@@ -9,4 +9,10 @@ describe('completed workout summary', () => {
     const q = S.slice(S.indexOf(".from('exercise_logs')"), S.indexOf('setExerciseLogs(logsData'));
     expect(q).toContain(".eq('is_complete', true)");
   });
+  it('Reset drops this workout\'s queued sets from the outbox before deleting its logs', () => {
+    const fn = body('async function handleResetWorkout', 'setShowResetModal(false)');
+    const dropAt = fn.indexOf('await loggerOutbox.drop(workoutInstanceId)');
+    expect(dropAt).toBeGreaterThan(-1);
+    expect(dropAt).toBeLessThan(fn.indexOf(".from('exercise_logs')"));
+  });
 });
