@@ -15,14 +15,6 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import { createQueue } from '../lib/offline/queue';
-import {
-  enqueueThrow,
-  flushQueue,
-  queueSize,
-  startOfflineQueue,
-  stopOfflineQueue,
-  type QueuedThrowRow,
-} from '../lib/pulse/ble/offline-queue';
 
 beforeEach(() => {
   for (const k of Object.keys(store)) delete store[k];
@@ -93,43 +85,85 @@ describe('createQueue', () => {
   });
 });
 
-describe('Pulse queue on the generic queue', () => {
-  const row = (n: number): QueuedThrowRow => ({
-    org_id: 'o',
-    athlete_id: 'a',
-    device_id: null,
-    thrown_at: `t${n}`,
-    torque_nm: null,
-    arm_speed_dps: null,
-    arm_slot_deg: null,
-    ball_weight_oz: 5,
-    source: 'test',
-    is_valid: true,
-  });
-  const client = (inserted: any[], fail = false): any => ({
-    from: () => ({
-      insert: async (rows: any[]) => {
-        if (fail) return { error: { message: 'down' } };
-        inserted.push(...rows);
-        return { error: null };
+describe('createQueue fixes', () => {
+  it('maxItems trimming during an in-flight send never removes an unsent item', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => (release = r));
+    const sent: number[] = [];
+    const q = createQueue<number>(
+      'k7',
+      async n => {
+        if (n === 1) await gate;
+        sent.push(n);
       },
-    }),
+      { maxItems: 2 },
+    );
+    await q.enqueue(1);
+    await q.enqueue(2);
+    const f = q.flush();
+    await new Promise(r => setTimeout(r, 5));
+    await q.enqueue(3); // trims 1 (in flight) away
+    release();
+    await f;
+    expect(sent).toEqual([1, 2, 3]);
+    expect(await q.size()).toBe(0);
   });
 
-  it('keeps the legacy storage key/format, flushes in order, hydrates on start', async () => {
-    store['pulse_offline_throw_queue'] = JSON.stringify([row(1)]);
-    const inserted: any[] = [];
-    await startOfflineQueue(client(inserted, true));
-    stopOfflineQueue();
-    expect(queueSize()).toBe(1);
-    await enqueueThrow(row(2));
-    expect(queueSize()).toBe(2);
-    expect(JSON.parse(store['pulse_offline_throw_queue']).map((r: any) => r.thrown_at)).toEqual(['t1', 't2']);
-    expect(await flushQueue(client(inserted, true))).toBe(0);
-    expect(queueSize()).toBe(2);
-    expect(await flushQueue(client(inserted))).toBe(2);
-    expect(inserted.map(r => r.thrown_at)).toEqual(['t1', 't2']);
-    expect(queueSize()).toBe(0);
-    expect(store['pulse_offline_throw_queue']).toBeUndefined();
+  it('batches: one storage write per chunk, FIFO', async () => {
+    const AS = require('@react-native-async-storage/async-storage').default;
+    const batches: number[][] = [];
+    const q = createQueue<number>('k8', async () => {}, {
+      sendBatch: async b => void batches.push(b),
+      batchSize: 2,
+    });
+    for (const n of [1, 2, 3, 4, 5]) await q.enqueue(n);
+    AS.setItem.mockClear();
+    AS.removeItem.mockClear();
+    expect(await q.flush()).toEqual({ sent: 5, failed: 0 });
+    expect(batches).toEqual([[1, 2], [3, 4], [5]]);
+    expect(AS.setItem.mock.calls.length + AS.removeItem.mock.calls.length).toBe(3);
+  });
+
+  it('batch transient failure keeps the chunk and stops', async () => {
+    const q = createQueue<number>('k9', async () => {}, {
+      sendBatch: async b => {
+        if (b.includes(3)) throw new Error('offline');
+      },
+      batchSize: 2,
+    });
+    for (const n of [1, 2, 3, 4]) await q.enqueue(n);
+    expect(await q.flush()).toEqual({ sent: 2, failed: 2 });
+    expect(await q.peekAll()).toEqual([3, 4]);
+  });
+
+  it('batch permanent failure falls back to per-item to isolate the bad one', async () => {
+    const sent: number[] = [];
+    const q = createQueue<number>(
+      'k10',
+      async n => {
+        if (n === 2) throw Object.assign(new Error('bad'), { permanent: true });
+        sent.push(n);
+      },
+      {
+        sendBatch: async () => {
+          throw Object.assign(new Error('bad'), { permanent: true });
+        },
+        batchSize: 3,
+      },
+    );
+    for (const n of [1, 2, 3]) await q.enqueue(n);
+    const r = await q.flush();
+    expect(sent).toEqual([1, 3]);
+    expect(r.sent).toBe(2);
+    expect(await q.size()).toBe(0);
+  });
+
+  it('a storage error rejects only its caller, not the chain', async () => {
+    const AS = require('@react-native-async-storage/async-storage').default;
+    AS.setItem.mockRejectedValueOnce(new Error('disk'));
+    const q = createQueue<number>('k11', async () => {});
+    await expect(q.enqueue(1)).rejects.toThrow('disk');
+    await q.enqueue(2);
+    expect(await q.peekAll()).toEqual([2]);
   });
 });

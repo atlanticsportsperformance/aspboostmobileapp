@@ -12,7 +12,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type QueueOptions<T> = {
   idOf?: (item: T) => string;
+  // Oldest items are dropped when the queue grows past this.
   maxItems?: number;
+  // When given, flush sends chunks of `batchSize` with one storage write per
+  // successful chunk. A permanent failure falls back to per-item `send` for
+  // that chunk so the bad item can be isolated.
+  sendBatch?: (items: T[]) => Promise<void>;
+  batchSize?: number;
 };
 
 export type Queue<T> = {
@@ -30,6 +36,7 @@ function withLock<R>(key: string, fn: () => Promise<R>): Promise<R> {
   return next;
 }
 
+// One queue per storage key: flushes are shared by key.
 const flushing = new Map<string, Promise<{ sent: number; failed: number }>>();
 
 function isPermanent(err: unknown): boolean {
@@ -58,7 +65,10 @@ export function createQueue<T>(
   send: (item: T) => Promise<void>,
   opts: QueueOptions<T> = {},
 ): Queue<T> {
-  const { idOf, maxItems } = opts;
+  const { idOf, maxItems, sendBatch } = opts;
+  const batchSize = Math.max(1, opts.batchSize ?? 50);
+  // Identity of a queued item: its id, else its serialized value.
+  const identOf = (item: T) => (idOf ? idOf(item) : JSON.stringify(item));
 
   const enqueue = (item: T) =>
     withLock(key, async () => {
@@ -68,38 +78,66 @@ export function createQueue<T>(
         if (items.some(i => idOf(i) === id)) return;
       }
       items.push(item);
-      // Over capacity: drop the oldest.
       if (maxItems && items.length > maxItems) items.splice(0, items.length - maxItems);
       await write(key, items);
     });
 
-  const removeHead = () =>
+  // Removes one occurrence of each given item BY IDENTITY (never by position),
+  // in a single storage write. Items already trimmed away are simply absent.
+  const remove = (done: T[]) =>
     withLock(key, async () => {
       const items = await read<T>(key);
-      items.shift();
+      for (const d of done) {
+        const id = identOf(d);
+        const idx = items.findIndex(i => identOf(i) === id);
+        if (idx >= 0) items.splice(idx, 1);
+      }
       await write(key, items);
     });
 
-  const runFlush = async () => {
-    let sent = 0;
-    let failed = 0;
-    for (;;) {
-      const head = (await withLock(key, () => read<T>(key)))[0];
-      if (head === undefined) break;
+  // Sends items one by one; returns false if a transient failure stopped it.
+  const sendEach = async (chunk: T[], acc: { sent: number; failed: number }) => {
+    for (const item of chunk) {
       try {
-        await send(head);
+        await send(item);
       } catch (err) {
-        failed++;
+        acc.failed++;
         if (isPermanent(err)) {
-          await removeHead();
+          await remove([item]);
           continue;
         }
-        break;
+        return false;
       }
-      await removeHead();
-      sent++;
+      await remove([item]);
+      acc.sent++;
     }
-    return { sent, failed };
+    return true;
+  };
+
+  const runFlush = async () => {
+    const acc = { sent: 0, failed: 0 };
+    for (;;) {
+      const snapshot = await withLock(key, () => read<T>(key));
+      if (snapshot.length === 0) break;
+      const chunk = snapshot.slice(0, sendBatch ? batchSize : 1);
+      if (!sendBatch) {
+        if (!(await sendEach(chunk, acc))) break;
+        continue;
+      }
+      try {
+        await sendBatch(chunk);
+      } catch (err) {
+        if (!isPermanent(err)) {
+          acc.failed += chunk.length;
+          break;
+        }
+        if (!(await sendEach(chunk, acc))) break;
+        continue;
+      }
+      await remove(chunk);
+      acc.sent += chunk.length;
+    }
+    return acc;
   };
 
   const flush = () => {
