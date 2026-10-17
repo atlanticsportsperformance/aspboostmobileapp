@@ -202,14 +202,20 @@ function rig(initialLogs: SetLogRow[] = []) {
     startSet: jest.fn(async (_r, a, st) => put({ active_athlete_id: a, state: 'lifting', set_started_at: st, pending_end: false })),
     setActive: jest.fn(async (_r, a) => put({ active_athlete_id: a })),
     endSet: jest.fn(async () => put({ state: 'idle', set_started_at: null, pending_end: false })),
-    todaysSetLogs: jest.fn(async () => logs),
+    athleteSets: jest.fn(async () => logs),
     setIpadContext: jest.fn(async (_r, a, c) =>
       server.state === 'lifting'
         ? put({ pending_workout_instance_id: c.workoutInstanceId, pending_routine_exercise_id: c.routineExerciseId, pending_set_number: c.setNumber, pending_load_lb: c.loadLb })
         : put({ active_athlete_id: a, workout_instance_id: c.workoutInstanceId, routine_exercise_id: c.routineExerciseId, set_number: c.setNumber, load_lb: c.loadLb }),
     ),
   };
-  const persist = { writeRep: jest.fn(async () => {}), endSet: jest.fn(async () => {}), amendSet: jest.fn(async () => {}), flush: jest.fn(async () => {}) };
+  // The DB: the rack's set writes land in the logs.
+  const write = async (sm: any) => {
+    if (sm.workoutInstanceId && sm.routineExerciseId && sm.setNumber != null) {
+      logs = [...logs, { athleteId: sm.athleteId, workoutInstanceId: sm.workoutInstanceId, routineExerciseId: sm.routineExerciseId, setNumber: sm.setNumber, isComplete: true }];
+    }
+  };
+  const persist = { writeRep: jest.fn(async () => {}), endSet: jest.fn(write), amendSet: jest.fn(write), flush: jest.fn(async () => {}) };
   const ex = createRackExecutor({ engine: createRackEngine(RACK), api, persist, sensor: { writeLoad: jest.fn(async () => {}) }, now: () => t, log: () => {} });
   return {
     ex, api, persist,
@@ -331,7 +337,7 @@ describe('iPad wiring (executor → engine)', () => {
       r.ex.setToday([SIM()]);
       r.sync({});
       await jest.advanceTimersByTimeAsync(0);
-      (r.api.todaysSetLogs as jest.Mock).mockImplementation(() => new Promise(() => {}));
+      (r.api.athleteSets as jest.Mock).mockImplementation(() => new Promise(() => {}));
       r.advance(5000);
       r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
       r.ex.dispatch({ type: 'rep', rep: ovr(0.69) });
@@ -342,6 +348,187 @@ describe('iPad wiring (executor → engine)', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+const toEx = (re: string): TodayExercise => tEx(re);
+
+describe('fix round 1 (review 10c)', () => {
+  /** Squat set 2 lifted, then 60 s with no rep → idle end. */
+  async function idleEndedSet2(r: ReturnType<typeof rig>) {
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 });
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    r.ex.dispatch({ type: 'tick' }, r.advance(61_000));
+    await settle();
+    expect(r.ex.getState().lastEndByAthlete.tyler).toMatchObject({ endedBy: 'idle', hold: true });
+  }
+
+  it('C1 (reviewer repro): idle end, the phone moves to set 3, a rep 3 min later → set 3, not merged into set 2', async () => {
+    const r = rig(logRows('squat', 1));
+    await idleEndedSet2(r);
+    r.sync({ set_number: 3 }, r.advance(2000)); // the phone opens set 3
+    await settle();
+    expect(r.ex.getState().lastEndByAthlete.tyler.hold).toBe(false);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(180_000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+    expect(r.ex.getState().live?.reps.some(x => x.carried)).toBe(false);
+  });
+
+  it('C1: no phone at all — the hold ends 3 min after the idle end (a rep then starts set 3)', async () => {
+    const r = rig(logRows('squat', 1));
+    await idleEndedSet2(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(180_000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+  });
+
+  it('C1: a pause inside the window still reopens the set (spec §3)', async () => {
+    const r = rig(logRows('squat', 1));
+    await idleEndedSet2(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.69) }, r.advance(30_000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    expect(r.ex.getState().live?.reps.filter(x => x.carried)).toHaveLength(1);
+  });
+
+  it('I2: an un-check on the phone is reflected — the guard is rebuilt from each read, set 2 is filled again', async () => {
+    const r = rig(logRows('squat', 1));
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 });
+    await settle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(1000));
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    await settle();
+    expect(r.ex.getState().completeSets['tyler:wi:squat']).toEqual(expect.arrayContaining([1, 2]));
+    r.sync({ set_number: 3 }, r.advance(1000)); // the rack's row landed: the phone opens set 3
+    await settle();
+    // The athlete un-checks set 2 on the phone (the row goes is_complete false), the phone sends set 2.
+    r.setLogs(logRows('squat', 1));
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2 }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().completeSets['tyler:wi:squat']).toEqual([1]);
+    const { nextSetNumber } = require('../lib/rack/engine');
+    expect(nextSetNumber(r.ex.getState(), 'tyler')).toBe(2);
+  });
+
+  it('I3: the iPad published squat:1, the phone saves set 1 by hand and sends squat:2 → hint kept, never rewritten', async () => {
+    const r = rig();
+    r.ex.setToday([SIM()]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'squat', set_number: 1 }); // iPad auto-pick
+    const before = (r.api.setIpadContext as jest.Mock).mock.calls.length;
+    // DB still lacks set 1 (outbox); the phone's context says set 2.
+    r.sync({ set_number: 2 }, r.advance(500));
+    await settle();
+    expect((r.api.setIpadContext as jest.Mock).mock.calls.slice(before).map(c => c[2].setNumber)).not.toContain(1);
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'squat', set_number: 2 });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+  });
+
+  it('I4: squat 3/3 saved by hand (DB stale) → the phone sends squat:4 → next rack lift, never squat 3', async () => {
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 4 });
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(5000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'bulgarian', setNumber: 1 });
+  });
+
+  it('M1: a coach pick during the first-rep wait is queued behind the rep (the rep is not lifted under it)', async () => {
+    jest.useFakeTimers();
+    try {
+      const r = rig();
+      r.ex.setToday([SIM()]);
+      r.sync({});
+      await jest.advanceTimersByTimeAsync(0);
+      (r.api.athleteSets as jest.Mock).mockImplementation(() => new Promise(res => setTimeout(() => res([]), 500)));
+      r.advance(5000);
+      r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
+      r.ex.setOverride('tyler', toEx('rdl'));
+      await jest.advanceTimersByTimeAsync(600);
+      expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 1 });
+      expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat' }); // lifting: applies next set
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "isn\'t syncing")', () => {
+  const { phoneRackNow, followOnFinish, rackStripLine, rackFollowToast } = require('../lib/rack/phoneView');
+  const { buildRackView } = require('../lib/rack/viewModel');
+  // Back Squat (lift) → DB Bulgarian (NOT a lift here: reps only) → Romanian Deadlift (lift).
+  const reRow = (id: string, name: string, lift: boolean) => ({
+    id, exercise_id: `ex-${id}`, sets: 3, velocity_min_mps: null, velocity_max_mps: null,
+    enabled_measurements: lift ? ['weight', 'reps'] : ['reps'], exercises: { name, is_placeholder: false },
+  });
+  const routines: any[] = [{ id: 'r-a', scheme: 'straight', routine_exercises: [reRow('squat', 'Back Squat', true), reRow('bulgarian', 'DB Bulgarian', false), reRow('rdl', 'Romanian Deadlift', true)] }];
+  const today = (): TodayAthlete => {
+    const exs = routines[0].routine_exercises.map((r: any) => ({
+      ...tEx(r.id, r.enabled_measurements.includes('weight')),
+      name: r.exercises.name,
+    }));
+    return tyler(exs);
+  };
+
+  it('phone view-model, iPad view-model and the follow all say Romanian Deadlift · Set 1 of 3', async () => {
+    // ---- phone: squat 3/3 just completed by hand on the squat screen
+    const instance = rackInstanceFromLogger('wi', routines);
+    const before = rackLogsFromCompleted('wi', { squat: [true, true, false] });
+    const after = rackLogsFromCompleted('wi', { squat: [true, true, true] });
+    const session = row({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 3 });
+    const isEcho = (c: any) => c.routineExerciseId === 'squat' && c.setNumber === 3;
+    const nowBefore = phoneRackNow({ instance, logs: before, session, athleteId: 'tyler', workoutInstanceId: 'wi', openExerciseId: 'squat', isEcho });
+    expect(nowBefore).toMatchObject({ routineExerciseId: 'squat', setNumber: 3, source: 'phone' });
+    const now = phoneRackNow({ instance, logs: after, session, athleteId: 'tyler', workoutInstanceId: 'wi', openExerciseId: 'squat', isEcho });
+    expect(now).toMatchObject({ routineExerciseId: 'rdl', setNumber: 1, source: 'rack' });
+    const follow = followOnFinish({
+      prev: { openId: 'squat', finished: false, active: true },
+      openId: 'squat', finished: true, active: true, rackNow: now, blockHasMore: false,
+    });
+    expect(follow).toBe('rdl');
+    expect(rackFollowToast('Rack 1', 'Romanian Deadlift', 1)).toBe('Rack 1 → Romanian Deadlift · set 1');
+    const phoneStrip = rackStripLine('Rack 1', 'Romanian Deadlift', now.setNumber, 3);
+    expect(phoneStrip).toBe('Rack 1 · Romanian Deadlift · Set 1 of 3');
+
+    // ---- iPad: the phone sent "done through 3" (squat:4); its logs may still lag (only 1, 2).
+    const r = rig(logRows('squat', 1, 2));
+    r.ex.setToday([today()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 4 });
+    await settle();
+    const v = buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(v.exerciseLine).toBe('Romanian Deadlift · Set 1 of 3');
+    expect(phoneStrip).toBe(`Rack 1 · ${v.exerciseLine}`);
+    // truthful source: the phone never chose RDL
+    expect(v.sourceLine).toBe('PICKED BY RACK');
+
+    // ---- the phone follows: it opens RDL set 1 and sends it → the iPad says "from the phone"
+    r.sync({ routine_exercise_id: 'rdl', set_number: 1 }, r.advance(500));
+    await settle();
+    const v2 = buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(v2.exerciseLine).toBe('Romanian Deadlift · Set 1 of 3');
+    expect(v2.sourceLine).toBe("FROM TYLER'S PHONE");
+  });
+
+  it('truthful source: a coach pick reads PICKED ON IPAD', async () => {
+    const r = rig();
+    r.ex.setToday([today()]);
+    r.sync({});
+    await settle();
+    expect(buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t }).sourceLine).toBe('PICKED BY RACK');
+    r.ex.setOverride('tyler', today().exercises.find((e: TodayExercise) => e.routineExerciseId === 'rdl')!);
+    await settle();
+    expect(buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t }).sourceLine).toBe('PICKED ON IPAD');
   });
 });
 

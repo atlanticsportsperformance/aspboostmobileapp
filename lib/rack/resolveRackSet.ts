@@ -71,7 +71,8 @@ export interface ResolveRackSetInput {
   liftingContinues?: boolean;
 }
 
-export type RackSetReason = 'phone' | 'superset-lift' | 'override' | 'extra-set' | 'next-rack-lift';
+/** 'reopen' is the executor's idle-hold reopen (spec §3), never returned by resolveRackSet. */
+export type RackSetReason = 'phone' | 'superset-lift' | 'override' | 'extra-set' | 'next-rack-lift' | 'reopen';
 
 export type ResolvedRackSet =
   | {
@@ -176,6 +177,15 @@ export function resolveRackSet(input: ResolveRackSetInput): ResolvedRackSet {
     }
   }
   return { none: true, reason: 'nothing-left' };
+}
+
+/**
+ * "Romanian Deadlift · Set 1 of 3" — the ONE wording of the current rack set,
+ * shown on the iPad's athlete card and in the phone's rack strip.
+ */
+export function rackSetLine(name: string, setNumber: number | null | undefined, sets: number | null | undefined): string {
+  if (setNumber == null) return name;
+  return `${name} · Set ${setNumber}${sets ? ` of ${sets}` : ''}`;
 }
 
 // ---------------------------------------------------------------- inputs

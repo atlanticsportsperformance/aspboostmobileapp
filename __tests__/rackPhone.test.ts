@@ -421,3 +421,64 @@ describe('phone ↔ iPad in unison', () => {
     expect(endedSets([session()], [session({ state: 'lifting' })], 'me')).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------- fix round 1: the rack's set on the phone
+import { followOnFinish, phoneRackNow, rackStripLine, withRackSet } from '../lib/rack/phoneView';
+import { rackInstanceFromLogger, rackLogsFromCompleted } from '../lib/rack/resolveRackSet';
+
+describe('phoneRackNow / followOnFinish / banner strip', () => {
+  const reRow = (id: string, lift: boolean) => ({
+    id, exercise_id: `ex-${id}`, sets: 3, velocity_min_mps: null, velocity_max_mps: null,
+    enabled_measurements: lift ? ['weight'] : ['reps'], exercises: { name: id, is_placeholder: false },
+  });
+  const instance = rackInstanceFromLogger('wi', [{ id: 'r', scheme: 'straight', routine_exercises: [reRow('squat', true), reRow('box', false), reRow('rdl', true)] }] as any);
+  const sess = (over: any = {}) => ({
+    active_athlete_id: 'me', workout_instance_id: 'wi', routine_exercise_id: null, state: 'idle', set_number: null, load_lb: null,
+    pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null, ...over,
+  });
+  const now = (over: any = {}) =>
+    phoneRackNow({ instance, logs: rackLogsFromCompleted('wi', { squat: [true, true, true] }), session: sess(), athleteId: 'me', workoutInstanceId: 'wi', openExerciseId: null, isEcho: () => false, ...over });
+
+  it('overview: the resolver’s rack lift (skips the non-lift); exercise screen: the open exercise wins', () => {
+    expect(now()).toEqual({ routineExerciseId: 'rdl', setNumber: 1, source: 'rack' });
+    expect(now({ openExerciseId: 'box' })).toEqual({ routineExerciseId: 'box', setNumber: 1, source: 'phone' });
+  });
+
+  it('a coach pick in the row (not the phone’s echo, not the auto-pick) is the override; lifting = the row’s live set', () => {
+    expect(now({ session: sess({ routine_exercise_id: 'box', set_number: 1 }) })).toMatchObject({ routineExerciseId: 'box', source: 'ipad' });
+    expect(now({ session: sess({ routine_exercise_id: 'box', set_number: 1 }), isEcho: () => true })).toMatchObject({ routineExerciseId: 'rdl' });
+    expect(now({ session: sess({ state: 'lifting', routine_exercise_id: 'squat', set_number: 4 }) })).toEqual({ routineExerciseId: 'squat', setNumber: 4, source: 'live' });
+  });
+
+  it('followOnFinish: only on the transition, not inside a block with sets left, never to the open exercise', () => {
+    const base = { openId: 'squat', finished: true, active: true, rackNow: { routineExerciseId: 'rdl', setNumber: 1, source: 'rack' as const }, blockHasMore: false };
+    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true } })).toBe('rdl');
+    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: true, active: false } })).toBe('rdl');
+    expect(followOnFinish({ ...base, prev: { openId: 'box', finished: false, active: true } })).toBeNull(); // opened a finished one by hand
+    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true }, blockHasMore: true })).toBeNull();
+    expect(followOnFinish({ ...base, prev: { openId: 'squat', finished: false, active: true }, active: false })).toBeNull();
+  });
+
+  it('the strip is the iPad card’s wording; only the active banner carries it', () => {
+    expect(rackStripLine('Rack 1', 'Romanian Deadlift', 1, 3)).toBe('Rack 1 · Romanian Deadlift · Set 1 of 3');
+    const active = { mode: 'active' as const, rackId: 'r', title: 'Rack 1 · you’re up', subtitle: 'Nobody waiting', racks: [] };
+    expect(withRackSet(active, 'X')?.rackSet).toBe('X');
+    expect(withRackSet({ ...active, mode: 'queued' }, 'X')?.rackSet).toBeUndefined();
+  });
+
+  it('I4: after the phone finished squat (sent squat:4), the iPad’s auto-pick is not an override', () => {
+    expect(
+      followTarget({
+        session: session({ routine_exercise_id: 'rdl', set_number: 1 }) as any,
+        prevRackExercise: 'squat',
+        sentThisActivation: true,
+        athleteId: 'me',
+        workoutInstanceId: 'wi',
+        openExerciseId: 'squat',
+        isEcho: () => false,
+        autoPickExerciseId: 'rdl',
+        isFinishedOnPhone: re => re === 'squat',
+      }),
+    ).toBeNull();
+  });
+});

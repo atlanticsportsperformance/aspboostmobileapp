@@ -19,18 +19,22 @@
 //     published with rack_set_ipad_context (unison). At a set start the live
 //     set's context is published BEFORE rack_start_set when the row differs,
 //     so the phone's live row is the rack's set.
-//   - Logs (todaysSetLogs) are PRELOADED for every athlete on today's tiles
-//     (+ the active / switching-to athlete) on start, every 60 s, on a tile
-//     list / active change, on every rack_sessions row and after each set
-//     write. Complete rows also go to the engine as `seedHighWater` (its
-//     never-overwrite guard). The rack's own writes count as complete at once.
-//     A first rep whose athlete's logs are older than 2 s waits (≤ 1.5 s) for
-//     a fresh read of them; every later event first releases it, so order is
-//     kept. `isSyncing()` = the rep athlete's logs haven't loaded yet (UI).
+//   - Logs: ONE athlete at a time (the active / switching-to one) through
+//     rack_athlete_sets, read only when that athlete changes, when the
+//     phone's set / exercise in the row moves, when a set ends, and before a
+//     set start whose logs are older than 2 s. Never on every row. Each read
+//     REPLACES the engine's complete-set guard (`replaceComplete`) with the
+//     read's complete rows + the rack's own writes not confirmed yet.
+//   - The row's set number from the phone (anything the iPad didn't publish
+//     itself) is always the resolver's "everything below is done" hint.
+//   - A first rep whose athlete's logs are stale waits (≤ 1.5 s) for the
+//     read; meanwhile EVERY event (ticks, rows, Done, taps, coach picks) is
+//     queued and replayed in order. `isSyncing()` = the rep athlete's logs
+//     haven't loaded yet (UI).
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
 
-import { IDLE_END_MS, LATE_REP_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
+import { IDLE_END_MS, LATE_REP_MS, REOPEN_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
 import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAthlete, type TodayExercise } from './api';
 import { rackInstancesOf, resolveRackSet, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
@@ -40,7 +44,6 @@ import { withTimeout, type RackPersist } from './persist';
 export const TICK_MS = 1_000;
 export const FLUSH_MS = 15_000;
 export const SEED_RETRY_MS = 5_000;
-export const SEED_REFRESH_MS = 60_000;
 export const RPC_TIMEOUT_MS = 10_000;
 /** A failed last-logged-weight read is retried after this long. */
 export const WEIGHT_RETRY_MS = 30_000;
@@ -55,8 +58,8 @@ export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
   setActive(rackId: string, athleteId: string): Promise<RackSessionRow>;
   endSet(rackId: string, athleteId: string): Promise<RackSessionRow>;
-  /** Today's exercise_logs rows of these athletes (resolveRackSet's logs). */
-  todaysSetLogs(athleteIds: string[]): Promise<SetLogRow[]>;
+  /** One athlete's set rows today (rack_athlete_sets) — resolveRackSet's logs. */
+  athleteSets(rackId: string, athleteId: string): Promise<SetLogRow[]>;
   /** Last logged weight for (athlete, exercise) — the load fallback when
    *  neither the phone nor the plan gives one. Optional (tests). */
   lastLoggedWeight?(athleteId: string, exerciseId: string): Promise<number | null>;
@@ -77,6 +80,8 @@ export const PUBLISH_RETRY_MS = 10_000;
 
 export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet'> & {
   flush(opts?: { force?: boolean }): Promise<void>;
+  /** Queued set writes (key `wi:re:set`) — a rack write still queued stays complete for the resolver. */
+  setQueue?: { peekAll(): Promise<{ key: string }[]> };
 };
 
 export interface ExecutorSensor {
@@ -128,6 +133,8 @@ export function createRackExecutor(opts: {
   sensor: ExecutorSensor;
   now?: () => number;
   log?: (...args: unknown[]) => void;
+  /** The phone has an exercise open that today's list lacks: re-read today now. */
+  onStaleToday?: () => void;
 }): RackExecutor {
   const { api, persist, sensor } = opts;
   const now = opts.now ?? (() => Date.now());
@@ -143,15 +150,16 @@ export function createRackExecutor(opts: {
 
   /** Athletes whose logs have landed at least once. */
   const seeded = new Set<string>();
-  let seedInFlight = false;
-  let seedAgain = false;
-  let seedRetry: ReturnType<typeof setTimeout> | null = null;
-  /** Cached exercise_logs per athlete (+ when they were read). */
-  const logsByAthlete = new Map<string, { rows: SetLogRow[]; at: number }>();
-  /** Sets the rack itself wrote complete, until a read shows them (key athlete:wi:re:n). */
-  const rackWritten = new Map<string, SetLogRow>();
-  /** Complete rows already handed to the engine as seedHighWater. */
-  const seededRows = new Set<string>();
+  let readInFlight = false;
+  let readAgain = false;
+  let readRetry: ReturnType<typeof setTimeout> | null = null;
+  /** Orders writes and read requests (a read only confirms writes made before it). */
+  let seq = 0;
+  /** Cached exercise_logs per athlete (+ when / at which seq they were requested). */
+  const logsByAthlete = new Map<string, { rows: SetLogRow[]; at: number; seq: number }>();
+  /** Sets the rack itself wrote complete, until a later read confirms or drops them (key athlete:wi:re:n). */
+  const rackWritten = new Map<string, SetLogRow & { seq: number }>();
+  let staleTodayAt = -Infinity;
 
   /** Writes whose enqueue failed (storage error) — retried on every flush. */
   const unsavedReps: RepWrite[] = [];
@@ -294,8 +302,9 @@ export function createRackExecutor(opts: {
             () => unsavedSets.push({ kind, summary: s }),
           );
           setWriteFailed = !ok;
-          // Refresh the logs once the write has gone out.
-          void flushSoon().then(() => preloadSeeds());
+          // A set ended: re-read that athlete's logs once the write has gone out.
+          const who = fx.summary.athleteId;
+          void flushSoon().then(() => readLogs(who));
           break;
         }
         case 'rpcEndSet':
@@ -316,65 +325,74 @@ export function createRackExecutor(opts: {
     }
   };
 
-  // ---------------------------------------------------------------- seed preload
+  // ---------------------------------------------------------------- log reads (one athlete)
 
-  const seedIds = (): string[] => {
-    const ids = new Set<string>(today.map(a => a.athleteId));
-    if (state.activeAthleteId) ids.add(state.activeAthleteId);
-    if (state.switchingTo) ids.add(state.switchingTo);
-    return [...ids];
-  };
-
-  const preloadSeeds = () => {
-    if (seedInFlight) {
-      seedAgain = true;
-      return;
+  /** Read one athlete's logs (default: the rep target). Coalesced; retried on failure. */
+  const readLogs = (athleteId: string | null = repTarget()): Promise<void> => {
+    if (!athleteId || !state.rackId) return Promise.resolve();
+    if (readInFlight) {
+      readAgain = true;
+      return Promise.resolve();
     }
-    const ids = seedIds();
-    if (ids.length === 0) return;
-    if (seedRetry) clearTimeout(seedRetry);
-    seedRetry = null;
-    seedInFlight = true;
-    withTimeout(api.todaysSetLogs(ids), RPC_TIMEOUT_MS, 'todaysSetLogs')
-      .then(rows => {
-        storeLogs(ids, rows);
-        notify();
-      })
+    if (readRetry) clearTimeout(readRetry);
+    readRetry = null;
+    readInFlight = true;
+    const rackId = state.rackId;
+    const reqSeq = ++seq;
+    const reqAt = now();
+    return withTimeout(api.athleteSets(rackId, athleteId), RPC_TIMEOUT_MS, 'athleteSets')
+      .then(rows => storeLogs(athleteId, rows, reqSeq, reqAt))
+      .then(() => notify())
       .catch(e => {
-        log(`seed preload failed; retrying in ${SEED_RETRY_MS} ms`, e);
-        if (running) seedRetry = setTimeout(() => ((seedRetry = null), preloadSeeds()), SEED_RETRY_MS);
+        log(`log read failed; retrying in ${SEED_RETRY_MS} ms`, e);
+        if (running) readRetry = setTimeout(() => ((readRetry = null), void readLogs()), SEED_RETRY_MS);
       })
       .finally(() => {
-        seedInFlight = false;
-        if (seedAgain) {
-          seedAgain = false;
-          preloadSeeds();
+        readInFlight = false;
+        if (readAgain) {
+          readAgain = false;
+          void readLogs();
         }
       });
   };
 
-  /** A read of these athletes' logs landed: cache, seed the engine guard, re-resolve. */
-  const storeLogs = (ids: string[], rows: SetLogRow[]) => {
-    const at = now();
-    for (const id of ids) logsByAthlete.set(id, { rows: rows.filter(r => r.athleteId === id), at });
-    for (const w of rows) {
-      if (!w.isComplete) continue;
-      const k = `${w.athleteId}:${w.workoutInstanceId}:${w.routineExerciseId}:${w.setNumber}`;
-      rackWritten.delete(k);
-      if (seededRows.has(k)) continue;
-      seededRows.add(k);
-      apply(
-        {
-          type: 'seedHighWater',
-          athleteId: w.athleteId,
-          workoutInstanceId: w.workoutInstanceId,
-          routineExerciseId: w.routineExerciseId,
-          setNumber: w.setNumber,
-        },
-        now(),
-      );
+  /**
+   * A read landed: cache it (an older request never overwrites a newer one),
+   * settle the rack's own writes (confirmed → dropped; shown not complete and
+   * no longer queued → dropped: an un-check / a moved set), then REPLACE the
+   * engine's complete-set guard and re-resolve.
+   */
+  const storeLogs = async (athleteId: string, rows: SetLogRow[], reqSeq: number, reqAt: number) => {
+    const cached = logsByAthlete.get(athleteId);
+    if (cached && cached.seq > reqSeq) return;
+    let queued: Set<string> | null = null;
+    try {
+      queued = persist.setQueue ? new Set((await persist.setQueue.peekAll()).map(i => i.key)) : null;
+    } catch {
+      queued = null;
     }
-    ids.forEach(id => seeded.add(id));
+    const cachedNow = logsByAthlete.get(athleteId);
+    if (cachedNow && cachedNow.seq > reqSeq) return;
+    logsByAthlete.set(athleteId, { rows, at: reqAt, seq: reqSeq });
+    const done = new Set(rows.filter(r => r.isComplete).map(r => `${r.workoutInstanceId}:${r.routineExerciseId}:${r.setNumber}`));
+    const unsaved = new Set(unsavedSets.map(u => `${u.summary.workoutInstanceId}:${u.summary.routineExerciseId}:${u.summary.setNumber}`));
+    for (const [k, w] of rackWritten) {
+      if (w.athleteId !== athleteId) continue;
+      const sk = `${w.workoutInstanceId}:${w.routineExerciseId}:${w.setNumber}`;
+      if (done.has(sk)) rackWritten.delete(k);
+      else if (w.seq < reqSeq && !unsaved.has(sk) && !(queued?.has(sk) ?? false)) rackWritten.delete(k);
+    }
+    seeded.add(athleteId);
+    apply(
+      {
+        type: 'replaceComplete',
+        athleteId,
+        sets: logsFor(athleteId)
+          .filter(l => l.isComplete)
+          .map(l => ({ workoutInstanceId: l.workoutInstanceId, routineExerciseId: l.routineExerciseId, setNumber: l.setNumber })),
+      },
+      now(),
+    );
     reresolve();
   };
 
@@ -394,10 +412,21 @@ export function createRackExecutor(opts: {
 
   const refSig = (r: RackExerciseRef | null) => (r ? `${r.workoutInstanceId}:${r.routineExerciseId}:${r.setNumber ?? ''}` : '');
 
-  /** The phone's open exercise + set — only when the row's context is the phone's. */
+  /**
+   * The phone's context in the row: anything the iPad didn't publish itself.
+   * Its exercise is the phone-open one (rule 1) and its set number is always
+   * the "everything below is done" hint — also when the iPad published that
+   * exercise and the phone then moved the set on (a hand-saved set).
+   */
   const phoneRef = (): RackExerciseRef | null => {
-    if (!phoneOwnsRow()) return null;
-    const n = rowNext()!;
+    const id = state.activeAthleteId;
+    const r = state.session;
+    if (!id || !r || r.active_athlete_id !== id) return null;
+    const n = rowNext();
+    if (!n || n.wi == null || n.re == null) return null;
+    // Only what the iPad actually SENT is its own (an adopted phone value stays the phone's hint).
+    const p = sentByIpad;
+    if (p && p.athleteId === id && p.workoutInstanceId === n.wi && p.routineExerciseId === n.re && p.setNumber === n.set) return null;
     return { workoutInstanceId: n.wi, routineExerciseId: n.re, setNumber: n.set };
   };
   const lastRackExerciseOf = (athleteId: string): RackExerciseRef | null => {
@@ -421,7 +450,13 @@ export function createRackExecutor(opts: {
       instances.some(i => (!ref.workoutInstanceId || i.workoutInstanceId === ref.workoutInstanceId) && i.exercises.some(e => e.routineExerciseId === ref.routineExerciseId));
     // The phone has an exercise open that today's list doesn't hold (another
     // instance / a stale list): the phone wins — the row's context applies.
-    if (phone && !known(phone) && !ov) return null;
+    if (phone && !known(phone) && !ov) {
+      if (opts.onStaleToday && now() - staleTodayAt > 10_000) {
+        staleTodayAt = now();
+        opts.onStaleToday();
+      }
+      return null;
+    }
     return resolveRackSet({
       instances,
       logs: logsFor(athleteId),
@@ -450,16 +485,18 @@ export function createRackExecutor(opts: {
       exerciseId: set?.exerciseId ?? null,
       setNumber: set?.setNumber ?? null,
     };
+    const reason = set?.reason ?? null;
     if (
       cur && cur.athleteId === athleteId && cur.resolved &&
       cur.workoutInstanceId === next.workoutInstanceId && cur.routineExerciseId === next.routineExerciseId &&
-      cur.exerciseId === next.exerciseId && cur.setNumber === next.setNumber
+      cur.exerciseId === next.exerciseId && cur.setNumber === next.setNumber && (cur.reason ?? null) === reason
     ) return;
     apply(
       {
         type: 'localContext',
         athleteId,
         resolved: true,
+        reason,
         ...next,
         loadLb: null,
         zoneMin: ex?.zoneMin ?? null,
@@ -496,10 +533,26 @@ export function createRackExecutor(opts: {
     try {
       let res = resolveFor(athleteId);
       const last = lastRackExerciseOf(athleteId);
-      const lastSet = state.lastEndByAthlete[athleteId]?.set;
-      const onLast = !!res && !res.none && !!last && res.workoutInstanceId === last.workoutInstanceId && res.routineExerciseId === last.routineExerciseId;
+      const rec = state.lastEndByAthlete[athleteId];
+      const lastSet = rec?.set;
+      const isLast = (ref: { workoutInstanceId: string | null; routineExerciseId: string | null } | null) =>
+        !!ref && !!last && ref.workoutInstanceId === last.workoutInstanceId && ref.routineExerciseId === last.routineExerciseId;
+      const onLast = !!res && !res.none && isLast(res);
       const ov = override && override.athleteId === athleteId ? override.ex : null;
-      const somethingElseOpen = !!phoneRef() || (!!ov && !(last && ov.workoutInstanceId === last.workoutInstanceId && ov.routineExerciseId === last.routineExerciseId));
+      const phone = phoneRef();
+      // The phone still on the finished last exercise (it sends set N+1) is not "something else".
+      const somethingElseOpen = (!!phone && !isLast(phone)) || (!!ov && !isLast(ov));
+      // Hold first: an idle-ended set (≤ REOPEN_MS ago, nothing else open) is reopened.
+      if (res && last && lastSet && rec.hold && lastSet.endedAtMs != null && at - lastSet.endedAtMs < REOPEN_MS && !somethingElseOpen) {
+        applyResolution(athleteId, {
+          workoutInstanceId: last.workoutInstanceId!,
+          routineExerciseId: last.routineExerciseId!,
+          exerciseId: lastSet.context.exerciseId,
+          setNumber: rec.setNumber ?? 1,
+          reason: 'reopen',
+        });
+        return;
+      }
       if (res && last && lastSet && !onLast && !somethingElseOpen && at - lastSet.lastRepAtMs <= CONTINUE_MS) {
         const extra = resolveFor(athleteId, true);
         if (extra && !extra.none && extra.reason === 'extra-set') res = extra;
@@ -535,6 +588,7 @@ export function createRackExecutor(opts: {
       loadLb: c.loadLb,
     };
     published = want;
+    sentByIpad = want;
     lastAttemptKey = `${want.athleteId}:${want.workoutInstanceId}:${want.routineExerciseId}:${want.setNumber}:${want.loadLb}`;
     const setIpadContext = api.setIpadContext;
     // Same serial chain as the RPCs: this goes out before the rpcStartSet the
@@ -555,7 +609,8 @@ export function createRackExecutor(opts: {
 
   // ---------------------------------------------------------------- first-rep freshness hold
 
-  let held: { athleteId: string; reps: { event: RackEvent; at: number }[]; timer: ReturnType<typeof setTimeout>; done: Promise<void> } | null = null;
+  /** The first-rep wait: every event / call meanwhile is queued, replayed in order on release. */
+  let held: { athleteId: string; queue: (() => void)[]; timer: ReturnType<typeof setTimeout>; done: Promise<void> } | null = null;
   let releasing = false;
 
   const logsFresh = (athleteId: string) => {
@@ -563,38 +618,48 @@ export function createRackExecutor(opts: {
     return !!c && now() - c.at <= LOG_FRESH_MS;
   };
 
-  const releaseHold = () => {
-    const h = held;
-    if (!h) return;
+  const releaseHold = (h = held) => {
+    if (!h || held !== h) return;
     held = null;
     clearTimeout(h.timer);
     releasing = true;
     try {
-      for (const r of h.reps) dispatch(r.event, r.at);
+      for (const run of h.queue) run();
     } finally {
       releasing = false;
     }
   };
 
-  /** Re-read the athlete's logs before the set starts (bounded; reps keep their times). */
+  /** Queue `run` behind a pending first-rep wait; false = no wait, run now. */
+  const queued = (run: () => void): boolean => {
+    if (!held || releasing) return false;
+    held.queue.push(run);
+    return true;
+  };
+
+  /** Re-read the athlete's logs before the set starts (bounded; events keep their order and times). */
   const beginHold = (athleteId: string, event: RackEvent, at: number) => {
     let finish!: () => void;
     const done = new Promise<void>(res => (finish = res));
-    held = {
+    const h = {
       athleteId,
-      reps: [{ event, at }],
+      queue: [() => dispatch(event, at)],
       timer: setTimeout(() => {
         log('log re-read slow; starting the set with cached logs');
-        releaseHold();
+        releaseHold(h);
         finish();
       }, LOG_HOLD_MAX_MS),
       done,
     };
-    withTimeout(api.todaysSetLogs([athleteId]), LOG_HOLD_MAX_MS, 'todaysSetLogs')
-      .then(rows => storeLogs([athleteId], rows))
+    held = h;
+    const rackId = state.rackId!;
+    const reqSeq = ++seq;
+    const reqAt = now();
+    withTimeout(api.athleteSets(rackId, athleteId), LOG_HOLD_MAX_MS, 'athleteSets')
+      .then(rows => storeLogs(athleteId, rows, reqSeq, reqAt))
       .catch(e => log('log re-read failed; starting the set with cached logs', e))
       .finally(() => {
-        releaseHold();
+        releaseHold(h);
         finish();
       });
   };
@@ -605,6 +670,7 @@ export function createRackExecutor(opts: {
     const before = state.activeAthleteId;
     const ctxBefore = state.mode === 'rack' ? `${state.setState}|${ctxKey(nextContext(state))}` : '';
     const targetBefore = repTarget();
+    const hintBefore = event.type === 'sessionSync' ? refSig(phoneRef()) : '';
     const res = reduce(state, event, at);
     state = res.state;
     // A set the rack just ended counts as complete for the resolver at once —
@@ -619,6 +685,7 @@ export function createRackExecutor(opts: {
         routineExerciseId: sm.routineExerciseId,
         setNumber: sm.setNumber,
         isComplete: true,
+        seq: ++seq,
       });
     }
     if (res.effects.length) {
@@ -626,21 +693,38 @@ export function createRackExecutor(opts: {
       effectChain = effectChain.then(() => runEffects(effects)).catch(e => log('effects failed', e));
     }
     const target = repTarget();
-    // Refresh right away on an active/switch-target change (the phone may have
-    // logged sets since the last preload). Non-blocking.
+    // Read right away on an active / switch-target change (the phone may have
+    // logged sets since). Non-blocking.
     if ((target !== targetBefore || state.activeAthleteId !== before) && (target || state.activeAthleteId)) {
-      preloadSeeds();
+      void readLogs();
     }
     if (state.activeAthleteId !== before) {
       if (override && override.athleteId !== state.activeAthleteId) override = null;
       published = null;
+      sentByIpad = null;
       lastAttemptKey = null;
     } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow() && refSig(phoneRef()) !== override.phoneSig) {
       // The phone moved the athlete on: its newer pick wins over the coach override.
       override = null;
     }
-    // Every rack_sessions row: the phone may have logged / moved — re-read.
-    if (event.type === 'sessionSync' && state.activeAthleteId) preloadSeeds();
+    if (event.type === 'sessionSync' && state.activeAthleteId === before && state.activeAthleteId) {
+      const hint = phoneRef();
+      if (refSig(hint) !== hintBefore && hint) {
+        // The phone's set / exercise moved: re-read (never on other row changes).
+        void readLogs();
+        // …and it moved past an idle-held set → that set is not reopened.
+        const rec = state.lastEndByAthlete[state.activeAthleteId];
+        const held = rec?.hold ? rec.set.context : null;
+        if (
+          held &&
+          (hint.workoutInstanceId !== held.workoutInstanceId ||
+            hint.routineExerciseId !== held.routineExerciseId ||
+            (hint.setNumber != null && rec!.setNumber != null && hint.setNumber > rec!.setNumber))
+        ) {
+          apply({ type: 'releaseHold', athleteId: state.activeAthleteId }, at);
+        }
+      }
+    }
     if (event.type !== 'localContext') reresolve();
     const changed = event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore;
     if (event.type !== 'loadChanged' && changed) deriveLoad();
@@ -655,6 +739,8 @@ export function createRackExecutor(opts: {
   type Pub = { athleteId: string; workoutInstanceId: string; routineExerciseId: string; setNumber: number | null; loadLb: number | null };
   /** What the iPad last published for the active athlete (null = nothing / phone-owned). */
   let published: Pub | null = null;
+  /** The last context the iPad itself sent (rack_set_ipad_context). */
+  let sentByIpad: Pub | null = null;
   let lastAttemptKey: string | null = null;
   let publishInFlight = false;
   let publishFailedAt: number | null = null;
@@ -706,7 +792,9 @@ export function createRackExecutor(opts: {
     const mine = published && published.athleteId === id ? published : null;
     // The set number is the resolver's (via the engine's guard / idle hold);
     // a load the phone changed after the iPad's publish stays the phone's.
-    const setNumber = nextSetNumber(state, id);
+    const resolved = nextSetNumber(state, id);
+    // Keep the phone's set hint for this exercise when it is ahead (a hand-saved set).
+    const setNumber = sameEx && n!.set != null && resolved != null && n!.set > resolved && !(override && override.athleteId === id) ? n!.set : resolved;
     const phoneLoad = sameEx && n!.set === setNumber && n!.load != null && mine && n!.load !== mine.loadLb ? Number(n!.load) : null;
     const want: Pub = {
       athleteId: id,
@@ -725,6 +813,7 @@ export function createRackExecutor(opts: {
     lastAttemptKey = key;
     publishInFlight = true;
     published = want;
+    sentByIpad = want;
     const rackId = state.rackId;
     withTimeout(
       api.setIpadContext(rackId, id, {
@@ -888,13 +977,9 @@ export function createRackExecutor(opts: {
 
   const dispatch = (event: RackEvent, atMs?: number) => {
     const at = atMs ?? now();
-    if (held) {
-      if (event.type === 'rep') {
-        held.reps.push({ event, at });
-        return;
-      }
-      releaseHold(); // any other event: the held reps go first (order kept)
-    }
+    // A first rep is waiting for its log read: queue EVERYTHING (ticks, rows,
+    // Done, taps) and replay in order on release.
+    if (queued(() => dispatch(event, at))) return;
     let starting = false;
     if (event.type === 'rep' && startsSet(at)) {
       const id = state.activeAthleteId!;
@@ -915,6 +1000,7 @@ export function createRackExecutor(opts: {
   let override: { athleteId: string; ex: TodayExercise; phoneSig: string } | null = null;
 
   const setOverride = (athleteId: string, ex: TodayExercise | null) => {
+    if (queued(() => setOverride(athleteId, ex))) return;
     override = ex
       ? { athleteId, ex, phoneSig: athleteId === state.activeAthleteId ? refSig(phoneRef()) : '' }
       : override?.athleteId === athleteId ? null : override;
@@ -927,6 +1013,7 @@ export function createRackExecutor(opts: {
   };
 
   const setToday = (athletes: TodayAthlete[]) => {
+    if (queued(() => setToday(athletes))) return;
     today = athletes;
     // Fresh reads for % loads (the phone may have logged / edited sets).
     logged.clear();
@@ -947,7 +1034,8 @@ export function createRackExecutor(opts: {
       }
     }
     reresolve();
-    preloadSeeds();
+    const id = repTarget();
+    if (id && !seeded.has(id)) void readLogs(id);
   };
 
   // ---------------------------------------------------------------- lifecycle
@@ -981,17 +1069,16 @@ export function createRackExecutor(opts: {
       running = true;
       timers.push(setInterval(() => dispatch({ type: 'tick' }), TICK_MS));
       timers.push(setInterval(() => flushSoon(), FLUSH_MS));
-      timers.push(setInterval(preloadSeeds, SEED_REFRESH_MS));
       flushSoon();
-      preloadSeeds();
+      void readLogs();
     },
     stop() {
       releaseHold();
       running = false;
       timers.forEach(clearInterval);
       timers = [];
-      if (seedRetry) clearTimeout(seedRetry);
-      seedRetry = null;
+      if (readRetry) clearTimeout(readRetry);
+      readRetry = null;
     },
     async idle() {
       // Effects can enqueue RPCs and RPCs can dispatch more effects: settle both

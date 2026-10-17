@@ -88,7 +88,7 @@ describe('rack phone wiring', () => {
   it('context: debounced sender, active only, set = first incomplete', () => {
     expect(H).toContain('createContextSender(');
     expect(H).toContain('sender.update(activeRackId, activeRackId ? ctx : null, o)');
-    expect(L).toContain('firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets)');
+    expect(L).toContain('firstIncompleteSet(completedSets[ctxExercise.id], ctxExercise.sets ?? 1)');
     expect(L).toContain('{ immediate }');
     expect(L).toContain('contextLoad({');
   });
@@ -152,5 +152,37 @@ describe('rack phone wiring — shared resolver + re-review N1/N3/N4', () => {
     expect(n3).toContain('setRackSavingState(prev => (Object.keys(prev).length ? {} : prev));');
     expect(n3).toContain('RACK_WRITE_TIMEOUT_MS');
     expect(n3).toContain('if (rackWasActiveRef.current) return; // active again');
+  });
+});
+
+describe('rack phone wiring — fix round 1 (review 10c + owner sync)', () => {
+  it('I4: a finished exercise sends {instance, exercise, set: prescribed + 1}, never an empty context', () => {
+    expect(L).toContain('{ workoutInstanceId, routineExerciseId: ctxExercise.id, setNumber: (ctxExercise.sets ?? 1) + 1, loadLb: null }');
+    expect(L).not.toContain('? { workoutInstanceId: null, routineExerciseId: null, setNumber: null, loadLb: null }');
+    expect(L).toContain('isFinishedOnPhone: reId =>');
+  });
+
+  it('banner strip (both screens) and the overview Continue come from phoneRackNow — the iPad’s resolver', () => {
+    expect(L).toContain('const rackNow = rackActive\n    ? phoneRackNow({');
+    expect(L).toContain('banner: withRackSet(rack.banner, rackSetStrip),');
+    expect(L).toContain('rackFocus={rack.hasRacks ? (rackNow ? { reId: rackNow.routineExerciseId, setIndex: rackNow.setNumber - 1 } : rackFocus) : null}');
+    expect(BN).toContain('{active && banner.rackSet ? (');
+    // the exercise screen and the overview both render RackBanner from rackScreen
+    expect(L).toContain('...rackScreen,');
+  });
+
+  it('owner ruling 1: the open exercise finishing while active follows the rack (navigate + toast), and Next goes there', () => {
+    expect(L).toContain('const target = followOnFinish({');
+    expect(L).toContain('showRackToast(rackFollowToast(rack.activeRackName,');
+    const next = L.slice(L.indexOf('const handleNextSet = useCallback'), L.indexOf('// Navigation handlers'));
+    expect(next.indexOf('rackNextAfterRef.current(activeExerciseId, currentSetIndex)')).toBeLessThan(next.indexOf('nextStep(sequence, done'));
+    expect(D).toContain('const rackNext = rack?.hasRacks ? rack.rackNextAfter?.(currentSetIndex) ?? null : null;');
+  });
+
+  it('concern 4: extra rack sets past the prescription get a read-only row with the RACK line', () => {
+    expect(L).toContain("} else if (setIndex >= ex.sets && log.metric_data?.vbt?.source === 'rack') {");
+    expect(L).toContain('extraSets: extraRackSets(reId, currentExercise.sets ?? 1),');
+    expect(D).toContain('for (const x of rack?.hasRacks ? rack.extraSets ?? [] : []) {');
+    expect(D).toContain('{x.rackLine && <Text style={styles.rackSummary}>{x.rackLine}</Text>}');
   });
 });

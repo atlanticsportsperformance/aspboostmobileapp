@@ -70,7 +70,9 @@
  * sets + `seedHighWater`) and never writes onto one of them (a lagging log
  * read or phone context moves up to the next free number).
  * EXCEPTION — idle end: after a 60 s idle end the number is held until the
- * exercise changes or the active athlete changes. A later rep on the same
+ * exercise changes, the active athlete changes, the phone moves to a later
+ * set / another exercise (`releaseHold`, from the executor), or REOPEN_MS
+ * (3 min) passes since the idle end. A later rep on the same
  * exercise starts a new set with the SAME set_number that carries
  * the idle-ended set's reps forward, so the upsert rewrites the set with all
  * its reps — the server-side "reopen" of spec §3. Carried reps are not
@@ -109,6 +111,8 @@ import {
 
 export const IDLE_END_MS = 60_000;
 export const LATE_REP_MS = 3_000;
+/** The idle-reopen hold lasts at most this long after the idle end. */
+export const REOPEN_MS = 180_000;
 
 // ---------------------------------------------------------------- types
 
@@ -189,6 +193,17 @@ export interface LiveSet {
   endedAtMs: number | null;
   endedBy: EndedBy | null;
   free: boolean;
+  /** Who chose this set's exercise (resolved contexts only): the phone, the rack's resolver, or a coach on the iPad. */
+  pickedBy?: PickedBy | null;
+}
+
+export type PickedBy = 'phone' | 'rack' | 'ipad';
+/** resolveRackSet's reason → who picked it (only the phone-open exercise is the phone's). */
+export function pickedByOf(reason: string | null | undefined): PickedBy | null {
+  if (!reason) return null;
+  if (reason === 'phone') return 'phone';
+  if (reason === 'override') return 'ipad';
+  return 'rack';
 }
 
 export interface SetSummary {
@@ -257,7 +272,7 @@ export interface RackEngineState {
    * resolveRackSet (authoritative for the next set); otherwise the iPad's
    * pick, used only while the server row has no workout.
    */
-  localContext: (RackContext & { athleteId: string; resolved?: boolean }) | null;
+  localContext: (RackContext & { athleteId: string; resolved?: boolean; reason?: string | null }) | null;
   /** Last row applied from the server (null until the first sync). */
   session: RackSessionRow | null;
   activeAthleteId: string | null;
@@ -319,6 +334,8 @@ export type RackEvent =
       type: 'localContext';
       athleteId: string;
       resolved?: boolean;
+      /** resolveRackSet's reason (who picked it) — the iPad's source label. */
+      reason?: string | null;
       workoutInstanceId: string | null;
       routineExerciseId: string | null;
       exerciseId: string | null;
@@ -340,6 +357,18 @@ export type RackEvent =
   | { type: 'rpcFailed'; kind: RpcKind; athleteId: string }
   /** The executor's RPC succeeded (its returned row still goes in as a sessionSync). */
   | { type: 'rpcSettled'; kind: RpcKind; athleteId: string }
+  /** The phone moved past the idle-held set: release the athlete's hold. */
+  | { type: 'releaseHold'; athleteId: string }
+  /**
+   * The athlete's complete sets from a fresh log read (+ the rack's own
+   * unconfirmed writes): REPLACES the guard list, so an un-check / moved set
+   * stops counting.
+   */
+  | {
+      type: 'replaceComplete';
+      athleteId: string;
+      sets: { workoutInstanceId: string; routineExerciseId: string; setNumber: number }[];
+    }
   /** A set already complete today (exercise_logs) — the never-overwrite guard. */
   | {
       type: 'seedHighWater';
@@ -452,7 +481,7 @@ export function nextContext(s: RackEngineState): RackContext {
     };
   }
   if (server.workoutInstanceId == null && local) {
-    const { athleteId: _a, resolved: _r, ...ctx } = local;
+    const { athleteId: _a, resolved: _r, reason: _why, ...ctx } = local;
     return ctx;
   }
   return server;
@@ -669,6 +698,7 @@ function startSet(s: RackEngineState, athleteId: string, now: number): LiveSet {
     endedAtMs: null,
     endedBy: null,
     free,
+    pickedBy: resolvedFor(s, athleteId) ? (free ? null : reopen ? prev.set.pickedBy ?? 'rack' : pickedByOf(s.localContext?.reason)) : null,
   };
 }
 
@@ -721,6 +751,14 @@ function endLive(
   return syncSensorLoad(next, fx);
 }
 
+/** The idle-reopen hold ends REOPEN_MS after the idle end. */
+function expireHold(s: RackEngineState, now: number): RackEngineState {
+  const a = s.activeAthleteId;
+  const rec = a ? s.lastEndByAthlete[a] : undefined;
+  if (!a || !rec || !rec.hold || rec.set.endedAtMs == null || now - rec.set.endedAtMs < REOPEN_MS) return s;
+  return { ...s, lastEndByAthlete: { ...s.lastEndByAthlete, [a]: { ...rec, hold: false } } };
+}
+
 /** Credit a rep to the active athlete: start a set if needed, then add it. */
 function applyRep(s: RackEngineState, rep: OvrRep, at: number, fx: RackEffect[]): RackEngineState {
   const athleteId = s.activeAthleteId;
@@ -730,6 +768,7 @@ function applyRep(s: RackEngineState, rep: OvrRep, at: number, fx: RackEffect[])
   }
   let live = s.live;
   if (s.setState !== 'lifting' || !live) {
+    s = expireHold(s, at);
     live = startSet(s, athleteId, at);
     if (s.mode === 'rack') {
       fx.push({ type: 'rpcStartSet', athleteId, setStartedAt: new Date(at).toISOString() });
@@ -975,6 +1014,24 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       // (or any later change of the active athlete) resolves the switch.
       break;
 
+    case 'releaseHold': {
+      const rec = s.lastEndByAthlete[event.athleteId];
+      if (rec?.hold) s = { ...s, lastEndByAthlete: { ...s.lastEndByAthlete, [event.athleteId]: { ...rec, hold: false } } };
+      break;
+    }
+
+    case 'replaceComplete': {
+      const prefix = `${event.athleteId}:`;
+      const next: Record<string, number[]> = {};
+      for (const [k, v] of Object.entries(s.completeSets)) if (!k.startsWith(prefix)) next[k] = v;
+      for (const c of event.sets) {
+        const k = `${event.athleteId}:${c.workoutInstanceId}:${c.routineExerciseId}`;
+        if (!(next[k] ?? []).includes(c.setNumber)) next[k] = [...(next[k] ?? []), c.setNumber];
+      }
+      s = { ...s, completeSets: next };
+      break;
+    }
+
     case 'seedHighWater': {
       const k = `${event.athleteId}:${event.workoutInstanceId}:${event.routineExerciseId}`;
       s = { ...s, completeSets: markComplete(s.completeSets, k, event.setNumber) };
@@ -984,6 +1041,8 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
     case 'tick':
       if (s.setState === 'lifting' && s.live && now - s.live.lastRepAtMs >= IDLE_END_MS) {
         s = endLive(s, 'idle', now, fx, true);
+      } else if (s.setState !== 'lifting') {
+        s = expireHold(s, now);
       }
       break;
 

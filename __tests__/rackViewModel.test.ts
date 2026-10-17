@@ -235,13 +235,13 @@ describe('rack view model', () => {
     expect(view(r.s).exerciseLine).toBe('Back Squat · Set 3 of 3');
   });
 
-  it('iPad pick (localContext) when the phone sent nothing → PICKED ON THE IPAD', () => {
+  it('iPad pick (localContext) when the phone sent nothing → PICKED ON IPAD', () => {
     const r = rig();
     r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null });
     expect(view(r.s).sourceLine).toBe('FREE LIFT');
     r.send({ type: 'localContext', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-box', exerciseId: 'ex-box', setNumber: null, loadLb: null, zoneMin: null, zoneMax: null, dropStopPct: null });
     const v = view(r.s);
-    expect(v.sourceLine).toBe('PICKED ON THE IPAD');
+    expect(v.sourceLine).toBe('PICKED ON IPAD');
     expect(v.exerciseName).toBe('Box Jump');
     expect(v.remaining.map(e => e.name)).toEqual(['Back Squat', 'Box Jump']);
   });
@@ -287,13 +287,13 @@ describe('rack view model', () => {
     expect(repColor({ zone: null, partial: false, dropCue: true }, false)).toBe('#ffffff');
   });
 
-  it('a live set started from the iPad pick keeps "PICKED ON THE IPAD" after the phone sends a pending context', () => {
+  it('a live set started from the iPad pick keeps "PICKED ON IPAD" after the phone sends a pending context', () => {
     const r = rig();
     r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null });
     r.send({ type: 'localContext', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat', setNumber: null, loadLb: null, zoneMin: 0.45, zoneMax: 0.6, dropStopPct: 20 });
     r.send({ type: 'rep', rep: ovr(0.55) }, T0 + 1000);
     r.sync({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null, load_lb: null, pending_workout_instance_id: 'wi-1', pending_routine_exercise_id: 're-box' }, T0 + 2000);
-    expect(view(r.s, r.now).sourceLine).toBe('PICKED ON THE IPAD');
+    expect(view(r.s, r.now).sourceLine).toBe('PICKED ON IPAD');
   });
 
   it('phoneContextOfRow prefers the pending (newest) phone context', () => {
@@ -370,10 +370,10 @@ describe('fix round 3: pick prompt, % load note, iPad-owned source', () => {
     expect(view(r.s).loadNote).toBeNull();
   });
 
-  it('a row holding the iPad\'s published pick reads PICKED ON THE IPAD (not the phone)', () => {
+  it('a row holding the iPad\'s published pick reads PICKED ON IPAD (not the phone)', () => {
     const r = rig();
     r.sync({ queue: [] });
-    expect(view(r.s, T0, { ipadOwned: true }).sourceLine).toBe('PICKED ON THE IPAD');
+    expect(view(r.s, T0, { ipadOwned: true }).sourceLine).toBe('PICKED ON IPAD');
     expect(view(r.s, T0, { ipadOwned: false }).sourceLine).toBe("FROM TYLER'S PHONE");
   });
 });

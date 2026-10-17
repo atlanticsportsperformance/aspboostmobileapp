@@ -316,6 +316,8 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         const routines = [...(wi.workouts?.routines ?? [])].sort(byOrder);
         const exercises: TodayExercise[] = [];
         routines.forEach((r: any, ri: number) => {
+          // Text blocks (warm-up / notes) log no sets — same filter as the logger.
+          if (normalizeScheme(r.scheme) === 'text') return;
           // Code index counts the rows the logger lists (true placeholders dropped).
           const listed = [...(r.routine_exercises ?? [])]
             .sort(byOrder)
@@ -430,29 +432,18 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
     },
 
     /**
-     * Every exercise_logs row (set_number + is_complete) on the athletes'
-     * instances scheduled today — the logs resolveRackSet reads on the iPad.
+     * ONE athlete's set rows (set_number + is_complete, drafts too) on their
+     * instances scheduled `today` — resolveRackSet's logs on the iPad.
+     * rack_athlete_sets is SECURITY DEFINER (staff of the rack's org + reach):
+     * one call, no RLS planning.
      */
-    async todaysSetLogs(athleteIds: string[], today: string = todayKey()): Promise<SetLogRow[]> {
-      if (athleteIds.length === 0) return [];
-      const { data: wis, error } = await client
-        .from('workout_instances')
-        .select('id, athlete_id')
-        .in('athlete_id', athleteIds)
-        .eq('scheduled_date', today);
-      if (error) throw new RackRpcError('workout_instances', error);
-      const ids = ((wis as any[]) ?? []).map(w => w.id);
-      if (ids.length === 0) return [];
-      const { data: logs, error: logErr } = await client
-        .from('exercise_logs')
-        .select('athlete_id, workout_instance_id, routine_exercise_id, set_number, is_complete')
-        .in('workout_instance_id', ids);
-      if (logErr) throw new RackRpcError('exercise_logs', logErr);
+    async athleteSets(rackId: string, athleteId: string, today: string = todayKey()): Promise<SetLogRow[]> {
+      const rows = (await call<any[]>('rack_athlete_sets', { p_rack: rackId, p_athlete: athleteId, p_date: today })) ?? [];
       const out: SetLogRow[] = [];
-      for (const l of (logs as any[]) ?? []) {
+      for (const l of rows) {
         if (!l.routine_exercise_id || typeof l.set_number !== 'number') continue;
         out.push({
-          athleteId: l.athlete_id,
+          athleteId,
           workoutInstanceId: l.workout_instance_id,
           routineExerciseId: l.routine_exercise_id,
           setNumber: l.set_number,

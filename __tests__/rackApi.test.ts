@@ -94,7 +94,7 @@ describe('todaysAthletesForRack', () => {
     });
     const ex = createRackExecutor({
       engine: createRackEngine('rack-3'),
-      api: { startSet: jest.fn(), setActive: jest.fn(), endSet: jest.fn(), todaysSetLogs: jest.fn(async () => []) } as any,
+      api: { startSet: jest.fn(), setActive: jest.fn(), endSet: jest.fn(), athleteSets: jest.fn(async () => []) } as any,
       persist: { writeRep: jest.fn(), endSet: jest.fn(), amendSet: jest.fn(), flush: jest.fn(async () => {}) },
       sensor: { writeLoad: jest.fn(async () => {}) },
       log: () => {},
@@ -143,28 +143,16 @@ describe('realtime topics', () => {
 });
 
 describe('Task 9 fix round 3: api', () => {
-  it('todaysSetLogs returns every set row of today with its is_complete flag', async () => {
-    const calls: any[][] = [];
-    const client = {
-      rpc: jest.fn(),
-      from: jest.fn((t: string) => {
-        calls.push(['from', t]);
-        return builder(
-          t === 'workout_instances'
-            ? { data: [{ id: 'wi-1', athlete_id: 'tyler' }], error: null }
-            : {
-                data: [
-                  { athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2, is_complete: true },
-                  { athlete_id: 'tyler', workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 3, is_complete: false },
-                ],
-                error: null,
-              },
-          calls,
-        );
-      }),
-    };
-    const out = await createRackApi(client as any).todaysSetLogs(['tyler'], '2026-10-17');
-    expect(calls).toContainEqual(['eq', 'scheduled_date', '2026-10-17']);
+  it('athleteSets calls rack_athlete_sets for ONE athlete and maps is_complete', async () => {
+    const rpc = jest.fn(async () => ({
+      data: [
+        { workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 2, is_complete: true },
+        { workout_instance_id: 'wi-1', routine_exercise_id: 're-1', set_number: 3, is_complete: false },
+      ],
+      error: null,
+    }));
+    const out = await createRackApi({ rpc, from: jest.fn() } as any).athleteSets('rack-3', 'tyler', '2026-10-17');
+    expect(rpc).toHaveBeenCalledWith('rack_athlete_sets', { p_rack: 'rack-3', p_athlete: 'tyler', p_date: '2026-10-17' });
     expect(out).toEqual([
       { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 2, isComplete: true },
       { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-1', setNumber: 3, isComplete: false },

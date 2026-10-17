@@ -6,8 +6,9 @@
 
 import type { Zone } from '../ovr/protocol';
 import type { OvrConnState } from '../ovr/ovr-device';
-import { nextContext, nextSetNumber, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
+import { nextContext, nextSetNumber, pickedByOf, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
 import { percentWeightTarget, pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
+import { rackSetLine } from './resolveRackSet';
 
 // ---------------------------------------------------------------- colours
 
@@ -243,9 +244,9 @@ export interface RackView {
   repsTarget: number | null;
   /** "Back Squat · Set 1 of 3". */
   exerciseLine: string;
-  /** "FROM TYLER'S PHONE" / "PICKED ON THE IPAD" / "FREE LIFT". */
+  /** "FROM TYLER'S PHONE" / "PICKED BY RACK" / "PICKED ON IPAD" / "FREE LIFT". */
   sourceLine: string;
-  contextSource: 'phone' | 'ipad' | 'none';
+  contextSource: 'phone' | 'ipad' | 'rack' | 'none';
   /** BAR caption when the load can't be shown: "Set on phone" (an unresolved % target). */
   loadNote: string | null;
   /** No exercise for the active athlete (no rack lift left): prompt "Pick an exercise". */
@@ -386,7 +387,11 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   const row = s.session;
   const local = s.localContext && s.localContext.athleteId === activeId ? s.localContext : null;
   let contextSource: RackView['contextSource'];
+  // Resolved (resolveRackSet): the truthful origin — the phone only when its
+  // open exercise is the pick; the rack's own resolver; a coach on the iPad.
+  const resolvedPick = shownSet ? shownSet.pickedBy ?? null : local?.resolved ? pickedByOf(local.reason) : null;
   if (ctx.workoutInstanceId == null) contextSource = 'none';
+  else if (resolvedPick) contextSource = resolvedPick;
   else if (shownSet) {
     const fromIpad = !!local && sameEx(local, shownSet.rawContext) && (!!ipadOwned || row == null || row.workout_instance_id == null);
     contextSource = fromIpad ? 'ipad' : 'phone';
@@ -397,14 +402,17 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     contextSource = serverHasWorkout ? 'phone' : 'ipad';
   }
   const sourceLine =
-    contextSource === 'phone' ? `FROM ${possessive(firstName)} PHONE` : contextSource === 'ipad' ? 'PICKED ON THE IPAD' : 'FREE LIFT';
+    contextSource === 'phone'
+      ? `FROM ${possessive(firstName)} PHONE`
+      : contextSource === 'ipad'
+        ? 'PICKED ON IPAD'
+        : contextSource === 'rack'
+          ? 'PICKED BY RACK'
+          : 'FREE LIFT';
 
   const exerciseName = ex?.name ?? (ctx.workoutInstanceId ? 'Exercise' : 'Free lift');
   const setsPrescribed = ex?.sets ?? null;
-  const exerciseLine =
-    setNumber != null
-      ? `${exerciseName} · Set ${setNumber}${setsPrescribed ? ` of ${setsPrescribed}` : ''}`
-      : exerciseName;
+  const exerciseLine = rackSetLine(exerciseName, setNumber, setsPrescribed);
 
   const workoutName = active
     ? (active.instances.find(i => i.workoutInstanceId === ctx.workoutInstanceId) ?? active.instances[0])?.workoutName ?? null

@@ -96,6 +96,24 @@ export interface ExerciseRackProps extends RackScreenProps {
   /** Real pull-to-refresh: rack state + pending set rows. */
   onPullRefresh: () => void;
   refreshing: boolean;
+  /** Extra rack sets past the prescription (set N+1…), read-only; live while being lifted. */
+  extraSets?: ExtraRackSet[];
+  /**
+   * While active: where the rack goes once the set at `setIndex` is done and
+   * this exercise is finished (same resolver as the iPad) — the Next CTA
+   * points there instead of the logger's own next exercise. null = no change.
+   */
+  rackNextAfter?: (setIndex: number) => { reId: string; name: string } | null;
+}
+
+export interface ExtraRackSet {
+  setNumber: number;
+  /** "4 × 205" style values line (null while saving / live). */
+  values: string | null;
+  /** "RACK · avg 0.71 · best 0.78 m/s". */
+  rackLine: string | null;
+  live: boolean;
+  saving: 'saving' | 'timeout' | null;
 }
 
 interface ExerciseDetailViewProps {
@@ -1177,6 +1195,23 @@ export default function ExerciseDetailView({
       );
     }
 
+    // Rack VBT: extra sets the rack logged past the prescription — read-only.
+    for (const x of rack?.hasRacks ? rack.extraSets ?? [] : []) {
+      sets.push(
+        <View key={`x${x.setNumber}`} style={[styles.set, x.live && styles.setCur]} accessibilityLabel={`Extra set ${x.setNumber}`}>
+          <View style={styles.tr}>
+            <Text style={styles.caption}>{`SET ${x.setNumber} · EXTRA${x.values ? ` · ${x.values}` : ''}`}</Text>
+          </View>
+          {x.live && rackLive && rackLive.setIndex === x.setNumber - 1 && (
+            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} />
+          )}
+          {x.saving === 'saving' && <Text style={styles.caption}>Saving…</Text>}
+          {x.saving === 'timeout' && <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>}
+          {x.rackLine && <Text style={styles.rackSummary}>{x.rackLine}</Text>}
+        </View>,
+      );
+    }
+
     // While the rack's speed has dropped, its cue takes the rest footer's place.
     const rackDropText = rackLive?.dropCue != null ? `Speed dropped ${rackLive.dropCue}% — rack it` : null;
     if (footerRest || restSecondsLeft != null || rackDropText) {
@@ -1216,6 +1251,9 @@ export default function ExerciseDetailView({
     done[exercise.id] = updatedSets;
 
     const next = nextStep(sequence, done, { reId: exercise.id, setIndex: currentSetIndex });
+    // On a rack: once this exercise is finished, Next goes where the rack goes.
+    const rackNext = rack?.hasRacks ? rack.rackNextAfter?.(currentSetIndex) ?? null : null;
+    if (rackNext && rackNext.reId !== exercise.id) return truncateName(rackNext.name) + ' →';
     if (!next) return 'DONE';
     if (next.reId === exercise.id) return 'Next Set →';
 

@@ -9,6 +9,7 @@
 import type { RackListItem } from './api';
 import type { RackSessionRow } from './engine';
 import type { RepChip } from './phone';
+import { rackSetLine, resolveRackSet, type RackSetInstance, type RackSetLog } from './resolveRackSet';
 
 // ---- colours (logger v2 restraint: zone blue, slow red, fast faint white only)
 export const RACK_COLORS = {
@@ -138,6 +139,14 @@ export interface BannerState {
   subtitle: string;
   /** Browse: every rack with its state (tap = join). */
   racks: BannerRack[];
+  /** Active: the rack's current set, "Rack 1 · Romanian Deadlift · Set 1 of 3" (same resolver + wording as the iPad card). */
+  rackSet?: string | null;
+}
+
+/** The active banner with the rack's current set line (both phone screens). */
+export function withRackSet(banner: BannerState | null, line: string | null): BannerState | null {
+  if (!banner || banner.mode !== 'active') return banner;
+  return { ...banner, rackSet: line };
 }
 
 function rackStatus(item: RackListItem): string {
@@ -483,6 +492,8 @@ export interface FollowInput {
   openExerciseId: string | null;
   /** Exact echo test against what the phone sent. */
   isEcho: (ctx: RackCtx) => boolean;
+  /** The phone finished this exercise (it sent set N+1): a change away from it is like null→X. */
+  isFinishedOnPhone?: (routineExerciseId: string) => boolean;
   /**
    * The iPad's own auto-pick for this phone's state: resolveRackSet with no
    * phone context and no override (routine exercise id; null = none). A
@@ -510,7 +521,8 @@ export function followTarget(i: FollowInput): string | null {
   if (ctx.workoutInstanceId && ctx.workoutInstanceId !== i.workoutInstanceId) return null;
   if (i.prevRackExercise === undefined) return null;
   if (ctx.routineExerciseId === i.prevRackExercise) return null;
-  if (i.prevRackExercise === null && i.sentThisActivation && ctx.routineExerciseId === (i.autoPickExerciseId ?? null)) return null;
+  const prevNone = i.prevRackExercise === null || (!!i.prevRackExercise && !!i.isFinishedOnPhone?.(i.prevRackExercise));
+  if (prevNone && i.sentThisActivation && ctx.routineExerciseId === (i.autoPickExerciseId ?? null)) return null;
   if (ctx.routineExerciseId === i.openExerciseId) return null;
   if (i.isEcho(ctx)) return null;
   return ctx.routineExerciseId;
@@ -584,4 +596,88 @@ export function applyRackLog(i: {
     wasDone,
     idle: endedByIdle(i.log),
   };
+}
+
+// ---- the rack's current set on the phone (same resolver as the iPad)
+
+export interface PhoneRackNow {
+  routineExerciseId: string;
+  setNumber: number;
+  /** live = being lifted (the row); phone = the open exercise; rack = the resolver's pick; ipad = a coach pick. */
+  source: 'live' | 'phone' | 'rack' | 'ipad';
+}
+
+/**
+ * What the rack is on for this athlete, computed on the phone exactly as the
+ * iPad does: while lifting, the row's live set; otherwise resolveRackSet over
+ * the phone's logs with its open exercise as the phone context (rule 1) and a
+ * coach pick in the row (anything the phone didn't send and the resolver
+ * wouldn't auto-pick) as the override. A set the row has ahead of the phone
+ * (the rack's write not landed yet) wins over the phone's older logs.
+ */
+export function phoneRackNow(i: {
+  instance: RackSetInstance | null;
+  logs: RackSetLog[];
+  session: SessionLike | null;
+  athleteId: string;
+  workoutInstanceId: string;
+  /** Exercise open on the phone (null on the overview). */
+  openExerciseId: string | null;
+  isEcho: (ctx: RackCtx) => boolean;
+}): PhoneRackNow | null {
+  const s = i.session;
+  if (!s || s.active_athlete_id !== i.athleteId) return null;
+  const live = liveRackSet(s, i.athleteId, i.workoutInstanceId);
+  if (live) return { ...live, source: 'live' };
+  if (!i.instance) return null;
+  const base = { instances: [i.instance], logs: i.logs };
+  const auto = resolveRackSet(base);
+  const row = rackContextOf(s);
+  const rowHere = !!row.routineExerciseId && (!row.workoutInstanceId || row.workoutInstanceId === i.workoutInstanceId);
+  const rowFromIpad = rowHere && !i.isEcho(row);
+  const coach = rowFromIpad && (auto.none || auto.routineExerciseId !== row.routineExerciseId);
+  const res = resolveRackSet({
+    ...base,
+    phone: i.openExerciseId ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: i.openExerciseId } : null,
+    override: coach ? { workoutInstanceId: i.workoutInstanceId, routineExerciseId: row.routineExerciseId } : null,
+  });
+  if (res.none) return null;
+  const ahead = rowFromIpad && row.routineExerciseId === res.routineExerciseId && row.setNumber != null && row.setNumber > res.setNumber;
+  return {
+    routineExerciseId: res.routineExerciseId,
+    setNumber: ahead ? row.setNumber! : res.setNumber,
+    source: res.reason === 'phone' ? 'phone' : res.reason === 'override' ? 'ipad' : 'rack',
+  };
+}
+
+/** "Rack 1 · Romanian Deadlift · Set 1 of 3" — the phone's rack strip (the iPad card's exerciseLine). */
+export function rackStripLine(rackName: string | null, name: string, setNumber: number, sets: number | null): string {
+  return `${rackName ?? 'Rack'} · ${rackSetLine(name, setNumber, sets)}`;
+}
+
+/** "Rack 1 → Romanian Deadlift · set 1" — the toast when the phone follows the rack. */
+export function rackFollowToast(rackName: string | null, name: string, setNumber: number): string {
+  return `${rackName ?? 'The rack'} → ${name} · set ${setNumber}`;
+}
+
+export interface OpenState {
+  openId: string | null;
+  finished: boolean;
+  active: boolean;
+}
+
+/**
+ * The phone FOLLOWS the rack when its open exercise is finished while the
+ * athlete is active: right when the last set completes (or on becoming active
+ * on a finished exercise), to the rack's resolved exercise. Not while the
+ * open exercise's superset/circuit block still has sets (the athlete does the
+ * partner next), and never when the rack is already on the open exercise.
+ */
+export function followOnFinish(i: OpenState & { prev: OpenState | null; rackNow: PhoneRackNow | null; blockHasMore: boolean }): string | null {
+  if (!i.active || !i.openId || !i.finished || !i.rackNow || i.blockHasMore) return null;
+  if (i.rackNow.routineExerciseId === i.openId) return null;
+  const p = i.prev;
+  const justFinished = !!p && p.openId === i.openId && !p.finished;
+  const justActive = !!p && p.openId === i.openId && !p.active;
+  return justFinished || justActive ? i.rackNow.routineExerciseId : null;
 }

@@ -72,6 +72,9 @@ export default function RackBanner({ banner, error, busy, onJoin, onImUp, onLeav
         <View style={[styles.dot, !active && styles.dotQueued]} />
         <View style={styles.tx}>
           <Text style={styles.title} numberOfLines={1}>{banner.title}</Text>
+          {active && banner.rackSet ? (
+            <Text style={styles.rackSet} numberOfLines={1}>{banner.rackSet}</Text>
+          ) : null}
           <Text style={styles.sub} numberOfLines={1}>{banner.subtitle}</Text>
         </View>
         {!active && (
@@ -131,6 +134,7 @@ const styles = StyleSheet.create({
   tx: { flex: 1, minWidth: 0 },
   title: { color: LOGGER_COLORS.text, fontSize: 13, fontWeight: '700' },
   sub: { color: RACK_COLORS.muted, fontSize: 11, fontWeight: '500', marginTop: 1 },
+  rackSet: { color: RACK_COLORS.zone, fontSize: 12, fontWeight: '700', marginTop: 1 },
   btn: { borderRadius: 9, paddingVertical: 7, paddingHorizontal: 11 },
   btnPri: { backgroundColor: LOGGER_COLORS.accent },
   btnPriText: { color: '#04131C', fontSize: 12, fontWeight: '800' },

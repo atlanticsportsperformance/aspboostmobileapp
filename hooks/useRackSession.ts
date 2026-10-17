@@ -5,7 +5,7 @@
  * athletes as contextMeta/localContext. Exposes the engine state for the UI.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { createRackApi, type RackClient, type TodayAthlete } from '../lib/rack/api';
 import { createRackPersist } from '../lib/rack/persist';
@@ -29,10 +29,18 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
   const { rackId, orgId, sensor } = opts;
   const client = supabase as unknown as RackClient & { rpc: RackClient['rpc'] };
 
+  const staleTodayRef = useRef<() => void>(() => undefined);
   const { executor, api } = useMemo(() => {
     const api = createRackApi(client);
     const persist = createRackPersist({ client, orgId });
-    const executor = createRackExecutor({ engine: createRackEngine(rackId), api, persist, sensor });
+    const executor = createRackExecutor({
+      engine: createRackEngine(rackId),
+      api,
+      persist,
+      sensor,
+      // The phone has an exercise open that today's list lacks → re-read today now.
+      onStaleToday: () => staleTodayRef.current(),
+    });
     return { executor, api };
     // One engine per rack/org/sensor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -54,6 +62,8 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
     },
     [api, executor, orgId],
   );
+
+  staleTodayRef.current = () => void refreshToday();
 
   useEffect(() => {
     setState(executor.getState());
