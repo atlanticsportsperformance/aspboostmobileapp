@@ -18,7 +18,7 @@ import { buildSequence, nextStep } from '../lib/logger/sequence';
 import { exerciseDashes, progressLine, workoutProgress } from '../lib/logger/progress';
 import { formatRest } from '../lib/logger/rest';
 import { formatSetMetrics, metricFieldsFor } from '../lib/logger/setLine';
-import { prescribedValue, resolveTarget } from '../lib/logger/targets';
+import { needsWeightEntry, prescribedValue, resolveTarget } from '../lib/logger/targets';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { youTubeId } from '../lib/video';
 import VideoModal from '../components/logger/VideoModal';
@@ -95,8 +95,6 @@ function isExerciseCompleted(exerciseId: string, completedSets: Record<string, b
   return sets ? sets.every(s => s === true) : false;
 }
 
-// Get gradient colors based on workout category - BLACK at top, color at bottom
-// Uses the exact same colors as the dashboard workout cards
 // Segmented tab control used when a throwing workout has both a workout
 // body and a throws feed — letting the athlete swap between them rather
 // than scroll one past the other.
@@ -123,6 +121,7 @@ function TabButton({
   );
 }
 
+// Page background — plain black for every category.
 function getCategoryGradient(category: string): [string, string, string, string, string] {
   // Background is plain black across all categories — the previous design
   // bled a category-tinted color into the bottom of the screen (deep blue
@@ -130,15 +129,6 @@ function getCategoryGradient(category: string): [string, string, string, string,
   // line above the home indicator. Category coloring lives in the header
   // accent + dots, not the page background.
   return ['#000000', '#000000', '#000000', '#000000', '#000000'];
-}
-
-// Get accent color for category (matches dashboard dot colors)
-function getCategoryAccent(category: string): string {
-  const cat = category?.toLowerCase() || '';
-
-  if (cat.includes('hitting')) return '#ef4444'; // red dot
-  if (cat.includes('throwing')) return '#3b82f6'; // blue dot
-  return '#00ff55'; // green dot for strength_conditioning
 }
 
 export default function BlockOverview({
@@ -170,7 +160,6 @@ export default function BlockOverview({
   const [videoModalId, setVideoModalId] = useState<string | null>(null);
 
   const gradientColors = getCategoryGradient(workout.category);
-  const accentColor = getCategoryAccent(workout.category);
 
   // Video modal handlers
   const openVideoModal = (videoId: string) => {
@@ -247,6 +236,25 @@ export default function BlockOverview({
       customMeasurements,
     );
     return { logged, next: `set ${setIndex + 1} next${target ? `: ${target}` : ''}` };
+  };
+
+  // "enter weight" hint: the row's next set (the Continue set on the current
+  // row, else the first set not logged) has no weight to show — nothing
+  // prescribed and no % that works out to a number.
+  const showWeightHint = (exercise: RoutineExercise, fields: string[]): boolean => {
+    const done = completedSets[exercise.id] || [];
+    let setIndex = -1;
+    if (next && next.reId === exercise.id) setIndex = next.setIndex;
+    else for (let i = 0; i < (exercise.sets || 0); i++) if (done[i] !== true) { setIndex = i; break; }
+    if (setIndex < 0) return false;
+    return needsWeightEntry({
+      re: exercise,
+      setIndex,
+      maxes: athleteMaxes,
+      logged: exerciseInputs[exercise.id] || [],
+      moundVelocity,
+      fields,
+    });
   };
 
   const progressPercent = totalSets > 0 ? (completedSetsCount / totalSets) * 100 : 0;
@@ -458,6 +466,7 @@ export default function BlockOverview({
                     !hasLegacyReps;
                   // Finished exercise with sets → green "4 × 3 · all done".
                   const showDoneLine = isCompleted && !isNotesOnly && !isNotesOnlyRow && (exercise.sets || 0) > 0;
+                  const weightHint = !isNotesOnlyRow && !isCompleted && showWeightHint(exercise, fields);
 
                   return (
                     <TouchableOpacity
@@ -538,11 +547,15 @@ export default function BlockOverview({
                           <Text style={styles.currentLine} numberOfLines={2}>
                             {current.logged ? `${current.logged} · ` : ''}
                             <Text style={styles.currentNext}>{current.next}</Text>
+                            {weightHint && <Text style={styles.weightHint}> · enter weight</Text>}
                           </Text>
                         ) : metrics ? (
                           <Text style={[styles.metricsDisplay, dim]} numberOfLines={6}>
                             {metrics}
+                            {weightHint && <Text style={styles.weightHint}> · enter weight</Text>}
                           </Text>
+                        ) : weightHint ? (
+                          <Text style={[styles.metricsDisplay, styles.weightHint, dim]}>enter weight</Text>
                         ) : null}
 
                         {showDashes && (
@@ -687,7 +700,7 @@ export default function BlockOverview({
           early-quit taps. */}
       <View style={styles.completeButtonContainer}>
         <LinearGradient
-          colors={['transparent', 'rgba(10,10,10,0.98)', '#0A0A0A']}
+          colors={['transparent', 'rgba(10,10,10,0.98)', LOGGER_COLORS.bg]}
           style={styles.completeButtonGradient}
         >
           {allSetsCompleted ? (
@@ -698,7 +711,7 @@ export default function BlockOverview({
               activeOpacity={0.8}
             >
               <LinearGradient
-                colors={['#10B981', '#059669']}
+                colors={[LOGGER_COLORS.green, '#059669']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
                 style={styles.completeButtonActive}
@@ -848,7 +861,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   tabBtnActive: {
-    backgroundColor: '#9BDDFF',
+    backgroundColor: LOGGER_COLORS.accent,
   },
   tabBtnText: {
     color: '#9ca3af',
@@ -908,7 +921,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontStyle: 'italic',
     letterSpacing: 0.5,
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
   },
   blockDividerLine: {
     flex: 1,
@@ -1003,7 +1016,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  // Shrinks so a long name wraps/truncates instead of pushing the
+  // RPE / RACK · SPEED tags off the row.
   exerciseName: {
+    flexShrink: 1,
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
@@ -1079,20 +1095,9 @@ const styles = StyleSheet.create({
   dashCurrent: {
     backgroundColor: LOGGER_COLORS.accent,
   },
-  completionCheckmark: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    borderWidth: 1,
-    borderColor: '#10B981',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkmarkIcon: {
-    fontSize: 12,
-    color: '#6EE7B7',
-    fontWeight: 'bold',
+  // "enter weight" — low-key, ink-2, inline with the rx line.
+  weightHint: {
+    color: LOGGER_COLORS.muted,
   },
   metricsDisplay: {
     fontSize: 13,
@@ -1106,16 +1111,6 @@ const styles = StyleSheet.create({
     color: '#A3A3A3',
     marginTop: 2,
   },
-  // Notes-only exercises promote the note from "sidebar comment" styling to
-  // body-content styling: not italic, slightly larger, fuller line-height,
-  // brighter — readable as the actual instruction/cue.
-  exerciseNotesPrimary: {
-    fontSize: 13,
-    fontStyle: 'normal',
-    color: '#D4D4D4',
-    marginTop: 6,
-    lineHeight: 18,
-  },
   // Inter-round rest indicator on supersets/circuits/EMOMs.
   restBetweenRoundsRow: {
     paddingHorizontal: 12,
@@ -1125,12 +1120,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: 'rgba(155, 221, 255, 0.08)',
     borderLeftWidth: 3,
-    borderLeftColor: '#9BDDFF',
+    borderLeftColor: LOGGER_COLORS.accent,
   },
   restBetweenRoundsLabel: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
   },
   // Structured instruction block (parsed notes_only content): header +
   // bulleted items + optional bracketed callouts.
@@ -1194,15 +1189,11 @@ const styles = StyleSheet.create({
   tempo: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
     marginTop: 2,
   },
   exerciseRight: {
     justifyContent: 'center',
-  },
-  arrowIcon: {
-    fontSize: 20,
-    color: '#737373',
   },
   header: {
     backgroundColor: 'transparent',
@@ -1227,11 +1218,11 @@ const styles = StyleSheet.create({
   backButtonIcon: {
     fontSize: 24,
     fontWeight: '600',
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
   },
   backButtonText: {
     fontSize: 16,
-    color: '#9BDDFF',
+    color: LOGGER_COLORS.accent,
   },
   workoutTitle: {
     flex: 1,
@@ -1309,31 +1300,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
   },
-  completeButtonDisabled: {
-    opacity: 1,
-  },
   completeButtonActive: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     padding: 16,
-    shadowColor: '#10B981',
+    shadowColor: LOGGER_COLORS.green,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
     shadowRadius: 20,
     elevation: 8,
-  },
-  completeButtonInactive: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    padding: 16,
-    backgroundColor: 'rgba(115, 115, 115, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(115, 115, 115, 0.3)',
-    borderRadius: 12,
   },
   completeButtonIcon: {
     fontSize: 24,
@@ -1399,14 +1376,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.4,
   },
-  lockIcon: {
-    fontSize: 20,
-    color: '#737373',
-  },
-  completeButtonTextDisabled: {
-    fontSize: 14,
-    color: '#A3A3A3',
-  },
   // Quick Complete Checkbox Styles
   quickCompleteCheckbox: {
     width: 28,
@@ -1422,13 +1391,14 @@ const styles = StyleSheet.create({
     borderColor: LOGGER_COLORS.accent,
   },
   quickCompleteCheckboxChecked: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: LOGGER_COLORS.green,
+    borderColor: LOGGER_COLORS.green,
   },
+  // Same dark tick on green as the exercise screen's set circles.
   quickCompleteCheckmark: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#04130C',
   },
   // Modal Styles
   modalBackdrop: {

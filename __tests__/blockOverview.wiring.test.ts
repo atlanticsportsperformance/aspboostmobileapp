@@ -43,6 +43,16 @@ describe('after-Start overview v2 wiring', () => {
     expect(st.slice(0, 140)).toContain('LOGGER_COLORS.rpe');
   });
 
+  it('"enter weight" hint uses needsWeightEntry on the row\'s next set; never on done rows', () => {
+    const fn = B.slice(B.indexOf('const showWeightHint'), B.indexOf('const progressPercent'));
+    expect(fn).toContain('if (next && next.reId === exercise.id) setIndex = next.setIndex;');
+    expect(fn).toContain('needsWeightEntry({');
+    expect(B).toContain('const weightHint = !isNotesOnlyRow && !isCompleted && showWeightHint(exercise, fields);');
+    expect(B.match(/\{weightHint && <Text style=\{styles\.weightHint\}> · enter weight<\/Text>\}/g)?.length).toBe(2);
+    const st = B.slice(B.indexOf('  weightHint: {'));
+    expect(st.slice(0, 60)).toContain('LOGGER_COLORS.muted');
+  });
+
   it('RACK · SPEED tag gated on velocity', () => {
     expect(B).toContain(
       'const showSpeedTag = exercise.velocity_min_mps != null && exercise.velocity_max_mps != null;',
