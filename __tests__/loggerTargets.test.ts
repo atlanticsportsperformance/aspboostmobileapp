@@ -1,6 +1,6 @@
 import {
   roundLoad, resolveTarget, backoffFills, backoffUpdates, intensityFor, nextSetPrefill,
-  intensityText, pendingTargetText, needsWeightEntry,
+  intensityText, pendingTargetText, needsWeightEntry, intensityCaptionText,
 } from '../lib/logger/targets';
 import type { LoggerRoutineExercise } from '../types/logger';
 
@@ -262,5 +262,33 @@ describe('needsWeightEntry', () => {
   it('not when the athlete already typed a weight for that set', () => {
     expect(needsWeightEntry({ ...base, re: wave, setIndex: 0, logged: { 0: { weight: '185' } } })).toBe(false);
     expect(needsWeightEntry({ ...base, re: wave, setIndex: 0, logged: { 0: { weight: '' } } })).toBe(true);
+  });
+});
+
+describe('intensityCaptionText', () => {
+  const backoff = re({
+    set_configurations: [
+      { metric_values: { reps: 5 } },
+      { metric_values: { reps: 5 } },
+      { metric_values: { reps: 5 }, intensity_targets: [{ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 2 }] },
+    ],
+  });
+
+  it('shows the raw number → the rounded load', () => {
+    const logged = { 0: { weight: 295 }, 1: { weight: 310 } };
+    expect(intensityCaptionText({ re: backoff, setIndex: 2, metric: 'weight', maxes: {}, logged })).toBe('90% of set 2 · 279 → 280');
+  });
+
+  it('no arrow when nothing was rounded; just the % while pending; null without a target', () => {
+    expect(intensityCaptionText({ re: backoff, setIndex: 2, metric: 'weight', maxes: {}, logged: { 1: { weight: 300 } } }))
+      .toBe('90% of set 2 · 270');
+    expect(intensityCaptionText({ re: backoff, setIndex: 2, metric: 'weight', maxes: {}, logged: {} })).toBe('90% of set 2');
+    expect(intensityCaptionText({ re: backoff, setIndex: 0, metric: 'weight', maxes: {}, logged: {} })).toBeNull();
+  });
+
+  it('% of max reads the max', () => {
+    const e = re({ intensity_targets: [{ metric: 'weight', percent: 80 }] });
+    expect(intensityCaptionText({ re: e, setIndex: 0, metric: 'weight', maxes: { 'ex-A': { weight: 312 } }, logged: {} }))
+      .toBe('80% of max · 249.6 → 250');
   });
 });

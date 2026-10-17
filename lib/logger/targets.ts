@@ -120,6 +120,38 @@ export function intensityText(t: IntensityResult): string {
   return t.sourceExerciseName ? `${t.percent}% of ${t.sourceExerciseName} max` : `${t.percent}% of max`;
 }
 
+// The unrounded number a % target works out to (279 for 90% of 310), or
+// null when it has none yet or is a throwing-velocity target.
+function rawIntensityValue(args: TargetArgs): number | null {
+  const { re, setIndex, metric, maxes, logged } = args;
+  const target = intensityTargetFor(re, setIndex, metric);
+  if (!target) return null;
+  const refIdx = referenceIndex(target, setIndex);
+  if (refIdx != null) {
+    const ref = toNumber(logged[refIdx]?.[metric]);
+    return ref != null && ref > 0 ? ref * (target.percent / 100) : null;
+  }
+  if (isThrowingVelocityMetric(metric)) return null;
+  const max = maxes[target.source_exercise_id || re.exercise_id]?.[target.source_metric_id || metric] ?? null;
+  return max ? max * (target.percent / 100) : null;
+}
+
+// Caption under the open set: "90% of set 2 · 279 → 280" (the raw number →
+// what goes on the bar), "80% of max · 240" when nothing was rounded, or
+// just "90% of set 2" while the reference set is not logged. null when the
+// set has no % target for `metric`.
+export function intensityCaptionText(args: TargetArgs): string | null {
+  const t = intensityFor(args);
+  if (!t) return null;
+  const head = intensityText(t);
+  if (t.calculatedValue == null) return head;
+  const raw = rawIntensityValue(args);
+  const r = raw == null ? null : Math.round(raw * 10) / 10;
+  return r == null || r === t.calculatedValue
+    ? `${head} · ${t.calculatedValue}`
+    : `${head} · ${r} → ${t.calculatedValue}`;
+}
+
 // Placeholder for a % target that has no number yet: "90% of set 1" while
 // the reference set is not logged; "80% · no max set" only for % of max with
 // no max on file. null when the target resolves to a number.

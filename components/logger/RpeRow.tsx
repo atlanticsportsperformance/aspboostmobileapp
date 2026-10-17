@@ -7,13 +7,15 @@ type Props = {
   target: number | null;
   value: number | null;
   onChange: (value: number) => void;
+  /** Thin strip for the exercise table: label inline, short buttons. */
+  compact?: boolean;
 };
 
-export default function RpeRow({ target, value, onChange }: Props) {
+export default function RpeRow({ target, value, onChange, compact }: Props) {
   return (
-    <View style={styles.wrap}>
-      <Text style={styles.label}>{target != null ? `RPE · TARGET ${target}` : 'RPE'}</Text>
-      <View style={styles.row}>
+    <View style={compact ? styles.wrapCompact : styles.wrap}>
+      <Text style={[styles.label, compact && styles.labelCompact]}>{target != null ? `RPE · TARGET ${target}` : 'RPE'}</Text>
+      <View style={[styles.row, compact && styles.rowCompact]}>
         {rpeOptions(target).map(option => {
           const selected = value === option;
           const isTarget = target === option;
@@ -22,6 +24,7 @@ export default function RpeRow({ target, value, onChange }: Props) {
               key={option}
               style={[
                 styles.btn,
+                compact && styles.btnCompact,
                 isTarget && styles.btnTarget,
                 selected && styles.btnSelected,
               ]}
@@ -44,13 +47,16 @@ export default function RpeRow({ target, value, onChange }: Props) {
 
 const styles = StyleSheet.create({
   wrap: { marginTop: 10 },
+  wrapCompact: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   label: {
     color: LOGGER_COLORS.rpe,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1.8,
   },
+  labelCompact: { fontSize: 9, letterSpacing: 1.2 },
   row: { flexDirection: 'row', gap: 5, marginTop: 6 },
+  rowCompact: { flex: 1, gap: 4, marginTop: 0 },
   btn: {
     flex: 1,
     height: 34,
@@ -60,6 +66,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  btnCompact: { height: 24, borderRadius: 6 },
   btnTarget: { borderColor: LOGGER_COLORS.rpe },
   btnSelected: { backgroundColor: LOGGER_COLORS.rpe, borderColor: LOGGER_COLORS.rpe },
   btnText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontVariant: ['tabular-nums'] },
