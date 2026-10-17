@@ -16,6 +16,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { formatExerciseMetrics } from '../lib/formatExerciseMetrics';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
+import { buildSequence } from '../lib/logger/sequence';
+import { workoutProgress } from '../lib/logger/progress';
 
 // Types
 import type {
@@ -191,20 +193,12 @@ export default function BlockOverview({
     }));
   };
 
-  // Calculate progress (excluding placeholder exercises AND instruction
-  // blocks — nothing to log). `sets` can be null on a row; `s + null` → NaN
-  // took the whole progress bar down.
-  const totalSets = workout.routines.reduce(
-    (sum, routine) =>
-      sum + routine.routine_exercises
-        .filter(ex => !((ex as any).is_placeholder || (ex as any).exercises?.is_placeholder) && !(ex as any).notes_only)
-        .reduce((s, ex) => s + (ex.sets ?? 0), 0),
-    0
+  // Progress comes from the set-order sequence so it counts exactly the sets
+  // the athlete can log (no text/notes rows, uneven supersets respected).
+  const { doneSets: completedSetsCount, totalSets } = workoutProgress(
+    buildSequence(workout.routines),
+    completedSets,
   );
-
-  const completedSetsCount = Object.values(completedSets).reduce((sum, exerciseSets) => {
-    return sum + exerciseSets.filter(isComplete => isComplete).length;
-  }, 0);
 
   const progressPercent = totalSets > 0 ? (completedSetsCount / totalSets) * 100 : 0;
   const allSetsCompleted = completedSetsCount === totalSets && totalSets > 0;
