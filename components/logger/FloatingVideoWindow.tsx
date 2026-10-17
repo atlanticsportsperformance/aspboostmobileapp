@@ -12,6 +12,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import YoutubePlayer, { type YoutubeIframeRef } from 'react-native-youtube-iframe';
 import { LOGGER_COLORS } from '../../lib/logger/theme';
 
@@ -31,6 +32,8 @@ export default function FloatingVideoWindow({
   videoId,
   title,
   bottom,
+  keypadOpen,
+  keypadHeight,
   onClose,
   onExpand,
 }: {
@@ -38,6 +41,11 @@ export default function FloatingVideoWindow({
   title: string;
   /** Initial distance from the bottom of the screen (sits above the bar). */
   bottom: number;
+  /** While the numeric keypad is open the window lifts above it if it
+   *  fits (fully on-screen), otherwise hides, pauses and mutes. */
+  keypadOpen: boolean;
+  /** Last measured keypad height; 0 = not measured yet (treated as no fit). */
+  keypadHeight: number;
   onClose: () => void;
   onExpand: () => void;
 }) {
@@ -59,8 +67,13 @@ export default function FloatingVideoWindow({
     minY: MARGIN + topInset,
     maxY: bounds.h - WIN_H - MARGIN - insets.bottom,
   }), [bounds.w, bounds.h, insets.bottom, topInset]);
+  // Lowest y that keeps the whole window above the keypad.
+  const liftMaxY = bounds.h - keypadHeight - WIN_H - MARGIN;
+  const fitsAboveKeypad = keypadHeight > 0 && liftMaxY >= limits.minY;
+  const hidden = keypadOpen && !fitsAboveKeypad;
+  const lifted = keypadOpen && fitsAboveKeypad;
   const limitsRef = useRef(limits);
-  limitsRef.current = limits;
+  limitsRef.current = lifted ? { ...limits, maxY: Math.min(limits.maxY, liftMaxY) } : limits;
 
   const pos = useRef({ x: bounds.w - WIN_W - 12, y: bounds.h - bottom - WIN_H });
   const pan = useRef(new Animated.ValueXY(pos.current)).current;
@@ -69,20 +82,38 @@ export default function FloatingVideoWindow({
   // Until the athlete drags it, the window stays docked above the bar.
   const dragged = useRef(false);
 
+  // pos = the athlete's (or docked) home spot, clamped to the screen.
+  // While lifted for the keypad only the shown y moves; home is restored
+  // when the keypad closes.
+  const shownMaxYRef = useRef(Infinity);
+  shownMaxYRef.current = lifted ? liftMaxY : Infinity;
   const place = useCallback((x: number, y: number) => {
     const l = limitsRef.current;
     pos.current = { x: clamp(x, l.minX, l.maxX), y: clamp(y, l.minY, l.maxY) };
-    pan.setValue(pos.current);
+    pan.setValue({ x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) });
   }, [pan]);
 
-  // Keep the window on screen when the bounds change (layout, rotation).
+  // Keep the window on screen when the bounds change (layout, rotation) and
+  // when the keypad opens/closes.
   useEffect(() => {
-    if (dragged.current) place(pos.current.x, pos.current.y);
-    else place(bounds.w - WIN_W - 12, bounds.h - bottom - WIN_H);
-  }, [limits, place, bounds.w, bounds.h, bottom]);
+    if (!dragged.current) {
+      const x = bounds.w - WIN_W - 12;
+      const y = bounds.h - bottom - WIN_H;
+      const l = limits;
+      pos.current = { x: clamp(x, l.minX, l.maxX), y: clamp(y, l.minY, l.maxY) };
+    } else {
+      const l = limits;
+      pos.current = { x: clamp(pos.current.x, l.minX, l.maxX), y: clamp(pos.current.y, l.minY, l.maxY) };
+    }
+    pan.setValue({ x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) });
+  }, [limits, pan, bounds.w, bounds.h, bottom, lifted, liftMaxY]);
 
   const [videoError, setVideoError] = useState(false);
-  const openOnYouTube = () => Linking.openURL(`https://www.youtube.com/watch?v=${videoId}`);
+  // Gym audio: demos start muted; the header toggle unmutes.
+  const [muted, setMuted] = useState(true); // muted
+  const openOnYouTube = () => {
+    Linking.openURL(`https://www.youtube.com/watch?v=${videoId}`).catch(() => {});
+  };
   const errorRef = useRef(false);
   errorRef.current = videoError;
   const tapRef = useRef(openOnYouTube);
@@ -93,7 +124,7 @@ export default function FloatingVideoWindow({
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
-      start.current = pos.current;
+      start.current = { x: pos.current.x, y: Math.min(pos.current.y, shownMaxYRef.current) };
       moved.current = false;
     },
     onPanResponderMove: (_e, g) => {
@@ -122,7 +153,7 @@ export default function FloatingVideoWindow({
 
   // Progress line — poll the player while it's up.
   useEffect(() => {
-    if (!videoReady || videoError) return;
+    if (!videoReady || videoError || hidden) return;
     const t = setInterval(async () => {
       try {
         const p = playerRef.current;
@@ -134,7 +165,7 @@ export default function FloatingVideoWindow({
       }
     }, 500);
     return () => clearInterval(t);
-  }, [videoReady, videoError]);
+  }, [videoReady, videoError, hidden]);
 
   const onChangeState = useCallback((state: string) => {
     // loop + playlist handles the loop; restart by hand if it still ends.
@@ -145,7 +176,8 @@ export default function FloatingVideoWindow({
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none" onLayout={onLayout}>
       <Animated.View
-        style={[styles.window, { transform: pan.getTranslateTransform() }]}
+        style={[styles.window, { opacity: hidden ? 0 : 1, transform: pan.getTranslateTransform() }]}
+        pointerEvents={hidden ? 'none' : 'auto'}
       >
         <View style={styles.video}>
           {videoError ? (
@@ -159,7 +191,8 @@ export default function FloatingVideoWindow({
               ref={playerRef}
               height={VIDEO_H}
               width={WIN_W}
-              play
+              play={!hidden}
+              mute={muted || hidden}
               videoId={videoId}
               playList={playList}
               initialPlayerParams={{ loop: true, controls: false, modestbranding: true, rel: false }}
@@ -184,9 +217,17 @@ export default function FloatingVideoWindow({
           </View>
 
           <Text style={styles.title} numberOfLines={1} pointerEvents="none">
-            {title.toUpperCase()} · DEMO
+            {(title ?? '').toUpperCase()} · DEMO
           </Text>
           <View style={styles.actions}>
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => setMuted((m) => !m)}
+              hitSlop={6}
+              accessibilityLabel={muted ? 'Unmute video' : 'Mute video'}
+            >
+              <Ionicons name={muted ? 'volume-mute' : 'volume-high'} size={12} color="#FFFFFF" />
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.actionBtn}
               onPress={onExpand}
@@ -265,7 +306,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 7,
     left: 8,
-    right: 62,
+    right: 88,
     color: '#FFFFFF',
     fontSize: 9,
     fontWeight: '800',

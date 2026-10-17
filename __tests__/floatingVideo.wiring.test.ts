@@ -30,7 +30,7 @@ describe('floating video wiring', () => {
   it('non-YouTube links open full screen via Linking from the ▶', () => {
     const fn = D.slice(D.indexOf('const openVideo = '), D.indexOf('const openVideo = ') + 200);
     expect(fn).toContain('if (videoId) setFloatingVideoOpen(true)');
-    expect(fn).toContain('Linking.openURL(videoUrl)');
+    expect(fn).toContain('Linking.openURL(videoUrl.trim())');
   });
   it('button shows the thumbnail with ▶ over it, plain ▶ otherwise', () => {
     expect(B).toContain('videoThumb(');
@@ -49,5 +49,23 @@ describe('floating video wiring', () => {
     expect(Win).toContain('Linking.openURL');
     // overlay never blocks logging: the wrapper passes touches through
     expect(Win).toContain('pointerEvents="box-none"');
+  });
+  it('window yields to the keypad: lifted above it when it fits, else hidden + paused + muted', () => {
+    const i = D.indexOf('<FloatingVideoWindow');
+    const tag = D.slice(i, D.indexOf('/>', i));
+    expect(tag).toContain('keypadOpen={!!activeInput}');
+    expect(tag).toContain('keypadHeight={keypadHeight}');
+    expect(D).toContain('setKeypadHeight(e.nativeEvent.layout.height)');
+    expect(Win).toContain('const hidden = keypadOpen && !fitsAboveKeypad');
+    expect(Win).toContain('play={!hidden}');
+    expect(Win).toContain('mute={muted || hidden}');
+    expect(Win).toMatch(/opacity: hidden \? 0 : 1/);
+    expect(Win).toContain("pointerEvents={hidden ? 'none' : 'auto'}");
+  });
+  it('starts muted with a tap-to-unmute control; openURL rejections are caught', () => {
+    expect(Win).toContain('useState(true); // muted');
+    expect(Win).toContain('setMuted((m) => !m)');
+    expect(Win).toMatch(/Linking\.openURL\([^)]*\)\.catch\(/);
+    expect(D).toMatch(/Linking\.openURL\(videoUrl\.trim\(\)\)\.catch\(/);
   });
 });

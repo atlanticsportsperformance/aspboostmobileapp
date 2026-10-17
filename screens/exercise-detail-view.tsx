@@ -535,6 +535,9 @@ export default function ExerciseDetailView({
   const [fullVideoId, setFullVideoId] = useState<string | null>(null);
   // Measured bottom-bar height so the ▶ / window sit just above it.
   const [bottomBarHeight, setBottomBarHeight] = useState(80);
+  // Last measured numeric-keypad height (0 until it first opens) — the
+  // floating window lifts above it, or hides if it can't fit.
+  const [keypadHeight, setKeypadHeight] = useState(0);
 
   // Custom keypad state
   const [activeInput, setActiveInput] = useState<{
@@ -552,7 +555,7 @@ export default function ExerciseDetailView({
   // YouTube → floating window; any other link opens full screen outside.
   const openVideo = () => {
     if (videoId) setFloatingVideoOpen(true);
-    else if (videoUrl) Linking.openURL(videoUrl);
+    else if (videoUrl) Linking.openURL(videoUrl.trim()).catch(() => {});
   };
 
   // Scroll refs for auto-scrolling to current set
@@ -1733,6 +1736,8 @@ export default function ExerciseDetailView({
           videoId={videoId}
           title={exercise.exercises.name}
           bottom={bottomBarHeight + 12}
+          keypadOpen={!!activeInput}
+          keypadHeight={keypadHeight}
           onClose={() => setFloatingVideoOpen(false)}
           onExpand={() => {
             setFloatingVideoOpen(false);
@@ -1744,13 +1749,15 @@ export default function ExerciseDetailView({
 
       {/* Custom Numeric Keypad */}
       {activeInput && (
-        <NumericKeypad
-          onKeyPress={handleKeypadPress}
-          onBackspace={handleKeypadBackspace}
-          onDone={handleKeypadDone}
-          showDecimal={true}
-          hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
-        />
+        <View onLayout={(e) => setKeypadHeight(e.nativeEvent.layout.height)}>
+          <NumericKeypad
+            onKeyPress={handleKeypadPress}
+            onBackspace={handleKeypadBackspace}
+            onDone={handleKeypadDone}
+            showDecimal={true}
+            hasNextField={metricFields.indexOf(activeInput.metricId) < metricFields.length - 1}
+          />
+        </View>
       )}
 
       {/* PR popover — opens when the trophy in the header is tapped.

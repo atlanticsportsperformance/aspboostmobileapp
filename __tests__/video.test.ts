@@ -13,6 +13,12 @@ describe('lib/video', () => {
     expect(youTubeId(undefined)).toBeNull();
   });
 
+  it('trims URLs with surrounding spaces', () => {
+    expect(youTubeId('  https://youtu.be/abc123  ')).toBe('abc123');
+    expect(youTubeId(' https://www.youtube.com/watch?v=abc123\n')).toBe('abc123');
+    expect(hasVideo('  https://cdn.example.com/clip.mp4 ')).toBe(true);
+  });
+
   it('videoThumb null for non-YouTube', () => {
     expect(videoThumb('https://youtu.be/abc123')).toBe('https://img.youtube.com/vi/abc123/hqdefault.jpg');
     expect(videoThumb('https://vimeo.com/12345')).toBeNull();

@@ -9,9 +9,10 @@ const YT_PATTERNS = [
 ];
 
 export function youTubeId(url: string | null | undefined): string | null {
-  if (!url) return null;
+  const u = url?.trim();
+  if (!u) return null;
   for (const pattern of YT_PATTERNS) {
-    const match = url.match(pattern);
+    const match = u.match(pattern);
     if (match?.[1]) return match[1];
   }
   return null;
