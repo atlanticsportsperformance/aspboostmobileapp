@@ -13,66 +13,15 @@
  */
 
 import {
-  BleManager,
   type Device,
   type Subscription,
   type Characteristic,
   type BleError,
   State as BleState,
-  LogLevel,
 } from 'react-native-ble-plx';
 import { PULSE } from './constants';
-
-// ────────────────────────────────────────────────────────────────────
-// base64 <-> byte helpers (Hermes ships atob/btoa on RN 0.74+)
-// ────────────────────────────────────────────────────────────────────
-
-function base64ToBytes(b64: string): Uint8Array {
-  // eslint-disable-next-line no-undef
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  // eslint-disable-next-line no-undef
-  return btoa(bin);
-}
-
-function byteToBase64(b: number): string {
-  return bytesToBase64(new Uint8Array([b & 0xff]));
-}
-
-// ────────────────────────────────────────────────────────────────────
-// Singleton BleManager — ble-plx wants exactly one per app
-//
-// Wrapped in try/catch because ble-plx throws at construction time when
-// running inside Expo Go (no native linking). We surface a friendlier
-// error instead of a raw module crash.
-// ────────────────────────────────────────────────────────────────────
-
-const NOT_LINKED_MSG =
-  'Bluetooth requires a dev build. Run `npx expo run:ios` or install the TestFlight build — Expo Go does not include Bluetooth.';
-
-let _manager: BleManager | null = null;
-let _managerError: Error | null = null;
-
-function getManager(): BleManager {
-  if (_managerError) throw _managerError;
-  if (!_manager) {
-    try {
-      _manager = new BleManager();
-      _manager.setLogLevel(LogLevel.None);
-    } catch {
-      _managerError = new Error(NOT_LINKED_MSG);
-      throw _managerError;
-    }
-  }
-  return _manager;
-}
+import { getBleManager as getManager } from '../../ble/manager';
+import { base64ToBytes, byteToBase64, connectWithRetry } from '../../ble/connect';
 
 // ────────────────────────────────────────────────────────────────────
 // Event shim — tiny observer pattern, no EventTarget dependency
@@ -171,7 +120,7 @@ export class PulseDeviceRN {
 
   // ─── Connect + subscribe ───
   async connect(): Promise<void> {
-    const connected = await this._establishConnection();
+    const connected = await connectWithRetry(this.device);
     await connected.discoverAllServicesAndCharacteristics();
     this.connected = true;
 
@@ -210,70 +159,6 @@ export class PulseDeviceRN {
       this.connected = false;
       this._emit('disconnect', undefined);
     });
-  }
-
-  /**
-   * Establish the GATT connection with stale-connection cleanup, a hard
-   * timeout, and one retry. iOS surfaces a generic "Device <id> connection
-   * failed" (BleErrorCode 300) for several distinct conditions; the two we can
-   * remedy here are:
-   *   1. A half-open / stale connection left over from a previous session or a
-   *      backgrounded app — cancelling first guarantees a clean handshake.
-   *   2. A transient first-attempt failure — a single retry after a short
-   *      backoff clears most of these.
-   * If it still fails we re-throw with the real BleError reason/code attached
-   * so the wizard shows something actionable instead of the opaque default.
-   */
-  private async _establishConnection(): Promise<Device> {
-    // Clear any lingering OS-level connection to this peripheral first.
-    try {
-      if (await this.device.isConnected()) {
-        await this.device.cancelConnection();
-        await new Promise((r) => setTimeout(r, 300));
-      }
-    } catch {
-      // best-effort — ignore
-    }
-
-    const ATTEMPTS = 2;
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-      try {
-        // requestMTU is honored on Android and ignored on iOS (auto-negotiated);
-        // timeout prevents a hung connect from spinning forever.
-        return await this.device.connect({ requestMTU: 247, timeout: 12_000 });
-      } catch (err) {
-        lastErr = err;
-        if (attempt < ATTEMPTS) {
-          // Let CoreBluetooth release a half-open connection before retrying.
-          try {
-            await this.device.cancelConnection();
-          } catch {
-            // ignore
-          }
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-    }
-    throw this._describeBleError(lastErr);
-  }
-
-  /** Turn a raw BleError into a message carrying its reason + numeric codes,
-   *  so "Device … connection failed" becomes diagnosable in the field. */
-  private _describeBleError(err: unknown): Error {
-    if (err && typeof err === 'object' && 'errorCode' in err) {
-      const be = err as BleError;
-      const reason = be.reason ?? be.message ?? 'connection failed';
-      const codes = [
-        `BLE ${be.errorCode}`,
-        be.iosErrorCode != null ? `iOS ${be.iosErrorCode}` : null,
-        be.attErrorCode != null ? `ATT ${be.attErrorCode}` : null,
-      ]
-        .filter(Boolean)
-        .join(' / ');
-      return new Error(`${reason} (${codes})`);
-    }
-    return err instanceof Error ? err : new Error(String(err));
   }
 
   // ─── Reads ───
