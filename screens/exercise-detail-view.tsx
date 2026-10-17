@@ -11,6 +11,7 @@ import {
   PanResponder,
   Modal,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,7 +29,7 @@ import {
 } from '../lib/logger/targets';
 import { parseInstructionBlock } from '../lib/instructionBlockParser';
 import { formatRest } from '../lib/logger/rest';
-import { canStep, stepValue } from '../lib/logger/stepper';
+import { canStep, showSteppers, stepValue, tableColumnWidth } from '../lib/logger/stepper';
 import { normalizeScheme } from '../lib/logger/scheme';
 
 // Types
@@ -220,6 +221,7 @@ export default function ExerciseDetailView({
   onSelectSet,
 }: ExerciseDetailViewProps) {
   const insets = useSafeAreaInsets();
+  const { width: screenWidth } = useWindowDimensions();
   // Text blocks have no joined exercise (navigation skips them; guard anyway).
   const exerciseName = exercise.exercises?.name ?? exercise.placeholder_name ?? '';
   const videoUrl = exercise.exercises?.video_url || null;
@@ -517,6 +519,16 @@ export default function ExerciseDetailView({
 
   // LAST column — weight-tracked exercises that have a previous session.
   const showLast = metricFields.includes('weight') && lastWeek != null;
+  // Steppers only where a cell can hold [−] value [+]: ≤ 2 metric columns
+  // and ≥ 90 pt wide (lib/logger/stepper); else the tappable number alone.
+  const stepperFits = (metricId: string): boolean => {
+    const flexes = [...singleMetrics.map(() => 1), ...(pairedLines.length ? [0.9, 1, 1.1] : [])];
+    const metricColumns = singleMetrics.length + (pairedLines.length ? 2 : 0);
+    // single and paired-reps columns are flex 1; paired mph is 1.1
+    const flex = pairedLines.some((l) => l.mphId === metricId) ? 1.1 : 1;
+    const width = tableColumnWidth({ screenWidth, showLast, flexes, flex });
+    return showSteppers(metricColumns, width);
+  };
   const lastText = (r: SetResult | null): string => {
     if (!r) return '—';
     if (r.weight != null && r.reps != null) return `${r.weight}×${r.reps}`;
@@ -813,7 +825,7 @@ export default function ExerciseDetailView({
     // as the placeholder, else 0 (AMRAP / pending %). Free text — typed or
     // prescribed ("5 LB DB") — gets no steppers.
     const stepBase: unknown = !empty ? value : target && !target.amrap && !target.pending ? target.text : '';
-    const steppable = canStep(stepBase);
+    const steppable = canStep(stepBase) && stepperFits(metricId);
     const step = (dir: 1 | -1) => {
       const next = stepValue(metricId, stepBase, dir);
       if (next == null) return;

@@ -1,4 +1,4 @@
-import { canStep, stepFor, stepValue } from '../lib/logger/stepper';
+import { canStep, showSteppers, stepFor, stepValue, tableColumnWidth } from '../lib/logger/stepper';
 
 describe('logger stepper', () => {
   it('steps by metric', () => {
@@ -31,5 +31,25 @@ describe('logger stepper', () => {
     expect(stepValue('weight', '5 LB DB', 1)).toBeNull();
     expect(stepValue('distance', '10 yards', -1)).toBeNull();
     expect(canStep('12.5')).toBe(true);
+  });
+});
+
+describe('stepper visibility (review I3)', () => {
+  it('column widths follow the table styles', () => {
+    // Back Squat (LB · REPS + LAST): 95.5 at 375, 103 at 390
+    expect(tableColumnWidth({ screenWidth: 375, showLast: true, flexes: [1, 1], flex: 1 })).toBeCloseTo(95.5);
+    expect(tableColumnWidth({ screenWidth: 390, showLast: true, flexes: [1, 1], flex: 1 })).toBeCloseTo(103);
+    // three columns + LAST at 390: ~66
+    expect(tableColumnWidth({ screenWidth: 390, showLast: true, flexes: [1, 1, 1], flex: 1 })).toBeCloseTo(66);
+    // paired ball · reps · mph at 390: reps 90, mph 99
+    expect(tableColumnWidth({ screenWidth: 390, showLast: false, flexes: [0.9, 1, 1.1], flex: 1 })).toBeCloseTo(90);
+    expect(tableColumnWidth({ screenWidth: 390, showLast: false, flexes: [0.9, 1, 1.1], flex: 1.1 })).toBeCloseTo(99);
+  });
+
+  it('steppers only with ≤ 2 metric columns and a cell ≥ 90 pt', () => {
+    expect(showSteppers(2, 95.5)).toBe(true);
+    expect(showSteppers(1, 200)).toBe(true);
+    expect(showSteppers(3, 120)).toBe(false);
+    expect(showSteppers(2, 85)).toBe(false);
   });
 });

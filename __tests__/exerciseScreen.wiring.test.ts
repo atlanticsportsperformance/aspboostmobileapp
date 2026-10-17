@@ -193,11 +193,11 @@ describe('exercise screen — dense table (task 15)', () => {
   });
 
   it('+/− steppers on the current set only, through the same input path as typing', () => {
-    expect(D).toContain("import { canStep, stepValue } from '../lib/logger/stepper';");
+    expect(D).toContain("import { canStep, showSteppers, stepValue, tableColumnWidth } from '../lib/logger/stepper';");
     const fn = D.slice(D.indexOf('const renderMetric'), D.indexOf('// The completion circle'));
     // read-only rows return before the stepper branch
     expect(fn.indexOf('if (!open) {')).toBeLessThan(fn.indexOf('const steppable'));
-    expect(fn).toContain('const steppable = canStep(stepBase);');
+    expect(fn).toContain('const steppable = canStep(stepBase) && stepperFits(metricId);');
     expect(fn).toContain('{steppable && stepper(-1)}');
     expect(fn).toContain('{steppable && stepper(1)}');
     expect(fn).toContain('onInputChange(setIndex, metricId, String(next));');
@@ -226,5 +226,16 @@ describe('exercise screen — dense table (task 15)', () => {
     expect(L).toContain('if (newStatus && !currentSets[setIndex]) checkPRsRef.current(exerciseId, setIndex);');
     // compares against the latest maxes, not a stale closure
     expect(L).toContain('return athleteMaxesRef.current[exerciseId]?.[metricId] ?? null;');
+  });
+
+  it('steppers hide when the cell is too narrow (review I3)', () => {
+    expect(D).toContain('const steppable = canStep(stepBase) && stepperFits(metricId);');
+    expect(D).toContain('return showSteppers(metricColumns, width);');
+    // the width model must match the table styles it mirrors
+    expect(D).toContain("colMetric: { flex: 1, minWidth: 0, marginLeft: 8 },");
+    expect(D).toContain("colBall: { flex: 0.9, minWidth: 0, marginLeft: 8 },");
+    expect(D).toContain("colPairMph: { flex: 1.1, minWidth: 0, marginLeft: 8 },");
+    expect(D).toContain("colLast: { width: 64, marginLeft: 8 },");
+    expect(D).toContain("colCheck: { width: 32, marginLeft: 8, alignItems: 'flex-end' },");
   });
 });

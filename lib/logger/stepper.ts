@@ -31,3 +31,29 @@ export function stepValue(metric: string, value: unknown, dir: 1 | -1): number |
   const next = n + dir * stepFor(metric);
   return Math.max(0, Math.round(next * 100) / 100);
 }
+
+// Width (pt) of one metric column of the exercise table. Mirrors the table
+// styles in exercise-detail-view: 16 pt row padding each side, SET 24, LAST
+// 64 + 8, circle 32 + 8, and 8 pt before every metric column; the metric
+// columns share the rest by flex (single 1; paired ball 0.9 · reps 1 · mph 1.1).
+export function tableColumnWidth(args: {
+  screenWidth: number;
+  showLast: boolean;
+  flexes: number[];
+  flex: number;
+}): number {
+  const { screenWidth, showLast, flexes, flex } = args;
+  const fixed = 32 + 24 + (showLast ? 72 : 0) + 40 + 8 * flexes.length;
+  const total = flexes.reduce((a, b) => a + b, 0);
+  if (total <= 0) return 0;
+  return Math.max(0, ((screenWidth - fixed) * flex) / total);
+}
+
+// Below this a cell can't hold [−] value [+] and still show the number.
+export const MIN_STEPPER_CELL = 90;
+
+// Steppers only when the row has at most 2 metric columns and this cell is
+// wide enough; otherwise the cell is the tappable number alone (keypad).
+export function showSteppers(metricColumns: number, cellWidth: number): boolean {
+  return metricColumns <= 2 && cellWidth >= MIN_STEPPER_CELL;
+}
