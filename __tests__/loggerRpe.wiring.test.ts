@@ -7,8 +7,12 @@ const L = read('screens/WorkoutLoggerScreen.tsx');
 const R = read('components/logger/RpeRow.tsx');
 
 describe('RPE row wiring', () => {
-  it('RpeRow uses the amber label and outlines the target', () => {
-    expect(R).toContain('LOGGER_COLORS.rpe');
+  it('RpeRow is faint white: label, target outline, selected fill (no amber)', () => {
+    expect(R).toContain('color: LOGGER_COLORS.rpe,');
+    expect(R).toContain('btnTarget: { borderColor: LOGGER_COLORS.rpeTarget }');
+    expect(R).toContain('btnSelected: { backgroundColor: LOGGER_COLORS.rpeSelected');
+    expect(R).toContain('btnTextSelected: { color: LOGGER_COLORS.text');
+    expect(R).toContain('borderColor: LOGGER_COLORS.rpeBorder,');
     expect(R).toContain('RPE · TARGET');
     expect(R).toContain('rpeOptions(target)');
   });

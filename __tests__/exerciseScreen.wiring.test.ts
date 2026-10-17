@@ -6,13 +6,23 @@ const L = readFileSync(join(__dirname, '../screens/WorkoutLoggerScreen.tsx'), 'u
 const sets = () => D.slice(D.indexOf('const renderSets'), D.indexOf('// Helper to truncate exercise name'));
 
 describe('exercise screen — dense table (task 15)', () => {
-  it('uses LOGGER_COLORS; amber only for RPE and the PR 🏆', () => {
+  it('uses LOGGER_COLORS; RPE and PR markers faint white (no amber)', () => {
     expect(D).toContain("import { LOGGER_COLORS } from '../lib/logger/theme'");
     expect(D).toContain('LOGGER_COLORS.accent');
     expect(D).toContain('LOGGER_COLORS.bg');
     expect(D).toContain('LOGGER_COLORS.green');
     expect(D).toContain('LOGGER_COLORS.greenText');
-    expect(D).not.toMatch(/#D9A441/i); // amber comes from LOGGER_COLORS.rpe
+    expect(D).not.toMatch(/#D9A441|217,\s*164,\s*65/i);
+    expect(D).toContain('borderColor: LOGGER_COLORS.prBorder,');
+    expect(D).toContain('color: LOGGER_COLORS.prText,');
+    const T = readFileSync(join(__dirname, '../lib/logger/theme.ts'), 'utf8');
+    expect(T).not.toMatch(/#D9A441/i);
+    expect(T).toContain("rpe: 'rgba(255,255,255,0.45)'");
+    expect(T).toContain("rpeBorder: 'rgba(255,255,255,0.12)'");
+    expect(T).toContain("rpeTarget: 'rgba(255,255,255,0.45)'");
+    expect(T).toContain("rpeSelected: 'rgba(255,255,255,0.14)'");
+    expect(T).toContain("prBorder: 'rgba(255,255,255,0.18)'");
+    expect(T).toContain("prText: 'rgba(255,255,255,0.7)'");
   });
 
   it('no fontSize above 28', () => {

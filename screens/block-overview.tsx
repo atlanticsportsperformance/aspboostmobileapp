@@ -1038,7 +1038,7 @@ const styles = StyleSheet.create({
   // (sky, velocity band set).
   rpeTag: {
     borderWidth: 1,
-    borderColor: 'rgba(217, 164, 65, 0.4)',
+    borderColor: LOGGER_COLORS.rpeBorder,
     borderRadius: 4,
     paddingHorizontal: 4,
     paddingVertical: 1,

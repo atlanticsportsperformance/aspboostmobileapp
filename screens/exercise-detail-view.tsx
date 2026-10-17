@@ -1504,7 +1504,6 @@ export default function ExerciseDetailView({
 const INK_2 = 'rgba(255,255,255,0.6)';
 const INK_3 = 'rgba(255,255,255,0.4)';
 const ROW_LINE = 'rgba(255,255,255,0.06)';
-const PR_BORDER = 'rgba(217,164,65,0.45)';
 const SKY_BORDER = 'rgba(155,221,255,0.45)';
 
 const styles = StyleSheet.create({
@@ -1562,11 +1561,11 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: PR_BORDER,
+    borderColor: LOGGER_COLORS.prBorder,
     maxWidth: 150,
   },
   prText: {
-    color: LOGGER_COLORS.rpe,
+    color: LOGGER_COLORS.prText,
     fontSize: 11,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
@@ -1659,7 +1658,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
   },
   thTrophy: {
-    color: LOGGER_COLORS.rpe,
+    color: LOGGER_COLORS.prText,
     fontSize: 9.5,
   },
   // Table grid (mock phone 1): 24 px SET · [64 px LAST] · equal-width
@@ -1882,7 +1881,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0d0d0d',
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: PR_BORDER,
+    borderColor: LOGGER_COLORS.prBorder,
     overflow: 'hidden',
   },
   prPopoverHeader: {
@@ -1893,7 +1892,7 @@ const styles = StyleSheet.create({
     borderBottomColor: ROW_LINE,
   },
   prPopoverEyebrow: {
-    color: LOGGER_COLORS.rpe,
+    color: LOGGER_COLORS.prText,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1.6,
@@ -1935,7 +1934,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.5,
   },
-  prPopoverRowValueOn: { color: LOGGER_COLORS.rpe },
+  prPopoverRowValueOn: { color: LOGGER_COLORS.text },
   prPopoverRowValueOff: { color: '#4b5563' },
   prPopoverCloseBtn: {
     paddingVertical: 14,
