@@ -201,7 +201,7 @@ describe('rack engine', () => {
     const r = rig();
     r.sync();
     r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 1000);
-    const fx = r.sync({ state: 'lifting', leave_requested: true }, T0 + 2000);
+    const fx = r.sync({ state: 'lifting', set_started_at: iso(T0 + 1000), leave_requested: true }, T0 + 2000);
     expect(types(fx).slice(0, 2)).toEqual(['endSet', 'rpcEndSet']);
     expect(endOf(fx).endedBy).toBe('leave');
   });
@@ -339,6 +339,88 @@ describe('rack engine', () => {
     expect(r.state.switchingTo).toBeNull();
     // Later reps flow normally.
     expect(repOf(r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 3000)).repIndex).toBe(2);
+  });
+
+  it('switch buffer resolves on any active change; Cole is never credited to Tyler (N1)', () => {
+    const r = rig();
+    r.sync({}, T0);
+    r.send({ type: 'selectAthlete', athleteId: 'jake' }, T0 + 1000);
+    // A newer realtime row (Cole took the rack) is applied first…
+    r.sync({ active_athlete_id: 'cole', queue: ['jake', 'tyler'] }, T0 + 3000);
+    // …so Jake's confirming row (older updated_at) is dropped.
+    expect(
+      r.send({ type: 'sessionSync', row: row({ active_athlete_id: 'jake', updated_at: iso(T0 + 2000) }) }),
+    ).toEqual([]);
+    r.send({ type: 'rpcSettled', kind: 'setActive', athleteId: 'jake' }, T0 + 3500);
+    const a = r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 8000);
+    const b = r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 9000);
+    expect(repOf(a).athleteId).toBe('cole');
+    expect(repOf(b).athleteId).toBe('cole');
+    // Five minutes later staff tap Tyler: nothing of Cole's moves to Tyler.
+    r.send({ type: 'tick' }, T0 + 300_000);
+    r.send({ type: 'selectAthlete', athleteId: 'tyler' }, T0 + 300_000);
+    expect(ofType(r.all, 'writeRep').filter((w) => w.rep.athleteId === 'tyler')).toEqual([]);
+  });
+
+  it('reps buffered before the server changes the active athlete go to the new active one (N1)', () => {
+    const r = rig();
+    r.sync({}, T0);
+    r.send({ type: 'selectAthlete', athleteId: 'jake' }, T0 + 1000);
+    r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 5000);
+    const fx = r.sync({ active_athlete_id: 'cole', queue: ['jake', 'tyler'] }, T0 + 6000);
+    expect(ofType(fx, 'writeRep').map((w) => w.rep.athleteId)).toEqual(['cole']);
+    expect(r.state.switchingTo).toBeNull();
+  });
+
+  it('rpcSettled(setActive) without the confirming row keeps buffering', () => {
+    const r = rig();
+    r.sync({}, T0);
+    r.send({ type: 'selectAthlete', athleteId: 'jake' }, T0 + 1000);
+    expect(r.send({ type: 'rpcSettled', kind: 'setActive', athleteId: 'jake' })).toEqual([]);
+    expect(r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 2000)).toEqual([]);
+    const fx = r.sync({ active_athlete_id: 'jake', queue: ['cole', 'tyler'] }, T0 + 2500);
+    expect(repOf(fx).athleteId).toBe('jake');
+  });
+
+  it('a second tile tap flushes the pending buffer to the active athlete first (N1)', () => {
+    const r = rig();
+    r.sync({}, T0);
+    r.send({ type: 'selectAthlete', athleteId: 'jake' }, T0 + 1000);
+    r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 5000);
+    const fx = r.send({ type: 'selectAthlete', athleteId: 'cole' }, T0 + 6000);
+    expect(types(fx)).toEqual(['rpcStartSet', 'writeRep', 'endSet', 'rpcSetActive']);
+    expect(repOf(fx).athleteId).toBe('tyler');
+    expect(fx[3]).toEqual({ type: 'rpcSetActive', athleteId: 'cole' });
+    expect(r.state.switchingTo).toBe('cole');
+  });
+
+  it('after a refused tile tap the next set re-starts and phone Done ends it (N2)', () => {
+    const r = rig();
+    r.sync({}, T0);
+    r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 1000);
+    r.sync({ state: 'lifting', set_started_at: iso(T0 + 1000) }, T0 + 1100);
+    // Tap Jake → set ends locally as 'switch'; the server refuses (still lifting set 1).
+    r.send({ type: 'selectAthlete', athleteId: 'jake' }, T0 + 2000);
+    r.send({ type: 'rpcFailed', kind: 'setActive', athleteId: 'jake' }, T0 + 2500);
+    // Tyler's next set: rpcStartSet carries its own start despite server 'lifting'.
+    const start = r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 10_000);
+    expect(ofType(start, 'rpcStartSet')).toEqual([
+      { type: 'rpcStartSet', athleteId: 'tyler', setStartedAt: iso(T0 + 10_000) },
+    ]);
+    // rack_start_set took over the stale lift; phone Done carries the new start.
+    const done = r.sync(
+      { state: 'lifting', set_started_at: iso(T0 + 10_000), pending_end: true },
+      T0 + 12_000,
+    );
+    expect(types(done).slice(0, 2)).toEqual(['endSet', 'rpcEndSet']);
+    expect(endOf(done)).toMatchObject({ endedBy: 'phone', setNumber: 2 });
+  });
+
+  it('seedHighWater (restart) keeps a lagging phone from overwriting an earlier set', () => {
+    const r = rig();
+    r.send({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 2 });
+    r.sync({ queue: [], set_number: 2 });
+    expect(repOf(r.send({ type: 'rep', rep: ovr(0.5) }, T0 + 1000)).setNumber).toBe(3);
   });
 
   it('phone exercise switch applies next set', () => {

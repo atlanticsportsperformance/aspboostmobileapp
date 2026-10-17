@@ -20,25 +20,29 @@
  *   - Effects are ORDERED; run them in order. `rpcEndSet` only after the
  *     preceding `endSet` row is persisted (or durably queued).
  *   - Feed every RPC's returned row back as a `sessionSync`.
- *   - Dispatch `rpcFailed{kind, athleteId}` when an RPC errors (refused or
- *     unsendable). `rpcSetActive` must NOT be queued offline: show the tiles
- *     as offline and dispatch `rpcFailed('setActive')`.
+ *   - Dispatch `rpcSettled{kind, athleteId}` when an RPC succeeds and
+ *     `rpcFailed{kind, athleteId}` when it errors (refused or unsendable).
+ *     `rpcSetActive` must NOT be queued offline: show the tiles as offline
+ *     and dispatch `rpcFailed('setActive')`.
+ *   - After a restart, dispatch `seedHighWater` for today's already-written
+ *     sets (exercise_logs) of the active athlete's workout.
  *   - `writeRep` -> vbt_reps insert (dedupe on client_rep_id).
  *     `endSet` / `amendSet` -> upsert_exercise_log; both SKIPPED when `free`.
  *   - Dispatch `tick` about once a second.
  *
- * Set start: the first rep while not lifting starts a set and emits
- * `rpcStartSet{athleteId, setStartedAt}` (rack_start_set flips the row to
- * 'lifting' only while that athlete is still active).
+ * Set start: the first rep while not lifting starts a set and ALWAYS emits
+ * `rpcStartSet{athleteId, setStartedAt}` with that set's own start — even if
+ * the engine believes the server is still 'lifting'. rack_start_set flips the
+ * row to 'lifting' only while that athlete is active, and takes over a stale
+ * lift of the same athlete when the new start is newer (new set_started_at,
+ * pending_end cleared), so phone Done / Leave then match the new set.
  *
  * Set end triggers (ending is idempotent; a set is ended once):
  *   - `ipadDone` / `done`                          endedBy 'ipad' ('phone' in solo)
  *   - sync with pending_end = true                 endedBy 'phone'
  *   - sync with leave_requested = true             endedBy 'leave'
- *     Both flags only count when the row belongs to the live set: its
- *     set_started_at equals the live set's start; or, when the row has no
- *     set_started_at and no rpcEndSet is in flight for the lifter, its
- *     updated_at is newer than the live set's start. Otherwise ignored.
+ *     Both flags only count when the row's set_started_at equals the live
+ *     set's start (the iPad's own p_started_at). Otherwise ignored.
  *   - `selectAthlete(other)`                        endedBy 'switch'
  *     (endSet, then rpcSetActive; NO rpcEndSet — rack_set_active rotates)
  *   - sync where the server moved the active lifter away mid-set
@@ -50,8 +54,13 @@
  * starts a new set.
  *
  * Tile switch: after `selectAthlete`, reps are BUFFERED (never dropped) until
- * the sync that shows the chosen athlete active — they are then credited to
- * that athlete — or `rpcFailed('setActive')` — then to the still-active one.
+ * the switch resolves, then credited to whoever the server says is active:
+ *   - any applied sync that shows the chosen athlete active, or that changes
+ *     the active athlete at all (the server decided) -> the new active one;
+ *   - `rpcFailed('setActive')` -> the still-active athlete;
+ *   - another tile tap first flushes the pending buffer to the currently
+ *     active athlete, then starts its own switch.
+ * `rpcSettled('setActive')` without a confirming sync keeps waiting.
  *
  * Set numbers: per (athlete, workout instance, routine exercise) the engine
  * keeps a high-water mark of the set numbers it has written. A new set's
@@ -102,6 +111,7 @@ export type SetState = 'idle' | 'lifting' | 'summary';
 export type EngineMode = 'rack' | 'solo';
 export type SetSource = 'rack' | 'phone';
 export type EndedBy = 'ipad' | 'phone' | 'switch' | 'leave' | 'idle';
+export type RpcKind = 'setActive' | 'endSet' | 'startSet';
 
 /** The `rack_sessions` row as it arrives over realtime (snake_case). */
 export interface RackSessionRow {
@@ -313,7 +323,17 @@ export type RackEvent =
   | { type: 'tick' }
   | { type: 'loadChanged'; lb: number | null }
   /** The executor's RPC errored (refused, or not sendable). */
-  | { type: 'rpcFailed'; kind: 'setActive' | 'endSet' | 'startSet'; athleteId: string };
+  | { type: 'rpcFailed'; kind: RpcKind; athleteId: string }
+  /** The executor's RPC succeeded (its returned row still goes in as a sessionSync). */
+  | { type: 'rpcSettled'; kind: RpcKind; athleteId: string }
+  /** Restart: a set already written today (raises the set-number high-water mark). */
+  | {
+      type: 'seedHighWater';
+      athleteId: string;
+      workoutInstanceId: string;
+      routineExerciseId: string;
+      setNumber: number;
+    };
 
 export type RackEffect =
   /** rack_start_set(p_rack, athleteId, setStartedAt): 'lifting' only if still active. */
@@ -677,8 +697,9 @@ function flushSwitchBuffer(s: RackEngineState, fx: RackEffect[]): RackEngineStat
 function flagsBelongToLive(s: RackEngineState, row: RackSessionRow): boolean {
   const live = s.live;
   if (!live) return false;
-  if (row.set_started_at != null) return ms(row.set_started_at) === live.startedAtMs;
-  return s.endRpcPendingFor !== live.athleteId && ms(row.updated_at) > live.startedAtMs;
+  // rack_start_set always stamps set_started_at with the iPad's own start,
+  // so a row without one (or with another set's) is not about this set.
+  return row.set_started_at != null && ms(row.set_started_at) === live.startedAtMs;
 }
 
 function applyMeta(
@@ -783,9 +804,12 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       if (prevActive !== nextActive && s.setState !== 'lifting') {
         s = { ...s, setState: 'idle' };
       }
-      // The confirming sync of a tile switch: buffered reps go to whoever
-      // the server says is active.
-      if (s.switchingTo && nextActive === s.switchingTo) s = flushSwitchBuffer(s, fx);
+      // The switch resolves on the confirming sync, or on any applied change
+      // of the active athlete: buffered reps go to whoever the server says
+      // is active now.
+      if (s.switchingTo && (nextActive === s.switchingTo || nextActive !== prevActive)) {
+        s = flushSwitchBuffer(s, fx);
+      }
       s = releaseHoldOnNewContext(s);
       s = syncSensorLoad(s, fx);
       break;
@@ -868,6 +892,9 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       if (s.mode === 'solo') break;
       if (event.athleteId === s.switchingTo) break;
       if (!s.switchingTo && event.athleteId === s.activeAthleteId) break;
+      // A pending switch is replaced: its reps go to the currently active
+      // athlete first (never to the next one tapped).
+      if (s.switchingTo) s = flushSwitchBuffer(s, fx);
       s = endLive(s, 'switch', now, fx, false);
       fx.push({ type: 'rpcSetActive', athleteId: event.athleteId });
       s = { ...s, switchingTo: event.athleteId };
@@ -885,6 +912,20 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       }
       // 'startSet' refused: the athlete is no longer active server-side; the
       // sync that shows the new lifter ends the live set as a 'switch'.
+      break;
+    }
+
+    case 'rpcSettled':
+      // setActive settled without its confirming row: keep waiting — the row
+      // (or any later change of the active athlete) resolves the switch.
+      break;
+
+    case 'seedHighWater': {
+      const k = `${event.athleteId}:${event.workoutInstanceId}:${event.routineExerciseId}`;
+      s = {
+        ...s,
+        setHighWater: { ...s.setHighWater, [k]: Math.max(s.setHighWater[k] ?? 0, event.setNumber) },
+      };
       break;
     }
 
