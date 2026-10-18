@@ -642,7 +642,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     contextSource,
     routineExerciseId: ctx.routineExerciseId,
     loadLb,
-    loadNote: loadLb == null && ex && percentWeightTarget(ex, setNumber) ? 'Not set' : null,
+    // Unresolved % load: BAR shows "—" with the prescription as its caption ("90% of set 1").
+    loadNote: loadLb == null && ex ? percentLoadText(percentWeightTarget(ex, setNumber)) : null,
     powerAvailable: hasLoad(loadLb),
     lastSetMove: lastSetMoveOf(s, today, nowMs),
     needsPick: !!activeId && !lifting && ctx.workoutInstanceId == null && (active?.remaining.length ?? 0) > 0,
@@ -710,4 +711,10 @@ export function phoneRepsFor(
   if (row.reps_target_routine_exercise_id !== routineExerciseId || row.reps_target_set_number !== setNumber) return null;
   const n = Number(row.reps_target);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** A % weight target as the coach wrote it: "90% of set 1", "80% of max" (null = none). */
+export function percentLoadText(t: { percent?: number | null; relative_to?: string | null; reference_set?: number | null } | null | undefined): string | null {
+  if (!t || t.percent == null) return null;
+  return t.relative_to === 'set' && t.reference_set != null ? `${t.percent}% of set ${t.reference_set}` : `${t.percent}% of max`;
 }

@@ -108,16 +108,16 @@ export default function AthleteCard({
               <Text style={styles.stpTxt}>−</Text>
             </TouchableOpacity>
             <Pressable style={styles.stpVal} onLongPress={onBarType} delayLongPress={350} accessibilityLabel="Bar weight — long-press to type">
-              {lb == null && view.loadNote ? (
-                <Text style={[styles.x, styles.note, c && styles.xC]} numberOfLines={1}>{view.loadNote}</Text>
-              ) : (
-                <Text style={[styles.x, styles.stpX, c && styles.xC]} numberOfLines={1}>{lb != null ? String(lb) : '—'}</Text>
-              )}
+              <Text style={[styles.x, styles.stpX, c && styles.xC]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                {lb != null ? String(lb) : '—'}
+              </Text>
             </Pressable>
             <TouchableOpacity style={styles.stpBtn} disabled={!onBarStep} onPress={() => onBarStep?.(BAR_STEP_LB)} accessibilityLabel="Bar weight plus 5 pounds">
               <Text style={styles.stpTxt}>+</Text>
             </TouchableOpacity>
           </View>
+          {/* Unresolved % load: why it's empty — wraps, never truncates. */}
+          {lb == null && view.loadNote ? <Text style={styles.loadNote}>{view.loadNote}</Text> : null}
         </View>
         <View style={[styles.kvb, styles.wide, c && styles.kvbC]}>
           <Text style={styles.k}>TARGET SPEED</Text>
@@ -221,6 +221,7 @@ const styles = StyleSheet.create({
   sumTextRow: { alignItems: 'flex-start', gap: 8 },
   sumT: { fontSize: 12, fontWeight: '900', letterSpacing: 2, color: RACK_COLORS.acc, textAlign: 'center', paddingHorizontal: 12 },
   note: { fontSize: 18, color: 'rgba(255,255,255,0.55)', marginTop: 6 },
+  loadNote: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.55)', marginTop: 4, textAlign: 'center' },
   sumBig: { fontSize: 44, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
   sumCol: { alignItems: 'center', gap: 10 },
   sumColRow: { alignItems: 'flex-start' },

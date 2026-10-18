@@ -331,3 +331,11 @@ describe('athlete card: the exercise + set line is a clear button (pill)', () =>
     expect(CARD.indexOf('<ExercisePicker')).toBeLessThan(CARD.indexOf('<Text style={styles.src}>{view.sourceLine}</Text>'));
   });
 });
+
+describe('BAR · LB: an unresolved % load shows — plus the prescription caption', () => {
+  it('value is "—" (never a truncated note) and the caption wraps under it', () => {
+    expect(CARD).toContain("{lb != null ? String(lb) : '—'}");
+    expect(CARD).toContain('{lb == null && view.loadNote ? <Text style={styles.loadNote}>{view.loadNote}</Text> : null}');
+    expect(CARD).not.toMatch(/styles\.note, c && styles\.xC\]\} numberOfLines=\{1\}>\{view\.loadNote\}/);
+  });
+});

@@ -359,14 +359,16 @@ describe('fix round 3: pick prompt, % load note, iPad-owned source', () => {
     expect(view(rigWithPhone().s).needsPick).toBe(false);
   });
 
-  it('BAR reads "Not set" for an unresolved % target; a fixed weight shows normally', () => {
+  it('BAR: an unresolved % target → no load + the prescription as the caption; a fixed weight shows normally', () => {
     const pct: TodayExercise = { ...SQUAT, plan: { exercise_id: 'ex-squat', intensity_targets: [{ metric: 'weight', percent: 80 }] } };
     const today = [athlete('tyler', 'Tyler', 'Reed', [pct])];
     const r = rig();
     r.sync({ load_lb: null, queue: [] });
     const v = buildRackView({ state: r.s, today, rackName: 'Rack 3', nowMs: T0 });
     expect(v.loadLb).toBeNull();
-    expect(v.loadNote).toBe('Not set');
+    expect(v.loadNote).toBe('80% of max');
+    const { percentLoadText } = require('../lib/rack/viewModel');
+    expect(percentLoadText({ metric: 'weight', percent: 90, relative_to: 'set', reference_set: 1 })).toBe('90% of set 1');
     expect(view(r.s).loadNote).toBeNull();
   });
 
