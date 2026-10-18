@@ -199,7 +199,7 @@ describe('free set', () => {
     await p.endSet(free);
     await p.amendSet(free);
     expect(setWriteRow(free, ORG)).toBeNull();
-    expect(await p.pending()).toEqual({ reps: 1, sets: 0 });
+    expect(await p.pending()).toEqual({ reps: 1, sets: 0, moves: 0 });
     await p.flush();
     expect(m.rpc).not.toHaveBeenCalled();
     expect(m.from).toHaveBeenCalledWith('vbt_reps');
@@ -246,7 +246,7 @@ describe('double end writes once', () => {
     release();
     await f;
     expect(m.rpc.mock.calls.map(c => c[1].p_row.actual_reps)).toEqual([2, 3]);
-    expect(await p.pending()).toEqual({ reps: 0, sets: 0 });
+    expect(await p.pending()).toEqual({ reps: 0, sets: 0, moves: 0 });
   });
 
   it('different sets stay separate items', async () => {
@@ -302,7 +302,7 @@ describe('vbt_reps queue', () => {
     await p.writeRep(rep());
     await p.endSet(summary());
     await p.flush();
-    expect(await p.pending()).toEqual({ reps: 1, sets: 1 });
+    expect(await p.pending()).toEqual({ reps: 1, sets: 1, moves: 0 });
     expect(await p.dead.reps.size()).toBe(0);
   });
 

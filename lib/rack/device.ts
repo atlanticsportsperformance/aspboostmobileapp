@@ -124,6 +124,11 @@ function withUnsaved(left: { reps: number; sets: number }): { reps: number; sets
   }
 }
 
+/** Queued fix-mistakes calls (move set / remove rep) count as set writes left. */
+function withMoves(p: { reps: number; sets: number; moves?: number }): { reps: number; sets: number } {
+  return { reps: p.reps, sets: p.sets + (p.moves ?? 0) };
+}
+
 export const DRAIN_TIMEOUT_MS = 10_000;
 const DRAIN_POLL_MS = 500;
 
@@ -161,7 +166,7 @@ export async function drainRackQueues(
     if (remaining <= 0) break;
     await bounded(persist.flush({ force: true }), remaining);
     try {
-      left = withUnsaved(await persist.pending());
+      left = withUnsaved(withMoves(await persist.pending()));
     } catch (e) {
       console.warn('[rack] pending() failed during drain', e);
       left = { reps: -1, sets: -1 };
@@ -171,7 +176,7 @@ export async function drainRackQueues(
     await sleep(DRAIN_POLL_MS);
   }
   try {
-    left = withUnsaved(await persist.pending());
+    left = withUnsaved(withMoves(await persist.pending()));
   } catch {
     // keep the last count
   }

@@ -33,13 +33,22 @@
 //     haven't loaded yet (UI).
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
+//   - Fix mistakes (rack-edge mock): `moveSet(target)` ends a live set
+//     (ipadDone — its write durably queued), resolves the target's set with
+//     resolveRackSet, queues rack_move_set in rack_moves_v1 (flushed only
+//     behind every rep + set write), then rack_set_active(target).
+//     `removeRep(id)` drops the rep in the engine and queues rack_remove_rep
+//     (a removal seen from the phone = `remote`: engine only).
+//   - BAR stepper: `setBarLoad(lb)` publishes load_lb through
+//     rack_set_ipad_context between sets (mid-set: on the next set) and wins
+//     over the row's load for that exercise until someone else changes it.
 
 import { IDLE_END_MS, LATE_REP_MS, REOPEN_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
 import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAthlete, type TodayExercise } from './api';
 import { pickerRowsOf, rackInstancesOf, resolveRackSet, type PickerRow, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
 import { intensityFor, type LoggedSets } from '../logger/targets';
-import { withTimeout, type RackPersist } from './persist';
+import { setKeyOf, withTimeout, type FixItem, type RackPersist, type SetRef } from './persist';
 
 export const TICK_MS = 1_000;
 export const FLUSH_MS = 15_000;
@@ -53,6 +62,8 @@ export const LOG_FRESH_MS = 2_000;
 export const LOG_HOLD_MAX_MS = 1_500;
 /** Reps this soon after the last rack set of a finished exercise = lifting continues on it. */
 export const CONTINUE_MS = IDLE_END_MS;
+/** A just-ended set can be moved to the right athlete for this long. */
+export const MOVE_WINDOW_MS = 120_000;
 
 export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
@@ -82,6 +93,12 @@ export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSe
   flush(opts?: { force?: boolean }): Promise<void>;
   /** Queued set writes (key `wi:re:set`) — a rack write still queued stays complete for the resolver. */
   setQueue?: { peekAll(): Promise<{ key: string }[]> };
+  /** rack_move_set, queued behind every rep + set write (rack_moves_v1). */
+  moveSet?: RackPersist['moveSet'];
+  /** rack_remove_rep, queued behind every rep + set write (rack_moves_v1). */
+  removeRep?: RackPersist['removeRep'];
+  /** Queued fix-mistakes calls (a moved set's target stays complete for the resolver). */
+  moveQueue?: { peekAll(): Promise<FixItem[]> };
 };
 
 export interface ExecutorSensor {
@@ -116,6 +133,21 @@ export interface RackExecutor {
   /** The active athlete's context is the iPad's (its pick / a coach
    *  override, published to rack_sessions) — not the phone's. */
   ipadOwnsContext(): boolean;
+  /**
+   * Wrong athlete: move the live set (ended first, its write queued) or the
+   * set that just ended (≤ MOVE_WINDOW_MS) to `targetId` — rack_move_set to
+   * the target's resolveRackSet set, queued behind the set write — then put
+   * the target up (rack_set_active). Resolves with the target set (null = no
+   * set to move).
+   */
+  moveSet(targetId: string): Promise<SetRef | null>;
+  /** Remove a bad rep: engine first (live set recalculated), then rack_remove_rep
+   *  (queued). `remote` = it was removed elsewhere (the phone): engine only. */
+  removeRep(clientRepId: string, opts?: { remote?: boolean }): Promise<void>;
+  /** BAR stepper on the iPad: the bar weight for the active athlete's exercise. */
+  setBarLoad(lb: number): void;
+  /** The iPad's BAR weight; `next` = typed mid-set, applies on the next set. */
+  barLoad(): { lb: number; next: boolean } | null;
   start(): void;
   stop(): void;
   /** Resolves when every effect and RPC queued so far has run (tests). */
@@ -162,11 +194,15 @@ export function createRackExecutor(opts: {
   const logsByAthlete = new Map<string, { rows: SetLogRow[]; at: number; seq: number }>();
   /** Sets the rack itself wrote complete, until a later read confirms or drops them (key athlete:wi:re:n). */
   const rackWritten = new Map<string, SetLogRow & { seq: number }>();
+  /** Sets moved off an athlete (key athlete:wi:re:n): hidden from their logs until the move is sent. */
+  const movedAway = new Set<string>();
   let staleTodayAt = -Infinity;
 
   /** Writes whose enqueue failed (storage error) — retried on every flush. */
   const unsavedReps: RepWrite[] = [];
   const unsavedSets: { kind: 'endSet' | 'amendSet'; summary: SetSummary }[] = [];
+  /** Fix-mistakes calls whose enqueue failed (after the set writes in the drain). */
+  const unsavedFixes: { item: FixItem; run: () => Promise<void> }[] = [];
 
   const repTarget = () => state.switchingTo ?? state.activeAthleteId;
   const isSyncing = () => {
@@ -196,6 +232,12 @@ export function createRackExecutor(opts: {
       await (w.kind === 'endSet' ? persist.endSet(w.summary) : persist.amendSet(w.summary));
       const i = unsavedSets.indexOf(w);
       if (i >= 0) unsavedSets.splice(i, 1);
+    }
+    while (unsavedFixes.length) {
+      const f = unsavedFixes[0];
+      await f.run();
+      const i = unsavedFixes.indexOf(f);
+      if (i >= 0) unsavedFixes.splice(i, 1);
     }
     const force = flushForce;
     flushForce = false;
@@ -324,6 +366,28 @@ export function createRackExecutor(opts: {
         case 'droppedRep':
           log('dropped rep', fx.reason, fx.rep);
           break;
+        case 'setChanged': {
+          // A rep was removed from an ended set: a write of it still queued
+          // (or held in memory) carries the new summary; a sent one is fixed
+          // by rack_remove_rep's recompute.
+          if (fx.summary.free) break;
+          const sm = withExercise(fx.summary);
+          const key = setKeyOf(sm);
+          const mem = unsavedSets.find(u => setKeyOf(u.summary) === key);
+          if (mem) {
+            mem.summary = sm;
+            break;
+          }
+          let queuedNow = false;
+          try {
+            queuedNow = !!persist.setQueue && (await persist.setQueue.peekAll()).some(i => i.key === key);
+          } catch (e) {
+            log('set queue read failed; re-queuing the changed set', e);
+            queuedNow = true;
+          }
+          if (queuedNow) await durably('amendSet', () => persist.amendSet(sm), () => unsavedSets.push({ kind: 'amendSet', summary: sm }));
+          break;
+        }
       }
     }
   };
@@ -370,10 +434,32 @@ export function createRackExecutor(opts: {
     const cached = logsByAthlete.get(athleteId);
     if (cached && cached.seq > reqSeq) return;
     let queued: Set<string> | null = null;
+    let movesQueued: FixItem[] = [];
     try {
       queued = persist.setQueue ? new Set((await persist.setQueue.peekAll()).map(i => i.key)) : null;
     } catch {
       queued = null;
+    }
+    try {
+      movesQueued = persist.moveQueue ? await persist.moveQueue.peekAll() : [];
+    } catch {
+      movesQueued = [];
+    }
+    const pendingMoves = [...movesQueued, ...unsavedFixes.map(f => f.item)].filter(
+      (m): m is Extract<FixItem, { kind: 'move' }> => m.kind === 'move',
+    );
+    // A moved set's target is written by rack_move_set: complete until that call is sent.
+    for (const m of pendingMoves) {
+      if (m.to.athleteId === athleteId && m.to.workoutInstanceId && m.to.routineExerciseId && m.to.setNumber != null) {
+        queued = queued ?? new Set<string>();
+        queued.add(`${m.to.workoutInstanceId}:${m.to.routineExerciseId}:${m.to.setNumber}`);
+      }
+    }
+    // A moved-away set stops hiding once its move has been sent (the read is the truth again).
+    for (const k of [...movedAway]) {
+      if (!k.startsWith(`${athleteId}:`)) continue;
+      const still = pendingMoves.some(m => `${m.from.athleteId}:${m.from.workoutInstanceId}:${m.from.routineExerciseId}:${m.from.setNumber}` === k);
+      if (!still) movedAway.delete(k);
     }
     const cachedNow = logsByAthlete.get(athleteId);
     if (cachedNow && cachedNow.seq > reqSeq) return;
@@ -402,7 +488,10 @@ export function createRackExecutor(opts: {
 
   /** The athlete's logs as resolveRackSet reads them (cache + the rack's own writes). */
   const logsFor = (athleteId: string): RackSetLog[] => {
-    const rows = [...(logsByAthlete.get(athleteId)?.rows ?? [])];
+    // A set moved away to another athlete no longer counts for this one.
+    const rows = (logsByAthlete.get(athleteId)?.rows ?? []).filter(
+      r => !movedAway.has(`${athleteId}:${r.workoutInstanceId}:${r.routineExerciseId}:${r.setNumber}`),
+    );
     for (const w of rackWritten.values()) if (w.athleteId === athleteId) rows.push(w);
     return rows.map(r => ({
       workoutInstanceId: r.workoutInstanceId,
@@ -458,7 +547,8 @@ export function createRackExecutor(opts: {
     // Phone-open beats the coach pick — except a pick made AFTER the phone's
     // current context (the latest action wins; the phone then follows it).
     // A newer phone context clears the override (apply()).
-    const phoneNow = phoneRef();
+    // The row's phone context is the ACTIVE athlete's — never another's (a move target).
+    const phoneNow = athleteId === state.activeAthleteId ? phoneRef() : null;
     const phone = ovr && refSig(phoneNow) === ovr.phoneSig ? null : phoneNow;
     const known = (ref: RackExerciseRef) =>
       instances.some(i => (!ref.workoutInstanceId || i.workoutInstanceId === ref.workoutInstanceId) && i.exercises.some(e => e.routineExerciseId === ref.routineExerciseId));
@@ -741,13 +831,197 @@ export function createRackExecutor(opts: {
         }
       }
     }
+    trackBar(event);
     if (event.type !== 'localContext') reresolve();
     const changed = event.type !== 'tick' || `${state.setState}|${ctxKey(nextContext(state))}` !== ctxBefore;
     if (event.type !== 'loadChanged' && changed) deriveLoad();
     if (event.type !== 'loadChanged' && (changed || (publishFailedAt != null && now() - publishFailedAt >= PUBLISH_RETRY_MS))) {
       publishIfNeeded();
     }
+    if (bar && bar.status === 'pending' && state.setState !== 'lifting' && (barFailedAt == null || now() - barFailedAt >= PUBLISH_RETRY_MS)) {
+      publishBar();
+    }
     notify();
+  };
+
+  // ---------------------------------------------------------------- BAR stepper (iPad bar weight)
+
+  /** The iPad's bar weight for one exercise of the active athlete (pending = not sent yet). */
+  let bar: { athleteId: string; wi: string | null; re: string | null; lb: number; status: 'pending' | 'sent' | 'confirmed' } | null = null;
+  let barFailedAt: number | null = null;
+
+  const barFor = (athleteId: string, wi: string | null, re: string | null): number | null =>
+    bar && bar.athleteId === athleteId && bar.wi === wi && bar.re === re ? bar.lb : null;
+
+  /** Rows / athlete / exercise changes settle the bar weight (confirmed, replaced by the phone, or gone). */
+  const trackBar = (event: RackEvent) => {
+    if (!bar || event.type === 'barLoad') return;
+    if (bar.athleteId !== state.activeAthleteId) {
+      clearBar();
+      return;
+    }
+    if (state.setState !== 'lifting') {
+      const local = state.localContext;
+      // The resolver moved to another exercise: this lift's bar weight no longer applies.
+      if (local?.resolved && local.athleteId === bar.athleteId && (local.workoutInstanceId !== bar.wi || local.routineExerciseId !== bar.re)) {
+        clearBar();
+        return;
+      }
+    }
+    if (event.type !== 'sessionSync') return;
+    const n = rowNext();
+    if (!n || n.wi !== bar.wi || n.re !== bar.re || n.load == null) return;
+    if (Number(n.load) === bar.lb) bar.status = 'confirmed';
+    else if (bar.status === 'confirmed') {
+      // The phone changed the LB after the iPad's: the phone's edit wins.
+      clearBar();
+    }
+  };
+  const clearBar = () => {
+    const b = bar;
+    bar = null;
+    if (b && state.barLoad) apply({ type: 'barLoad', athleteId: b.athleteId, workoutInstanceId: b.wi, routineExerciseId: b.re, lb: null }, now());
+  };
+
+  /** Publish the bar weight with the row's next set (rack_set_ipad_context); the phone's LB cell follows. */
+  const publishBar = () => {
+    const b = bar;
+    const rackId = state.rackId;
+    if (!b || !rackId || !api.setIpadContext || state.setState === 'lifting') return;
+    const r = state.session;
+    if (!r || r.active_athlete_id !== b.athleteId) return;
+    if (b.wi == null || b.re == null) {
+      b.status = 'confirmed'; // a free set: the sensor + this iPad only
+      return;
+    }
+    const n = rowNext();
+    const sameRow = !!n && n.wi === b.wi && n.re === b.re;
+    const setNumber = sameRow && n!.set != null ? n!.set : nextSetNumber(state, b.athleteId);
+    b.status = 'sent';
+    // The iPad's own published context keeps its key in step (no re-publish of an old load).
+    if (published && published.athleteId === b.athleteId && published.workoutInstanceId === b.wi && published.routineExerciseId === b.re) {
+      published = { ...published, loadLb: b.lb };
+      lastAttemptKey = `${published.athleteId}:${published.workoutInstanceId}:${published.routineExerciseId}:${published.setNumber}:${published.loadLb}`;
+    }
+    const setIpadContext = api.setIpadContext;
+    rpcChain = rpcChain.then(async () => {
+      try {
+        const row = await withTimeout(
+          setIpadContext(rackId, b.athleteId, { workoutInstanceId: b.wi, routineExerciseId: b.re, setNumber, loadLb: b.lb }),
+          RPC_TIMEOUT_MS,
+          'setIpadContext',
+        );
+        barFailedAt = null;
+        if (row) dispatch({ type: 'sessionSync', row });
+      } catch (e) {
+        log('setIpadContext (bar weight) failed', e);
+        barFailedAt = now();
+        if (bar === b && b.status === 'sent') b.status = 'pending';
+      }
+    });
+  };
+
+  const setBarLoad = (lbIn: number) => {
+    if (queued(() => setBarLoad(lbIn))) return;
+    const id = state.activeAthleteId;
+    if (state.mode !== 'rack' || !id || !Number.isFinite(lbIn)) return;
+    const lb = Math.max(0, Math.min(2000, Math.round(lbIn * 2) / 2));
+    const c = state.setState === 'lifting' && state.live ? state.live.context : nextContext(state);
+    bar = { athleteId: id, wi: c.workoutInstanceId, re: c.routineExerciseId, lb, status: 'pending' };
+    barFailedAt = null;
+    // The engine's next set uses it (mid-set: the live set stays frozen; the sensor follows between sets).
+    // apply() then publishes it with the row (→ the phone's LB cell): between sets now, mid-set once the set ends.
+    apply({ type: 'barLoad', athleteId: id, workoutInstanceId: c.workoutInstanceId, routineExerciseId: c.routineExerciseId, lb }, now());
+  };
+
+  // ---------------------------------------------------------------- fix mistakes
+
+  /** Queue a fix-mistakes call; kept in memory (drained before the next flush) if storage fails. */
+  const queueFix = async (item: FixItem, run: () => Promise<void>) => {
+    await durably(item.kind, run, () => unsavedFixes.push({ item, run }));
+    void flushSoon();
+  };
+
+  /** Wait until the effect chain has run (the set write is durably queued). */
+  const effectsDone = async () => {
+    for (let i = 0; i < 20; i++) {
+      const e = effectChain;
+      await e;
+      if (e === effectChain) return;
+    }
+  };
+
+  /** One athlete's logs, now (bounded) — a move target's set is resolved on fresh logs. */
+  const readLogsNow = async (athleteId: string) => {
+    if (!state.rackId) return;
+    const reqSeq = ++seq;
+    const reqAt = now();
+    try {
+      const rows = await withTimeout(api.athleteSets(state.rackId, athleteId), LOG_HOLD_MAX_MS, 'athleteSets');
+      await storeLogs(athleteId, rows, reqSeq, reqAt);
+    } catch (e) {
+      log('move: target log read failed; resolving on cached logs', e);
+    }
+  };
+
+  const moveSet = async (targetId: string): Promise<SetRef | null> => {
+    releaseHold();
+    if (state.mode !== 'rack' || !state.rackId) return null;
+    // Mid-set: end it first (the iPad Done path) — its row is queued before the move.
+    if (state.setState === 'lifting' && state.live) dispatch({ type: 'ipadDone' });
+    await effectsDone();
+    const src = state.lastEnded;
+    if (!src || src.endedAtMs == null || src.athleteId === targetId || now() - src.endedAtMs > MOVE_WINDOW_MS) return null;
+    const c = src.context;
+    const from: SetRef = { athleteId: src.athleteId, workoutInstanceId: c.workoutInstanceId, routineExerciseId: c.routineExerciseId, setNumber: c.setNumber };
+
+    // The target's set: resolveRackSet on their fresh logs — the same rules as everywhere.
+    await readLogsNow(targetId);
+    const res = resolveFor(targetId);
+    const to: SetRef =
+      res && !res.none
+        ? { athleteId: targetId, workoutInstanceId: res.workoutInstanceId, routineExerciseId: res.routineExerciseId, setNumber: res.setNumber }
+        : { athleteId: targetId, workoutInstanceId: null, routineExerciseId: null, setNumber: null };
+
+    // Local truth right away: the wrong athlete's set is gone, the target's is complete.
+    apply({ type: 'setMoved', athleteId: src.athleteId, setStartedAtMs: src.startedAtMs }, now());
+    if (!src.free && c.workoutInstanceId && c.routineExerciseId && c.setNumber != null) {
+      const k = `${src.athleteId}:${c.workoutInstanceId}:${c.routineExerciseId}:${c.setNumber}`;
+      rackWritten.delete(k);
+      movedAway.add(k);
+    }
+    if (to.workoutInstanceId && to.routineExerciseId && to.setNumber != null) {
+      rackWritten.set(`${targetId}:${to.workoutInstanceId}:${to.routineExerciseId}:${to.setNumber}`, {
+        athleteId: targetId,
+        workoutInstanceId: to.workoutInstanceId,
+        routineExerciseId: to.routineExerciseId,
+        setNumber: to.setNumber,
+        isComplete: true,
+        seq: ++seq,
+      });
+      apply({ type: 'seedHighWater', athleteId: targetId, workoutInstanceId: to.workoutInstanceId, routineExerciseId: to.routineExerciseId, setNumber: to.setNumber }, now());
+    }
+    const item: FixItem = { kind: 'move', id: `move:${from.athleteId}:${src.startedAtMs}>${targetId}`, from, to };
+    if (persist.moveSet) {
+      const mv = persist.moveSet;
+      await queueFix(item, () => mv(from, to));
+    } else log('moveSet: persist has no move queue');
+
+    // Then the right athlete goes up.
+    if (state.activeAthleteId !== targetId) dispatch({ type: 'selectAthlete', athleteId: targetId });
+    return to;
+  };
+
+  const removeRep = async (clientRepId: string, o?: { remote?: boolean }) => {
+    if (queued(() => void removeRep(clientRepId, o))) return;
+    apply({ type: 'removeRep', clientRepId }, now());
+    if (o?.remote) return;
+    if (!persist.removeRep) {
+      log('removeRep: persist has no move queue');
+      return;
+    }
+    const rm = persist.removeRep;
+    await queueFix({ kind: 'remove', id: `remove:${clientRepId}`, clientRepId }, () => rm(clientRepId));
   };
 
   // ---------------------------------------------------------------- unison: publish the iPad's context
@@ -979,7 +1253,9 @@ export function createRackExecutor(opts: {
       const c = nextContext(state);
       // A phone load wins; a load the iPad itself published is re-derived.
       const phoneLoad = c.loadLb != null && !ipadOwnsContext();
-      if (!phoneLoad && (c.routineExerciseId || c.exerciseId)) {
+      const barLb = barFor(id, c.workoutInstanceId, c.routineExerciseId);
+      if (barLb != null) lb = barLb; // the iPad's BAR stepper
+      else if (!phoneLoad && (c.routineExerciseId || c.exerciseId)) {
         const ex = findExercise(id, c);
         const plan = ex ? planWeight(id, ex, nextSetNumber(state, id)) : { lb: null, percent: false };
         lb = plan.lb;
@@ -1084,8 +1360,18 @@ export function createRackExecutor(opts: {
         if (e === effectChain) return;
       }
     },
-    unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length }),
+    unsavedCount: () => ({ reps: unsavedReps.length, sets: unsavedSets.length + unsavedFixes.length }),
     ipadOwnsContext,
+    moveSet,
+    removeRep,
+    setBarLoad,
+    barLoad: () => {
+      const id = state.activeAthleteId;
+      if (!bar || !id || bar.athleteId !== id) return null;
+      const live = state.setState === 'lifting' ? state.live : null;
+      if (live) return live.context.workoutInstanceId === bar.wi && live.context.routineExerciseId === bar.re ? { lb: bar.lb, next: true } : null;
+      return { lb: bar.lb, next: false };
+    },
     pickerRows: (athleteId: string) => {
       const a = today.find(t => t.athleteId === athleteId);
       return a ? pickerRowsOf(rackInstancesOf(a), logsFor(athleteId)) : [];

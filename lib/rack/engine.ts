@@ -199,6 +199,11 @@ export interface LiveSet {
   free: boolean;
   /** Who chose this set's exercise (resolved contexts only): the phone, the rack's resolver, or a coach on the iPad. */
   pickedBy?: PickedBy | null;
+  /**
+   * Highest rep index ever used in this set (removed reps included), so a rep
+   * after a removal never reuses a removed rep's index / client_rep_id.
+   */
+  repSeq?: number;
 }
 
 export type PickedBy = 'phone' | 'rack' | 'ipad';
@@ -277,6 +282,11 @@ export interface RackEngineState {
    * pick, used only while the server row has no workout.
    */
   localContext: (RackContext & { athleteId: string; resolved?: boolean; reason?: string | null; exact?: boolean }) | null;
+  /**
+   * The iPad's BAR stepper weight for one exercise of one athlete: wins over
+   * every other load for that exercise's next set (the live set is frozen).
+   */
+  barLoad: { athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; lb: number } | null;
   /** Last row applied from the server (null until the first sync). */
   session: RackSessionRow | null;
   activeAthleteId: string | null;
@@ -382,7 +392,22 @@ export type RackEvent =
       workoutInstanceId: string;
       routineExerciseId: string;
       setNumber: number;
-    };
+    }
+  /**
+   * A bad rep (bumped bar, re-rack) is removed — on this iPad or from the
+   * athlete's phone (rack_remove_rep). Dropped from the live set (reps, best
+   * and drop recalculated) or from an ended set the engine still holds (its
+   * recalculated summary goes out as `setChanged`). Unknown id: no-op.
+   */
+  | { type: 'removeRep'; clientRepId: string }
+  /**
+   * An ended set was moved to another athlete (rack_move_set): the engine
+   * forgets it — no summary, no late-rep attach, no idle reopen, no longer
+   * complete in the guard.
+   */
+  | { type: 'setMoved'; athleteId: string; setStartedAtMs: number }
+  /** iPad BAR stepper: the bar weight for the athlete's exercise (lb null clears). Mid-set: the next set. */
+  | { type: 'barLoad'; athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; lb: number | null };
 
 export type RackEffect =
   /** rack_start_set(p_rack, athleteId, setStartedAt): 'lifting' only if still active. */
@@ -394,7 +419,13 @@ export type RackEffect =
   | { type: 'rpcSetActive'; athleteId: string }
   | { type: 'writeLoadToSensor'; lb: number }
   /** Only when nobody is (or is becoming) active on the rack. */
-  | { type: 'droppedRep'; reason: 'noAthlete'; rep: OvrRep };
+  | { type: 'droppedRep'; reason: 'noAthlete'; rep: OvrRep }
+  /**
+   * An ENDED set's summary changed (a rep was removed). Its row is fixed on
+   * the server by rack_remove_rep; a write of it still queued must carry the
+   * new summary (replace it) — nothing is written when none is queued.
+   */
+  | { type: 'setChanged'; summary: SetSummary };
 
 export interface ReduceResult {
   state: RackEngineState;
@@ -415,6 +446,7 @@ export function createRackEngine(init: string | EngineInit): RackEngineState {
     rackId: i.mode === 'rack' ? i.rackId : null,
     soloContext: null,
     localContext: null,
+    barLoad: null,
     session: null,
     activeAthleteId: i.mode === 'solo' ? i.athleteId : null,
     queue: [],
@@ -465,8 +497,17 @@ const EMPTY_CTX: RackContext = {
   loadLb: null,
 };
 
-/** Context for the next set, either mode. */
+/** Context for the next set, either mode — the iPad's BAR weight applied when it is for that exercise. */
 export function nextContext(s: RackEngineState): RackContext {
+  const c = baseNextContext(s);
+  const b = s.barLoad;
+  if (b && b.athleteId === s.activeAthleteId && b.workoutInstanceId === c.workoutInstanceId && b.routineExerciseId === c.routineExerciseId) {
+    return { ...c, loadLb: b.lb };
+  }
+  return c;
+}
+
+function baseNextContext(s: RackEngineState): RackContext {
   if (s.mode === 'solo') return s.soloContext ?? EMPTY_CTX;
   const server = serverNextContext(s.session, s.exerciseByRoutineExercise);
   const local = s.localContext && s.localContext.athleteId === s.activeAthleteId ? s.localContext : null;
@@ -592,6 +633,32 @@ function releaseHoldOnNewContext(s: RackEngineState): RackEngineState {
   return { ...s, lastEndByAthlete: { ...s.lastEndByAthlete, [a]: { ...rec, hold: false } } };
 }
 
+/** Next rep index: past every index the set has used (a removed rep's included). */
+function nextRepIndex(set: LiveSet): number {
+  return Math.max(set.repSeq ?? 0, ...set.reps.map(r => r.repIndex), 0) + 1;
+}
+
+/**
+ * The set without one rep: drop % and the drop cue of every full rep are
+ * recalculated against the best full rep so far (the removed rep may have
+ * been the best). null when the rep is not in the set.
+ */
+export function withoutRep(set: LiveSet, clientRepId: string): LiveSet | null {
+  const gone = set.reps.find(r => r.clientRepId === clientRepId);
+  if (!gone) return null;
+  let best = 0;
+  const reps = set.reps
+    .filter(r => r !== gone)
+    .map(r => {
+      if (r.partial) return r;
+      best = Math.max(best, r.v);
+      const drop = dropPctOf(best, r.v);
+      const dropCue = set.zone != null && set.dropStopPct != null && drop >= set.dropStopPct;
+      return { ...r, dropPct: drop, dropCue };
+    });
+  return { ...set, reps, repSeq: Math.max(set.repSeq ?? 0, ...set.reps.map(r => r.repIndex)) };
+}
+
 /** Build + append one rep to `set`; returns the new set and its write. */
 function addRep(
   s: RackEngineState,
@@ -603,7 +670,7 @@ function addRep(
     ? null
     : median(s.romHistory[romKey(set.athleteId, set.context.exerciseId)] ?? []);
   const partial = isPartialRom(rep.romIn, med);
-  const repIndex = set.reps.length + 1;
+  const repIndex = nextRepIndex(set);
   const zone = set.zone ? zoneOf(rep.meanV, set.zone[0], set.zone[1]) : null;
   let drop: number | null = null;
   let dropCue = false;
@@ -628,7 +695,7 @@ function addRep(
     dropCue,
     receivedAtMs: now,
   };
-  const next: LiveSet = { ...set, reps: [...set.reps, er], lastRepAtMs: now };
+  const next: LiveSet = { ...set, reps: [...set.reps, er], lastRepAtMs: now, repSeq: repIndex };
   const write: RepWrite = {
     clientRepId,
     rackId: s.rackId,
@@ -1058,6 +1125,60 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       break;
     }
 
+    case 'removeRep': {
+      const id = event.clientRepId;
+      // The live set: drop it locally (its row is written at the set's end).
+      if (s.live) {
+        const live = withoutRep(s.live, id);
+        if (live) {
+          s = { ...s, live };
+          break;
+        }
+      }
+      // An ended set the engine still holds (summary, late reps, idle reopen).
+      let changed: LiveSet | null = null;
+      let lastEnded = s.lastEnded;
+      if (lastEnded) {
+        const e = withoutRep(lastEnded, id);
+        if (e) lastEnded = changed = e;
+      }
+      let lastEndByAthlete = s.lastEndByAthlete;
+      for (const [a, rec] of Object.entries(s.lastEndByAthlete)) {
+        const e = changed && rec.set.startedAtMs === changed.startedAtMs && rec.set.athleteId === changed.athleteId ? changed : withoutRep(rec.set, id);
+        if (!e) continue;
+        changed = changed ?? e;
+        lastEndByAthlete = { ...lastEndByAthlete, [a]: { ...rec, set: e } };
+      }
+      if (!changed) break;
+      s = { ...s, lastEnded, lastEndByAthlete };
+      if (!changed.free) fx.push({ type: 'setChanged', summary: summarizeFor(s, changed) });
+      break;
+    }
+
+    case 'setMoved': {
+      const same = (x: LiveSet | null | undefined) => !!x && x.athleteId === event.athleteId && x.startedAtMs === event.setStartedAtMs;
+      const moved = same(s.lastEnded) ? s.lastEnded : same(s.lastEndByAthlete[event.athleteId]?.set) ? s.lastEndByAthlete[event.athleteId].set : null;
+      if (!moved) break;
+      let completeSets = s.completeSets;
+      const n = moved.context.setNumber;
+      if (!moved.free && n != null) {
+        const k = hwKey(moved.athleteId, moved.context);
+        const cur = completeSets[k] ?? [];
+        if (cur.includes(n)) completeSets = { ...completeSets, [k]: cur.filter(x => x !== n) };
+      }
+      const lastEndByAthlete = { ...s.lastEndByAthlete };
+      if (same(lastEndByAthlete[event.athleteId]?.set)) delete lastEndByAthlete[event.athleteId];
+      const wasShown = same(s.lastEnded);
+      s = {
+        ...s,
+        lastEnded: wasShown ? null : s.lastEnded,
+        setState: wasShown && s.setState === 'summary' ? 'idle' : s.setState,
+        lastEndByAthlete,
+        completeSets,
+      };
+      break;
+    }
+
     case 'tick':
       if (s.setState === 'lifting' && s.live && now - s.live.lastRepAtMs >= IDLE_END_MS) {
         s = endLive(s, 'idle', now, fx, true);
@@ -1069,6 +1190,12 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
     case 'loadChanged':
       s = syncSensorLoad({ ...s, loadOverrideLb: event.lb }, fx);
       break;
+
+    case 'barLoad': {
+      const { type: _t, lb, ...who } = event;
+      s = syncSensorLoad({ ...s, barLoad: lb == null ? null : { ...who, lb } }, fx);
+      break;
+    }
   }
 
   return { state: s, effects: fx };

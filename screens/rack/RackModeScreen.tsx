@@ -13,6 +13,12 @@
  * refresh every 60 s into executor.setToday. The executor's flush / end-live /
  * unsaved count are registered for the PIN-exit drain.
  *
+ * Fix mistakes (rack-edge.html): the ACTIVE athlete's tile mid-set opens
+ * "Switch, or move this set?"; the summary has "Wrong athlete? Move set" for
+ * 2 min; a tap on a THIS SET bar opens "Remove rep". Power (rack-power.html):
+ * Speed | Power on THIS SET and AVG W / PEAK W, only with a known load; the
+ * BAR · LB stepper publishes the bar weight (the phone's LB follows).
+ *
  * The live screen is NEVER unmounted by auth hiccups: a lost session or a
  * momentarily unresolved staff org shows an overlay on top of it, so the
  * sensor, the live set and its writes keep going. There is no sign-out here;
@@ -50,6 +56,13 @@ import AthleteTiles from '../../components/rack/AthleteTiles';
 import AthleteCard from '../../components/rack/AthleteCard';
 import SensorPill, { Pill } from '../../components/rack/SensorPill';
 import DevSensorBar from '../../components/rack/DevSensorBar';
+import MoveSetSheet, { type MoveSheetMode } from '../../components/rack/MoveSetSheet';
+import RemoveRepSheet, { type RemoveRepTarget } from '../../components/rack/RemoveRepSheet';
+import BarWeightSheet from '../../components/rack/BarWeightSheet';
+import type { BarsMetric } from '../../components/rack/RepBars';
+
+/** "+" on an empty BAR · LB starts at an empty bar. */
+export const EMPTY_BAR_LB = 45;
 
 export const TODAY_REFRESH_MS = 60_000;
 const RACK_LOOKUP_RETRY_MS = 10_000;
@@ -230,6 +243,13 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
     const t = setTimeout(() => setNowMs(Date.now()), Math.max(0, expiresAt - Date.now()) + 20);
     return () => clearTimeout(t);
   }, [expiresAt]);
+  // "Wrong athlete? Move set" goes 2 min after the set ended (a sticky summary).
+  const moveUntil = view.summary?.canMove ? view.summary.moveUntilMs : null;
+  useEffect(() => {
+    if (moveUntil == null) return;
+    const t = setTimeout(() => setNowMs(Date.now()), Math.max(0, moveUntil - Date.now()) + 20);
+    return () => clearTimeout(t);
+  }, [moveUntil]);
 
   // A refused tile / "+" switch (e.g. the athlete is up on another rack).
   const [toast, setToast] = useState<string | null>(null);
@@ -256,6 +276,49 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
 
   const selectAthlete = useCallback((athleteId: string) => dispatch({ type: 'selectAthlete', athleteId }), [dispatch]);
   const activeId = state.activeAthleteId;
+
+  // ---- fix mistakes
+  const [moveMode, setMoveMode] = useState<MoveSheetMode | null>(null);
+  // The athlete whose set the sheet moves (frozen when it opens).
+  const [moveFrom, setMoveFrom] = useState<{ id: string | null; name: string; reps: number }>({ id: null, name: '', reps: 0 });
+  const openMove = (mode: MoveSheetMode) => {
+    const set = mode === 'live' ? state.live : state.lastEnded;
+    const id = set?.athleteId ?? activeId;
+    const name = today.find(a => a.athleteId === id)?.firstName ?? 'Athlete';
+    setMoveFrom({ id: id ?? null, name, reps: set ? set.reps.filter(r => !r.partial).length : 0 });
+    setMoveMode(mode);
+  };
+  // The ACTIVE athlete's tile while lifting = "Switch, or move this set?"; any other tile switches.
+  const onTile = useCallback(
+    (athleteId: string) => {
+      if (athleteId === state.activeAthleteId && state.setState === 'lifting' && state.live) openMove('live');
+      else selectAthlete(athleteId);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.activeAthleteId, state.setState, state.live, selectAthlete, today],
+  );
+  const moveSetTo = (athleteId: string) => {
+    executor.moveSet(athleteId).catch(e => console.warn('[rack] move set failed', e));
+  };
+  const [removeRep, setRemoveRep] = useState<RemoveRepTarget | null>(null);
+  const doRemoveRep = (clientRepId: string) => {
+    setRemoveRep(null);
+    executor.removeRep(clientRepId).catch(e => console.warn('[rack] remove rep failed', e));
+  };
+
+  // ---- power + bar weight
+  const [metric, setMetric] = useState<BarsMetric>('speed');
+  const showPower = view.powerAvailable;
+  const [, setBarTick] = useState(0);
+  const bar = executor.barLoad();
+  const barLb = bar ? bar.lb : view.loadLb;
+  const stepBar = (d: number) => {
+    const next = barLb == null ? (d > 0 ? EMPTY_BAR_LB : null) : Math.max(0, barLb + d);
+    if (next == null) return;
+    executor.setBarLoad(next);
+    setBarTick(t => t + 1);
+  };
+  const [barSheet, setBarSheet] = useState(false);
   // Coach pick (exercise + set) → published override; the phone follows.
   const pickExercise = (ex: TodayExercise, setNumber: number) => {
     if (activeId) executor.setOverride(activeId, ex, setNumber);
@@ -333,6 +396,11 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
       onDone={() => dispatch({ type: 'ipadDone' })}
       onPickExercise={pickExercise}
       pickerRows={pickerRows}
+      barLb={barLb}
+      barNext={!!bar?.next}
+      onBarStep={activeId ? stepBar : undefined}
+      onBarType={activeId ? () => setBarSheet(true) : undefined}
+      onMoveSet={() => openMove('after')}
     />
   );
 
@@ -341,8 +409,21 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
       <View style={[styles.card, styles.barsCard]}>
         <View style={styles.cardh}>
           <Text style={styles.k}>THIS SET</Text>
+          {showPower && (
+            <View style={styles.seg}>
+              {(['speed', 'power'] as const).map(m => (
+                <TouchableOpacity key={m} style={[styles.segB, metric === m && styles.segOn]} onPress={() => setMetric(m)} accessibilityLabel={m === 'speed' ? 'Speed' : 'Power'}>
+                  <Text style={[styles.segTxt, metric === m && styles.segTxtOn]}>{m === 'speed' ? 'Speed' : 'Power'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
           <Text style={styles.s} numberOfLines={1}>
-            {view.zone ? 'Shaded band = target speed' : 'No speed target for this exercise'}
+            {showPower && metric === 'power'
+              ? 'Watts = bar weight × speed'
+              : view.zone
+                ? 'Shaded band = target speed'
+                : 'No speed target for this exercise'}
           </Text>
         </View>
         <RepBars
@@ -352,6 +433,9 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
           dropStopPct={view.dropStopPct}
           scaleV={view.scaleV}
           minHeight={layout.barsMin}
+          showWatts={showPower}
+          metric={showPower ? metric : 'speed'}
+          onPressBar={b => setRemoveRep({ clientRepId: b.clientRepId, repNo: b.repNo, v: b.v, partial: b.partial })}
         />
       </View>
       <View style={[styles.card, { width: layout.sideW }]}>
@@ -369,7 +453,7 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
     <AthleteTiles
       tiles={view.tiles}
       addable={view.addable}
-      onSelect={selectAthlete} onAdd={selectAthlete}
+      onSelect={onTile} onAdd={selectAthlete}
       height={layout.tilesH}
       compact={portrait}
     />
@@ -393,6 +477,28 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
           <Text style={styles.toastTxt}>{toast}</Text>
         </View>
       )}
+      <MoveSetSheet
+        mode={moveMode}
+        fromName={moveFrom.name}
+        fromId={moveFrom.id}
+        reps={moveFrom.reps}
+        rack={state}
+        today={today}
+        onCancel={() => setMoveMode(null)}
+        onMove={moveSetTo}
+        onSwitch={selectAthlete}
+      />
+      <RemoveRepSheet rep={removeRep} onKeep={() => setRemoveRep(null)} onRemove={doRemoveRep} />
+      <BarWeightSheet
+        visible={barSheet}
+        current={barLb}
+        nextSet={view.lifting}
+        onCancel={() => setBarSheet(false)}
+        onSet={lb => {
+          executor.setBarLoad(lb);
+          setBarTick(t => t + 1);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -440,6 +546,11 @@ const styles = StyleSheet.create({
   warn: { fontSize: 13, fontWeight: '800', color: RACK_COLORS.red },
   dialRow: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   bubs: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
+  seg: { flexDirection: 'row', borderWidth: 1, borderColor: RACK_COLORS.line, borderRadius: 9, overflow: 'hidden' },
+  segB: { paddingVertical: 5, paddingHorizontal: 12 },
+  segOn: { backgroundColor: 'rgba(155,221,255,0.14)' },
+  segTxt: { fontSize: 12, fontWeight: '800', color: 'rgba(255,255,255,0.55)' },
+  segTxtOn: { color: RACK_COLORS.acc },
   replayBody: {
     flex: 1,
     borderRadius: 12,

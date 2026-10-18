@@ -221,6 +221,10 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
         p_load_lb: ctx.loadLb,
       }),
     requestEndSet: (rackId: string) => session('rack_request_end_set', { p_rack: rackId }),
+    /** Soft-delete (or restore) one rep; the set row's reps / avg / best / drop are recomputed.
+     *  Staff in reach, or the athlete themself (the phone long-press). */
+    removeRep: (clientRepId: string, restore = false) =>
+      call<unknown>('rack_remove_rep', { p_client_rep_id: clientRepId, p_restore: restore }),
     async listForMe(): Promise<RackListItem[]> {
       const rows = (await call<any[]>('rack_list_for_me', {})) ?? [];
       return rows.map(r => ({

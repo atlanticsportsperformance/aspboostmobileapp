@@ -3,12 +3,19 @@
  * stop), with the target band and the −N% drop line — both only when the set
  * has a zone. Partial reps are dimmed and labelled "—". Fills its card: the
  * bar height comes from the measured height (at least `minHeight`).
+ *
+ * Power (rack-power.html), only when the load is known (`showWatts`):
+ *   - 'speed': the bars as above + a small "### W" under each bar;
+ *   - 'power': bars scaled by watts (faint white), the watts on top; no band.
+ * A tap on a bar → `onPressBar` (the remove-rep sheet).
  */
 
 import React, { memo, useState } from 'react';
-import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
 import { RACK_COLORS, repColor, type RepBarView } from '../../lib/rack/viewModel';
+
+export type BarsMetric = 'speed' | 'power';
 
 export interface RepBarsProps {
   bars: RepBarView[];
@@ -17,6 +24,10 @@ export interface RepBarsProps {
   dropStopPct: number | null;
   scaleV: number;
   minHeight?: number;
+  /** The load is known: watts under the bars / the power view. */
+  showWatts?: boolean;
+  metric?: BarsMetric;
+  onPressBar?: (bar: RepBarView) => void;
 }
 
 /** iOS draws non-uniform dashed borders solid — dash the band edges with SVG. */
@@ -28,41 +39,58 @@ function Dashed({ bottom }: { bottom: number }) {
   );
 }
 
-function RepBars({ bars, zone, dropLineV, dropStopPct, scaleV, minHeight = 90 }: RepBarsProps) {
+const W_LABEL_H = 15;
+
+function RepBars({ bars, zone, dropLineV, dropStopPct, scaleV, minHeight = 90, showWatts = false, metric = 'speed', onPressBar }: RepBarsProps) {
   const [measured, setMeasured] = useState(150);
+  const power = showWatts && metric === 'power';
+  const wattsUnder = showWatts && !power;
   const height = Math.max(minHeight, measured);
-  const H = height - 20; // room for the value label above the tallest bar
+  const H = height - 20 - (wattsUnder ? W_LABEL_H : 0); // room for the value label (+ the W line)
+  const base = wattsUnder ? W_LABEL_H : 0;
+  const pMax = Math.max(1, ...bars.map(b => b.watts ?? 0)) * 1.15;
   const y = (v: number) => (Math.min(v, scaleV) / scaleV) * H;
+  const yp = (w: number) => (Math.min(w, pMax) / pMax) * H;
   const onLayout = (e: LayoutChangeEvent) => {
     const h = Math.round(e.nativeEvent.layout.height);
     if (h > 0 && h !== measured) setMeasured(h);
   };
   return (
     <View style={[styles.bars, { minHeight }]} onLayout={onLayout}>
-      {zone && (
+      {!power && zone && (
         <>
-          <View style={[styles.band, { bottom: y(zone[0]), height: Math.max(y(zone[1]) - y(zone[0]), 1) }]} />
-          <Dashed bottom={y(zone[0])} />
-          <Dashed bottom={y(zone[1])} />
+          <View style={[styles.band, { bottom: base + y(zone[0]), height: Math.max(y(zone[1]) - y(zone[0]), 1) }]} />
+          <Dashed bottom={base + y(zone[0])} />
+          <Dashed bottom={base + y(zone[1])} />
         </>
       )}
-      {zone && dropLineV != null && dropStopPct != null && (
-        <View style={[styles.dropln, { bottom: y(dropLineV) }]}>
+      {!power && zone && dropLineV != null && dropStopPct != null && (
+        <View style={[styles.dropln, { bottom: base + y(dropLineV) }]}>
           <Text style={styles.dropTxt}>−{dropStopPct}%</Text>
         </View>
       )}
       {bars.length === 0 && (
         <View style={styles.empty}>
-          <Text style={styles.emptyTxt}>Lift — reps show here</Text>
+          <Text style={styles.emptyTxt}>{power ? 'Lift — watts show here' : 'Lift — reps show here'}</Text>
         </View>
       )}
       {bars.map(b => {
-        const c = repColor(b, !!zone);
+        const c = power ? (b.partial ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.85)') : repColor(b, !!zone);
+        const h = power ? Math.max(yp(b.watts ?? 0), 8) : Math.max(y(b.v), 8);
+        const top = power ? (b.partial || b.watts == null ? '—' : String(b.watts)) : b.label;
+        const topColor = b.partial ? 'rgba(255,255,255,0.35)' : power ? 'rgba(255,255,255,0.9)' : c;
         return (
-          <View key={b.key} style={styles.slot}>
-            <Text style={[styles.lbl, { color: b.partial ? 'rgba(255,255,255,0.35)' : c }]}>{b.label}</Text>
-            <View style={[styles.bar, { height: Math.max(y(b.v), 8), backgroundColor: c, opacity: b.partial ? 0.5 : 1 }]} />
-          </View>
+          <Pressable
+            key={b.key}
+            style={styles.slot}
+            onPress={onPressBar ? () => onPressBar(b) : undefined}
+            disabled={!onPressBar}
+            accessibilityLabel={`Rep ${b.repNo}`}
+          >
+            <Text style={[styles.lbl, { color: topColor }]}>{top}</Text>
+            <View style={[styles.bar, { height: h, backgroundColor: c, opacity: b.partial ? 0.5 : 1 }]} />
+            {wattsUnder && <Text style={styles.pw}>{b.watts != null ? `${b.watts} W` : ''}</Text>}
+          </Pressable>
         );
       })}
     </View>
@@ -92,4 +120,5 @@ const styles = StyleSheet.create({
   slot: { flex: 1, maxWidth: 54, alignItems: 'stretch', justifyContent: 'flex-end' },
   lbl: { textAlign: 'center', fontSize: 12, fontWeight: '800', marginBottom: 3, fontVariant: ['tabular-nums'] },
   bar: { borderTopLeftRadius: 7, borderTopRightRadius: 7, borderBottomLeftRadius: 2, borderBottomRightRadius: 2 },
+  pw: { height: W_LABEL_H, textAlign: 'center', fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.45)', paddingTop: 2, fontVariant: ['tabular-nums'] },
 });

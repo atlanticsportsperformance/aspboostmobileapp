@@ -46,7 +46,7 @@ describe('Rack screen wiring', () => {
 
   it('tiles and the "+" sheet call engine selectAthlete', () => {
     expect(S).toContain("const selectAthlete = useCallback((athleteId: string) => dispatch({ type: 'selectAthlete', athleteId }), [dispatch]);");
-    expect(S).toContain('onSelect={selectAthlete} onAdd={selectAthlete}');
+    expect(S).toContain('onSelect={onTile} onAdd={selectAthlete}');
     expect(TILES).toContain('onPress={() => onSelect(t.athleteId)}');
     expect(TILES).toContain('<AddAthleteSheet visible={sheet} addable={addable} onClose={() => setSheet(false)} onAdd={onAdd} />');
   });

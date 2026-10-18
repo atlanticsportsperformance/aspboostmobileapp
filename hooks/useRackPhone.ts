@@ -8,8 +8,11 @@
  * - While the athlete is ON a rack (active or queued): a realtime channel per
  *   rack (filter rack_id=eq.<id>) plus a 10 s poll; each tick also re-reads the
  *   reps (backfill) and calls onTick (pending set rows).
- * - While active: live chips (subscribeMyRack), the debounced phone context
- *   with an exact echo guard, and rack_request_end_set.
+ * - Rep chips (subscribeMyRack) while the org has racks — the live row's and
+ *   the saved rack rows' (long-press → remove a rep, rack_remove_rep); removals
+ *   and moves arrive as vbt_reps UPDATEs, and every refresh rebuilds them.
+ * - While active: the debounced phone context with an exact echo guard, and
+ *   rack_request_end_set.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -52,8 +55,10 @@ export interface RackPhone {
   activeRackName: string | null;
   /** Bumps on every inactive→active transition (follow baseline). */
   activation: number;
-  /** Chips of one set (empty when none / not active). */
+  /** Chips of one set (empty when none yet). */
   chipsFor: (workoutInstanceId: string, routineExerciseId: string, setNumber: number) => RepChip[];
+  /** Remove a bad rep (the athlete themself): rack_remove_rep; its set row is recomputed. */
+  removeRep: (clientRepId: string) => Promise<void>;
   /** Report the open exercise / set / load (debounced unless immediate; ignored unless active). */
   setContext: (ctx: PhoneContext | null, opts?: { immediate?: boolean }) => void;
   /** Exact echo test against the phone's own sent context. */
@@ -139,6 +144,8 @@ export function useRackPhone(opts: {
         return;
       }
       await readSessions();
+      // Removals / moves made elsewhere (the iPad) — rebuild the chips.
+      void subRef.current?.backfill();
     } catch (e) {
       console.warn('[rack phone] refresh failed', e);
     }
@@ -164,12 +171,11 @@ export function useRackPhone(opts: {
     () => (hasRacks ? sessions.find(s => s.active_athlete_id === athleteId) ?? null : null),
     [sessions, athleteId, hasRacks],
   );
-  const isActive = !!activeSession;
 
-  // Live chips: subscribe only while active.
+  // Rep chips: subscribed while the org has racks (live row + saved rack rows).
   const subRef = useRef<ReturnType<typeof subscribeMyRack> | null>(null);
   useEffect(() => {
-    if (!isActive) return;
+    if (!hasRacks) return;
     const sub = subscribeMyRack(athleteId, () => {
       if (mounted.current) setChipTick(t => t + 1);
     });
@@ -178,7 +184,7 @@ export function useRackPhone(opts: {
       sub.unsubscribe();
       if (subRef.current === sub) subRef.current = null;
     };
-  }, [isActive, athleteId]);
+  }, [hasRacks, athleteId]);
 
   // I2: realtime per rack I'm on + 10 s poll — only while on a rack.
   useEffect(() => {
@@ -214,8 +220,13 @@ export function useRackPhone(opts: {
     (wi: string, re: string, n: number) => subRef.current?.chipsFor(wi, re, n) ?? [],
     // chipTick: new chips → new function identity → consumers re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chipTick, isActive],
+    [chipTick, hasRacks],
   );
+
+  const removeRep = useCallback(async (clientRepId: string) => {
+    await api.removeRep(clientRepId);
+    void subRef.current?.backfill();
+  }, [api]);
 
   // An RPC's returned row is the newest state of that rack (routed through a ref: M8).
   const applyReturned = useCallback((row: unknown) => {
@@ -293,6 +304,7 @@ export function useRackPhone(opts: {
     activeRackName,
     activation,
     chipsFor,
+    removeRep,
     setContext,
     isEcho: sender.isEcho,
     sentThisActivation: sender.sentThisActivation,

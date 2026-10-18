@@ -2,7 +2,8 @@
  * Rack iPad session: one engine + executor per rack. Feeds the server's
  * `rack_sessions` row (initial read, realtime, and every RPC's returned row)
  * into the engine as `sessionSync`, sensor reps as `rep`, and today's
- * athletes as contextMeta/localContext. Exposes the engine state for the UI.
+ * athletes as contextMeta/localContext; a rep removed on the phone (vbt_reps
+ * UPDATE with removed_at) as a remote removeRep. Exposes the engine state for the UI.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -86,6 +87,16 @@ export function useRackSession(opts: { rackId: string; orgId: string; sensor: Ov
         { event: '*', schema: 'public', table: 'rack_sessions', filter: `rack_id=eq.${rackId}` },
         (payload: { new?: RackSessionRow }) => {
           if (payload.new && (payload.new as RackSessionRow).rack_id) sync(payload.new as RackSessionRow);
+        },
+      )
+      // A rep removed from the athlete's phone (rack_remove_rep): drop it from
+      // the live / just-ended set here too, so the set end never writes it back.
+      .on(
+        'postgres_changes' as any,
+        { event: 'UPDATE', schema: 'public', table: 'vbt_reps', filter: `rack_id=eq.${rackId}` },
+        (payload: { new?: { client_rep_id?: string; removed_at?: string | null } }) => {
+          const r = payload.new;
+          if (r?.client_rep_id && r.removed_at) void executor.removeRep(r.client_rep_id, { remote: true });
         },
       )
       .subscribe((status: string) => {

@@ -59,6 +59,7 @@ import {
   followTarget,
   fullRepCount,
   liveRackSet,
+  livePowerText,
   loadFromInput,
   loadSyncValue,
   pressDone,
@@ -1860,7 +1861,7 @@ export default function WorkoutLoggerScreen() {
     return [...nos].sort((a, b) => a - b).map(n => {
       const log = rackExtra[reId]?.[n];
       const vbt = log?.metric_data?.vbt;
-      const line = rackSummaryLine(vbt);
+      const line = rackSummaryLine(vbt, log?.actual_weight);
       const reps = log?.actual_reps;
       const lb = log?.actual_weight;
       return {
@@ -1869,8 +1870,52 @@ export default function WorkoutLoggerScreen() {
         rackLine: line ? `${vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${line}` : null,
         live: !!liveSet && liveSet.routineExerciseId === reId && liveSet.setNumber === n,
         saving: rackSaving[`${reId}:${n - 1}`] ?? null,
+        chips: log ? savedRackChips(reId, n) : [],
       };
     });
+  };
+  /** Rep chips of a saved rack set (from vbt_reps; removed reps are gone). */
+  const savedRackChips = (reId: string, setNumber: number) => {
+    const ex = allExercises.find(e => e.id === reId);
+    return chipViews(rack.chipsFor(workoutInstanceId, reId, setNumber), ex ? zoneOf(ex.velocity_min_mps, ex.velocity_max_mps) : null);
+  };
+  /** The load of a live set's reps (their vbt_reps load), else the row's. */
+  const chipsLoad = (chips: { loadLb: number | null }[], fallback: unknown) =>
+    chips.find(c => c.loadLb != null)?.loadLb ?? loadFromInput(fallback);
+  /**
+   * Long-press "Remove rep" (the athlete themself). A phone-sensor rep goes
+   * through the solo engine (out of its live / just-ended set, rack_remove_rep
+   * queued behind its writes); a rack rep is removed on the server — the iPad
+   * drops it from its set via realtime — then the row is re-read.
+   */
+  const removeRackRep = async (reId: string, clientRepId: string, setIndex: number) => {
+    const reread = async () => {
+      try {
+        const { data } = await supabase
+          .from('exercise_logs')
+          .select('*')
+          .eq('workout_instance_id', workoutInstanceId)
+          .eq('routine_exercise_id', reId)
+          .eq('set_number', setIndex + 1)
+          .maybeSingle();
+        if (data && (data as any).is_complete === true) applyRackWrittenLog(data as Record<string, any>);
+      } catch (e) {
+        console.warn('[rack phone] set re-read failed', e);
+      }
+    };
+    if (clientRepId.startsWith('solo:')) {
+      await solo.removeRep(clientRepId);
+      setTimeout(() => void reread(), 2000);
+      return;
+    }
+    try {
+      await rack.removeRep(clientRepId);
+    } catch (e) {
+      console.warn('[rack phone] remove rep failed', e);
+      showRackToast('Couldn’t remove the rep — try again');
+      return;
+    }
+    await reread();
   };
   const rackExerciseProps: ExerciseRackProps | null = (() => {
     // Racks, the phone sensor, or extra sets already logged (shown after Disconnect too).
@@ -1893,6 +1938,7 @@ export default function WorkoutLoggerScreen() {
         repsTarget: typeof target === 'number' ? target : null,
         lifting: true,
         dropCue: speedDropCue(chips, zone, currentExercise.speed_drop_stop_pct),
+        powerText: livePowerText(chips, chipsLoad(chips, s.load_lb)),
       };
     } else if (soloLive && soloLive.routineExerciseId === reId) {
       // Solo: same live row, "SENSOR · LIVE", chips from the phone's engine.
@@ -1908,6 +1954,7 @@ export default function WorkoutLoggerScreen() {
         repsTarget: typeof target === 'number' ? target : null,
         lifting: true,
         dropCue: speedDropCue(chips, zone, currentExercise.speed_drop_stop_pct),
+        powerText: livePowerText(chips, chipsLoad(chips, soloLive.set.context.loadLb)),
       };
     }
     const saving: Record<number, 'saving' | 'timeout'> = {};
@@ -1927,6 +1974,8 @@ export default function WorkoutLoggerScreen() {
       saving,
       idleSaved,
       extraSets: extraRackSets(reId, currentExercise.sets ?? 1),
+      savedChips: setIndex => savedRackChips(reId, setIndex + 1),
+      onRemoveRep: (clientRepId, setIndex) => void removeRackRep(reId, clientRepId, setIndex),
       rackNextAfter,
       refreshing: rackRefreshing,
       onPullRefresh: handleRackPullRefresh,

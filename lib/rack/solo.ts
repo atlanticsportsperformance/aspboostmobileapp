@@ -18,7 +18,7 @@ import {
   type RackEvent,
   type SetSummary,
 } from './engine';
-import type { PersistKeys, RackPersist } from './persist';
+import { setKeyOf, type PersistKeys, type RackPersist } from './persist';
 import type { RackListItem } from './api';
 import type { RepChip } from './phone';
 import type { OvrConnState } from '../ovr/ovr-device';
@@ -33,6 +33,8 @@ export const SOLO_PERSIST_KEYS: PersistKeys = {
   sets: 'solo_set_writes_v1',
   deadReps: 'solo_vbt_reps_dead_v1',
   deadSets: 'solo_set_writes_dead_v1',
+  moves: 'solo_moves_v1',
+  deadMoves: 'solo_moves_dead_v1',
 };
 
 /** Per athlete: user A's leftovers never flush under user B's login. */
@@ -43,6 +45,8 @@ export function soloPersistKeys(athleteId: string): PersistKeys {
     sets: k(SOLO_PERSIST_KEYS.sets),
     deadReps: k(SOLO_PERSIST_KEYS.deadReps),
     deadSets: k(SOLO_PERSIST_KEYS.deadSets),
+    moves: k(SOLO_PERSIST_KEYS.moves!),
+    deadMoves: k(SOLO_PERSIST_KEYS.deadMoves!),
   };
 }
 
@@ -211,11 +215,14 @@ export interface SoloSession {
   idle(): Promise<void>;
   /** A set-start rack check is in flight (events are held behind it). */
   checking(): boolean;
+  /** Remove a bad rep (long-press): out of the engine's set now, then rack_remove_rep (queued behind the writes). */
+  removeRep(clientRepId: string): Promise<void>;
 }
 
 export function createSoloSession(opts: {
   athleteId: string;
-  persist: Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet' | 'flush'>;
+  persist: Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSet' | 'flush'> &
+    Partial<Pick<RackPersist, 'removeRep' | 'setQueue'>>;
   sensor: SoloSensor;
   /**
    * At each set start (the rep that would start a set): is the athlete on a
@@ -279,6 +286,26 @@ export function createSoloSession(opts: {
       case 'droppedRep':
         log('rep dropped', fx.reason);
         break;
+      case 'setChanged': {
+        // A rep removed from an ended set: a still-queued write of it carries the new summary.
+        const summary = fx.summary;
+        const key = setKeyOf(summary);
+        let queuedNow = false;
+        try {
+          queuedNow = !!opts.persist.setQueue && (await opts.persist.setQueue.peekAll()).some(i => i.key === key);
+        } catch {
+          queuedNow = true;
+        }
+        if (queuedNow) await tryEnqueue(() => opts.persist.amendSet(summary), 'set');
+        savedSubs.forEach(f => {
+          try {
+            f(summary);
+          } catch (e) {
+            log('onSetSaved threw', e);
+          }
+        });
+        break;
+      }
       default:
         // Solo never emits rpcStartSet / rpcEndSet / rpcSetActive; nothing to call.
         log('ignored effect in solo mode', fx.type);
@@ -379,5 +406,12 @@ export function createSoloSession(opts: {
     flush: () => flush().catch(e => log('flush failed', e)),
     idle: () => chain,
     checking: () => held != null,
+    async removeRep(clientRepId: string) {
+      apply({ type: 'removeRep', clientRepId }, now());
+      const rm = opts.persist.removeRep;
+      if (!rm) return;
+      await tryEnqueue(() => rm(clientRepId), 'remove rep');
+      void flush().catch(e => log('flush failed', e));
+    },
   };
 }

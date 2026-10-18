@@ -10,6 +10,7 @@ import type { RackListItem } from './api';
 import type { RackSessionRow } from './engine';
 import type { RepChip } from './phone';
 import { rackSetLine, resolveRackSet, type RackSetInstance, type RackSetLog } from './resolveRackSet';
+import { avgWattsSuffix, setWatts } from './power';
 
 // ---- colours (logger v2 restraint: zone blue, slow red, fast faint white only)
 export const RACK_COLORS = {
@@ -54,6 +55,12 @@ export function chipTone(chip: Pick<RepChip, 'v' | 'partial'>, zone: SpeedZone |
 
 export interface ChipView {
   key: string;
+  /** vbt_reps.client_rep_id (long-press → remove this rep). */
+  clientRepId: string;
+  /** 1-based position in the set ("Rep 3"). */
+  repNo: number;
+  v: number;
+  partial: boolean;
   label: string;
   tone: ChipTone;
   color: string;
@@ -62,9 +69,18 @@ export interface ChipView {
   dashedBorder: string | null;
 }
 
-export function chipView(chip: RepChip, zone: SpeedZone | null): ChipView {
+export function chipView(chip: RepChip, zone: SpeedZone | null, repNo = 1): ChipView {
   const tone = chipTone(chip, zone);
-  const base = { key: chip.clientRepId, tone, label: chip.v.toFixed(2), dashedBorder: null as string | null };
+  const base = {
+    key: chip.clientRepId,
+    clientRepId: chip.clientRepId,
+    repNo,
+    v: chip.v,
+    partial: chip.partial,
+    tone,
+    label: chip.v.toFixed(2),
+    dashedBorder: null as string | null,
+  };
   switch (tone) {
     case 'part':
       return { ...base, label: 'part', color: RACK_COLORS.partText, backgroundColor: 'transparent', dashedBorder: RACK_COLORS.partBorder };
@@ -80,7 +96,18 @@ export function chipView(chip: RepChip, zone: SpeedZone | null): ChipView {
 }
 
 export function chipViews(chips: RepChip[], zone: SpeedZone | null): ChipView[] {
-  return chips.map(c => chipView(c, zone));
+  return chips.map((c, i) => chipView(c, zone, i + 1));
+}
+
+/** The live row's power: "avg 612 W" from the full reps, only when the load is known. */
+export function livePowerText(chips: Pick<RepChip, 'v' | 'partial'>[], loadLb: number | null | undefined): string | null {
+  const w = setWatts(loadLb, chips).avgW;
+  return w == null ? null : `avg ${w} W`;
+}
+
+/** Remove-rep sheet title on the phone: "Rep 3 · 0.30 m/s". */
+export function chipRemoveTitle(c: Pick<ChipView, 'repNo' | 'v' | 'partial'>): string {
+  return `Rep ${c.repNo} · ${c.partial ? 'partial' : `${c.v.toFixed(2)} m/s`}`;
 }
 
 /** REPS cell = full reps only (partials are stored, never counted). */
@@ -556,14 +583,17 @@ export function firstIncompleteSet(completed: boolean[] | undefined, sets: numbe
   return null;
 }
 
-/** "RACK · avg 0.78 · best 0.84 m/s" under a rack-saved row (null when not rack-saved). */
-export function rackSummaryLine(vbt: any): string | null {
+/**
+ * "RACK · avg 0.78 · best 0.84 m/s · avg 612 W" under a rack-saved row (null
+ * when not rack-saved). The watts are ours (load × g × avg v), only with a load.
+ */
+export function rackSummaryLine(vbt: any, loadLb?: unknown): string | null {
   if (!vbt || typeof vbt !== 'object') return null;
   const avg = numOrNull(vbt.avg_v);
   const best = numOrNull(vbt.best_v);
   if (avg == null && best == null) return null;
   const parts = [avg != null ? `avg ${avg.toFixed(2)}` : null, best != null ? `best ${best.toFixed(2)}` : null].filter(Boolean);
-  return `${parts.join(' · ')} m/s`;
+  return `${parts.join(' · ')} m/s${avgWattsSuffix(numOrNull(loadLb), avg)}`;
 }
 
 /**

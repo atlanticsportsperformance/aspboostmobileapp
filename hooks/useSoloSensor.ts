@@ -167,6 +167,8 @@ export function useSoloSensor(opts: {
   }, [onRack, on, disconnect]);
 
   const dispatch = useCallback((e: RackEvent) => session?.dispatch(e), [session]);
+  /** Long-press "Remove rep" on a phone-sensor rep: out of the engine's set, rack_remove_rep queued. */
+  const removeRep = useCallback((clientRepId: string) => session?.removeRep(clientRepId) ?? Promise.resolve(), [session]);
 
   return {
     /** The athlete wants the sensor (connected, scanning or reconnecting). */
@@ -180,6 +182,7 @@ export function useSoloSensor(opts: {
     connect,
     disconnect,
     dispatch,
+    removeRep,
     setDisplayLoad,
   };
 }

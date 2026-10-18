@@ -9,6 +9,7 @@ import type { OvrConnState } from '../ovr/ovr-device';
 import { nextContext, nextSetNumber, pickedByOf, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
 import { percentWeightTarget, pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
 import { rackSetLine } from './resolveRackSet';
+import { hasLoad, setWatts, wattsOf } from './power';
 
 // ---------------------------------------------------------------- colours
 
@@ -198,6 +199,10 @@ const exLabel = (e: TodayExercise) => (e.code ? `${e.code} · ${e.name}` : e.nam
 
 export interface RepBarView {
   key: string;
+  /** vbt_reps.client_rep_id (tap → remove-rep sheet). */
+  clientRepId: string;
+  /** 1-based position in the set ("Rep 3"). */
+  repNo: number;
   v: number;
   partial: boolean;
   zone: Zone | null;
@@ -205,6 +210,8 @@ export interface RepBarView {
   dropCue: boolean;
   /** "0.52", or "—" for a partial rep. */
   label: string;
+  /** Our watts (load × g × mean v); null without a load or for a partial rep. */
+  watts: number | null;
 }
 
 export interface SummaryView {
@@ -217,6 +224,13 @@ export interface SummaryView {
   endedBy: EndedBy;
   /** When the summary stops showing (null = until the engine leaves summary). */
   expiresAtMs: number | null;
+  /** AVG W / PEAK W — only when the set's load is known. */
+  avgW: string | null;
+  peakW: string | null;
+  /** "Wrong athlete? Move set" — within MOVE_WINDOW_MS of the end. */
+  canMove: boolean;
+  /** When the move button goes (the screen re-renders then). */
+  moveUntilMs: number;
 }
 
 export interface TileView {
@@ -247,8 +261,10 @@ export interface RackView {
   /** "FROM TYLER'S PHONE" / "PICKED BY RACK" / "PICKED ON IPAD" / "FREE LIFT". */
   sourceLine: string;
   contextSource: 'phone' | 'ipad' | 'rack' | 'none';
-  /** BAR caption when the load can't be shown: "Set on phone" (an unresolved % target). */
+  /** BAR caption when the load can't be shown yet (an unresolved % target). */
   loadNote: string | null;
+  /** The load is known (> 0): the Speed | Power toggle and the watts show. */
+  powerAvailable: boolean;
   /** No exercise for the active athlete (no rack lift left): prompt "Pick an exercise". */
   needsPick: boolean;
   /** Routine exercise the card is showing (picker highlight). */
@@ -280,6 +296,8 @@ export interface RackView {
 
 /** How long a summary stays up (an idle-ended one stays until something changes). */
 export const SUMMARY_MS = 6_000;
+/** "Wrong athlete? Move set" shows this long after the set ended (= executor MOVE_WINDOW_MS). */
+export const MOVE_WINDOW_MS = 120_000;
 
 const END_LABEL: Record<EndedBy, string> = {
   ipad: 'DONE ON IPAD',
@@ -291,15 +309,65 @@ const END_LABEL: Record<EndedBy, string> = {
 
 const fmtV = (v: number | null | undefined) => (v == null ? '—' : v.toFixed(2));
 
-export function repBars(reps: EngineRep[], prefix: string): RepBarView[] {
-  return reps.map(r => ({
+export function repBars(reps: EngineRep[], prefix: string, loadLb: number | null = null): RepBarView[] {
+  return reps.map((r, i) => ({
     key: `${prefix}:${r.repIndex}`,
+    clientRepId: r.clientRepId,
+    repNo: i + 1,
     v: r.v,
     partial: r.partial,
     zone: r.partial ? null : r.zone,
     dropCue: !r.partial && r.dropCue,
     label: r.partial ? '—' : r.v.toFixed(2),
+    watts: r.partial ? null : wattsOf(loadLb, r.v),
   }));
+}
+
+/** Summary boxes: AVG / BEST / DROP, then AVG W / PEAK W when the load is known. */
+export function summaryBoxes(sm: SummaryView): [string, string][] {
+  const out: [string, string][] = [
+    ['AVG', sm.avg],
+    ['BEST', sm.best],
+    ['DROP', sm.drop],
+  ];
+  if (sm.avgW != null) out.push(['AVG W', sm.avgW]);
+  if (sm.peakW != null) out.push(['PEAK W', sm.peakW]);
+  return out;
+}
+
+/** Remove-rep sheet text: "Rep 3 · 0.30 m/s" (a partial: "Rep 3 · partial"). */
+export function removeRepTitle(b: Pick<RepBarView, 'repNo' | 'v' | 'partial'>): string {
+  return `Rep ${b.repNo} · ${b.partial ? 'partial' : `${b.v.toFixed(2)} m/s`}`;
+}
+
+/**
+ * "Switch, or move this set?" list: the athletes on the rack (queue order)
+ * first, then today's other athletes by name — never `excludeId` (whose set
+ * it is). A search (first / last name) filters both groups.
+ */
+export function moveCandidates(
+  s: Pick<RackEngineState, 'activeAthleteId' | 'queue'>,
+  today: TodayAthlete[],
+  excludeId: string | null,
+  query = '',
+): { athlete: TodayAthlete; onRack: boolean }[] {
+  const q = query.trim().toLowerCase();
+  const match = (a: TodayAthlete) =>
+    !q || a.firstName.toLowerCase().startsWith(q) || a.lastName.toLowerCase().startsWith(q) || `${a.firstName} ${a.lastName}`.toLowerCase().includes(q);
+  const out: { athlete: TodayAthlete; onRack: boolean }[] = [];
+  const seen = new Set<string>(excludeId ? [excludeId] : []);
+  for (const id of [s.activeAthleteId, ...s.queue]) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const a = today.find(t => t.athleteId === id);
+    if (a && match(a)) out.push({ athlete: a, onRack: true });
+  }
+  for (const a of filterAddable(today, '')) {
+    if (seen.has(a.athleteId)) continue;
+    seen.add(a.athleteId);
+    if (match(a)) out.push({ athlete: a, onRack: false });
+  }
+  return out;
 }
 
 function possessive(first: string): string {
@@ -452,6 +520,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
       const n = ended.context.setNumber;
       const what = ended.free ? 'REPS SAVED' : n != null ? `SET ${n} SAVED` : 'SET SAVED';
       const lb = ended.context.loadLb;
+      const sw = setWatts(lb, ended.reps);
+      const moveUntilMs = ended.endedAtMs + MOVE_WINDOW_MS;
       const nextUp = s.queue.find(id => id !== ended.athleteId);
       const nextName = nextUp ? findAthlete(today, nextUp)?.firstName ?? 'next athlete' : null;
       summary = {
@@ -470,6 +540,10 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
                 : 'Same lifter · next set',
         endedBy: ended.endedBy,
         expiresAtMs,
+        avgW: sw.avgW != null ? String(sw.avgW) : null,
+        peakW: sw.peakW != null ? String(sw.peakW) : null,
+        canMove: nowMs < moveUntilMs,
+        moveUntilMs,
       };
     }
   }
@@ -547,11 +621,12 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     contextSource,
     routineExerciseId: ctx.routineExerciseId,
     loadLb,
-    loadNote: loadLb == null && ex && percentWeightTarget(ex, setNumber) ? 'Set on phone' : null,
+    loadNote: loadLb == null && ex && percentWeightTarget(ex, setNumber) ? 'Not set' : null,
+    powerAvailable: hasLoad(loadLb),
     needsPick: !!activeId && !lifting && ctx.workoutInstanceId == null && (active?.remaining.length ?? 0) > 0,
     zone,
     dropStopPct,
-    bars: repBars(reps, setKey),
+    bars: repBars(reps, setKey, loadLb),
     fullReps: full.length,
     bestV,
     dropPct,

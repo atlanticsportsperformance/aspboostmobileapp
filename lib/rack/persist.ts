@@ -1,4 +1,4 @@
-// Rack VBT persistence: two durable offline queues (never drop a rep).
+// Rack VBT persistence: durable offline queues (never drop a rep).
 //
 //   rack_vbt_reps_v1   — one item per rep (id = client_rep_id). Flushed in
 //                        batches into vbt_reps with ON CONFLICT (client_rep_id)
@@ -7,6 +7,10 @@
 //                        write of the same set REPLACES the queued one (an
 //                        amend after a late rep, a double end), so each flush
 //                        makes one upsert_exercise_log call per set.
+//   rack_moves_v1      — "fix mistakes": rack_move_set (wrong athlete) and
+//                        rack_remove_rep (bad rep), in order. Flushed only
+//                        once BOTH queues above are empty, so a move / removal
+//                        never runs before the rep or set write it fixes.
 //
 // Set rows go through upsert_exercise_log with only the keys the rack owns:
 // identity (buildLogRow), actual_reps = full reps, actual_weight = load,
@@ -22,6 +26,38 @@ import type { RackClient } from './api';
 
 export const REP_QUEUE_KEY = 'rack_vbt_reps_v1';
 export const SET_QUEUE_KEY = 'rack_set_writes_v1';
+export const MOVE_QUEUE_KEY = 'rack_moves_v1';
+export const MOVE_DEAD_KEY = 'rack_moves_dead_v1';
+
+/** A set's identity for rack_move_set (wi/re/set null = a free set). */
+export interface SetRef {
+  athleteId: string;
+  workoutInstanceId: string | null;
+  routineExerciseId: string | null;
+  setNumber: number | null;
+}
+
+/** One "fix mistakes" call, queued behind the rep + set writes. */
+export type FixItem =
+  | { kind: 'move'; id: string; from: SetRef; to: SetRef }
+  | { kind: 'remove'; id: string; clientRepId: string; restore?: boolean };
+
+export const moveItemId = (from: SetRef, to: SetRef) =>
+  `move:${from.athleteId}:${from.workoutInstanceId}:${from.routineExerciseId}:${from.setNumber}>${to.athleteId}:${to.workoutInstanceId}:${to.routineExerciseId}:${to.setNumber}`;
+
+/** rack_move_set's arguments. */
+export function moveArgs(from: SetRef, to: SetRef): Record<string, unknown> {
+  return {
+    p_from_athlete: from.athleteId,
+    p_from_wi: from.workoutInstanceId,
+    p_from_re: from.routineExerciseId,
+    p_from_set: from.setNumber,
+    p_to_athlete: to.athleteId,
+    p_to_wi: to.workoutInstanceId,
+    p_to_re: to.routineExerciseId,
+    p_to_set: to.setNumber,
+  };
+}
 
 export interface VbtRepRow {
   client_rep_id: string;
@@ -196,12 +232,17 @@ export interface RackPersist {
   endSet(summary: SetSummary): Promise<void>;
   /** Same as endSet: re-writes the whole set, replacing any queued write. */
   amendSet(summary: SetSummary): Promise<void>;
+  /** Durably queue rack_move_set (runs after every queued rep + set write). */
+  moveSet(from: SetRef, to: SetRef): Promise<void>;
+  /** Durably queue rack_remove_rep (runs after every queued rep + set write). */
+  removeRep(clientRepId: string, restore?: boolean): Promise<void>;
   /** Flush both queues (reps first). Never rejects. Skipped while backing
    *  off after a transient failure unless `force`. */
   flush(opts?: { force?: boolean }): Promise<void>;
-  pending(): Promise<{ reps: number; sets: number }>;
+  pending(): Promise<{ reps: number; sets: number; moves?: number }>;
   readonly repQueue: Queue<VbtRepRow>;
   readonly setQueue: Queue<SetWriteItem>;
+  readonly moveQueue: Queue<FixItem>;
   /** Items the server rejected as malformed (kept, never flushed or deleted). */
   readonly dead: { reps: DeadLetter<VbtRepRow>; sets: DeadLetter<SetWriteItem> };
 }
@@ -212,6 +253,9 @@ export interface PersistKeys {
   sets: string;
   deadReps: string;
   deadSets: string;
+  /** "Fix mistakes" queue (move set / remove rep). */
+  moves?: string;
+  deadMoves?: string;
 }
 
 export const RACK_PERSIST_KEYS: PersistKeys = {
@@ -219,6 +263,8 @@ export const RACK_PERSIST_KEYS: PersistKeys = {
   sets: SET_QUEUE_KEY,
   deadReps: REP_DEAD_KEY,
   deadSets: SET_DEAD_KEY,
+  moves: MOVE_QUEUE_KEY,
+  deadMoves: MOVE_DEAD_KEY,
 };
 
 export function createRackPersist(opts: {
@@ -244,6 +290,7 @@ export function createRackPersist(opts: {
   };
   const deadReps = createQueue<VbtRepRow>(keys.deadReps, never, { idOf: r => r.client_rep_id });
   const deadSets = createQueue<SetWriteItem>(keys.deadSets, never);
+  const deadMoves = createQueue<FixItem>(keys.deadMoves ?? `${keys.sets}:moves_dead`, never, { idOf: i => i.id });
 
   // Set by any transient send failure during a flush (drives back-off; a
   // dead-lettered permanent failure alone does not).
@@ -314,6 +361,33 @@ export function createRackPersist(opts: {
     { idOf: i => i.key, replace: true },
   );
 
+  // Fix mistakes: one RPC per item, in order. The server answering with an
+  // error code (rep not found, not in reach…) dead-letters it; transport
+  // problems keep it queued.
+  const moveQueue = createQueue<FixItem>(
+    keys.moves ?? `${keys.sets}:moves`,
+    async item => {
+      const fn = item.kind === 'move' ? 'rack_move_set' : 'rack_remove_rep';
+      const args =
+        item.kind === 'move'
+          ? moveArgs(item.from, item.to)
+          : { p_client_rep_id: item.clientRepId, p_restore: item.restore === true };
+      let res: { data: unknown; error: any; status?: number };
+      try {
+        res = await withTimeout(client.rpc(fn, args), timeoutMs, fn);
+      } catch (error) {
+        return raise(failure(`${fn} unreachable`, { message: String((error as Error)?.message ?? error) }));
+      }
+      if (res.error) {
+        const err = failure(fn, res.error, res.status);
+        log(`${fn} failed`, res.error, item.id);
+        if (err.permanent) await deadMoves.enqueue(item);
+        raise(err);
+      }
+    },
+    { idOf: i => i.id },
+  );
+
   const exerciseCache = new Map<string, string>();
   /** exercise_id of a routine exercise; null = definitely none. Any lookup
    *  failure throws a TRANSIENT error so the queue keeps the set and retries. */
@@ -359,6 +433,9 @@ export function createRackPersist(opts: {
     writeRep: rep => repQueue.enqueue(vbtRepRow(rep, orgId)),
     endSet: writeSet,
     amendSet: writeSet,
+    moveSet: (from, to) => moveQueue.enqueue({ kind: 'move', id: moveItemId(from, to), from, to }),
+    removeRep: (clientRepId, restore = false) =>
+      moveQueue.enqueue({ kind: 'remove', id: `${restore ? 'restore' : 'remove'}:${clientRepId}`, clientRepId, restore }),
     async flush(o) {
       if (!o?.force && now() < retryAt) return;
       sawTransient = false;
@@ -374,6 +451,15 @@ export function createRackPersist(opts: {
         sawTransient = true;
         log('set flush failed', e);
       }
+      // A move / removal only after the rep and set writes it fixes are sent.
+      try {
+        if ((await moveQueue.size()) > 0 && (await repQueue.size()) === 0 && (await setQueue.size()) === 0) {
+          await moveQueue.flush();
+        }
+      } catch (e) {
+        sawTransient = true;
+        log('move flush failed', e);
+      }
       if (sawTransient) {
         backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2_000, 60_000);
         retryAt = now() + backoffMs;
@@ -383,10 +469,11 @@ export function createRackPersist(opts: {
       }
     },
     async pending() {
-      return { reps: await repQueue.size(), sets: await setQueue.size() };
+      return { reps: await repQueue.size(), sets: await setQueue.size(), moves: await moveQueue.size() };
     },
     repQueue,
     setQueue,
+    moveQueue,
     dead: {
       reps: { peekAll: () => deadReps.peekAll(), size: () => deadReps.size() },
       sets: { peekAll: () => deadSets.peekAll(), size: () => deadSets.size() },

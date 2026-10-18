@@ -359,14 +359,14 @@ describe('fix round 3: pick prompt, % load note, iPad-owned source', () => {
     expect(view(rigWithPhone().s).needsPick).toBe(false);
   });
 
-  it('BAR reads "Set on phone" for an unresolved % target; a fixed weight shows normally', () => {
+  it('BAR reads "Not set" for an unresolved % target; a fixed weight shows normally', () => {
     const pct: TodayExercise = { ...SQUAT, plan: { exercise_id: 'ex-squat', intensity_targets: [{ metric: 'weight', percent: 80 }] } };
     const today = [athlete('tyler', 'Tyler', 'Reed', [pct])];
     const r = rig();
     r.sync({ load_lb: null, queue: [] });
     const v = buildRackView({ state: r.s, today, rackName: 'Rack 3', nowMs: T0 });
     expect(v.loadLb).toBeNull();
-    expect(v.loadNote).toBe('Set on phone');
+    expect(v.loadNote).toBe('Not set');
     expect(view(r.s).loadNote).toBeNull();
   });
 

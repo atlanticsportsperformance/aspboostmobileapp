@@ -57,7 +57,7 @@ describe('rack phone wiring', () => {
   it('live row only on the live set; REPS = full reps; Done hands off to the rack', () => {
     expect(D).toContain('const rackLive = rack?.hasRacks ? rack.live : null;');
     expect(D).toContain("if (rackLive && isLiveRow(setIndex) && metricId === 'reps') {");
-    expect(D).toContain('<LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} />');
+    expect(D).toContain('<LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} powerText={rackLive.powerText} onLongPressChip={chipPress(i)} />');
     expect(D).toContain('liveDoneLabel(rackLive.fullReps)');
     expect(D).toContain('Saved · tap to edit');
     expect(D).toContain('Saved on the rack · pull to refresh');

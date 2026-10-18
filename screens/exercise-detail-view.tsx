@@ -50,7 +50,8 @@ import { getMeasurementName, getMetricLabel, tableFieldsFor } from '../lib/logge
 import RackBanner, { type RackScreenProps } from '../components/logger/RackBanner';
 import SensorButton, { type SensorButtonProps } from '../components/logger/SensorButton';
 import LiveRepRow from '../components/logger/LiveRepRow';
-import { RACK_COLORS, liveDoneLabel, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
+import RemoveRepSheet from '../components/rack/RemoveRepSheet';
+import { RACK_COLORS, liveDoneLabel, loadFromInput, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -82,6 +83,8 @@ export interface ExerciseLiveSet {
   lifting: boolean;
   /** "Speed dropped N% — rack it" threshold crossed (zone exercises only). */
   dropCue: number | null;
+  /** "avg 612 W" — our watts, only with a known load. */
+  powerText?: string | null;
 }
 
 export interface ExerciseRackProps extends RackScreenProps {
@@ -107,6 +110,10 @@ export interface ExerciseRackProps extends RackScreenProps {
    * points there instead of the logger's own next exercise. null = no change.
    */
   rackNextAfter?: (setIndex: number) => { reId: string; name: string } | null;
+  /** Rep chips of a SAVED rack row (0-based set of THIS exercise) — long-press removes one. */
+  savedChips?: (setIndex: number) => ChipView[];
+  /** Remove a bad rep (the athlete themself): rack_remove_rep, then the row re-reads. */
+  onRemoveRep?: (clientRepId: string, setIndex: number) => void;
 }
 
 export interface ExtraRackSet {
@@ -117,6 +124,8 @@ export interface ExtraRackSet {
   rackLine: string | null;
   live: boolean;
   saving: 'saving' | 'timeout' | null;
+  /** Saved rep chips (long-press removes one). */
+  chips?: ChipView[];
 }
 
 interface ExerciseDetailViewProps {
@@ -287,6 +296,9 @@ export default function ExerciseDetailView({
   // Rack VBT — every piece below is guarded by hasRacks + an active live set.
   const rackLive = rack?.hasRacks ? rack.live : null;
   const isLiveRow = (setIndex: number) => !!rackLive && rackLive.setIndex === setIndex;
+  // Long-press a rep chip (live row or a saved rack row) → "Remove rep".
+  const [rmChip, setRmChip] = useState<{ chip: ChipView; setIndex: number } | null>(null);
+  const chipPress = (setIndex: number) => (rack?.onRemoveRep ? (chip: ChipView) => setRmChip({ chip, setIndex }) : undefined);
   const rackSaving = (setIndex: number) => (rack?.hasRacks ? rack.saving[setIndex] ?? null : null);
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
@@ -1146,7 +1158,7 @@ export default function ExerciseDetailView({
           {isCurrentSet && <View style={styles.rail} />}
           {lines}
           {rackLive && isLiveRow(i) && (
-            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} />
+            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} powerText={rackLive.powerText} onLongPressChip={chipPress(i)} />
           )}
           {rackSaving(i) === 'saving' && <Text style={styles.caption}>Saving…</Text>}
           {rackSaving(i) === 'timeout' && <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>}
@@ -1154,7 +1166,10 @@ export default function ExerciseDetailView({
             <Text style={styles.caption}>Saved · tap to edit</Text>
           )}
           {isCompleted && !isLiveRow(i) && rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt) && (
-            <Text style={styles.rackSummary}>{`${exerciseInputs[exercise.id]?.[i]?.vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt)}`}</Text>
+            <Text style={styles.rackSummary}>{`${exerciseInputs[exercise.id]?.[i]?.vbt?.source === 'phone' ? 'SENSOR' : 'RACK'} · ${rackSummaryLine(exerciseInputs[exercise.id]?.[i]?.vbt, loadFromInput(exerciseInputs[exercise.id]?.[i]?.weight))}`}</Text>
+          )}
+          {isCompleted && !isLiveRow(i) && (rack?.savedChips?.(i).length ?? 0) > 0 && (
+            <LiveRepRow source="rack" chips={rack!.savedChips!(i)} live={false} onLongPressChip={chipPress(i)} />
           )}
           {showNote && <Text style={styles.cn}>{setConfig?.notes}</Text>}
           {!!caption && <Text style={styles.caption}>{caption}</Text>}
@@ -1212,11 +1227,14 @@ export default function ExerciseDetailView({
             <Text style={styles.caption}>{`SET ${x.setNumber} · EXTRA${x.values ? ` · ${x.values}` : ''}`}</Text>
           </View>
           {x.live && rackLive && rackLive.setIndex === x.setNumber - 1 && (
-            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} />
+            <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} powerText={rackLive.powerText} onLongPressChip={chipPress(x.setNumber - 1)} />
           )}
           {x.saving === 'saving' && <Text style={styles.caption}>Saving…</Text>}
           {x.saving === 'timeout' && <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>}
           {x.rackLine && <Text style={styles.rackSummary}>{x.rackLine}</Text>}
+          {!x.live && (x.chips?.length ?? 0) > 0 && (
+            <LiveRepRow source="rack" chips={x.chips!} live={false} onLongPressChip={chipPress(x.setNumber - 1)} />
+          )}
         </View>,
       );
     }
@@ -1643,6 +1661,17 @@ export default function ExerciseDetailView({
           hasNextField={inputOrder.indexOf(activeInput.metricId) < inputOrder.length - 1}
         />
       )}
+
+      {/* Rack VBT: long-press a rep chip → remove that rep (the athlete themself). */}
+      <RemoveRepSheet
+        rep={rmChip ? rmChip.chip : null}
+        onKeep={() => setRmChip(null)}
+        onRemove={id => {
+          const at = rmChip?.setIndex ?? 0;
+          setRmChip(null);
+          rack?.onRemoveRep?.(id, at);
+        }}
+      />
 
       {/* PR popover — the 🏆 pill. Each tracked metric with the athlete's
           all-time best, from the cached athleteMaxes (no fetch). */}
