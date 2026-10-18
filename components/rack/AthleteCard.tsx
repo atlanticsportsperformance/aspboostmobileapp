@@ -37,7 +37,7 @@ export interface AthleteCardProps {
   onBarStep?: (deltaLb: number) => void;
   /** Long-press the value: type it. */
   onBarType?: () => void;
-  /** Summary "Wrong athlete? Move set". */
+  /** Summary "Wrong athlete? Move set" and the card's "Move last set" chip (the just-ended set). */
   onMoveSet?: () => void;
 }
 
@@ -82,6 +82,11 @@ export default function AthleteCard({
             prompt={view.needsPick}
           />
           <Text style={styles.src}>{view.sourceLine}</Text>
+          {view.lastSetMove && onMoveSet && (
+            <TouchableOpacity style={styles.lastChip} onPress={onMoveSet} accessibilityLabel="Wrong athlete? Move last set">
+              <Text style={styles.lastChipTxt} numberOfLines={1}>Wrong athlete? Move last set</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -224,6 +229,8 @@ const styles = StyleSheet.create({
   bxTight: { paddingHorizontal: 9, paddingVertical: 8 },
   bxX: { fontSize: 24, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
   bxXTight: { fontSize: 18 },
+  lastChip: { alignSelf: 'flex-start', marginTop: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', borderRadius: 8, paddingVertical: 4, paddingHorizontal: 9 },
+  lastChipTxt: { fontSize: 11, fontWeight: '800', color: 'rgba(255,255,255,0.7)' },
   wrong: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', borderRadius: 9, paddingVertical: 7, paddingHorizontal: 12 },
   wrongTxt: { fontSize: 12, fontWeight: '800', color: 'rgba(255,255,255,0.7)' },
   stp: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },

@@ -406,6 +406,26 @@ export type RackEvent =
    * complete in the guard.
    */
   | { type: 'setMoved'; athleteId: string; setStartedAtMs: number }
+  /**
+   * Wrong athlete, mid-set ("Move set to X"): the live set becomes the
+   * target's — its reps re-keyed to the target (re-sent as `writeRep`, same
+   * client_rep_ids), the set ended AS the target with the target's resolved
+   * exercise + set (`endSet`), `moveReps` (rack_move_reps) for the reps the
+   * wrong athlete's rows already hold, then `rpcSetActive(target)`. Never an
+   * `rpcEndSet`, nothing written to the wrong athlete's set row. All-null
+   * target = a free set (reps only).
+   */
+  | {
+      type: 'moveLiveSet';
+      toAthleteId: string;
+      workoutInstanceId: string | null;
+      routineExerciseId: string | null;
+      exerciseId: string | null;
+      setNumber: number | null;
+      zoneMin: number | null;
+      zoneMax: number | null;
+      dropStopPct: number | null;
+    }
   /** iPad BAR stepper: the bar weight for the athlete's exercise (lb null clears). Mid-set: the next set. */
   | { type: 'barLoad'; athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; lb: number | null };
 
@@ -425,7 +445,13 @@ export type RackEffect =
    * the server by rack_remove_rep; a write of it still queued must carry the
    * new summary (replace it) — nothing is written when none is queued.
    */
-  | { type: 'setChanged'; summary: SetSummary };
+  | { type: 'setChanged'; summary: SetSummary }
+  /** rack_move_reps: move exactly these reps to the target set (queued behind the rep writes). */
+  | {
+      type: 'moveReps';
+      clientRepIds: string[];
+      to: { athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null };
+    };
 
 export interface ReduceResult {
   state: RackEngineState;
@@ -657,6 +683,49 @@ export function withoutRep(set: LiveSet, clientRepId: string): LiveSet | null {
       return { ...r, dropPct: drop, dropCue };
     });
   return { ...set, reps, repSeq: Math.max(set.repSeq ?? 0, ...set.reps.map(r => r.repIndex)) };
+}
+
+/** The vbt_reps write of a rep already in `set` (its own index / id, the set's context). */
+function repWriteOf(s: RackEngineState, set: LiveSet, r: EngineRep): RepWrite {
+  return {
+    clientRepId: r.clientRepId,
+    rackId: s.rackId,
+    athleteId: set.athleteId,
+    workoutInstanceId: set.context.workoutInstanceId,
+    routineExerciseId: set.context.routineExerciseId,
+    exerciseId: set.context.exerciseId,
+    setNumber: set.context.setNumber,
+    repIndex: r.repIndex,
+    loadLb: set.context.loadLb,
+    meanVelocity: r.v,
+    peakVelocity: r.pv,
+    meanPowerW: r.meanPowerW,
+    peakPowerW: r.peakPowerW,
+    romIn: r.rom,
+    concentricS: r.concentricS,
+    isPartial: r.partial,
+    zone: r.zone,
+    dropPct: r.dropPct,
+    dropCue: r.dropCue,
+    receivedAt: new Date(r.receivedAtMs).toISOString(),
+  };
+}
+
+/** Zones + drops of a set's reps recalculated for its (new) zone / stop %. */
+function rezone(set: LiveSet): LiveSet {
+  let best = 0;
+  const reps = set.reps.map(r => {
+    if (r.partial) return { ...r, zone: null };
+    best = Math.max(best, r.v);
+    const drop = dropPctOf(best, r.v);
+    return {
+      ...r,
+      zone: set.zone ? zoneOf(r.v, set.zone[0], set.zone[1]) : null,
+      dropPct: drop,
+      dropCue: set.zone != null && set.dropStopPct != null && drop >= set.dropStopPct,
+    };
+  });
+  return { ...set, reps };
 }
 
 /** Build + append one rep to `set`; returns the new set and its write. */
@@ -1190,6 +1259,61 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
     case 'loadChanged':
       s = syncSensorLoad({ ...s, loadOverrideLb: event.lb }, fx);
       break;
+
+    case 'moveLiveSet': {
+      if (s.mode !== 'rack' || s.setState !== 'lifting' || !s.live) break;
+      const from = s.live;
+      const to = event.toAthleteId;
+      if (to === from.athleteId) break;
+      const ctx: RackContext = {
+        workoutInstanceId: event.workoutInstanceId,
+        routineExerciseId: event.routineExerciseId,
+        exerciseId: event.exerciseId,
+        setNumber: event.setNumber,
+        // The bar that was lifted.
+        loadLb: from.context.loadLb,
+      };
+      const free = isFree(ctx);
+      const zone: [number, number] | null = event.zoneMin != null && event.zoneMax != null ? [event.zoneMin, event.zoneMax] : null;
+      const moved: LiveSet = rezone({
+        ...from,
+        athleteId: to,
+        rawContext: ctx,
+        context: free ? { ...ctx, setNumber: null } : ctx,
+        zone,
+        dropStopPct: event.dropStopPct,
+        free,
+        pickedBy: free ? null : 'ipad',
+        endedAtMs: now,
+        endedBy: 'switch',
+      });
+      // Re-sent under the target (a still-queued write is replaced; a sent one is moved by rack_move_reps).
+      for (const r of moved.reps) if (!r.carried) fx.push({ type: 'writeRep', rep: repWriteOf(s, moved, r) });
+      fx.push({ type: 'endSet', summary: summarizeFor(s, moved) });
+      fx.push({
+        type: 'moveReps',
+        clientRepIds: moved.reps.filter(r => !r.carried).map(r => r.clientRepId),
+        to: { athleteId: to, workoutInstanceId: moved.context.workoutInstanceId, routineExerciseId: moved.context.routineExerciseId, setNumber: moved.context.setNumber },
+      });
+      // Then the target goes up (later reps buffer until the server confirms).
+      fx.push({ type: 'rpcSetActive', athleteId: to });
+      let completeSets = s.completeSets;
+      if (!free && moved.context.setNumber != null) completeSets = markComplete(completeSets, hwKey(to, moved.context), moved.context.setNumber);
+      s = {
+        ...s,
+        setState: 'summary',
+        live: null,
+        lastEnded: moved,
+        lastEndByAthlete: {
+          ...s.lastEndByAthlete,
+          [to]: { rawContext: moved.rawContext, setNumber: moved.context.setNumber, endedBy: 'switch', hold: false, set: moved },
+        },
+        completeSets,
+        switchingTo: to,
+      };
+      s = syncSensorLoad(s, fx);
+      break;
+    }
 
     case 'barLoad': {
       const { type: _t, lb, ...who } = event;

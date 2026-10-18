@@ -265,6 +265,11 @@ export interface RackView {
   loadNote: string | null;
   /** The load is known (> 0): the Speed | Power toggle and the watts show. */
   powerAvailable: boolean;
+  /**
+   * Athlete-card chip "Wrong athlete? Move last set": the set that just ended,
+   * for 2 min after its end or until that athlete's next set starts.
+   */
+  lastSetMove: { athleteId: string; name: string; untilMs: number } | null;
   /** No exercise for the active athlete (no rack lift left): prompt "Pick an exercise". */
   needsPick: boolean;
   /** Routine exercise the card is showing (picker highlight). */
@@ -321,6 +326,20 @@ export function repBars(reps: EngineRep[], prefix: string, loadLb: number | null
     label: r.partial ? '—' : r.v.toFixed(2),
     watts: r.partial ? null : wattsOf(loadLb, r.v),
   }));
+}
+
+/** The move-last-set chip: the just-ended set, ≤ 2 min, until that athlete's next set starts. */
+export function lastSetMoveOf(
+  s: Pick<RackEngineState, 'lastEnded' | 'live' | 'setState'>,
+  today: TodayAthlete[],
+  nowMs: number,
+): RackView['lastSetMove'] {
+  const e = s.lastEnded;
+  if (!e || e.endedAtMs == null) return null;
+  const untilMs = e.endedAtMs + MOVE_WINDOW_MS;
+  if (nowMs >= untilMs) return null;
+  if (s.setState === 'lifting' && s.live && s.live.athleteId === e.athleteId && s.live.startedAtMs > e.endedAtMs - 1) return null;
+  return { athleteId: e.athleteId, name: findAthlete(today, e.athleteId)?.firstName ?? 'Athlete', untilMs };
 }
 
 /** Summary boxes: AVG / BEST / DROP, then AVG W / PEAK W when the load is known. */
@@ -623,6 +642,7 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     loadLb,
     loadNote: loadLb == null && ex && percentWeightTarget(ex, setNumber) ? 'Not set' : null,
     powerAvailable: hasLoad(loadLb),
+    lastSetMove: lastSetMoveOf(s, today, nowMs),
     needsPick: !!activeId && !lifting && ctx.workoutInstanceId == null && (active?.remaining.length ?? 0) > 0,
     zone,
     dropStopPct,

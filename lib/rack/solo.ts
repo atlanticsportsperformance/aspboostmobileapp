@@ -35,6 +35,7 @@ export const SOLO_PERSIST_KEYS: PersistKeys = {
   deadSets: 'solo_set_writes_dead_v1',
   moves: 'solo_moves_v1',
   deadMoves: 'solo_moves_dead_v1',
+  removals: 'solo_rep_removals_v1',
 };
 
 /** Per athlete: user A's leftovers never flush under user B's login. */
@@ -47,6 +48,7 @@ export function soloPersistKeys(athleteId: string): PersistKeys {
     deadSets: k(SOLO_PERSIST_KEYS.deadSets),
     moves: k(SOLO_PERSIST_KEYS.moves!),
     deadMoves: k(SOLO_PERSIST_KEYS.deadMoves!),
+    removals: k(SOLO_PERSIST_KEYS.removals!),
   };
 }
 

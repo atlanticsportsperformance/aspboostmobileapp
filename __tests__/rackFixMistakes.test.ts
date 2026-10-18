@@ -16,8 +16,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { createRackEngine, reduce, type RackEffect, type RackEngineState, type RackEvent, type RackSessionRow } from '../lib/rack/engine';
 import { createRackExecutor, MOVE_WINDOW_MS, type ExecutorApi } from '../lib/rack/executor';
-import { createRackPersist, MOVE_QUEUE_KEY, SET_QUEUE_KEY } from '../lib/rack/persist';
-import { buildRackView, moveCandidates, MOVE_WINDOW_MS as VIEW_MOVE_WINDOW_MS, removeRepTitle } from '../lib/rack/viewModel';
+import { createRackPersist, MOVE_QUEUE_KEY, REMOVAL_QUEUE_KEY, REP_QUEUE_KEY, SET_QUEUE_KEY } from '../lib/rack/persist';
+import type { RepWrite, SetSummary } from '../lib/rack/engine';
+import { buildRackView, lastSetMoveOf, moveCandidates, MOVE_WINDOW_MS as VIEW_MOVE_WINDOW_MS, removeRepTitle } from '../lib/rack/viewModel';
 import { addRepRow, type ChipSet } from '../lib/rack/phone';
 import { dropPct } from '../lib/ovr/protocol';
 import type { OvrRep } from '../lib/ovr/protocol';
@@ -71,6 +72,17 @@ const todayOf = (athleteId: string, exs: TodayExercise[], first = athleteId, las
   instances: [{ workoutInstanceId: exs[0]?.workoutInstanceId ?? 'wi-x', status: 'not_started', createdAt: '2026-10-17T10:00:00Z', exercises: exs, remaining: exs }],
   exercises: exs,
   remaining: exs,
+});
+
+const repW = (id: string): RepWrite => ({
+  clientRepId: id, rackId: RACK, athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat',
+  setNumber: 1, repIndex: 1, loadLb: 205, meanVelocity: 0.5, peakVelocity: 0.8, meanPowerW: 1, peakPowerW: 2, romIn: 20,
+  concentricS: 0.5, isPartial: false, zone: null, dropPct: 0, dropCue: false, receivedAt: iso(T0),
+});
+const setSum = (): SetSummary => ({
+  rackId: RACK, source: 'rack', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', exerciseId: 'ex-squat',
+  setNumber: 1, loadLb: 205, setStartedAt: iso(T0), reps: [{ v: 0.5, pv: 0.8, rom: 20, partial: false }], fullReps: 1, avgV: 0.5,
+  bestV: 0.5, dropPct: 0, zone: null, endedBy: 'ipad', free: false,
 });
 
 const flushMicro = async () => {
@@ -227,6 +239,7 @@ function rig(over: { api?: Partial<ExecutorApi>; persist?: any } = {}) {
     endSet: jest.fn(async () => void calls.push('persist:endSet')),
     amendSet: jest.fn(async () => void calls.push('persist:amendSet')),
     moveSet: jest.fn(async () => void calls.push('persist:moveSet')),
+    moveReps: jest.fn(async () => void calls.push('persist:moveReps')),
     removeRep: jest.fn(async () => void calls.push('persist:removeRep')),
     flush: jest.fn(async () => {}),
   };
@@ -251,32 +264,75 @@ async function tylerUpWithJakeToday(r: ReturnType<typeof rig>) {
 }
 
 describe('executor: move a set to the right athlete', () => {
-  it('mid-set: set write enqueued → rack_move_set queued → rack_set_active(target), exactly once', async () => {
+  it('mid-set: zero writes for the wrong athlete, no rack_end_set; set ends as the target → rack_move_reps (exact ids) → rack_set_active', async () => {
     const r = rig();
     await tylerUpWithJakeToday(r);
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
     r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
     await r.ex.idle();
-    expect(r.ex.getState().setState).toBe('lifting');
+    const ids = r.ex.getState().live!.reps.map(x => x.clientRepId);
+    (r.persist.writeRep as jest.Mock).mockClear();
+    r.calls.length = 0;
 
     const to = await r.ex.moveSet('jake');
     await r.ex.idle();
     expect(to).toEqual({ athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 });
-    expect(r.persist.moveSet).toHaveBeenCalledTimes(1);
-    expect(r.persist.moveSet).toHaveBeenCalledWith(
-      { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 1 },
-      { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 },
+    // Nothing for Tyler: no set row, no re-sent rep, no rack_end_set, no rack_move_set.
+    const setWrites = [...(r.persist.endSet as jest.Mock).mock.calls, ...(r.persist.amendSet as jest.Mock).mock.calls].map(c => c[0]);
+    expect(setWrites.filter(sm => sm.athleteId === 'tyler')).toHaveLength(0);
+    expect((r.persist.writeRep as jest.Mock).mock.calls.filter(c => c[0].athleteId === 'tyler')).toHaveLength(0);
+    expect(r.api.endSet).not.toHaveBeenCalled();
+    expect(r.persist.moveSet).not.toHaveBeenCalled();
+    // The set is Jake's: reps re-sent under Jake (same ids), his row written, then exactly these reps moved.
+    expect((r.persist.writeRep as jest.Mock).mock.calls.map(c => [c[0].clientRepId, c[0].athleteId, c[0].routineExerciseId, c[0].setNumber])).toEqual(
+      ids.map(id => [id, 'jake', 're-j', 1]),
     );
+    expect(setWrites).toHaveLength(1);
+    expect(setWrites[0]).toMatchObject({ athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1, fullReps: 2 });
+    expect(r.persist.moveReps).toHaveBeenCalledTimes(1);
+    expect(r.persist.moveReps).toHaveBeenCalledWith(ids, { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 });
     const iEnd = r.calls.indexOf('persist:endSet');
-    const iMove = r.calls.indexOf('persist:moveSet');
+    const iMove = r.calls.indexOf('persist:moveReps');
     const iActive = r.calls.indexOf('rpc:setActive:jake');
     expect(iEnd).toBeGreaterThan(-1);
     expect(iEnd).toBeLessThan(iMove);
     expect(iMove).toBeLessThan(iActive);
     expect(r.calls.filter(c => c === 'rpc:setActive:jake')).toHaveLength(1);
-    // The wrong athlete's set is forgotten here; Jake is up.
-    expect(r.ex.getState().lastEnded).toBeNull();
+    expect(r.calls).not.toContain('rpc:endSet');
     expect(r.ex.getState().activeAthleteId).toBe('jake');
+    expect(r.ex.getState().lastEnded!.athleteId).toBe('jake');
+  });
+
+  it('after Done, a FREE set moves with rack_move_reps and exactly its rep ids (never rack_move_set)', async () => {
+    const r = rig();
+    r.ex.setToday([todayOf('jake', [tEx({})], 'Jake')]);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ workout_instance_id: null, routine_exercise_id: null, exercise_id: null, set_number: null }) });
+    await r.ex.idle();
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    const ids = r.ex.getState().lastEnded!.reps.map(x => x.clientRepId);
+    expect(r.ex.getState().lastEnded!.free).toBe(true);
+    await r.ex.moveSet('jake', { last: true });
+    expect(r.persist.moveSet).not.toHaveBeenCalled();
+    expect(r.persist.moveReps).toHaveBeenCalledTimes(1);
+    expect((r.persist.moveReps as jest.Mock).mock.calls[0][0]).toEqual(ids);
+    expect((r.persist.moveReps as jest.Mock).mock.calls[0][1]).toEqual({ athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 });
+  });
+
+  it('after Done, a workout set moves with rack_move_set (and does not touch someone lifting now)', async () => {
+    const r = rig();
+    await tylerUpWithJakeToday(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    await r.ex.moveSet('jake', { last: true });
+    expect(r.persist.moveSet).toHaveBeenCalledWith(
+      { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 1 },
+      { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 },
+    );
+    expect(r.persist.moveReps).not.toHaveBeenCalled();
   });
 
   it('after Done: the just-ended set moves within 2 minutes, not after', async () => {
@@ -300,66 +356,117 @@ describe('executor: move a set to the right athlete', () => {
     expect(VIEW_MOVE_WINDOW_MS).toBe(MOVE_WINDOW_MS);
   });
 
-  it('offline: the move waits in rack_moves_v1 behind the set write, then goes out once', async () => {
+  it('offline: the mid-set move waits in rack_moves_v1 behind the rep + set writes, then goes out once', async () => {
     let online = false;
-    const rpc = jest.fn(async (fn: string, _a: any) => (online ? { data: fn === 'rack_move_set' ? 2 : 'ok', error: null, status: 200 } : { data: null, error: { message: 'offline' }, status: 503 }));
-    const upsert = jest.fn(async () => (online ? { error: null, status: 201 } : { error: { message: 'offline' }, status: 503 }));
+    const rpc = jest.fn(async (fn: string, _a: any) => (online ? { data: fn === 'rack_move_reps' ? 2 : 'ok', error: null, status: 200 } : { data: null, error: { message: 'offline' }, status: 503 }));
+    const upsert = jest.fn(async (_rows: any[], _o?: any) => (online ? { error: null, status: 201 } : { error: { message: 'offline' }, status: 503 }));
     const client = { rpc, from: jest.fn(() => ({ upsert })) } as any;
     const persist = createRackPersist({ client, orgId: ORG, log: () => {} });
-    const r = rig({ persist });
+    const r = rig({ persist, api: { setActive: jest.fn(async () => { throw new Error('offline'); }) } });
     await tylerUpWithJakeToday(r);
     r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) });
     await r.ex.idle();
+    const ids = r.ex.getState().live!.reps.map(x => x.clientRepId);
     await r.ex.moveSet('jake');
     await r.ex.idle();
     await r.ex.flush();
-    // On disk, in order: the set write and the move — nothing sent.
-    expect(JSON.parse(store[SET_QUEUE_KEY])).toHaveLength(1);
+    // On disk: the reps (re-keyed to Jake, never Tyler), Jake's set row, then the move.
+    const reps = JSON.parse(store[REP_QUEUE_KEY]);
+    expect(reps.map((x: any) => [x.client_rep_id, x.athlete_id])).toEqual(ids.map(id => [id, 'jake']));
+    const sets = JSON.parse(store[SET_QUEUE_KEY]);
+    expect(sets).toHaveLength(1);
+    expect(sets[0].row).toMatchObject({ athlete_id: 'jake', routine_exercise_id: 're-j', set_number: 1 });
     const moves = JSON.parse(store[MOVE_QUEUE_KEY]);
     expect(moves).toHaveLength(1);
-    expect(moves[0]).toMatchObject({ kind: 'move', from: { athleteId: 'tyler', setNumber: 1 }, to: { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 } });
-    expect(rpc.mock.calls.filter(c => c[0] === 'rack_move_set')).toHaveLength(0);
+    expect(moves[0]).toMatchObject({ kind: 'moveReps', clientRepIds: ids, to: { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 } });
+    expect(rpc.mock.calls.filter(c => c[0] === 'rack_move_reps')).toHaveLength(0);
 
     online = true;
+    const sentFrom = upsert.mock.calls.length;
     await r.ex.flush();
     const fns = rpc.mock.calls.map(c => c[0]);
     const lastUpsert = fns.lastIndexOf('upsert_exercise_log');
     expect(lastUpsert).toBeGreaterThan(-1);
-    expect(fns.filter(f => f === 'rack_move_set')).toHaveLength(1);
-    expect(fns.indexOf('rack_move_set')).toBeGreaterThan(lastUpsert);
-    expect(rpc.mock.calls.find(c => c[0] === 'rack_move_set')![1]).toEqual({
-      p_from_athlete: 'tyler',
-      p_from_wi: 'wi-1',
-      p_from_re: 're-squat',
-      p_from_set: 1,
+    expect(fns.filter(f => f === 'rack_move_reps')).toHaveLength(1);
+    expect(fns.indexOf('rack_move_reps')).toBeGreaterThan(lastUpsert);
+    expect(fns).not.toContain('rack_end_set');
+    expect(rpc.mock.calls.find(c => c[0] === 'rack_move_reps')![1]).toEqual({
+      p_client_rep_ids: ids,
       p_to_athlete: 'jake',
       p_to_wi: 'wi-j',
       p_to_re: 're-j',
       p_to_set: 1,
     });
+    // Every vbt_reps row that reached the server is Jake's.
+    const sent = upsert.mock.calls.slice(sentFrom).flatMap(c => c[0] as any[]);
+    expect(sent.map(x => x.client_rep_id)).toEqual(ids);
+    for (const x of sent) expect(x.athlete_id).toBe('jake');
     expect(store[MOVE_QUEUE_KEY]).toBeUndefined();
     await r.ex.flush();
-    expect(rpc.mock.calls.filter(c => c[0] === 'rack_move_set')).toHaveLength(1);
+    expect(rpc.mock.calls.filter(c => c[0] === 'rack_move_reps')).toHaveLength(1);
   });
 
-  it('a move flush never runs while a rep is still queued', async () => {
+  it('removal ordering: rep → its removal → set writes, in one flush', async () => {
+    const order: string[] = [];
+    const rpc = jest.fn(async (fn: string) => {
+      order.push(fn);
+      return { data: 1, error: null, status: 200 };
+    });
+    const upsert = jest.fn(async () => {
+      order.push('vbt_reps');
+      return { error: null, status: 201 };
+    });
+    const p = createRackPersist({ client: { rpc, from: () => ({ upsert }) } as any, orgId: ORG, log: () => {} });
+    await p.writeRep(repW('rack-3:tyler:1:1'));
+    await p.endSet(setSum());
+    await p.removeRep('rack-3:tyler:1:1');
+    await p.flush({ force: true });
+    expect(order).toEqual(['vbt_reps', 'rack_remove_rep', 'upsert_exercise_log']);
+  });
+
+  it('a removal waits while its rep is still queued (never "rep not found")', async () => {
     let repsOnline = false;
     const rpc = jest.fn(async () => ({ data: 1, error: null, status: 200 }));
     const upsert = jest.fn(async () => (repsOnline ? { error: null, status: 201 } : { error: { message: 'offline' }, status: 503 }));
     const p = createRackPersist({ client: { rpc, from: () => ({ upsert }) } as any, orgId: ORG, log: () => {} });
-    await p.writeRep({
-      clientRepId: 'rack-3:tyler:1:1', rackId: RACK, athleteId: 'tyler', workoutInstanceId: null, routineExerciseId: null, exerciseId: null,
-      setNumber: null, repIndex: 1, loadLb: null, meanVelocity: 0.5, peakVelocity: 0.8, meanPowerW: 1, peakPowerW: 2, romIn: 20,
-      concentricS: 0.5, isPartial: false, zone: null, dropPct: 0, dropCue: false, receivedAt: iso(T0),
-    });
+    await p.writeRep(repW('rack-3:tyler:1:1'));
     await p.removeRep('rack-3:tyler:1:1');
     await p.flush({ force: true });
     expect(rpc).not.toHaveBeenCalled();
+    expect(JSON.parse(store[REMOVAL_QUEUE_KEY])).toHaveLength(1);
     repsOnline = true;
     await p.flush({ force: true });
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledWith('rack_remove_rep', { p_client_rep_id: 'rack-3:tyler:1:1', p_restore: false });
     expect(await p.pending()).toEqual({ reps: 0, sets: 0, moves: 0 });
+  });
+
+  it('a rep held only in memory is dropped by its removal: never sent, no rack_remove_rep', async () => {
+    let fail = true;
+    const r = rig({
+      persist: {
+        writeRep: jest.fn(async () => {
+          if (fail) throw new Error('disk full');
+        }),
+        endSet: jest.fn(async () => {}),
+        amendSet: jest.fn(async () => {}),
+        removeRep: jest.fn(async () => {}),
+        flush: jest.fn(async () => {}),
+      },
+    });
+    await tylerUpWithJakeToday(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.idle();
+    expect(r.ex.unsavedCount().reps).toBe(1);
+    const id = r.ex.getState().live!.reps[0].clientRepId;
+    await r.ex.removeRep(id);
+    expect(r.ex.unsavedCount().reps).toBe(0);
+    expect(r.persist.removeRep).not.toHaveBeenCalled();
+    fail = false;
+    (r.persist.writeRep as jest.Mock).mockClear();
+    await r.ex.flush();
+    expect(r.persist.writeRep).not.toHaveBeenCalled();
   });
 });
 
@@ -469,6 +576,50 @@ describe('summary "Wrong athlete? Move set" — only within 2 minutes', () => {
   });
 });
 
+describe('athlete card chip "Wrong athlete? Move last set"', () => {
+  it('2 min after the set ended, or until that athlete’s next set starts', () => {
+    const r = engineRig();
+    zoned(r);
+    r.send({ type: 'rep', rep: ovr(0.8) });
+    r.send({ type: 'ipadDone' });
+    const endedAt = r.s.lastEnded!.endedAtMs!;
+    const today = [todayOf('tyler', [], 'Tyler')];
+    expect(lastSetMoveOf(r.s, today, endedAt + 10_000)).toEqual({ athleteId: 'tyler', name: 'Tyler', untilMs: endedAt + 120_000 });
+    expect(lastSetMoveOf(r.s, today, endedAt + 119_999)).not.toBeNull();
+    expect(lastSetMoveOf(r.s, today, endedAt + 120_000)).toBeNull();
+    // Tyler's next set starts → gone (well inside the 2 min).
+    r.send({ type: 'rep', rep: ovr(0.7) }, 20_000);
+    expect(r.s.setState).toBe('lifting');
+    expect(lastSetMoveOf(r.s, today, endedAt + 21_000)).toBeNull();
+    const v = buildRackView({ state: r.s, today, rackName: 'Rack 3', nowMs: endedAt + 21_000 });
+    expect(v.lastSetMove).toBeNull();
+  });
+
+  it('sits under the source label and opens the same sheet with the just-ended set', () => {
+    const C = read('components/rack/AthleteCard.tsx');
+    const src = C.indexOf('<Text style={styles.src}>{view.sourceLine}</Text>');
+    const chip = C.indexOf('{view.lastSetMove && onMoveSet && (');
+    expect(src).toBeGreaterThan(-1);
+    expect(chip).toBeGreaterThan(src);
+    expect(C).toContain('Wrong athlete? Move last set');
+    const S = read('screens/rack/RackModeScreen.tsx');
+    expect(S).toContain("onMoveSet={() => openMove('after')}");
+    expect(S).toContain('const chipUntil = view.lastSetMove?.untilMs ?? null;');
+  });
+});
+
+describe('phone rep subscription', () => {
+  it('only while the exercise screen shows rack / sensor rows, paused in the background', () => {
+    const H = read('hooks/useRackPhone.ts');
+    expect(H).toContain('const chipsWanted = hasRacks && foreground && !!opts.exerciseOpen && (!!opts.savedRackRows || liveHere);');
+    expect(H).toContain("AppState.addEventListener('change', st => setForeground(st === 'active'))");
+    expect(H).toContain('if (!chipsWanted) return;');
+    const L = read('screens/WorkoutLoggerScreen.tsx');
+    expect(L).toContain("const chipsExercise = viewMode === 'exercise' ? activeExerciseId : null;");
+    expect(L).toContain('exerciseOpen: chipsExercise,');
+  });
+});
+
 describe('move sheet', () => {
   const today = [
     todayOf('zed', [tEx({})], 'Zed', 'Adams'),
@@ -505,7 +656,7 @@ describe('move sheet', () => {
     const S = read('screens/rack/RackModeScreen.tsx');
     expect(S).toContain("if (athleteId === state.activeAthleteId && state.setState === 'lifting' && state.live) openMove('live');");
     expect(S).toContain('else selectAthlete(athleteId);');
-    expect(S).toContain('executor.moveSet(athleteId)');
+    expect(S).toContain("executor.moveSet(athleteId, { last: moveFrom.mode === 'after' })");
     expect(S).toContain('onSwitch={selectAthlete}');
   });
 });

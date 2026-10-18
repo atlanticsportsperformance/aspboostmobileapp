@@ -8,9 +8,11 @@
  * - While the athlete is ON a rack (active or queued): a realtime channel per
  *   rack (filter rack_id=eq.<id>) plus a 10 s poll; each tick also re-reads the
  *   reps (backfill) and calls onTick (pending set rows).
- * - Rep chips (subscribeMyRack) while the org has racks — the live row's and
- *   the saved rack rows' (long-press → remove a rep, rack_remove_rep); removals
- *   and moves arrive as vbt_reps UPDATEs, and every refresh rebuilds them.
+ * - Rep chips (subscribeMyRack) only while the exercise screen shows rack /
+ *   sensor rows (a saved rack row, or this exercise being lifted on the rack)
+ *   and the app is in the foreground — the live row's and the saved rows'
+ *   (long-press → remove a rep, rack_remove_rep); removals and moves arrive as
+ *   vbt_reps UPDATEs, and every (re)subscribe / refresh rebuilds them.
  * - While active: the debounced phone context with an exact echo guard, and
  *   rack_request_end_set.
  */
@@ -73,6 +75,10 @@ export function useRackPhone(opts: {
   onSetEnded?: (ended: EndedSet) => void;
   /** Every 10 s while on a rack (re-read pending set rows). */
   onTick?: () => void;
+  /** The exercise screen's routine exercise (null = overview / closed). */
+  exerciseOpen?: string | null;
+  /** That exercise shows saved rack / sensor rows. */
+  savedRackRows?: boolean;
 }): RackPhone {
   const { athleteId } = opts;
   const api = useMemo(() => createRackApi(supabase as unknown as RackClient), []);
@@ -172,10 +178,17 @@ export function useRackPhone(opts: {
     [sessions, athleteId, hasRacks],
   );
 
-  // Rep chips: subscribed while the org has racks (live row + saved rack rows).
+  // Rep chips: only while the exercise screen shows rack / sensor rows, app in the foreground.
+  const [foreground, setForeground] = useState(AppState.currentState !== 'background');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', st => setForeground(st === 'active'));
+    return () => sub.remove();
+  }, []);
+  const liveHere = !!opts.exerciseOpen && !!activeSession && activeSession.state === 'lifting' && activeSession.routine_exercise_id === opts.exerciseOpen;
+  const chipsWanted = hasRacks && foreground && !!opts.exerciseOpen && (!!opts.savedRackRows || liveHere);
   const subRef = useRef<ReturnType<typeof subscribeMyRack> | null>(null);
   useEffect(() => {
-    if (!hasRacks) return;
+    if (!chipsWanted) return;
     const sub = subscribeMyRack(athleteId, () => {
       if (mounted.current) setChipTick(t => t + 1);
     });
@@ -184,7 +197,7 @@ export function useRackPhone(opts: {
       sub.unsubscribe();
       if (subRef.current === sub) subRef.current = null;
     };
-  }, [hasRacks, athleteId]);
+  }, [chipsWanted, athleteId]);
 
   // I2: realtime per rack I'm on + 10 s poll — only while on a rack.
   useEffect(() => {
@@ -220,7 +233,7 @@ export function useRackPhone(opts: {
     (wi: string, re: string, n: number) => subRef.current?.chipsFor(wi, re, n) ?? [],
     // chipTick: new chips → new function identity → consumers re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chipTick, hasRacks],
+    [chipTick, chipsWanted],
   );
 
   const removeRep = useCallback(async (clientRepId: string) => {

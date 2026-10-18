@@ -1181,10 +1181,17 @@ export default function WorkoutLoggerScreen() {
   const rackOnSetEndedRef = useRef<(e: EndedSet) => void>(() => undefined);
   const rackOnTickRef = useRef<() => void>(() => undefined);
 
+  // Rep chips are read only while the exercise screen shows rack / sensor rows.
+  const chipsExercise = viewMode === 'exercise' ? activeExerciseId : null;
+  const savedRackRows =
+    !!chipsExercise &&
+    (!!rackExtra[chipsExercise] || (exerciseInputs[chipsExercise] ?? []).some((r: any) => !!r?.vbt));
   const rack = useRackPhone({
     athleteId,
     onSetEnded: e => rackOnSetEndedRef.current(e),
     onTick: () => rackOnTickRef.current(),
+    exerciseOpen: chipsExercise,
+    savedRackRows,
   });
   const rackActive = rack.hasRacks && !!rack.activeSession;
   const rackLive = rack.hasRacks ? liveRackSet(rack.activeSession, athleteId, workoutInstanceId) : null;

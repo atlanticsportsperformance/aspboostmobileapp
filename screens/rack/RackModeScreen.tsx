@@ -250,6 +250,13 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
     const t = setTimeout(() => setNowMs(Date.now()), Math.max(0, moveUntil - Date.now()) + 20);
     return () => clearTimeout(t);
   }, [moveUntil]);
+  // The card's "Move last set" chip goes 2 min after the set ended.
+  const chipUntil = view.lastSetMove?.untilMs ?? null;
+  useEffect(() => {
+    if (chipUntil == null) return;
+    const t = setTimeout(() => setNowMs(Date.now()), Math.max(0, chipUntil - Date.now()) + 20);
+    return () => clearTimeout(t);
+  }, [chipUntil]);
 
   // A refused tile / "+" switch (e.g. the athlete is up on another rack).
   const [toast, setToast] = useState<string | null>(null);
@@ -280,12 +287,12 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
   // ---- fix mistakes
   const [moveMode, setMoveMode] = useState<MoveSheetMode | null>(null);
   // The athlete whose set the sheet moves (frozen when it opens).
-  const [moveFrom, setMoveFrom] = useState<{ id: string | null; name: string; reps: number }>({ id: null, name: '', reps: 0 });
+  const [moveFrom, setMoveFrom] = useState<{ id: string | null; name: string; reps: number; mode: MoveSheetMode }>({ id: null, name: '', reps: 0, mode: 'after' });
   const openMove = (mode: MoveSheetMode) => {
     const set = mode === 'live' ? state.live : state.lastEnded;
     const id = set?.athleteId ?? activeId;
     const name = today.find(a => a.athleteId === id)?.firstName ?? 'Athlete';
-    setMoveFrom({ id: id ?? null, name, reps: set ? set.reps.filter(r => !r.partial).length : 0 });
+    setMoveFrom({ id: id ?? null, name, reps: set ? set.reps.filter(r => !r.partial).length : 0, mode });
     setMoveMode(mode);
   };
   // The ACTIVE athlete's tile while lifting = "Switch, or move this set?"; any other tile switches.
@@ -298,7 +305,8 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
     [state.activeAthleteId, state.setState, state.live, selectAthlete, today],
   );
   const moveSetTo = (athleteId: string) => {
-    executor.moveSet(athleteId).catch(e => console.warn('[rack] move set failed', e));
+    // 'after' (summary / card chip) = the just-ended set, even if someone is lifting now.
+    executor.moveSet(athleteId, { last: moveFrom.mode === 'after' }).catch(e => console.warn('[rack] move set failed', e));
   };
   const [removeRep, setRemoveRep] = useState<RemoveRepTarget | null>(null);
   const doRemoveRep = (clientRepId: string) => {

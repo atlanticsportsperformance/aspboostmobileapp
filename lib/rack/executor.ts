@@ -33,10 +33,13 @@
 //     haven't loaded yet (UI).
 //   - `tick` every 1 s; both queues flushed (serialized) on start, every 15 s
 //     (the app has no NetInfo), after each enqueue, and on `flush()`.
-//   - Fix mistakes (rack-edge mock): `moveSet(target)` ends a live set
-//     (ipadDone — its write durably queued), resolves the target's set with
-//     resolveRackSet, queues rack_move_set in rack_moves_v1 (flushed only
-//     behind every rep + set write), then rack_set_active(target).
+//   - Fix mistakes (rack-edge mock): `moveSet(target)` mid-set resolves the
+//     target's set with resolveRackSet and dispatches `moveLiveSet` — the set
+//     ends AS the target (nothing written for the wrong athlete, no
+//     rack_end_set), rack_move_reps (exact rep ids) queued in rack_moves_v1
+//     behind the rep + set writes, then rack_set_active(target). After Done
+//     (`{ last: true }`, ≤ 2 min): rack_move_set for a workout set,
+//     rack_move_reps (its rep ids) for a free set.
 //     `removeRep(id)` drops the rep in the engine and queues rack_remove_rep
 //     (a removal seen from the phone = `remote`: engine only).
 //   - BAR stepper: `setBarLoad(lb)` publishes load_lb through
@@ -95,7 +98,9 @@ export type ExecutorPersist = Pick<RackPersist, 'writeRep' | 'endSet' | 'amendSe
   setQueue?: { peekAll(): Promise<{ key: string }[]> };
   /** rack_move_set, queued behind every rep + set write (rack_moves_v1). */
   moveSet?: RackPersist['moveSet'];
-  /** rack_remove_rep, queued behind every rep + set write (rack_moves_v1). */
+  /** rack_move_reps (exact rep ids), queued behind every rep + set write (rack_moves_v1). */
+  moveReps?: RackPersist['moveReps'];
+  /** rack_remove_rep, queued right behind the reps (rack_rep_removals_v1). */
   removeRep?: RackPersist['removeRep'];
   /** Queued fix-mistakes calls (a moved set's target stays complete for the resolver). */
   moveQueue?: { peekAll(): Promise<FixItem[]> };
@@ -140,7 +145,7 @@ export interface RackExecutor {
    * the target up (rack_set_active). Resolves with the target set (null = no
    * set to move).
    */
-  moveSet(targetId: string): Promise<SetRef | null>;
+  moveSet(targetId: string, opts?: { last?: boolean }): Promise<SetRef | null>;
   /** Remove a bad rep: engine first (live set recalculated), then rack_remove_rep
    *  (queued). `remote` = it was removed elsewhere (the phone): engine only. */
   removeRep(clientRepId: string, opts?: { remote?: boolean }): Promise<void>;
@@ -323,10 +328,25 @@ export function createRackExecutor(opts: {
         case 'writeLoadToSensor':
           sensor.writeLoad(fx.lb).catch(e => log('writeLoad failed', e));
           break;
-        case 'writeRep':
+        case 'writeRep': {
+          // A re-sent rep (moved to the right athlete) supersedes its memory-held copy.
+          const old = unsavedReps.findIndex(u => u.clientRepId === fx.rep.clientRepId);
+          if (old >= 0) unsavedReps.splice(old, 1);
           await durably('writeRep', () => persist.writeRep(fx.rep), () => unsavedReps.push(fx.rep));
           flushSoon();
           break;
+        }
+        case 'moveReps': {
+          const to: SetRef = fx.to;
+          const ids = fx.clientRepIds;
+          if (!persist.moveReps) {
+            log('moveReps: persist has no move queue');
+            break;
+          }
+          const mv = persist.moveReps;
+          await queueFix({ kind: 'moveReps', id: `reps:${ids.join(',')}>${to.athleteId}`, clientRepIds: ids, to }, () => mv(ids, to));
+          break;
+        }
         case 'endSet':
         case 'amendSet': {
           // The weight just saved is the athlete's newest "last logged weight".
@@ -445,11 +465,11 @@ export function createRackExecutor(opts: {
     } catch {
       movesQueued = [];
     }
-    const pendingMoves = [...movesQueued, ...unsavedFixes.map(f => f.item)].filter(
-      (m): m is Extract<FixItem, { kind: 'move' }> => m.kind === 'move',
-    );
-    // A moved set's target is written by rack_move_set: complete until that call is sent.
-    for (const m of pendingMoves) {
+    const allMoves = [...movesQueued, ...unsavedFixes.map(f => f.item)];
+    const pendingMoves = allMoves.filter((m): m is Extract<FixItem, { kind: 'move' }> => m.kind === 'move');
+    // A moved set's target is written by rack_move_set / rack_move_reps: complete until that call is sent.
+    for (const m of allMoves) {
+      if (m.kind === 'remove') continue;
       if (m.to.athleteId === athleteId && m.to.workoutInstanceId && m.to.routineExerciseId && m.to.setNumber != null) {
         queued = queued ?? new Set<string>();
         queued.add(`${m.to.workoutInstanceId}:${m.to.routineExerciseId}:${m.to.setNumber}`);
@@ -964,24 +984,49 @@ export function createRackExecutor(opts: {
     }
   };
 
-  const moveSet = async (targetId: string): Promise<SetRef | null> => {
+  /** The target's set: resolveRackSet on their fresh logs — the same rules as everywhere. */
+  const targetSet = async (targetId: string): Promise<SetRef> => {
+    await readLogsNow(targetId);
+    const res = resolveFor(targetId);
+    return res && !res.none
+      ? { athleteId: targetId, workoutInstanceId: res.workoutInstanceId, routineExerciseId: res.routineExerciseId, setNumber: res.setNumber }
+      : { athleteId: targetId, workoutInstanceId: null, routineExerciseId: null, setNumber: null };
+  };
+
+  const moveSet = async (targetId: string, o?: { last?: boolean }): Promise<SetRef | null> => {
     releaseHold();
     if (state.mode !== 'rack' || !state.rackId) return null;
-    // Mid-set: end it first (the iPad Done path) — its row is queued before the move.
-    if (state.setState === 'lifting' && state.live) dispatch({ type: 'ipadDone' });
+    // Mid-set: the live set becomes the target's — nothing saved to the wrong athlete, no rack_end_set.
+    if (!o?.last && state.setState === 'lifting' && state.live && state.live.athleteId !== targetId) {
+      const startedAt = state.live.startedAtMs;
+      const to = await targetSet(targetId);
+      if (state.setState === 'lifting' && state.live && state.live.startedAtMs === startedAt) {
+        const ex = to.routineExerciseId
+          ? today.find(t => t.athleteId === targetId)?.exercises.find(e => e.workoutInstanceId === to.workoutInstanceId && e.routineExerciseId === to.routineExerciseId)
+          : undefined;
+        dispatch({
+          type: 'moveLiveSet',
+          toAthleteId: targetId,
+          workoutInstanceId: to.workoutInstanceId,
+          routineExerciseId: to.routineExerciseId,
+          exerciseId: ex?.exerciseId ?? (to.routineExerciseId ? state.exerciseByRoutineExercise[to.routineExerciseId] ?? null : null),
+          setNumber: to.setNumber,
+          zoneMin: ex?.zoneMin ?? null,
+          zoneMax: ex?.zoneMax ?? null,
+          dropStopPct: ex?.dropStopPct ?? null,
+        });
+        await effectsDone();
+        return to;
+      }
+      // The set ended meanwhile (phone Done / idle): move it as the last set.
+    }
     await effectsDone();
     const src = state.lastEnded;
     if (!src || src.endedAtMs == null || src.athleteId === targetId || now() - src.endedAtMs > MOVE_WINDOW_MS) return null;
     const c = src.context;
     const from: SetRef = { athleteId: src.athleteId, workoutInstanceId: c.workoutInstanceId, routineExerciseId: c.routineExerciseId, setNumber: c.setNumber };
 
-    // The target's set: resolveRackSet on their fresh logs — the same rules as everywhere.
-    await readLogsNow(targetId);
-    const res = resolveFor(targetId);
-    const to: SetRef =
-      res && !res.none
-        ? { athleteId: targetId, workoutInstanceId: res.workoutInstanceId, routineExerciseId: res.routineExerciseId, setNumber: res.setNumber }
-        : { athleteId: targetId, workoutInstanceId: null, routineExerciseId: null, setNumber: null };
+    const to = await targetSet(targetId);
 
     // Local truth right away: the wrong athlete's set is gone, the target's is complete.
     apply({ type: 'setMoved', athleteId: src.athleteId, setStartedAtMs: src.startedAtMs }, now());
@@ -1001,14 +1046,23 @@ export function createRackExecutor(opts: {
       });
       apply({ type: 'seedHighWater', athleteId: targetId, workoutInstanceId: to.workoutInstanceId, routineExerciseId: to.routineExerciseId, setNumber: to.setNumber }, now());
     }
-    const item: FixItem = { kind: 'move', id: `move:${from.athleteId}:${src.startedAtMs}>${targetId}`, from, to };
-    if (persist.moveSet) {
-      const mv = persist.moveSet;
-      await queueFix(item, () => mv(from, to));
-    } else log('moveSet: persist has no move queue');
+    if (src.free) {
+      // A free set: exactly its reps (rack_move_set would take every free rep of the athlete).
+      const ids = src.reps.filter(r => !r.carried).map(r => r.clientRepId);
+      if (persist.moveReps) {
+        const mv = persist.moveReps;
+        await queueFix({ kind: 'moveReps', id: `reps:${ids.join(',')}>${targetId}`, clientRepIds: ids, to }, () => mv(ids, to));
+      } else log('moveSet: persist has no move queue');
+    } else {
+      const item: FixItem = { kind: 'move', id: `move:${from.athleteId}:${src.startedAtMs}>${targetId}`, from, to };
+      if (persist.moveSet) {
+        const mv = persist.moveSet;
+        await queueFix(item, () => mv(from, to));
+      } else log('moveSet: persist has no move queue');
+    }
 
-    // Then the right athlete goes up.
-    if (state.activeAthleteId !== targetId) dispatch({ type: 'selectAthlete', athleteId: targetId });
+    // Then the right athlete goes up — unless someone else is lifting now.
+    if (state.activeAthleteId !== targetId && state.setState !== 'lifting') dispatch({ type: 'selectAthlete', athleteId: targetId });
     return to;
   };
 
@@ -1016,6 +1070,12 @@ export function createRackExecutor(opts: {
     if (queued(() => void removeRep(clientRepId, o))) return;
     apply({ type: 'removeRep', clientRepId }, now());
     if (o?.remote) return;
+    // Held in memory only (its enqueue failed): never send it — nothing to remove on the server.
+    const mem = unsavedReps.findIndex(u => u.clientRepId === clientRepId);
+    if (mem >= 0) {
+      unsavedReps.splice(mem, 1);
+      return;
+    }
     if (!persist.removeRep) {
       log('removeRep: persist has no move queue');
       return;
