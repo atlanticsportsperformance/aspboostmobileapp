@@ -170,3 +170,13 @@ export function createQueue<T>(
     peekAll: () => withLock(key, () => read<T>(key)),
   };
 }
+
+/** Remove queued items matching `pred` from one queue key (serialized with that queue). Returns how many. */
+export function removeQueued<T>(key: string, pred: (item: T) => boolean): Promise<number> {
+  return withLock(key, async () => {
+    const items = await read<T>(key);
+    const keep = items.filter(i => !pred(i));
+    if (keep.length !== items.length) await write(key, keep);
+    return items.length - keep.length;
+  });
+}

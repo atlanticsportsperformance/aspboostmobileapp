@@ -91,6 +91,11 @@ export default function AthleteCard({
       </View>
 
       <View style={[styles.kv, row && styles.kvRow]}>
+        {/* Reps before weight (owner): REPS first, then BAR · LB. */}
+        <View style={[styles.kvb, c && styles.kvbC]}>
+          <Text style={styles.k}>REPS</Text>
+          <Text style={[styles.x, c && styles.xC]}>{view.repsTarget != null ? view.repsTarget : '—'}</Text>
+        </View>
         <View style={[styles.kvb, c && styles.kvbC]}>
           <Text style={styles.k}>{barNext ? 'BAR · LB · NEXT SET' : 'BAR · LB'}</Text>
           <View style={styles.stp}>
@@ -113,10 +118,6 @@ export default function AthleteCard({
               <Text style={styles.stpTxt}>+</Text>
             </TouchableOpacity>
           </View>
-        </View>
-        <View style={[styles.kvb, c && styles.kvbC]}>
-          <Text style={styles.k}>REPS</Text>
-          <Text style={[styles.x, c && styles.xC]}>{view.repsTarget != null ? view.repsTarget : '—'}</Text>
         </View>
         <View style={[styles.kvb, styles.wide, c && styles.kvbC]}>
           <Text style={styles.k}>TARGET SPEED</Text>

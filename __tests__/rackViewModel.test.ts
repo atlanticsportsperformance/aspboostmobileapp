@@ -175,7 +175,7 @@ describe('rack view model', () => {
     const v = view(r.s, r.now + 10 * SUMMARY_MS);
     expect(v.summary).toMatchObject({
       title: 'SET 1 SAVED · 60 S NO REPS',
-      big: '205 lb × 2',
+      big: '2 reps × 205 lb',
       avg: '0.53',
       best: '0.55',
       drop: '9%',
@@ -205,7 +205,7 @@ describe('rack view model', () => {
     r.sync({ set_number: 3, queue: [], state: 'idle' }, T0 + 5200);
     // nowMs may lag (minute clock): the summary is still up.
     const during = view(r.s, T0);
-    expect(during.summary).toMatchObject({ title: 'SET 3 SAVED · DONE ON IPAD', big: '205 lb × 2', avg: '0.54', best: '0.55', drop: '5%' });
+    expect(during.summary).toMatchObject({ title: 'SET 3 SAVED · DONE ON IPAD', big: '2 reps × 205 lb', avg: '0.54', best: '0.55', drop: '5%' });
     expect(during.bars).toHaveLength(2);
     const after = view(r.s, T0 + 5000 + SUMMARY_MS + 1);
     expect(after.summary).toBeNull();

@@ -267,7 +267,7 @@ describe('fix round 3 wiring', () => {
   });
   it('the executor publishes via rack_set_ipad_context and never echoes the phone', () => {
     const E = read('lib/rack/executor.ts');
-    expect(E).toContain("if (!ipadOwnsContext() && !coach) return; // the phone's context: never echo it");
+    expect(E).toContain("if (!ipadOwnsContext() && !coach && !phoneRowFinished()) return;");
     expect(read('lib/rack/api.ts')).toContain("session('rack_set_ipad_context', {");
   });
 });

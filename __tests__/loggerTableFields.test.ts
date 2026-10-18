@@ -17,16 +17,16 @@ describe('tableFieldsFor', () => {
       enabled_measurements: ['m-w'],
       set_configurations: [{ metric_values: { reps: 2 } }, { metric_values: { reps: 2 } }],
     });
-    expect(tableFieldsFor(squat, weightOnly)).toEqual(['weight', 'reps']);
+    expect(tableFieldsFor(squat, weightOnly)).toEqual(['reps', 'weight']);
   });
 
-  it('weight first, then reps, then others; % targets count; empty values do not', () => {
+  it('REPS first, then weight, then others; % targets count; empty values do not', () => {
     const e = re({
       enabled_measurements: ['m-d'],
       intensity_targets: [{ metric: 'weight', percent: 80 }],
       set_configurations: [{ metric_values: { reps: 5, time_seconds: null as unknown as number } }],
     });
     const distance: Measurement[] = [{ id: 'm-d', name: 'Distance', category: 'single', primary_metric_id: 'distance' }];
-    expect(tableFieldsFor(e, distance)).toEqual(['weight', 'reps', 'distance']);
+    expect(tableFieldsFor(e, distance)).toEqual(['reps', 'weight', 'distance']);
   });
 });

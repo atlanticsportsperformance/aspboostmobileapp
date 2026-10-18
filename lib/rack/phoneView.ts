@@ -308,6 +308,8 @@ export interface PhoneContext {
   routineExerciseId: string | null;
   setNumber: number | null;
   loadLb: number | null;
+  /** The REPS the phone holds for that set (typed / prefilled) — the iPad's REPS box follows it. */
+  repsTarget?: number | null;
 }
 
 export function contextSig(c: RackCtx | PhoneContext): string {
@@ -341,7 +343,12 @@ export function createContextSender(
 ): ContextSender {
   let handle: unknown = null;
   let lastSent: string | null = null;
+  /** Dedup key incl. the reps target (echoes compare without it — the row's context has no reps). */
+  let lastFull: string | null = null;
   const inFlight = new Map<string, number>();
+  /** Every context sent this activation (bounded): a LATE realtime row of an older send is still the phone's own echo. */
+  const recent: string[] = [];
+  const RECENT_MAX = 32;
   const cancel = () => {
     if (handle != null) timers.clearTimeout(handle);
     handle = null;
@@ -349,6 +356,8 @@ export function createContextSender(
   const fire = (rackId: string, ctx: PhoneContext, sig: string) => {
     handle = null;
     lastSent = sig;
+    recent.push(sig);
+    if (recent.length > RECENT_MAX) recent.shift();
     inFlight.set(sig, (inFlight.get(sig) ?? 0) + 1);
     const done = () => {
       const n = (inFlight.get(sig) ?? 1) - 1;
@@ -368,19 +377,26 @@ export function createContextSender(
       cancel();
       if (!rackId) {
         lastSent = null; // not active: the next activation sends again
+        lastFull = null;
         inFlight.clear();
+        recent.length = 0;
         return;
       }
       if (!ctx) return; // active but nothing open (overview): send nothing, keep the echo memory
       const sig = contextSig(ctx);
-      if (sig === lastSent && inFlight.size === 0) return;
-      if (opts?.immediate) fire(rackId, ctx, sig);
-      else handle = timers.setTimeout(() => fire(rackId, ctx, sig), delayMs);
+      const full = `${sig}|${ctx.repsTarget ?? ''}`;
+      if (full === lastFull && inFlight.size === 0) return;
+      const go = () => {
+        lastFull = full;
+        fire(rackId, ctx, sig);
+      };
+      if (opts?.immediate) go();
+      else handle = timers.setTimeout(go, delayMs);
     },
     cancel,
     isEcho(ctx) {
       const sig = contextSig(ctx);
-      return sig === lastSent || inFlight.has(sig);
+      return sig === lastSent || inFlight.has(sig) || recent.includes(sig);
     },
     sentThisActivation: () => lastSent != null,
   };
@@ -737,9 +753,23 @@ export function phoneRackNow(i: {
   const live = liveRackSet(s, i.athleteId, i.workoutInstanceId);
   if (live) return { ...live, source: 'live' };
   // A coach's explicit set (iPad picker, carried by the row): the strip shows
-  // exactly the set the rack will capture — the phone-open exercise must not
-  // re-resolve it to its own first open set.
+  // exactly the set the rack will capture.
   if (i.chosen) return { routineExerciseId: i.chosen.routineExerciseId, setNumber: i.chosen.setNumber, source: 'ipad' };
+  // While active, the strip shows the RACK'S row (what the iPad shows) — any
+  // row value the phone didn't send itself (the iPad's resolution / a coach
+  // pick). The phone resolver below runs only when the row has no exercise or
+  // holds the phone's own echo (identical inputs to the iPad's resolver).
+  const rowNow = rackContextOf(s);
+  if (
+    rowNow.routineExerciseId &&
+    rowNow.setNumber != null &&
+    (!rowNow.workoutInstanceId || rowNow.workoutInstanceId === i.workoutInstanceId) &&
+    !i.isEcho(rowNow)
+  ) {
+    const autoNow = i.instance ? resolveRackSet({ instances: [i.instance], logs: i.logs }) : null;
+    const coachPick = !!autoNow && (autoNow.none || autoNow.routineExerciseId !== rowNow.routineExerciseId);
+    return { routineExerciseId: rowNow.routineExerciseId, setNumber: rowNow.setNumber, source: coachPick ? 'ipad' : 'rack' };
+  }
   if (!i.instance) return null;
   const base = { instances: [i.instance], logs: i.logs };
   const auto = resolveRackSet(base);

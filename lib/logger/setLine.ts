@@ -97,7 +97,7 @@ export function isBallMetric(metricId: string, customMeasurements: Measurement[]
 }
 
 // The metrics an exercise logs, in screen order (ball metrics heaviest to
-// lightest, weight before reps). Empty = notes-only exercise.
+// lightest, REPS before weight). Empty = notes-only exercise.
 export function metricFieldsFor(
   exercise: LoggerRoutineExercise,
   customMeasurements: Measurement[],
@@ -147,27 +147,27 @@ export function metricFieldsFor(
     fields = [...nonBallMetrics, ...ballMetrics];
   }
 
-  // Weight before reps (load, then reps) — on screen and in keypad order.
+  // REPS before weight (owner) — on screen and in keypad order.
   const w = fields.indexOf('weight');
   const r = fields.indexOf('reps');
-  if (w > r && r !== -1) {
-    fields.splice(w, 1);
-    fields.splice(r, 0, 'weight');
+  if (w !== -1 && r > w) {
+    fields.splice(r, 1);
+    fields.splice(w, 0, 'reps');
   }
 
   return fields;
 }
 
-// "220 × 2", "220 lb", "8 reps" — weight × reps when the exercise has them.
+// "5 × 50 lb", "220 lb", "8 reps" — REPS × weight when the exercise has both.
 export function formatWeightReps(weight: unknown, reps: unknown): string | null {
   const has = (v: unknown) => v != null && v !== '';
-  if (has(weight) && has(reps)) return `${weight} × ${reps}`;
+  if (has(weight) && has(reps)) return `${reps} × ${weight} lb`;
   if (has(weight)) return `${weight} lb`;
   if (has(reps)) return `${reps} reps`;
   return null;
 }
 
-// One compact line for a set: "220 × 2", then every other metric ("40 ft",
+// One compact line for a set: "5 × 50 lb", then every other metric ("40 ft",
 // "30s", "85 red ball velo") — at most 3 parts. `valueOf` returns the logged
 // value (done sets) or value-else-target (upcoming).
 export function formatSetMetrics(
@@ -198,7 +198,7 @@ export function formatSetMetrics(
 // every metric the coach prescribed a value or % target for (metric_targets,
 // set_configurations[n].metric_values / intensity_targets) — a Back Squat
 // with enabled_measurements = [weight] still prescribes reps = 2 per set.
-// Order: weight first, then reps, then the rest as metricFieldsFor had them.
+// Order: REPS first, then weight (LB), then the rest as metricFieldsFor had them.
 export function tableFieldsFor(
   exercise: LoggerRoutineExercise,
   customMeasurements: Measurement[],
@@ -214,7 +214,7 @@ export function tableFieldsFor(
     for (const [k, v] of Object.entries(sc?.metric_values ?? {})) if (hasValue(v)) add(k);
     for (const t of sc?.intensity_targets ?? []) add(t.metric);
   }
-  const rank = (m: string) => (m === 'weight' ? 0 : m === 'reps' ? 1 : 2);
+  const rank = (m: string) => (m === 'reps' ? 0 : m === 'weight' ? 1 : 2);
   return fields
     .map((m, i) => ({ m, i }))
     .sort((a, b) => rank(a.m) - rank(b.m) || a.i - b.i)

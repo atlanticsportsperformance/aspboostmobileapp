@@ -87,14 +87,14 @@ describe('after-Start overview v2 wiring', () => {
 
 describe('setLine', () => {
   const re: any = { enabled_measurements: [], metric_targets: { reps: 3, weight: 200 } };
-  it('orders weight before reps and formats a compact line', () => {
+  it('orders REPS before weight and formats a compact line (owner)', () => {
     const fields = metricFieldsFor(re, []);
-    expect(fields).toEqual(['weight', 'reps']);
-    expect(formatSetMetrics(fields, (m) => ({ weight: 220, reps: 2 } as any)[m], [])).toBe('220 × 2');
+    expect(fields).toEqual(['reps', 'weight']);
+    expect(formatSetMetrics(fields, (m) => ({ weight: 220, reps: 2 } as any)[m], [])).toBe('2 × 220 lb');
   });
   it('adds other metrics, at most 3 parts', () => {
-    const fields = ['weight', 'reps', 'distance', 'time_seconds', 'x'];
+    const fields = ['reps', 'weight', 'distance', 'time_seconds', 'x'];
     const v: any = { weight: 100, reps: 5, distance: 40, time_seconds: 30, x: 9 };
-    expect(formatSetMetrics(fields, (m) => v[m], [])).toBe('100 × 5 · 40 ft · 30s');
+    expect(formatSetMetrics(fields, (m) => v[m], [])).toBe('5 × 100 lb · 40 ft · 30s');
   });
 });

@@ -203,23 +203,42 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
     return res.data as T;
   }
   const session = (fn: string, args: Record<string, unknown>) => call<RackSessionRow>(fn, args);
+  /** rack_set_phone_context has no p_reps_target yet (migration pending): skip it. */
+  let repsTargetUnsupported = false;
 
   return {
     // ---- phone (athlete) RPCs
     join: (rackId: string) => session('rack_join', { p_rack: rackId }),
     imUp: (rackId: string) => session('rack_im_up', { p_rack: rackId }),
     leave: (rackId: string) => session('rack_leave', { p_rack: rackId }),
-    setPhoneContext: (
+    /**
+     * The phone's open exercise / set / LB (+ its REPS for that set, so the
+     * iPad's REPS box follows). p_reps_target needs the reps_target migration;
+     * until it is applied the call falls back to the 5-argument RPC.
+     */
+    async setPhoneContext(
       rackId: string,
-      ctx: { workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null; loadLb: number | null },
-    ) =>
-      session('rack_set_phone_context', {
+      ctx: { workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null; loadLb: number | null; repsTarget?: number | null },
+    ) {
+      const args = {
         p_rack: rackId,
         p_workout_instance: ctx.workoutInstanceId,
         p_routine_exercise: ctx.routineExerciseId,
         p_set_number: ctx.setNumber,
         p_load_lb: ctx.loadLb,
-      }),
+      };
+      if (!repsTargetUnsupported) {
+        try {
+          return await session('rack_set_phone_context', { ...args, p_reps_target: ctx.repsTarget ?? null });
+        } catch (e) {
+          // PGRST202 / 42883: no 6-argument function yet (migration not applied).
+          const code = (e as RackRpcError).code;
+          if (code !== 'PGRST202' && code !== '42883') throw e;
+          repsTargetUnsupported = true;
+        }
+      }
+      return session('rack_set_phone_context', args);
+    },
     requestEndSet: (rackId: string) => session('rack_request_end_set', { p_rack: rackId }),
     /** Soft-delete (or restore) one rep; the set row's reps / avg / best / drop are recomputed.
      *  Staff in reach, or the athlete themself (the phone long-press). */

@@ -46,6 +46,13 @@ import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
 import { consumeWorkoutListDirty } from '../lib/workoutRefreshSignal';
 import { startOfflineQueue } from '../lib/pulse/ble/offline-queue';
 import { cancelBooking } from '../lib/bookingApi';
+import { DISCARD_CONFIRM, RESTART_CONFIRM, resetWorkout, type ResetDeps } from '../lib/logger/resetWorkout';
+import { createRackApi, type RackClient } from '../lib/rack/api';
+
+const resetDeps: ResetDeps = {
+  client: supabase as any,
+  leaveRack: rackId => createRackApi(supabase as unknown as RackClient).leave(rackId),
+};
 import { useWorkloadMonth } from '../lib/pulse/useWorkloadMonth';
 import { WorkloadDayRing } from '../components/pulse/WorkloadDayRing';
 import { WorkloadDaySection, CombinedThrowingDayCard } from '../components/pulse/DayDetailCards';
@@ -932,41 +939,51 @@ export default function DashboardScreen({ navigation }: any) {
     }
   }
 
-  async function handleRestartWorkout() {
-    if (resumeWorkoutData) {
-      // Clear saved state
-      await AsyncStorage.removeItem(`workout_${resumeWorkoutData.instanceId}`);
-      setShowResumeModal(false);
-      navigation.navigate('WorkoutLogger', { workoutInstanceId: resumeWorkoutData.instanceId, athleteId });
-    }
+  // Restart from Beginning: confirm → leave the rack → delete this instance's
+  // sets (as Discard) → clear the device state (outbox, drafts, saved
+  // progress, queued rack/solo set writes) → stay in_progress → open fresh.
+  // vbt_reps stay (history). lib/logger/resetWorkout.
+  function handleRestartWorkout() {
+    const data = resumeWorkoutData;
+    if (!data) return;
+    Alert.alert(RESTART_CONFIRM.title, RESTART_CONFIRM.message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: RESTART_CONFIRM.ok,
+        style: 'destructive',
+        onPress: async () => {
+          setShowResumeModal(false);
+          const { ok } = await resetWorkout(data.instanceId, athleteId ?? null, resetDeps);
+          if (!ok) {
+            Alert.alert('Couldn’t restart', 'Check your connection and try again.');
+            return;
+          }
+          await supabase.from('workout_instances').update({ status: 'in_progress' }).eq('id', data.instanceId);
+          navigation.navigate('WorkoutLogger', { workoutInstanceId: data.instanceId, athleteId });
+        },
+      },
+    ]);
   }
 
-  async function handleDiscardWorkout() {
-    if (resumeWorkoutData) {
-      const instanceId = resumeWorkoutData.instanceId;
-
-      // Close modal first
-      setShowResumeModal(false);
-      setResumeWorkoutData(null);
-
-      // Clear saved state from AsyncStorage
-      await AsyncStorage.removeItem(`workout_${instanceId}`);
-
-      // Delete all exercise logs for this workout instance
-      await supabase
-        .from('exercise_logs')
-        .delete()
-        .eq('workout_instance_id', instanceId);
-
-      // Update workout instance status to 'not_started'
-      await supabase
-        .from('workout_instances')
-        .update({ status: 'not_started' })
-        .eq('id', instanceId);
-
-      // Refresh the dashboard to show updated state
-      await loadDashboard();
-    }
+  // Discard Progress: its own confirm; the same reset, then not_started.
+  function handleDiscardWorkout() {
+    const data = resumeWorkoutData;
+    if (!data) return;
+    Alert.alert(DISCARD_CONFIRM.title, DISCARD_CONFIRM.message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: DISCARD_CONFIRM.ok,
+        style: 'destructive',
+        onPress: async () => {
+          const instanceId = data.instanceId;
+          setShowResumeModal(false);
+          setResumeWorkoutData(null);
+          await resetWorkout(instanceId, athleteId ?? null, resetDeps);
+          await supabase.from('workout_instances').update({ status: 'not_started' }).eq('id', instanceId);
+          await loadDashboard();
+        },
+      },
+    ]);
   }
 
   // Booking sheet handlers

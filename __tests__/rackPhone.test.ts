@@ -558,3 +558,66 @@ describe('fix round 3: the phone follows a coach’s exact set; a finished open 
     expect(phoneRackNow({ ...base, openExerciseId: null, chosen: { routineExerciseId: 'squat', setNumber: 2 } })).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, source: 'ipad' });
   });
 });
+
+describe('REGRESSION (owner): strip showed "Box Jump · Set 5 of 4" while the iPad showed Back Squat · Set 1 of 3', () => {
+  const { createContextSender, coachSetChoice, phoneRackNow, rackStripLine } = require('../lib/rack/phoneView');
+  const { rackInstanceFromLogger, rackLogsFromCompleted } = require('../lib/rack/resolveRackSet');
+  const reRow = (id: string, sets: number, lift: boolean) => ({
+    id, exercise_id: `ex-${id}`, sets, velocity_min_mps: null, velocity_max_mps: null,
+    enabled_measurements: lift ? ['weight', 'reps'] : ['reps'], exercises: { name: id, is_placeholder: false },
+  });
+  const instance = rackInstanceFromLogger('wi', [{ id: 'r', scheme: 'straight', routine_exercises: [reRow('box', 4, false), reRow('squat', 3, true)] }]);
+  const logs = rackLogsFromCompleted('wi', { box: [true, true, true, true] });
+  const ctx = (re: string, set: number) => ({ workoutInstanceId: 'wi', routineExerciseId: re, setNumber: set, loadLb: null });
+  const sess = (re: string, set: number) => ({
+    active_athlete_id: 'me', workout_instance_id: 'wi', routine_exercise_id: re, set_number: set, state: 'idle', load_lb: null,
+    pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null,
+  });
+
+  it('root cause: a LATE realtime row of an older phone send looked like a coach pick → "chosen" Box Jump 5', () => {
+    // Sets 3–4 checked by hand: the phone sent box:3, box:4, then box:5 ("done through 4"), then followed to squat:1.
+    const sender = createContextSender(() => Promise.resolve(), 0, { setTimeout: (fn: () => void) => (fn(), 0), clearTimeout: () => {} });
+    for (const c of [ctx('box', 3), ctx('box', 4), ctx('box', 5), ctx('squat', 1)]) sender.update('rack-1', c, { immediate: true });
+    // the late row box:5 is still the phone's own echo (not only the last / in-flight send)
+    expect(sender.isEcho(ctx('box', 5))).toBe(true);
+    expect(sender.isEcho(ctx('box', 4))).toBe(true);
+    expect(coachSetChoice({ ctx: ctx('box', 5), prev: { exercise: 'squat', set: 1 }, workoutInstanceId: 'wi', isEcho: sender.isEcho, autoPick: { routineExerciseId: 'squat', setNumber: 1 } })).toBeNull();
+    // the strip then resolves from the phone's own state: never an extra set from manual completion
+    const now = phoneRackNow({ instance, logs, session: sess('box', 5), athleteId: 'me', workoutInstanceId: 'wi', openExerciseId: 'box', openSetNumber: 5, isEcho: sender.isEcho });
+    expect(now).toMatchObject({ routineExerciseId: 'squat', setNumber: 1 });
+    expect(rackStripLine('Rack 1', 'Back Squat', now.setNumber, 3)).toBe('Rack 1 · Back Squat · Set 1 of 3');
+  });
+
+  it('while active the strip IS the rack row (iPad-published squat:1), whatever the phone has open', () => {
+    const now = phoneRackNow({ instance, logs, session: sess('squat', 1), athleteId: 'me', workoutInstanceId: 'wi', openExerciseId: 'box', openSetNumber: 5, isEcho: () => false });
+    expect(now).toMatchObject({ routineExerciseId: 'squat', setNumber: 1, source: 'rack' });
+  });
+});
+
+describe('iPad REPS follow the phone: the context carries the phone’s reps', () => {
+  const { createContextSender } = require('../lib/rack/phoneView');
+  const { createRackApi } = require('../lib/rack/api');
+  it('a reps-only change is sent; echoes still match the row (which has no reps)', () => {
+    const send = jest.fn((_r: string, _c: any) => Promise.resolve());
+    const s = createContextSender(send, 0, { setTimeout: (fn: () => void) => (fn(), 0), clearTimeout: () => {} });
+    const c = { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 1, loadLb: 185 };
+    s.update('rack-1', { ...c, repsTarget: 2 }, { immediate: true });
+    s.update('rack-1', { ...c, repsTarget: 5 }, { immediate: true });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][1]).toMatchObject({ repsTarget: 5 });
+    expect(s.isEcho({ workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 1, loadLb: 185 })).toBe(true);
+  });
+  it('rack_set_phone_context sends p_reps_target; before the migration it falls back to the 5-argument call once', async () => {
+    const rpc = jest
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST202', message: 'no function' } })
+      .mockResolvedValue({ data: { rack_id: 'r' }, error: null });
+    const api = createRackApi({ rpc, from: jest.fn() });
+    const ctx = { workoutInstanceId: 'wi', routineExerciseId: 're', setNumber: 1, loadLb: null, repsTarget: 5 };
+    await api.setPhoneContext('r', ctx);
+    await api.setPhoneContext('r', ctx);
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_reps_target: 5 });
+    expect('p_reps_target' in rpc.mock.calls[1][1]).toBe(false);
+    expect('p_reps_target' in rpc.mock.calls[2][1]).toBe(false); // remembered
+  });
+});

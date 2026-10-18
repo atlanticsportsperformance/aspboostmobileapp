@@ -180,7 +180,7 @@ describe('engine removeRep', () => {
     expect(sm.setNumber).toBe(1);
     expect(r.s.lastEnded!.reps).toHaveLength(1);
     const view = buildRackView({ state: r.s, today: [], rackName: 'Rack 3', nowMs: r.t });
-    expect(view.summary?.big).toBe('205 lb × 1');
+    expect(view.summary?.big).toBe('1 rep × 205 lb');
   });
 
   it('an unknown rep id is a no-op', () => {

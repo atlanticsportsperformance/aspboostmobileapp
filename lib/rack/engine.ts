@@ -146,6 +146,10 @@ export interface RackSessionRow {
   pending_end: boolean;
   /** Maintained by the touch_updated_at trigger; orders out-of-order rows. */
   updated_at: string;
+  /** The phone's REPS for (reps_target_routine_exercise_id, reps_target_set_number) — migration pending; optional. */
+  reps_target?: number | null;
+  reps_target_routine_exercise_id?: string | null;
+  reps_target_set_number?: number | null;
 }
 
 /** Which set the phone has open (camelCase of the session's context). */

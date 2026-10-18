@@ -536,7 +536,9 @@ describe('END TO END: phone finishes A → rack lift B on BOTH devices (owner: "
     await settle();
     const v2 = buildRackView({ state: r.ex.getState(), today: [today()], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
     expect(v2.exerciseLine).toBe('Romanian Deadlift · Set 1 of 3');
-    expect(v2.sourceLine).toBe("FROM TYLER'S PHONE");
+    // The iPad published RDL:1 over the phone's "done through" row; the phone
+    // following sends the same value — the rack picked it (the phone followed).
+    expect(v2.sourceLine).toBe('PICKED BY RACK');
   });
 
   it('N1 (reviewer repro): open DB Bulgarian, back to the overview → the strip shows Bulgarian set 1 on BOTH', async () => {
@@ -748,6 +750,66 @@ describe('the set open on the phone is the rack’s set (owner bug)', () => {
     r.sync({ set_number: 1 }, r.advance(500)); // the phone after the coach
     await settle();
     expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 1, reason: 'phone' });
+  });
+});
+
+describe('REGRESSION: the phone’s tapped set survives the iPad re-publishing it (executor + phone sender)', () => {
+  it('phone taps set 2 (set 1 empty) → the iPad card shows set 2 and the next rep is written as set 2', async () => {
+    const { createContextSender } = require('../lib/rack/phoneView');
+    const r = rig();
+    // a derived load makes the iPad re-publish the phone's set with its load
+    const sq = { ...tEx('squat'), prescribedWeight: 185 };
+    const today = tyler([sq, tEx('rdl')]);
+    r.ex.setToday([today]);
+    r.sync({});
+    await settle();
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'squat', set_number: 1, load_lb: 185 }); // auto-pick
+    // The phone's real sender: the tap goes out at once (no debounce) via rack_set_phone_context.
+    const sender = createContextSender((_rack: string, c: any) => {
+      r.sync({ workout_instance_id: c.workoutInstanceId, routine_exercise_id: c.routineExerciseId, set_number: c.setNumber, load_lb: c.loadLb }, r.advance(100));
+      return Promise.resolve();
+    });
+    sender.update('rack-3', { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 2, loadLb: null }, { immediate: true });
+    await settle();
+    // the iPad filled in its load for set 2 (a re-publish of the phone's set) …
+    expect((r.api.setIpadContext as jest.Mock).mock.calls.at(-1)?.[2]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    // … and it stays on set 2: the rack's auto-pick is never newer than the phone's tap
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, reason: 'phone' });
+    const view = require('../lib/rack/viewModel').buildRackView({ state: r.ex.getState(), today: [today], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(view.exerciseLine).toBe('squat · Set 2 of 3');
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }, r.advance(5000));
+    await settle();
+    expect((r.persist.writeRep as jest.Mock).mock.calls.at(-1)?.[0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+  });
+});
+
+describe('fix round (owner): banner = rack row; iPad REPS follow the phone', () => {
+  it('a phone row "done through N" (Box Jump 4/4 → box:5) is not a target: the iPad publishes its resolution over it', async () => {
+    const box = { ...tEx('box', false), sets: 4 };
+    const today = tyler([box, tEx('squat')]);
+    const r = rig(logRows('box', 1, 2)); // DB lags: 3–4 still in the phone's outbox
+    r.ex.setToday([today]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'box', set_number: 5 });
+    await settle();
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 1 });
+    // the row now IS what the iPad shows — the phone's strip reads it (never "Box Jump · Set 5 of 4")
+    expect(r.ex.getState().session).toMatchObject({ routine_exercise_id: 'squat', set_number: 1 });
+  });
+
+  it('the iPad REPS box shows the phone’s reps for that exact exercise + set, else the prescription', async () => {
+    const { buildRackView, phoneRepsFor } = require('../lib/rack/viewModel');
+    const sq = { ...tEx('squat'), repsTarget: 2 };
+    const today = tyler([sq]);
+    const r = rig();
+    r.ex.setToday([today]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 1 });
+    await settle();
+    const v = () => buildRackView({ state: r.ex.getState(), today: [today], rackName: 'Rack 1', nowMs: r.t, ipadOwned: r.ex.ipadOwnsContext() });
+    expect(v().repsTarget).toBe(2); // prescription
+    r.sync({ reps_target: 5, reps_target_routine_exercise_id: 'squat', reps_target_set_number: 1 } as any, r.advance(200));
+    await settle();
+    expect(v().repsTarget).toBe(5); // the phone's REPS cell
+    expect(phoneRepsFor({ reps_target: 5, reps_target_routine_exercise_id: 'squat', reps_target_set_number: 1 }, 'squat', 2)).toBeNull(); // another set
   });
 });
 

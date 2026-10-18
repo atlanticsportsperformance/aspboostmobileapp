@@ -1548,6 +1548,9 @@ export default function WorkoutLoggerScreen() {
           setNumber: ctxSetIndex + 1,
         })
       : null;
+  // The REPS the phone holds for that set (typed / prefilled): the iPad's REPS box follows it.
+  const ctxRepsRaw = ctxExercise && ctxSetIndex != null ? exerciseInputs[ctxExercise.id]?.[ctxSetIndex]?.reps : null;
+  const ctxReps = ctxRepsRaw == null || ctxRepsRaw === '' || !Number.isFinite(Number(ctxRepsRaw)) ? null : Number(ctxRepsRaw);
   const rackActivation = rack.activation;
   const rackActivationSentRef = useRef(0);
   const rackLastCtxRef = useRef<{ reId: string; setIndex: number | null } | null>(null);
@@ -1575,11 +1578,11 @@ export default function WorkoutLoggerScreen() {
       ctxSetIndex == null
         ? // I4: finished — "done through N" (set N+1), never an empty context.
           { workoutInstanceId, routineExerciseId: ctxExercise.id, setNumber: (ctxExercise.sets ?? 1) + 1, loadLb: null }
-        : { workoutInstanceId, routineExerciseId: ctxExercise.id, setNumber: ctxSetIndex + 1, loadLb: ctxLoad },
+        : { workoutInstanceId, routineExerciseId: ctxExercise.id, setNumber: ctxSetIndex + 1, loadLb: ctxLoad, repsTarget: ctxReps },
       { immediate },
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rackActive, rackActivation, ctxExercise?.id, ctxSetIndex, ctxLoad, workoutInstanceId, rack.setContext]);
+  }, [rackActive, rackActivation, ctxExercise?.id, ctxSetIndex, ctxLoad, ctxReps, workoutInstanceId, rack.setContext]);
 
   // Solo: the open exercise + set (resolveRackSet with the phone as the only
   // context) and LB (typed, else the prescribed number) → the solo engine,

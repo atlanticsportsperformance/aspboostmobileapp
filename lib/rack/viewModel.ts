@@ -545,7 +545,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
       const nextName = nextUp ? findAthlete(today, nextUp)?.firstName ?? 'next athlete' : null;
       summary = {
         title: `${what} · ${END_LABEL[ended.endedBy]}`,
-        big: lb != null ? `${lb} lb × ${efull.length}` : `${efull.length} rep${efull.length === 1 ? '' : 's'}`,
+        // Reps before weight (owner): "5 reps × 205 lb".
+        big: lb != null ? `${efull.length} rep${efull.length === 1 ? '' : 's'} × ${lb} lb` : `${efull.length} rep${efull.length === 1 ? '' : 's'}`,
         avg: fmtV(eavg),
         best: fmtV(ebest),
         drop: ended.zone && elast?.dropPct != null ? `${elast.dropPct}%` : '—',
@@ -634,7 +635,8 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     exerciseName,
     setNumber,
     setsPrescribed,
-    repsTarget: ex?.repsTarget ?? null,
+    // The phone's REPS for this exact exercise + set when it holds one, else the prescription.
+    repsTarget: phoneRepsFor(row, ctx.routineExerciseId, setNumber) ?? ex?.repsTarget ?? null,
     exerciseLine,
     sourceLine,
     contextSource,
@@ -696,4 +698,16 @@ export function phoneContextOfRow(s: RackEngineState): { athleteId: string; ctx:
 export function pillParts(label: string): { name: string; set: string | null } {
   const i = label.lastIndexOf(' · Set ');
   return i < 0 ? { name: label, set: null } : { name: label.slice(0, i), set: label.slice(i + 3) };
+}
+
+/** The phone's REPS for (exercise, set) from the row (rack_set_phone_context p_reps_target), else null. */
+export function phoneRepsFor(
+  row: Pick<RackContext, never> & { reps_target?: number | null; reps_target_routine_exercise_id?: string | null; reps_target_set_number?: number | null } | null | undefined,
+  routineExerciseId: string | null,
+  setNumber: number | null,
+): number | null {
+  if (!row || row.reps_target == null || !routineExerciseId || setNumber == null) return null;
+  if (row.reps_target_routine_exercise_id !== routineExerciseId || row.reps_target_set_number !== setNumber) return null;
+  const n = Number(row.reps_target);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }

@@ -637,7 +637,7 @@ export default function ExerciseDetailView({
   };
   const lastText = (r: SetResult | null): string => {
     if (!r) return '—';
-    if (r.weight != null && r.reps != null) return `${r.weight}×${r.reps}`;
+    if (r.weight != null && r.reps != null) return `${r.reps}×${r.weight}`;
     if (r.weight != null) return String(r.weight);
     if (r.reps != null) return `×${r.reps}`;
     return '—';

@@ -545,16 +545,32 @@ export function createRackExecutor(opts: {
    * the "everything below is done" hint — also when the iPad published that
    * exercise and the phone then moved the set on (a hand-saved set).
    */
+  /**
+   * The phone's latest context — remembered by PROVENANCE, not read off the
+   * row: the iPad's own re-publishes (a derived load, the bar weight, its
+   * resolution of that same set) rewrite the row with the phone's set but are
+   * not phone actions, and must never launder the phone's set back to the
+   * rack's auto-pick. Set from every row value the iPad didn't send itself;
+   * cleared when the active athlete changes. The rack's auto-pick is never
+   * newer than a phone action; only a coach pick competes (latest wins).
+   */
+  let phoneCtx: (RackExerciseRef & { athleteId: string }) | null = null;
+  const notePhoneCtx = () => {
+    const id = state.activeAthleteId;
+    const r = state.session;
+    if (!id || !r || r.active_athlete_id !== id) return;
+    const n = rowNext();
+    if (!n || n.wi == null || n.re == null) return;
+    const p = sentByIpad;
+    if (p && p.athleteId === id && p.workoutInstanceId === n.wi && p.routineExerciseId === n.re && p.setNumber === n.set) return;
+    phoneCtx = { athleteId: id, workoutInstanceId: n.wi, routineExerciseId: n.re, setNumber: n.set };
+  };
   const phoneRef = (): RackExerciseRef | null => {
     const id = state.activeAthleteId;
     const r = state.session;
-    if (!id || !r || r.active_athlete_id !== id) return null;
-    const n = rowNext();
-    if (!n || n.wi == null || n.re == null) return null;
-    // Only what the iPad actually SENT is its own (an adopted phone value stays the phone's hint).
-    const p = sentByIpad;
-    if (p && p.athleteId === id && p.workoutInstanceId === n.wi && p.routineExerciseId === n.re && p.setNumber === n.set) return null;
-    return { workoutInstanceId: n.wi, routineExerciseId: n.re, setNumber: n.set };
+    if (!id || !r || r.active_athlete_id !== id || !phoneCtx || phoneCtx.athleteId !== id) return null;
+    const { athleteId: _a, ...ref } = phoneCtx;
+    return ref;
   };
   const lastRackExerciseOf = (athleteId: string): RackExerciseRef | null => {
     const set = state.lastEndByAthlete[athleteId]?.set;
@@ -842,7 +858,12 @@ export function createRackExecutor(opts: {
       if (override && override.athleteId !== state.activeAthleteId) override = null;
       published = null;
       sentByIpad = null;
+      phoneCtx = null;
       lastAttemptKey = null;
+    }
+    if (event.type === 'sessionSync') notePhoneCtx();
+    if (state.activeAthleteId !== before) {
+      // (handled above)
     } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow() && refSig(phoneRef()) !== override.phoneSig) {
       // The phone moved the athlete on: its newer pick wins over the coach override.
       override = null;
@@ -1157,6 +1178,14 @@ export function createRackExecutor(opts: {
     if (!n || n.wi == null) return true;
     return !!published && published.athleteId === id && published.workoutInstanceId === n.wi && published.routineExerciseId === n.re;
   };
+  /** The row holds the phone's "done through N" context (set past the prescription). */
+  const phoneRowFinished = (): boolean => {
+    const n = rowNext();
+    const id = state.activeAthleteId;
+    if (!n || n.wi == null || n.re == null || n.set == null || !id) return false;
+    const ex = today.find(t => t.athleteId === id)?.exercises.find(e => e.workoutInstanceId === n.wi && e.routineExerciseId === n.re);
+    return !!ex && n.set > Math.max(0, ex.sets ?? 1);
+  };
   const phoneOwnsRow = () => {
     const n = rowNext();
     return !!n && n.wi != null && !ipadOwnsContext();
@@ -1178,7 +1207,10 @@ export function createRackExecutor(opts: {
     const r = state.session;
     if (!r || r.active_athlete_id !== id) return;
     const coach = !!override && override.athleteId === id && override.ex.workoutInstanceId === local.workoutInstanceId && override.ex.routineExerciseId === local.routineExerciseId;
-    if (!ipadOwnsContext() && !coach) return; // the phone's context: never echo it
+    // The phone's context: never echo it — except a finished exercise the
+    // phone only views ("done through N", set > prescribed): not a target, so
+    // the row shows the rack's resolved set (the phone's strip reads the row).
+    if (!ipadOwnsContext() && !coach && !phoneRowFinished()) return;
     const n = rowNext();
     const sameEx = !!n && n.wi === local.workoutInstanceId && n.re === local.routineExerciseId;
     const mine = published && published.athleteId === id ? published : null;
