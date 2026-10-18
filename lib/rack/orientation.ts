@@ -25,43 +25,107 @@ export function isRackRoute(name: string | undefined | null): boolean {
 }
 
 type Want = 'portrait' | 'unlocked';
-let last: Want | null = null;
 
-/** Unlocked only on a rack route on an iPad; portrait everywhere else. */
+/**
+ * Serialized "desired state" pump. Every request records what it WANTS; one
+ * loop applies locks one at a time until what was applied equals the latest
+ * want. (The old code cached `last` only after an async lock resolved, so a
+ * quick rack → non-rack → rack bounce — the staff guard / boot-to-rack reset —
+ * skipped the unlock as "already unlocked" and the late portrait lock won:
+ * RackMode stayed portrait-locked and iPadOS 26 letterboxed it on rotation.)
+ */
+let desired: Want | null = null;
+let applied: Want | null = null;
+/** Re-apply even when applied === desired (RackMode focus / foreground). */
+let dirty = false;
+let pumping: Promise<void> | null = null;
+
+async function pump(): Promise<void> {
+  while (desired !== null && (desired !== applied || dirty)) {
+    const want = desired;
+    dirty = false;
+    try {
+      await ScreenOrientation.lockAsync(
+        want === 'unlocked' ? ScreenOrientation.OrientationLock.DEFAULT : ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      );
+      applied = want;
+    } catch (e) {
+      applied = null;
+      console.warn(`[orientation] ${want === 'unlocked' ? 'unlock' : 'portrait lock'} failed`, e);
+      return; // retried on the next request
+    }
+  }
+}
+
+function request(want: Want, force = false): Promise<void> {
+  desired = want;
+  if (force) dirty = true;
+  if (!pumping) {
+    pumping = pump().finally(() => {
+      pumping = null;
+    });
+  }
+  return pumping;
+}
+
+/**
+ * Whether this iPad is a rack (rack_device_v1 present). null = not read yet.
+ * App.tsx sets it. While booting (Loading) a rack iPad must NOT be locked
+ * portrait: a portrait-only moment while the iPad is held landscape makes
+ * iPadOS 26 open the app as a letterboxed WINDOW, and it stays windowed.
+ */
+let rackHint: boolean | null = null;
+export function setRackDeviceHint(present: boolean): void {
+  rackHint = present;
+}
+
+/** Boot routes shown before routing decides (Loading). */
+const BOOT_ROUTES = ['Loading'];
+
+/** iPad: unlocked on rack routes, on every route of a rack iPad, and while booting
+ *  before rack_device_v1 is read; portrait everywhere else. Phone: portrait. */
 export function orientationFor(routeName: string | undefined | null): Want {
-  return isRackRoute(routeName) && isTabletDevice() ? 'unlocked' : 'portrait';
+  if (!isTabletDevice()) return 'portrait';
+  if (isRackRoute(routeName)) return 'unlocked';
+  // A rack iPad (rack_device_v1 set) is never portrait-locked — not even the
+  // brief Loading → CoachDashboard → RackMode hop at boot.
+  if (rackHint === true) return 'unlocked';
+  if ((routeName == null || BOOT_ROUTES.includes(routeName)) && rackHint === null) return 'unlocked';
+  return 'portrait';
 }
 
-// `last` is recorded only after a lock succeeds, so a failed lock is retried
-// on the next navigation change.
-export async function lockPortrait(): Promise<void> {
-  try {
-    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    last = 'portrait';
-  } catch (e) {
-    last = null;
-    console.warn('[orientation] portrait lock failed', e);
-  }
+export function lockPortrait(): Promise<void> {
+  return request('portrait');
 }
 
-/** iPad rack screens: back to the plist's supported set (all four on iPad). */
-export async function unlockRackOrientations(): Promise<void> {
-  try {
-    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.DEFAULT);
-    last = 'unlocked';
-  } catch (e) {
-    last = null;
-    console.warn('[orientation] unlock failed', e);
-  }
+/** iPad rack screens: OrientationLock.DEFAULT (= all-but-upside-down on a
+ *  home-indicator iPad; `ALL` is refused there). */
+export function unlockRackOrientations(): Promise<void> {
+  return request('unlocked');
 }
 
-/** The non-rack base: portrait (phone and iPad). */
-export async function applyBaseOrientation(): Promise<void> {
+/** The non-rack base: portrait (phone and iPad). Used when leaving Rack mode. */
+export function applyBaseOrientation(): Promise<void> {
   return lockPortrait();
 }
 
+/**
+ * App start. Phone: portrait. iPad: no lock yet — the native default is the
+ * plist's iPad set (all four; app.json sets no portrait-only launch mask), and
+ * the first route decides (a rack iPad boots straight into RackMode unlocked).
+ */
+export function applyBootOrientation(): Promise<void> {
+  return isTabletDevice() ? Promise.resolve() : lockPortrait();
+}
+
+/**
+ * Rack screen mount / focus / foreground: unlock on an iPad EVERY time, even
+ * if this module believes it already is (a native lock can be stale).
+ */
+export function ensureRackOrientation(): Promise<void> {
+  return isTabletDevice() ? request('unlocked', true) : request('portrait');
+}
+
 export function syncOrientationForRoute(name: string | undefined | null): void {
-  const want = orientationFor(name);
-  if (want === last) return;
-  void (want === 'unlocked' ? unlockRackOrientations() : lockPortrait());
+  void request(orientationFor(name));
 }

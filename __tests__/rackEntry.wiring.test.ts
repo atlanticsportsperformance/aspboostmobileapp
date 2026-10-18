@@ -118,7 +118,7 @@ describe('boot to rack', () => {
   });
   it('registers the rack routes and applies the base orientation at start', () => {
     for (const r of ['RackSetup', 'RackMode', 'RackPinExit']) expect(A).toContain(`name="${r}"`);
-    expect(A).toMatch(/\napplyBaseOrientation\(\);/);
+    expect(A).toMatch(/\napplyBootOrientation\(\);/);
     expect(A).not.toMatch(/lockPortrait|lockRackLandscape/);
     expect(A).toContain('onStateChange={() => syncOrientationForRoute(');
   });
@@ -130,11 +130,12 @@ describe('boot to rack', () => {
 describe('app config', () => {
   const app = JSON.parse(read('app.json')).expo;
   const eas = JSON.parse(read('eas.json'));
-  it('iPad supported, full screen, default orientation with a portrait initial lock', () => {
+  it('iPad supported; no portrait-only launch mask (iPadOS 26 would window a landscape-held iPad)', () => {
     expect(app.ios.supportsTablet).toBe(true);
     expect(app.ios.requireFullScreen).toBe(true);
     expect(app.orientation).toBe('default');
-    expect(app.plugins).toContainEqual(['expo-screen-orientation', { initialOrientation: 'PORTRAIT_UP' }]);
+    expect(app.plugins).toContain('expo-screen-orientation');
+    expect(JSON.stringify(app.plugins)).not.toContain('initialOrientation');
   });
   it('Android keeps its native portrait lock via the local plugin', () => {
     expect(app.plugins).toContain('./plugins/withAndroidPortrait');

@@ -157,7 +157,17 @@ describe('orientation: iPad rack screens unlocked, everything else portrait', ()
     expect(ORIENT).not.toMatch(/OrientationLock\.LANDSCAPE/);
     expect(ORIENT).not.toMatch(/OrientationLock\.ALL/);
     expect(ORIENT).toContain('ScreenOrientation.OrientationLock.DEFAULT');
-    expect(APP).toMatch(/\napplyBaseOrientation\(\);/);
+    expect(APP).toMatch(/\napplyBootOrientation\(\);/);
+  });
+
+  it('RackMode re-asserts the unlock on mount, focus and foreground (never trusts a cached lock)', () => {
+    expect(S).toContain('void ensureRackOrientation();');
+    expect(S).toContain("if (st === 'active') void ensureRackOrientation();");
+    expect(S).toMatch(/useFocusEffect\(\s*useCallback\(\(\) => \{\s*void ensureRackOrientation\(\);/);
+  });
+
+  it('a rack iPad is never portrait-locked (boot hop Loading → CoachDashboard → RackMode)', () => {
+    expect(APP).toContain('setRackDeviceHint(!!d);');
   });
 
   it('Info.plist: iPhone portrait only; iPad all four orientations', () => {
@@ -199,6 +209,56 @@ describe('orientation: iPad rack screens unlocked, everything else portrait', ()
     o.syncOrientationForRoute('RackMode');
     await Promise.resolve();
     expect(lockAsync.mock.calls.map(c => (c as unknown[])[0])).toEqual(['PORTRAIT_UP']);
+  });
+
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  it('regression: a quick rack → non-rack → rack bounce ends UNLOCKED (late portrait lock never wins)', async () => {
+    const { o, lockAsync } = load(true);
+    o.setRackDeviceHint(false);
+    const pending: (() => void)[] = [];
+    lockAsync.mockImplementation(() => new Promise<void>(r => pending.push(r)));
+    o.syncOrientationForRoute('RackMode'); // DEFAULT in flight
+    pending.shift()!();
+    await settle();
+    o.syncOrientationForRoute('Loading'); // hint false → portrait in flight
+    o.syncOrientationForRoute('RackMode'); // back before it resolves
+    pending.shift()!();
+    await settle();
+    pending.shift()?.();
+    await settle();
+    const calls = lockAsync.mock.calls.map(c => (c as unknown[])[0]);
+    expect(calls[calls.length - 1]).toBe('DEFAULT');
+  });
+
+  it('a rack iPad is never portrait-locked, on any route', async () => {
+    const { o, lockAsync } = load(true);
+    o.setRackDeviceHint(true);
+    o.syncOrientationForRoute('Loading');
+    await settle();
+    o.syncOrientationForRoute('CoachDashboard');
+    await settle();
+    expect(lockAsync.mock.calls.map(c => (c as unknown[])[0])).toEqual(['DEFAULT']);
+  });
+
+  it('boot: iPad applies no lock; phone locks portrait', async () => {
+    const ipad = load(true);
+    await ipad.o.applyBootOrientation();
+    expect(ipad.lockAsync).not.toHaveBeenCalled();
+    const phone = load(false);
+    await phone.o.applyBootOrientation();
+    expect(phone.lockAsync).toHaveBeenCalledWith('PORTRAIT_UP');
+  });
+
+  it('ensureRackOrientation re-applies the unlock even when already unlocked', async () => {
+    const { o, lockAsync } = load(true);
+    o.syncOrientationForRoute('RackMode');
+    await settle();
+    await o.ensureRackOrientation();
+    await settle();
+    expect(lockAsync.mock.calls.map(c => (c as unknown[])[0])).toEqual(['DEFAULT', 'DEFAULT']);
   });
 });
 

@@ -105,12 +105,7 @@
         }
       ],
       "expo-video",
-      [
-        "expo-screen-orientation",
-        {
-          "initialOrientation": "PORTRAIT_UP"
-        }
-      ],
+      "expo-screen-orientation",
       "./plugins/withAndroidPortrait"
     ],
     "runtimeVersion": {

@@ -26,9 +26,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackHandler, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { AppState, BackHandler, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useAuth } from '../../contexts/AuthContext';
@@ -43,6 +43,7 @@ import {
   type RackDevice,
 } from '../../lib/rack/device';
 import { useRackStaffGuard } from '../../hooks/useRackStaffGuard';
+import { ensureRackOrientation } from '../../lib/rack/orientation';
 import { useOvrDevice } from '../../hooks/useOvrDevice';
 import { useRackSession } from '../../hooks/useRackSession';
 import { createRackApi, type TodayExercise } from '../../lib/rack/api';
@@ -92,6 +93,22 @@ export default function RackModeScreen() {
   }, []);
 
   // Android back never leaves Rack mode.
+  // iPad: unlock on mount, on every focus and on every return to the
+  // foreground — never trust a cached lock (a quick route bounce could leave
+  // RackMode portrait-locked, which iPadOS 26 letterboxes on rotation).
+  useEffect(() => {
+    void ensureRackOrientation();
+    const sub = AppState.addEventListener('change', st => {
+      if (st === 'active') void ensureRackOrientation();
+    });
+    return () => sub.remove();
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      void ensureRackOrientation();
+    }, []),
+  );
+
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
     return () => sub.remove();

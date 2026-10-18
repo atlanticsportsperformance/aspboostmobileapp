@@ -47,10 +47,11 @@ import LoadingScreen from './screens/LoadingScreen';
 import { StatusBar } from 'expo-status-bar';
 import { useOutboxForegroundSync } from './hooks/useOutboxForegroundSync';
 import { readRackDevice, subscribeRackDevice, type RackDevice } from './lib/rack/device';
-import { applyBaseOrientation, isRackRoute, syncOrientationForRoute } from './lib/rack/orientation';
+import { applyBootOrientation, isRackRoute, setRackDeviceHint, syncOrientationForRoute } from './lib/rack/orientation';
 
-// Portrait everywhere; on an iPad the Rack screens unlock (lib/rack/orientation).
-applyBaseOrientation();
+// Phone: portrait everywhere. iPad: Rack screens unlocked, others portrait;
+// never portrait-locked at boot (lib/rack/orientation).
+applyBootOrientation();
 
 const Stack = createNativeStackNavigator();
 
@@ -68,8 +69,15 @@ function AppContent() {
   const [rackDevice, setRackDevice] = useState<RackDevice | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
-    readRackDevice().then((d) => { if (alive) setRackDevice(d); });
-    const off = subscribeRackDevice((d) => setRackDevice(d));
+    readRackDevice().then((d) => {
+      setRackDeviceHint(!!d);
+      if (alive) setRackDevice(d);
+      syncOrientationForRoute(navigationRef.current?.getCurrentRoute()?.name);
+    });
+    const off = subscribeRackDevice((d) => {
+      setRackDeviceHint(!!d);
+      setRackDevice(d);
+    });
     return () => { alive = false; off(); };
   }, []);
 
