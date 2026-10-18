@@ -33,6 +33,8 @@ export interface DraftWriter {
   take(key: string): string[];
   /** Fields pending for a set (tests / debugging). */
   pending(key: string): string[];
+  /** What the phone last knew the server holds for a set (the baseline drafts diff against). */
+  savedOf(key: string): Record<string, unknown> | undefined;
 }
 
 export function createDraftWriter(opts: {
@@ -96,5 +98,6 @@ export function createDraftWriter(opts: {
       return fields;
     },
     pending: key => [...(fieldsOf.get(key) ?? [])],
+    savedOf: key => saved.get(key),
   };
 }

@@ -20,7 +20,8 @@ import { createRackPersist, MOVE_QUEUE_KEY, REMOVAL_QUEUE_KEY, REP_QUEUE_KEY, SE
 import type { RepWrite, SetSummary } from '../lib/rack/engine';
 import { buildRackView, lastSetMoveOf, moveCandidates, MOVE_WINDOW_MS as VIEW_MOVE_WINDOW_MS, removeRepTitle } from '../lib/rack/viewModel';
 import { addRepRow, type ChipSet } from '../lib/rack/phone';
-import { rackRowsGone } from '../lib/rack/phoneView';
+import { rackRowDiff, rackRowsGone } from '../lib/rack/phoneView';
+import { createDraftWriter } from '../lib/logger/draftWriter';
 import { dropPct } from '../lib/ovr/protocol';
 import type { OvrRep } from '../lib/ovr/protocol';
 import type { SetLogRow, TodayAthlete, TodayExercise } from '../lib/rack/api';
@@ -778,8 +779,14 @@ describe('review I3: phones re-read the open exercise when a rack row changes', 
     expect(H).toContain('useFocusEffect(');
     const L = read('screens/WorkoutLoggerScreen.tsx');
     expect(L).toContain('onRackChange: () => rackOnChangeRef.current(),');
-    expect(L).toContain("const gone = rackRowsGone({ completed: completedRef.current[reId], inputs: inputsRef.current[reId], rows: rows as any, sets: ex.sets ?? 1 });");
-    expect(L).toContain('for (const r of rows) if (r.is_complete === true && r.metric_data?.vbt) applyRackWrittenLog(r);');
+    expect(L).toContain('const { changes, gone } = rackRowDiff({');
+    // The re-read never cancels a draft and never reapplies a whole row to a prescribed set.
+    const reread = L.slice(L.indexOf('rackOnChangeRef.current = () => {'), L.indexOf('// N3: left the rack or bumped off it'));
+    expect(reread).not.toContain('cancelDraft');
+    expect(reread).not.toContain('draftWriter.take');
+    expect(reread).not.toContain('draftWriter.setSaved');
+    expect(reread).toContain('pending: k => draftWriter.pending(keyOf(k)),');
+    expect(reread).toContain('saved: k => draftWriter.savedOf(keyOf(k)),');
     const P = read('lib/rack/phone.ts');
     expect(P).toContain('if (!closed) onUpdate?.(payload.new);');
   });
@@ -839,5 +846,109 @@ describe('review I4: a phone LB edit newer than the iPad bar weight wins', () =>
     release();
     await r.ex.idle();
     expect(r.ex.getState().barLoad).toBeNull();
+  });
+});
+
+describe('fix round 3 C1: the set re-read is a diff of rack keys only', () => {
+  const vbt1 = { avg_v: 0.5, best_v: 0.6, reps: [{ v: 0.5 }, { v: 0.6 }] };
+  const rowOf = (n: number, over: Record<string, any> = {}) => ({
+    set_number: n,
+    is_complete: true,
+    actual_reps: 2,
+    actual_weight: 205,
+    rpe: 7,
+    notes: 'server note',
+    metric_data: { vbt: vbt1 },
+    ...over,
+  });
+  const writer = () => createDraftWriter({ persist: () => {}, timers: { setTimeout: () => 1, clearTimeout: () => {} } });
+
+  it('an unchanged row → no change at all', () => {
+    const w = writer();
+    w.setSaved('re:0', { reps: 2, weight: 205, notes: 'server note', vbt: vbt1 });
+    const d = rackRowDiff({
+      completed: [true],
+      inputs: [{ reps: 2, weight: 205, notes: 'server note', vbt: vbt1 }],
+      rows: [rowOf(1)],
+      sets: 1,
+      saved: k => w.savedOf(`re:${k}`),
+      pending: k => w.pending(`re:${k}`),
+    });
+    expect(d).toEqual({ changes: [], gone: [] });
+  });
+
+  it('an edit in flight survives: a pending LB / RPE / notes draft and an unsynced reps edit are never touched or cancelled', () => {
+    const w = writer();
+    w.setSaved('re:0', { reps: 2, weight: 205, notes: 'server note', vbt: vbt1 });
+    w.edit('re:0', 'weight', 215); // typed, debounce pending
+    w.edit('re:0', 'notes', 'felt fast');
+    // The server row changed its rack keys (a rep removed on the iPad: 1 rep left), and the athlete
+    // also changed REPS locally to 3 (in the outbox, not on the server yet).
+    const vbt2 = { avg_v: 0.6, best_v: 0.6, reps: [{ v: 0.6 }] };
+    const d = rackRowDiff({
+      completed: [true],
+      inputs: [{ reps: 3, weight: 215, notes: 'felt fast', vbt: vbt1 }],
+      rows: [rowOf(1, { actual_reps: 1, metric_data: { vbt: vbt2 } })],
+      sets: 1,
+      saved: k => w.savedOf(`re:${k}`),
+      pending: k => w.pending(`re:${k}`),
+    });
+    expect(d.changes).toEqual([{ setIndex: 0, kind: 'changed', patch: { vbt: vbt2 } }]);
+    expect(d.changes[0].patch).not.toHaveProperty('weight');
+    expect(d.changes[0].patch).not.toHaveProperty('notes');
+    expect(d.changes[0].patch).not.toHaveProperty('rpe');
+    expect(d.changes[0].patch).not.toHaveProperty('reps'); // the athlete's own edit stands
+    expect(w.pending('re:0').sort()).toEqual(['notes', 'weight']); // drafts untouched
+  });
+
+  it('rack reps follow the server when the phone still shows the old value', () => {
+    const w = writer();
+    w.setSaved('re:0', { reps: 2, vbt: vbt1 });
+    const vbt2 = { avg_v: 0.6, best_v: 0.6, reps: [{ v: 0.6 }] };
+    const d = rackRowDiff({
+      completed: [true],
+      inputs: [{ reps: 2, vbt: vbt1 }],
+      rows: [rowOf(1, { actual_reps: 1, metric_data: { vbt: vbt2 } })],
+      sets: 1,
+      saved: k => w.savedOf(`re:${k}`),
+      pending: k => w.pending(`re:${k}`),
+    });
+    expect(d.changes).toEqual([{ setIndex: 0, kind: 'changed', patch: { vbt: vbt2, reps: 1 } }]);
+  });
+
+  it('a moved-in row checks off (rack keys; weight only into an empty cell)', () => {
+    const w = writer();
+    const d = rackRowDiff({
+      completed: [true, false],
+      inputs: [{ reps: 2, vbt: vbt1 }, {}],
+      rows: [rowOf(1), rowOf(2, { actual_reps: 3 })],
+      sets: 2,
+      saved: k => (k === 0 ? { reps: 2, vbt: vbt1 } : undefined),
+      pending: () => [],
+    });
+    expect(d.changes).toEqual([{ setIndex: 1, kind: 'in', patch: { vbt: vbt1, reps: 3, weight: 205 } }]);
+    // A typed LB on the moved-in set stays the athlete's.
+    w.edit('re:1', 'weight', 225);
+    const d2 = rackRowDiff({
+      completed: [false],
+      inputs: [{ weight: 225 }],
+      rows: [rowOf(1)],
+      sets: 1,
+      saved: () => undefined,
+      pending: k => w.pending(`re:${k + 1}`),
+    });
+    expect(d2.changes[0].patch).toEqual({ vbt: vbt1, reps: 2 });
+  });
+
+  it('a moved-out row un-checks (gone), a hand-logged one stays', () => {
+    const d = rackRowDiff({
+      completed: [true, true],
+      inputs: [{ reps: 2, vbt: vbt1 }, { reps: 5 }],
+      rows: [],
+      sets: 2,
+      saved: () => undefined,
+      pending: () => [],
+    });
+    expect(d).toEqual({ changes: [], gone: [0] });
   });
 });

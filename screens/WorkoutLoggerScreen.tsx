@@ -66,7 +66,7 @@ import {
   rackContextOf,
   rackSafeWrite,
   rackSummaryLine,
-  rackRowsGone,
+  rackRowDiff,
   speedDropCue,
   followOnFinish,
   phoneRackNow,
@@ -1357,8 +1357,11 @@ export default function WorkoutLoggerScreen() {
 
   // A rack row changed (a set moved to / away from this athlete, a rep removed
   // on the iPad), or the screen refreshed: re-read the open exercise's set
-  // rows. A moved-in set fills in and checks off; a moved-away rack set
-  // un-checks (its row was deleted / un-completed by rack_move_set).
+  // rows as a DIFF (rackRowDiff) — never a reapply. Only rack-owned keys
+  // (vbt, rack reps) that the server changed since the phone's baseline are
+  // merged; a moved-in set checks off; a moved-away rack set un-checks. LB,
+  // RPE, notes and anything with a pending / unsynced edit are never touched,
+  // and no draft is cancelled. (readPendingRackWrites keeps the full apply.)
   rackOnChangeRef.current = () => {
     const reId = viewMode === 'exercise' ? activeExerciseId : null;
     const ex = reId ? allExercises.find(e => e.id === reId) : undefined;
@@ -1372,19 +1375,57 @@ export default function WorkoutLoggerScreen() {
           .eq('routine_exercise_id', reId);
         if (error) throw error;
         const rows = ((data as any[]) ?? []) as Record<string, any>[];
-        for (const r of rows) if (r.is_complete === true && r.metric_data?.vbt) applyRackWrittenLog(r);
-        const gone = rackRowsGone({ completed: completedRef.current[reId], inputs: inputsRef.current[reId], rows: rows as any, sets: ex.sets ?? 1 });
-        if (gone.length) {
+        const sets = ex.sets ?? 1;
+        const keyOf = (k: number) => `${reId}:${k}`;
+        const { changes, gone } = rackRowDiff({
+          completed: completedRef.current[reId],
+          inputs: inputsRef.current[reId],
+          rows: rows as any,
+          sets,
+          saved: k => draftWriter.savedOf(keyOf(k)),
+          pending: k => draftWriter.pending(keyOf(k)),
+        });
+        if (changes.length || gone.length) {
           const inputs = [...(inputsRef.current[reId] ?? [])];
+          while (inputs.length < sets) inputs.push({});
+          for (const c of changes) {
+            inputs[c.setIndex] = { ...inputs[c.setIndex], ...c.patch };
+            draftWriter.markSaved(keyOf(c.setIndex), Object.keys(c.patch), c.patch);
+            if (c.kind === 'in') {
+              const key = keyOf(c.setIndex);
+              delete rackPendingRef.current[key];
+              setRackSavingState(prev => {
+                if (!(key in prev)) return prev;
+                const next = { ...prev };
+                delete next[key];
+                return next;
+              });
+            }
+          }
           for (const k of gone) {
             const { vbt: _v, ...rest } = inputs[k] ?? {};
             inputs[k] = rest;
-            draftWriter.setSaved(`${reId}:${k}`, rest);
+            draftWriter.markSaved(keyOf(k), ['vbt'], { vbt: undefined });
           }
           commitInputs({ ...inputsRef.current, [reId]: inputs });
-          commitCompleted(reId, c => c.map((v, k) => (gone.includes(k) ? false : v)), ex.sets ?? 1);
+          const moved = changes.filter(c => c.kind === 'in').map(c => c.setIndex);
+          if (moved.length || gone.length) {
+            commitCompleted(reId, c => c.map((v, k) => (moved.includes(k) ? true : gone.includes(k) ? false : v)), sets);
+          }
+          if (moved.length) {
+            // The next set opens past a moved-in one (forward only).
+            const done = completedRef.current[reId];
+            const top = Math.max(...moved);
+            const nextIndex = firstIncompleteSet(done, sets);
+            if (nextIndex != null && nextIndex > top) {
+              setCurrentSetIndexes(prev => ((prev[reId] ?? 0) <= top ? { ...prev, [reId]: nextIndex } : prev));
+            }
+          }
         }
-        // Extra rack sets that moved away.
+        // Extra rack sets (past the prescription): new ones land, moved-away ones go.
+        for (const r of rows) {
+          if (r.is_complete === true && r.metric_data?.vbt && Number(r.set_number) > sets && !rackExtra[reId]?.[Number(r.set_number)]) applyRackWrittenLog(r);
+        }
         const extraNow = new Set(rows.filter(r => r.is_complete === true).map(r => Number(r.set_number)));
         setRackExtra(prev => {
           const cur = prev[reId];
@@ -1397,6 +1438,7 @@ export default function WorkoutLoggerScreen() {
       }
     })();
   };
+
 
   // N3: left the rack or bumped off it — one more read of the rack's pending
   // rows now and after RACK_WRITE_TIMEOUT_MS, then the phone owns those sets

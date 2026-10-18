@@ -466,6 +466,60 @@ export function rackRowsGone(i: {
   return out;
 }
 
+export interface RackRowChange {
+  /** 0-based set. */
+  setIndex: number;
+  /** 'in' = new to the phone (moved in): checks off. 'changed' = rack keys changed on a done set. */
+  kind: 'in' | 'changed';
+  /** Only rack-owned keys (vbt, reps; weight only into an empty, un-drafted cell of a moved-in set). */
+  patch: Record<string, any>;
+}
+
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const sameText = (a: unknown, b: unknown) => (a == null ? '' : String(a)) === (b == null ? '' : String(b));
+
+/**
+ * The set re-read as a DIFF (never a reapply): which rack rows are new to the
+ * phone (moved in), which rack-owned keys changed on the server since the
+ * phone's baseline (`saved` — what it last knew the server holds), and which
+ * rack-saved sets disappeared (moved out → `gone`, see rackRowsGone).
+ * A key the athlete has edited (pending draft, or a local value that differs
+ * from the baseline, e.g. still in the outbox) is never touched; LB, RPE and
+ * notes are never part of a change to a done set. Unchanged rows → nothing.
+ */
+export function rackRowDiff(i: {
+  completed: boolean[] | undefined;
+  inputs: Record<string, any>[] | undefined;
+  rows: { set_number: number; is_complete?: boolean | null; actual_reps?: unknown; actual_weight?: unknown; metric_data?: any }[];
+  sets: number;
+  saved: (setIndex: number) => Record<string, unknown> | undefined;
+  pending: (setIndex: number) => string[];
+}): { changes: RackRowChange[]; gone: number[] } {
+  const changes: RackRowChange[] = [];
+  for (const r of i.rows) {
+    const k = Number(r.set_number) - 1;
+    const vbt = r.metric_data?.vbt;
+    if (r.is_complete !== true || !vbt || !Number.isInteger(k) || k < 0 || k >= i.sets) continue;
+    const cur = i.inputs?.[k] ?? {};
+    const base = i.saved(k) ?? {};
+    const pend = new Set(i.pending(k));
+    const patch: Record<string, any> = {};
+    if (i.completed?.[k] !== true) {
+      // Moved in: the rack's set lands; the athlete's own typing stays.
+      Object.assign(patch, { vbt }); // local state only — the phone never writes vbt
+      if (r.actual_reps != null && !pend.has('reps')) patch.reps = r.actual_reps;
+      if (r.actual_weight != null && loadFromInput(cur.weight) == null && !pend.has('weight')) patch.weight = r.actual_weight;
+      changes.push({ setIndex: k, kind: 'in', patch });
+      continue;
+    }
+    // A done set: only rack keys the server changed, only where the phone holds the old value.
+    if (!sameJson(vbt, base.vbt) && !pend.has('vbt') && sameJson(cur.vbt, base.vbt)) Object.assign(patch, { vbt });
+    if (r.actual_reps != null && !sameText(r.actual_reps, base.reps) && !pend.has('reps') && sameText(cur.reps, base.reps)) patch.reps = r.actual_reps;
+    if (Object.keys(patch).length) changes.push({ setIndex: k, kind: 'changed', patch });
+  }
+  return { changes, gone: rackRowsGone({ completed: i.completed, inputs: i.inputs, rows: i.rows, sets: i.sets }) };
+}
+
 /** The rack ended the set on its own (60 s with no rep). */
 export function endedByIdle(log: { metric_data?: any } | null | undefined): boolean {
   return log?.metric_data?.vbt?.ended_by === 'idle';
