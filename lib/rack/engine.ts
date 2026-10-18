@@ -446,6 +446,15 @@ export type RackEffect =
    * new summary (replace it) — nothing is written when none is queued.
    */
   | { type: 'setChanged'; summary: SetSummary }
+  /**
+   * rack_move_set: the wrong athlete's whole set (undo their row, move every rep under that key) —
+   * a mid-set move of an idle-REOPENED set, whose carried reps sit in the wrong athlete's ended row.
+   */
+  | {
+      type: 'moveSetRow';
+      from: { athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null };
+      to: { athleteId: string; workoutInstanceId: string | null; routineExerciseId: string | null; setNumber: number | null };
+    }
   /** rack_move_reps: move exactly these reps to the target set (queued behind the rep writes). */
   | {
       type: 'moveReps';
@@ -1290,6 +1299,15 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       // Re-sent under the target (a still-queued write is replaced; a sent one is moved by rack_move_reps).
       for (const r of moved.reps) if (!r.carried) fx.push({ type: 'writeRep', rep: repWriteOf(s, moved, r) });
       fx.push({ type: 'endSet', summary: summarizeFor(s, moved) });
+      const toRef = { athleteId: to, workoutInstanceId: moved.context.workoutInstanceId, routineExerciseId: moved.context.routineExerciseId, setNumber: moved.context.setNumber };
+      if (from.reps.some(r => r.carried) && !from.free) {
+        // Idle reopen: the carried reps live in the wrong athlete's ended row — move that row too.
+        fx.push({
+          type: 'moveSetRow',
+          from: { athleteId: from.athleteId, workoutInstanceId: from.context.workoutInstanceId, routineExerciseId: from.context.routineExerciseId, setNumber: from.context.setNumber },
+          to: toRef,
+        });
+      }
       fx.push({
         type: 'moveReps',
         clientRepIds: moved.reps.filter(r => !r.carried).map(r => r.clientRepId),
@@ -1299,15 +1317,21 @@ export function reduce(state: RackEngineState, event: RackEvent, now: number): R
       fx.push({ type: 'rpcSetActive', athleteId: to });
       let completeSets = s.completeSets;
       if (!free && moved.context.setNumber != null) completeSets = markComplete(completeSets, hwKey(to, moved.context), moved.context.setNumber);
+      const lastEndByAthlete = { ...s.lastEndByAthlete };
+      if (from.reps.some(r => r.carried) && !from.free) {
+        // The reopened (idle-ended) set moves with it: no longer the wrong athlete's.
+        const k = hwKey(from.athleteId, from.context);
+        const n = from.context.setNumber;
+        if (n != null && completeSets[k]?.includes(n)) completeSets = { ...completeSets, [k]: completeSets[k].filter(x => x !== n) };
+        delete lastEndByAthlete[from.athleteId];
+      }
+      lastEndByAthlete[to] = { rawContext: moved.rawContext, setNumber: moved.context.setNumber, endedBy: 'switch', hold: false, set: moved };
       s = {
         ...s,
         setState: 'summary',
         live: null,
         lastEnded: moved,
-        lastEndByAthlete: {
-          ...s.lastEndByAthlete,
-          [to]: { rawContext: moved.rawContext, setNumber: moved.context.setNumber, endedBy: 'switch', hold: false, set: moved },
-        },
+        lastEndByAthlete,
         completeSets,
         switchingTo: to,
       };

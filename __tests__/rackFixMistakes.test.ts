@@ -20,6 +20,7 @@ import { createRackPersist, MOVE_QUEUE_KEY, REMOVAL_QUEUE_KEY, REP_QUEUE_KEY, SE
 import type { RepWrite, SetSummary } from '../lib/rack/engine';
 import { buildRackView, lastSetMoveOf, moveCandidates, MOVE_WINDOW_MS as VIEW_MOVE_WINDOW_MS, removeRepTitle } from '../lib/rack/viewModel';
 import { addRepRow, type ChipSet } from '../lib/rack/phone';
+import { rackRowsGone } from '../lib/rack/phoneView';
 import { dropPct } from '../lib/ovr/protocol';
 import type { OvrRep } from '../lib/ovr/protocol';
 import type { SetLogRow, TodayAthlete, TodayExercise } from '../lib/rack/api';
@@ -704,5 +705,139 @@ describe('remove-rep sheet', () => {
     addRepRow(sets, { ...base, client_rep_id: 'r2', rep_index: 2, workout_instance_id: 'wi-1', routine_exercise_id: 're-bench', set_number: 2 });
     expect(sets.get('wi-1:re-squat:1')!.chips).toHaveLength(0);
     expect(sets.get('wi-1:re-bench:2')!.chips.map(c => c.clientRepId)).toEqual(['r2']);
+  });
+});
+
+// ---------------------------------------------------------------- fix round 2 (review)
+
+describe('review I2: a mid-set move of an idle-reopened set moves the carried reps too', () => {
+  it('queues rack_move_set for the wrong athlete’s reopened set + rack_move_reps for the new reps', async () => {
+    const r = rig();
+    await tylerUpWithJakeToday(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.8) });
+    await r.ex.idle();
+    r.advance(61_000);
+    r.ex.dispatch({ type: 'tick' }); // 60 s idle end → hold
+    await r.ex.idle();
+    r.advance(10_000);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.7) }); // reopen: set 1 again, rep 1 carried
+    await r.ex.idle();
+    const live = r.ex.getState().live!;
+    expect(live.reps.some(x => x.carried)).toBe(true);
+    const fresh = live.reps.filter(x => !x.carried).map(x => x.clientRepId);
+    (r.persist.endSet as jest.Mock).mockClear();
+    r.calls.length = 0;
+    await r.ex.moveSet('jake');
+    await r.ex.idle();
+    expect(r.persist.moveSet).toHaveBeenCalledTimes(1);
+    expect(r.persist.moveSet).toHaveBeenCalledWith(
+      { athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 1 },
+      { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 },
+    );
+    expect(r.persist.moveReps).toHaveBeenCalledWith(fresh, { athleteId: 'jake', workoutInstanceId: 'wi-j', routineExerciseId: 're-j', setNumber: 1 });
+    expect((r.persist.endSet as jest.Mock).mock.calls.every(c => c[0].athleteId === 'jake')).toBe(true);
+    expect(r.calls).not.toContain('rpc:endSet');
+    // The wrong athlete no longer holds that set.
+    expect(r.ex.getState().lastEndByAthlete.tyler).toBeUndefined();
+    expect(r.ex.getState().completeSets['tyler:wi-1:re-squat'] ?? []).not.toContain(1);
+  });
+});
+
+describe('review I1: solo set writes carry metric_data_patch.vbt (the server recomputes them)', () => {
+  it('a phone-sensor set row has the vbt patch', () => {
+    const { setWriteRow } = require('../lib/rack/persist');
+    const row = setWriteRow({ ...setSum(), rackId: null, source: 'phone' }, ORG);
+    expect(row.metric_data_patch.vbt).toMatchObject({ source: 'phone', rack: null, avg_v: 0.5 });
+    expect(read('hooks/useSoloSensor.ts')).toContain('const persist = createRackPersist({');
+  });
+});
+
+describe('review I3: phones re-read the open exercise when a rack row changes', () => {
+  it('a moved-away rack set un-checks; a moved-in one is applied', () => {
+    const gone = rackRowsGone({
+      completed: [true, true, false],
+      inputs: [{ reps: 2, vbt: { avg_v: 0.5 } }, { reps: 3 }, {}],
+      rows: [],
+      sets: 3,
+    });
+    expect(gone).toEqual([0]); // set 2 was hand-logged (no vbt): kept
+    expect(
+      rackRowsGone({ completed: [true], inputs: [{ vbt: {} }], rows: [{ set_number: 1, is_complete: true, metric_data: { vbt: {} } }], sets: 1 }),
+    ).toEqual([]);
+  });
+
+  it('triggers: rack_sessions realtime, refresh (focus / foreground / pull), my rep UPDATEs — debounced', () => {
+    const H = read('hooks/useRackPhone.ts');
+    const rt = H.slice(H.indexOf("supabase\n        .channel(uniqueTopic(`rack_session:${rackId}:me`))"));
+    expect(rt).toContain('rackChanged();');
+    expect(H).toMatch(/await readSessions\(\);[\s\S]*?rackChanged\(\);/);
+    expect(H).toContain('() => rackChanged(),');
+    expect(H).toContain('cbRef.current.onRackChange?.();');
+    expect(H).toContain('RACK_CHANGE_DEBOUNCE_MS');
+    expect(H).toContain("AppState.addEventListener('change', s => {\n      if (s === 'active') void refresh();");
+    expect(H).toContain('useFocusEffect(');
+    const L = read('screens/WorkoutLoggerScreen.tsx');
+    expect(L).toContain('onRackChange: () => rackOnChangeRef.current(),');
+    expect(L).toContain("const gone = rackRowsGone({ completed: completedRef.current[reId], inputs: inputsRef.current[reId], rows: rows as any, sets: ex.sets ?? 1 });");
+    expect(L).toContain('for (const r of rows) if (r.is_complete === true && r.metric_data?.vbt) applyRackWrittenLog(r);');
+    const P = read('lib/rack/phone.ts');
+    expect(P).toContain('if (!closed) onUpdate?.(payload.new);');
+  });
+});
+
+describe('review I4: a phone LB edit newer than the iPad bar weight wins', () => {
+  const phoneMid = (load: number, t: number) =>
+    row({
+      state: 'lifting',
+      pending_workout_instance_id: 'wi-1',
+      pending_routine_exercise_id: 're-squat',
+      pending_set_number: 2,
+      pending_load_lb: load,
+      updated_at: iso(t),
+    });
+
+  it('mid-set step, then a phone LB edit, then set end → the phone’s LB, never the iPad’s', async () => {
+    const r = rig({ api: { endSet: jest.fn(async () => row({ set_number: 2, load_lb: 235, queue: [], updated_at: iso(T0 + 90_000) })) } });
+    await tylerUpWithJakeToday(r);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.6) });
+    await r.ex.idle();
+    r.ex.setBarLoad(225);
+    expect(r.ex.barLoad()).toEqual({ lb: 225, next: true });
+    r.advance(5_000);
+    const live = r.ex.getState().live!;
+    r.ex.dispatch({ type: 'sessionSync', row: { ...phoneMid(235, T0 + 50_000), set_started_at: new Date(live.startedAtMs).toISOString() } });
+    await r.ex.idle();
+    expect(r.ex.barLoad()).toBeNull();
+    r.ex.dispatch({ type: 'ipadDone' });
+    await r.ex.idle();
+    expect(r.api.setIpadContext).not.toHaveBeenCalledWith(RACK, 'tyler', expect.objectContaining({ loadLb: 225 }));
+    expect(r.sensor.writeLoad).not.toHaveBeenCalledWith(225);
+    r.advance(10_000);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.6) });
+    await r.ex.idle();
+    expect(r.ex.getState().live!.context.loadLb).toBe(235);
+  });
+
+  it('between sets, still unconfirmed: a phone edit wins; the stale pre-step load inside 3 s does not', async () => {
+    let release!: () => void;
+    const first = new Promise<RackSessionRow>(res => (release = () => res(row({ load_lb: 215, updated_at: iso(T0 + 1) }))));
+    let n = 0;
+    const r = rig({
+      api: {
+        setIpadContext: jest.fn(async (_r: string, a: string, c: any) => (n++ === 0 ? first : row({ active_athlete_id: a, load_lb: c.loadLb, updated_at: iso(T0 + 30) }))),
+      },
+    });
+    await tylerUpWithJakeToday(r);
+    r.ex.setBarLoad(215);
+    // The phone's in-flight context with the old load (205) lands within 3 s: not an edit.
+    r.advance(500);
+    r.ex.dispatch({ type: 'sessionSync', row: row({ load_lb: 205, updated_at: iso(T0 + 10) }) });
+    expect(r.ex.barLoad()).toEqual({ lb: 215, next: false });
+    // A real phone edit (230) while the iPad's publish is still in flight: the phone wins.
+    r.ex.dispatch({ type: 'sessionSync', row: row({ load_lb: 230, updated_at: iso(T0 + 20) }) });
+    expect(r.ex.barLoad()).toBeNull();
+    release();
+    await r.ex.idle();
+    expect(r.ex.getState().barLoad).toBeNull();
   });
 });

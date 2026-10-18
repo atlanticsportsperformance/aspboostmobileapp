@@ -109,6 +109,8 @@ export function subscribeMyRack(
   athleteId: string,
   onSet: (current: ChipSet, all: Map<string, ChipSet>) => void,
   client: any = supabase,
+  /** An UPDATE of one of my reps (removed / moved). */
+  onUpdate?: (row: any) => void,
 ): MyRackSubscription {
   const sets = new Map<string, ChipSet>();
   let closed = false;
@@ -159,7 +161,10 @@ export function subscribeMyRack(
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'vbt_reps', filter: `athlete_id=eq.${athleteId}` },
-      (payload: { new?: any }) => push(payload.new),
+      (payload: { new?: any }) => {
+        push(payload.new);
+        if (!closed) onUpdate?.(payload.new);
+      },
     )
     .subscribe((status: string) => {
       if (status === 'SUBSCRIBED') backfill();

@@ -66,6 +66,7 @@ import {
   rackContextOf,
   rackSafeWrite,
   rackSummaryLine,
+  rackRowsGone,
   speedDropCue,
   followOnFinish,
   phoneRackNow,
@@ -1180,6 +1181,7 @@ export default function WorkoutLoggerScreen() {
   const rackToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rackOnSetEndedRef = useRef<(e: EndedSet) => void>(() => undefined);
   const rackOnTickRef = useRef<() => void>(() => undefined);
+  const rackOnChangeRef = useRef<() => void>(() => undefined);
 
   // Rep chips are read only while the exercise screen shows rack / sensor rows.
   const chipsExercise = viewMode === 'exercise' ? activeExerciseId : null;
@@ -1192,6 +1194,7 @@ export default function WorkoutLoggerScreen() {
     onTick: () => rackOnTickRef.current(),
     exerciseOpen: chipsExercise,
     savedRackRows,
+    onRackChange: () => rackOnChangeRef.current(),
   });
   const rackActive = rack.hasRacks && !!rack.activeSession;
   const rackLive = rack.hasRacks ? liveRackSet(rack.activeSession, athleteId, workoutInstanceId) : null;
@@ -1350,6 +1353,49 @@ export default function WorkoutLoggerScreen() {
 
   rackOnTickRef.current = () => {
     if (Object.keys(rackPendingRef.current).length > 0) void readPendingRackWrites();
+  };
+
+  // A rack row changed (a set moved to / away from this athlete, a rep removed
+  // on the iPad), or the screen refreshed: re-read the open exercise's set
+  // rows. A moved-in set fills in and checks off; a moved-away rack set
+  // un-checks (its row was deleted / un-completed by rack_move_set).
+  rackOnChangeRef.current = () => {
+    const reId = viewMode === 'exercise' ? activeExerciseId : null;
+    const ex = reId ? allExercises.find(e => e.id === reId) : undefined;
+    if (!reId || !ex) return;
+    void (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('exercise_logs')
+          .select('*')
+          .eq('workout_instance_id', workoutInstanceId)
+          .eq('routine_exercise_id', reId);
+        if (error) throw error;
+        const rows = ((data as any[]) ?? []) as Record<string, any>[];
+        for (const r of rows) if (r.is_complete === true && r.metric_data?.vbt) applyRackWrittenLog(r);
+        const gone = rackRowsGone({ completed: completedRef.current[reId], inputs: inputsRef.current[reId], rows: rows as any, sets: ex.sets ?? 1 });
+        if (gone.length) {
+          const inputs = [...(inputsRef.current[reId] ?? [])];
+          for (const k of gone) {
+            const { vbt: _v, ...rest } = inputs[k] ?? {};
+            inputs[k] = rest;
+            draftWriter.setSaved(`${reId}:${k}`, rest);
+          }
+          commitInputs({ ...inputsRef.current, [reId]: inputs });
+          commitCompleted(reId, c => c.map((v, k) => (gone.includes(k) ? false : v)), ex.sets ?? 1);
+        }
+        // Extra rack sets that moved away.
+        const extraNow = new Set(rows.filter(r => r.is_complete === true).map(r => Number(r.set_number)));
+        setRackExtra(prev => {
+          const cur = prev[reId];
+          if (!cur) return prev;
+          const keep = Object.fromEntries(Object.entries(cur).filter(([n]) => extraNow.has(Number(n))));
+          return Object.keys(keep).length === Object.keys(cur).length ? prev : { ...prev, [reId]: keep };
+        });
+      } catch (e) {
+        console.warn('[rack phone] open exercise re-read failed', e);
+      }
+    })();
   };
 
   // N3: left the rack or bumped off it — one more read of the rack's pending

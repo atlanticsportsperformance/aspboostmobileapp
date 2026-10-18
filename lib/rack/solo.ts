@@ -246,9 +246,9 @@ export function createSoloSession(opts: {
   let tick: ReturnType<typeof setInterval> | null = null;
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   // Writes whose enqueue failed: kept in memory, re-enqueued on the next flush.
-  const unsaved: (() => Promise<void>)[] = [];
+  const unsaved: ((() => Promise<void>) & { repId?: string })[] = [];
 
-  const tryEnqueue = async (fn: () => Promise<void>, what: string) => {
+  const tryEnqueue = async (fn: (() => Promise<void>) & { repId?: string }, what: string) => {
     for (let i = 0; i < ENQUEUE_TRIES; i++) {
       try {
         await fn();
@@ -263,7 +263,7 @@ export function createSoloSession(opts: {
   const run = async (fx: RackEffect) => {
     switch (fx.type) {
       case 'writeRep':
-        await tryEnqueue(() => opts.persist.writeRep(fx.rep), 'rep');
+        await tryEnqueue(Object.assign(() => opts.persist.writeRep(fx.rep), { repId: fx.rep.clientRepId }), 'rep');
         break;
       case 'endSet':
       case 'amendSet': {
@@ -409,7 +409,16 @@ export function createSoloSession(opts: {
     idle: () => chain,
     checking: () => held != null,
     async removeRep(clientRepId: string) {
+      // Behind a set-start rack check: the rep is not applied yet — wait for it (bounded).
+      for (let i = 0; i < 60 && held; i++) await new Promise(res => setTimeout(res, 50));
+      await chain; // its writeRep is enqueued (or held in memory)
       apply({ type: 'removeRep', clientRepId }, now());
+      // Held in memory only (its enqueue failed): never send it — nothing to remove on the server.
+      const mem = unsaved.findIndex(f => f.repId === clientRepId);
+      if (mem >= 0) {
+        unsaved.splice(mem, 1);
+        return;
+      }
       const rm = opts.persist.removeRep;
       if (!rm) return;
       await tryEnqueue(() => rm(clientRepId), 'remove rep');

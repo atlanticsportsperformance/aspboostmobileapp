@@ -49,6 +49,7 @@
 import { IDLE_END_MS, LATE_REP_MS, REOPEN_MS, nextContext, nextSetNumber, reduce, type RackEffect, type RackEngineState, type RackEvent, type RpcKind } from './engine';
 import type { RackContext, RackSessionRow, SetSummary, RepWrite } from './engine';
 import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAthlete, type TodayExercise } from './api';
+import { LOAD_EDIT_GUARD_MS } from './phoneView';
 import { pickerRowsOf, rackInstancesOf, resolveRackSet, type PickerRow, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
 import { intensityFor, type LoggedSets } from '../logger/targets';
 import { setKeyOf, withTimeout, type FixItem, type RackPersist, type SetRef } from './persist';
@@ -334,6 +335,19 @@ export function createRackExecutor(opts: {
           if (old >= 0) unsavedReps.splice(old, 1);
           await durably('writeRep', () => persist.writeRep(fx.rep), () => unsavedReps.push(fx.rep));
           flushSoon();
+          break;
+        }
+        case 'moveSetRow': {
+          if (!persist.moveSet) {
+            log('moveSetRow: persist has no move queue');
+            break;
+          }
+          const mv = persist.moveSet;
+          const { from, to } = fx;
+          const fk = `${from.athleteId}:${from.workoutInstanceId}:${from.routineExerciseId}:${from.setNumber}`;
+          rackWritten.delete(fk);
+          movedAway.add(fk);
+          await queueFix({ kind: 'move', id: `move:${fk}>${to.athleteId}`, from, to }, () => mv(from, to));
           break;
         }
         case 'moveReps': {
@@ -867,7 +881,19 @@ export function createRackExecutor(opts: {
   // ---------------------------------------------------------------- BAR stepper (iPad bar weight)
 
   /** The iPad's bar weight for one exercise of the active athlete (pending = not sent yet). */
-  let bar: { athleteId: string; wi: string | null; re: string | null; lb: number; status: 'pending' | 'sent' | 'confirmed' } | null = null;
+  let bar: {
+    athleteId: string;
+    wi: string | null;
+    re: string | null;
+    lb: number;
+    status: 'pending' | 'sent' | 'confirmed';
+    /** When it was set (iPad clock). */
+    at: number;
+    /** The row's load for that exercise when it was set (a stale echo of it is not a phone edit). */
+    prevLoad: number | null;
+  } | null = null;
+  /** The row's next-set load as last seen, per exercise (`wi:re` → lb) — a change is a phone edit. */
+  let lastRowLoad: { key: string; lb: number | null } | null = null;
   let barFailedAt: number | null = null;
 
   const barFor = (athleteId: string, wi: string | null, re: string | null): number | null =>
@@ -875,6 +901,16 @@ export function createRackExecutor(opts: {
 
   /** Rows / athlete / exercise changes settle the bar weight (confirmed, replaced by the phone, or gone). */
   const trackBar = (event: RackEvent) => {
+    let prev: number | null | undefined;
+    let rowLb: number | null = null;
+    let n: ReturnType<typeof rowNext> = null;
+    if (event.type === 'sessionSync') {
+      n = rowNext();
+      const key = n ? `${n.wi}:${n.re}` : '';
+      rowLb = n && n.load != null ? Number(n.load) : null;
+      prev = lastRowLoad && lastRowLoad.key === key ? lastRowLoad.lb : undefined;
+      lastRowLoad = { key, lb: rowLb };
+    }
     if (!bar || event.type === 'barLoad') return;
     if (bar.athleteId !== state.activeAthleteId) {
       clearBar();
@@ -889,13 +925,17 @@ export function createRackExecutor(opts: {
       }
     }
     if (event.type !== 'sessionSync') return;
-    const n = rowNext();
-    if (!n || n.wi !== bar.wi || n.re !== bar.re || n.load == null) return;
-    if (Number(n.load) === bar.lb) bar.status = 'confirmed';
-    else if (bar.status === 'confirmed') {
-      // The phone changed the LB after the iPad's: the phone's edit wins.
-      clearBar();
+    if (!n || n.wi !== bar.wi || n.re !== bar.re || rowLb == null) return;
+    if (rowLb === bar.lb) {
+      bar.status = 'confirmed';
+      return;
     }
+    // The row's load changed to something else after the iPad's step = a phone LB edit: the phone wins,
+    // whatever the bar's status. Within the 3 s guard, the row going back to the load from before the
+    // step is the phone's stale (in-flight) context, not an edit.
+    if (prev === rowLb) return;
+    if (now() - bar.at < LOAD_EDIT_GUARD_MS && rowLb === bar.prevLoad) return;
+    clearBar();
   };
   const clearBar = () => {
     const b = bar;
@@ -947,7 +987,9 @@ export function createRackExecutor(opts: {
     if (state.mode !== 'rack' || !id || !Number.isFinite(lbIn)) return;
     const lb = Math.max(0, Math.min(2000, Math.round(lbIn * 2) / 2));
     const c = state.setState === 'lifting' && state.live ? state.live.context : nextContext(state);
-    bar = { athleteId: id, wi: c.workoutInstanceId, re: c.routineExerciseId, lb, status: 'pending' };
+    const n = rowNext();
+    const prevLoad = n && n.wi === c.workoutInstanceId && n.re === c.routineExerciseId && n.load != null ? Number(n.load) : null;
+    bar = { athleteId: id, wi: c.workoutInstanceId, re: c.routineExerciseId, lb, status: 'pending', at: now(), prevLoad };
     barFailedAt = null;
     // The engine's next set uses it (mid-set: the live set stays frozen; the sensor follows between sets).
     // apply() then publishes it with the row (→ the phone's LB cell): between sets now, mid-set once the set ends.

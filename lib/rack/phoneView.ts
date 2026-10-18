@@ -447,6 +447,25 @@ export function rackSafeWrite<W extends { complete?: boolean; fields?: string[];
   return { ...(rest as W), fields: (write.fields ?? []).filter(f => f !== 'reps') };
 }
 
+/**
+ * Sets the phone shows as rack/sensor-saved (checked, with `vbt`) whose row is
+ * no longer a complete rack row on the server — moved to another athlete
+ * (rack_move_set deletes / un-completes it). 0-based; the phone un-checks them.
+ */
+export function rackRowsGone(i: {
+  completed: boolean[] | undefined;
+  inputs: Record<string, any>[] | undefined;
+  rows: { set_number: number; is_complete?: boolean | null; metric_data?: any }[];
+  sets: number;
+}): number[] {
+  const live = new Set(i.rows.filter(r => r.is_complete === true && r.metric_data?.vbt).map(r => Number(r.set_number) - 1));
+  const out: number[] = [];
+  for (let k = 0; k < i.sets; k++) {
+    if (i.completed?.[k] === true && i.inputs?.[k]?.vbt && !live.has(k)) out.push(k);
+  }
+  return out;
+}
+
 /** The rack ended the set on its own (60 s with no rep). */
 export function endedByIdle(log: { metric_data?: any } | null | undefined): boolean {
   return log?.metric_data?.vbt?.ended_by === 'idle';

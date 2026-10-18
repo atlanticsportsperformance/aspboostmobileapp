@@ -37,6 +37,9 @@ import {
   type RackCtx,
 } from '../lib/rack/phoneView';
 
+/** rack_sessions bursts (a move bumps several rows) → one re-read. */
+export const RACK_CHANGE_DEBOUNCE_MS = 400;
+
 export interface RackPhone {
   /** Self + the org has at least one active rack (everything else is guarded by this). */
   hasRacks: boolean;
@@ -79,6 +82,13 @@ export function useRackPhone(opts: {
   exerciseOpen?: string | null;
   /** That exercise shows saved rack / sensor rows. */
   savedRackRows?: boolean;
+  /**
+   * A rack row changed (realtime — rack_move_set / rack_move_reps touch every
+   * rack the from/to athletes are on), the screen refreshed (focus,
+   * foreground, pull), or one of my reps was updated (removed / moved): re-read
+   * the open exercise's set rows. Debounced.
+   */
+  onRackChange?: () => void;
 }): RackPhone {
   const { athleteId } = opts;
   const api = useMemo(() => createRackApi(supabase as unknown as RackClient), []);
@@ -95,6 +105,17 @@ export function useRackPhone(opts: {
   cbRef.current = opts;
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rackChanged = useCallback(() => {
+    if (changeTimer.current) clearTimeout(changeTimer.current);
+    changeTimer.current = setTimeout(() => {
+      changeTimer.current = null;
+      if (mounted.current) cbRef.current.onRackChange?.();
+    }, RACK_CHANGE_DEBOUNCE_MS);
+  }, []);
+  useEffect(() => () => {
+    if (changeTimer.current) clearTimeout(changeTimer.current);
+  }, []);
 
   // I5: self only.
   useEffect(() => {
@@ -150,12 +171,13 @@ export function useRackPhone(opts: {
         return;
       }
       await readSessions();
-      // Removals / moves made elsewhere (the iPad) — rebuild the chips.
+      // Removals / moves made elsewhere (the iPad) — rebuild the chips, re-read the open rows.
       void subRef.current?.backfill();
+      rackChanged();
     } catch (e) {
       console.warn('[rack phone] refresh failed', e);
     }
-  }, [api, isSelf, readSessions]);
+  }, [api, isSelf, readSessions, rackChanged]);
 
   // Mount + screen focus + app foreground (browse mode is never polled).
   useFocusEffect(
@@ -189,9 +211,15 @@ export function useRackPhone(opts: {
   const subRef = useRef<ReturnType<typeof subscribeMyRack> | null>(null);
   useEffect(() => {
     if (!chipsWanted) return;
-    const sub = subscribeMyRack(athleteId, () => {
-      if (mounted.current) setChipTick(t => t + 1);
-    });
+    const sub = subscribeMyRack(
+      athleteId,
+      () => {
+        if (mounted.current) setChipTick(t => t + 1);
+      },
+      undefined,
+      // A rep of mine was removed / moved (iPad): the saved row's REPS / avg changed too.
+      () => rackChanged(),
+    );
     subRef.current = sub;
     return () => {
       sub.unsubscribe();
@@ -210,6 +238,9 @@ export function useRackPhone(opts: {
           { event: '*', schema: 'public', table: 'rack_sessions', filter: `rack_id=eq.${rackId}` },
           () => {
             readSessions().catch(e => console.warn('[rack phone] session read failed', e));
+            // A move touches both athletes' rack rows: chips + the open exercise's rows re-read.
+            void subRef.current?.backfill();
+            rackChanged();
           },
         )
         .subscribe(),
@@ -225,7 +256,7 @@ export function useRackPhone(opts: {
       clearInterval(poll);
       channels.forEach(c => supabase.removeChannel(c));
     };
-  }, [hasRacks, onRackIds, athleteId, readSessions, refresh]);
+  }, [hasRacks, onRackIds, athleteId, readSessions, refresh, rackChanged]);
 
   const activeRackName = activeSession ? list.find(r => r.rackId === activeSession.rack_id)?.name ?? null : null;
 

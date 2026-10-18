@@ -82,7 +82,7 @@ export const sheetStyles = StyleSheet.create({
   gh: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
   ghTxt: { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '800' },
   red: { backgroundColor: 'rgba(229,83,75,0.15)', borderWidth: 1, borderColor: 'rgba(229,83,75,0.5)' },
-  redTxt: { color: '#ff8f88', fontSize: 14, fontWeight: '800' },
+  redTxt: { color: RACK_COLORS.red, fontSize: 14, fontWeight: '800' },
   pri: { backgroundColor: RACK_COLORS.acc },
   priTxt: { color: '#06202E', fontSize: 14, fontWeight: '800' },
 });
