@@ -6,7 +6,7 @@
 
 import type { Zone } from '../ovr/protocol';
 import type { OvrConnState } from '../ovr/ovr-device';
-import { nextContext, nextSetNumber, pickedByOf, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
+import { nextContext, nextDisplaySetNumber, pickedByOf, type EndedBy, type EngineRep, type LiveSet, type RackContext, type RackEngineState } from './engine';
 import { percentWeightTarget, pickLocalExercise, type TodayAthlete, type TodayExercise } from './api';
 import { rackSetLine } from './resolveRackSet';
 import { hasLoad, setWatts, wattsOf } from './power';
@@ -455,8 +455,11 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
       ? s.lastEnded
       : null;
 
-  // Context: the live set's frozen one, else the ended set's, else the next one.
-  const ctx: RackContext = shownSet ? shownSet.context : nextContext(s);
+  // The CARD / SET bubble / tile describe the live set, else the NEXT set —
+  // never a finished one (owner): right after any end (idle included) they
+  // advance. Bars, dial and the summary keep the just-ended set (shownSet).
+  const cardSet: LiveSet | null = lifting ? s.live : null;
+  const ctx: RackContext = cardSet ? cardSet.context : nextContext(s);
   const ex = exerciseFor(active, ctx);
   const meta = ctx.exerciseId ? s.metaByExercise[ctx.exerciseId] : undefined;
   const zone: [number, number] | null = shownSet
@@ -467,8 +470,10 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
         ? [ex.zoneMin, ex.zoneMax]
         : null;
   const dropStopPct = shownSet ? shownSet.dropStopPct : meta?.dropStopPct ?? ex?.dropStopPct ?? null;
-  const setNumber = shownSet ? shownSet.context.setNumber : activeId ? nextSetNumber(s, activeId) : null;
-  const loadLb = shownSet ? shownSet.context.loadLb : ctx.loadLb ?? s.loadOverrideLb;
+  const setNumber = cardSet ? cardSet.context.setNumber : activeId ? nextDisplaySetNumber(s, activeId) : null;
+  const loadLb = cardSet ? cardSet.context.loadLb : ctx.loadLb ?? s.loadOverrideLb;
+  /** The live set is an idle-ended set reopened by a rep inside the reopen window. */
+  const reopened = !!cardSet && cardSet.reps.some(r => r.carried);
 
   // Where the context came from. A shown set keeps its own origin: it came
   // from the iPad when it matches the iPad pick and the row's LIVE context is
@@ -478,11 +483,11 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   let contextSource: RackView['contextSource'];
   // Resolved (resolveRackSet): the truthful origin — the phone only when its
   // open exercise is the pick; the rack's own resolver; a coach on the iPad.
-  const resolvedPick = shownSet ? shownSet.pickedBy ?? null : local?.resolved ? pickedByOf(local.reason) : null;
+  const resolvedPick = cardSet ? cardSet.pickedBy ?? null : local?.resolved ? pickedByOf(local.reason) : null;
   if (ctx.workoutInstanceId == null) contextSource = 'none';
   else if (resolvedPick) contextSource = resolvedPick;
-  else if (shownSet) {
-    const fromIpad = !!local && sameEx(local, shownSet.rawContext) && (!!ipadOwned || row == null || row.workout_instance_id == null);
+  else if (cardSet) {
+    const fromIpad = !!local && sameEx(local, cardSet.rawContext) && (!!ipadOwned || row == null || row.workout_instance_id == null);
     contextSource = fromIpad ? 'ipad' : 'phone';
   } else if (ipadOwned !== undefined) {
     contextSource = ipadOwned ? 'ipad' : 'phone';
@@ -524,7 +529,9 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
     ? `Switching to ${switchingName}…`
     : !activeId
       ? `${rackName} is open`
-      : `${firstName} is up · ${lifting ? 'lifting' : 'lift when ready'}`;
+      : reopened && setNumber != null
+        ? `${firstName} is up · Reopened set ${setNumber}`
+        : `${firstName} is up · ${lifting ? 'lifting' : 'lift when ready'}`;
 
   // Summary overlay.
   let summary: SummaryView | null = null;

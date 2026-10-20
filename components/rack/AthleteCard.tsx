@@ -3,13 +3,18 @@
  * context came from, BAR · LB (−/+ 5 lb, long-press to type — published to
  * the phone), REPS (prescribed) / TARGET SPEED, and the big Done.
  * The set summary (AVG / BEST / DROP, + AVG W / PEAK W with a load, and
- * "Wrong athlete? Move set" for 2 min) and "Rack n is open" overlay the card.
+ * "Wrong athlete? Move set" for 2 min) REPLACES the card's contents while it
+ * is up — the card's own opaque #101113 background and radius, nothing of the
+ * card underneath (no see-through, no collisions), at least the card's last
+ * height so the screen doesn't jump; stat boxes wrap, never overlap.
+ * "Rack n is open" overlays the card.
  *
  * `layout='column'` (landscape, 360 wide, Done at the bottom) or `'row'`
  * (portrait, full width: 220 name block | kv grid | 150-wide Done).
  */
 
-import React from 'react';
+import React, { useState } from 'react';
+import type { LayoutChangeEvent } from 'react-native';
 import { Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import type { TodayExercise } from '../../lib/rack/api';
@@ -61,8 +66,52 @@ export default function AthleteCard({
   const lb = barLb !== undefined ? barLb : view.loadLb;
   const row = layout === 'row';
   const c = compact && !row;
+  // The card's height with its normal contents (the summary keeps at least it).
+  const [contentH, setContentH] = useState(0);
+  const onLayout = (e: LayoutChangeEvent) => {
+    if (view.summary) return;
+    const h = Math.round(e.nativeEvent.layout.height);
+    if (h > 0 && h !== contentH) setContentH(h);
+  };
+
+  if (view.summary) {
+    const sm = view.summary;
+    const tight = sm.avgW != null;
+    return (
+      <View style={[styles.card, row ? styles.cardRowSum : styles.cardCol, c && styles.cardC, { minHeight: contentH || undefined }]}>
+        <View style={[styles.sum, row && styles.sumRowL]}>
+          <View style={[styles.sumText, row && styles.sumTextRow]}>
+            <Text style={[styles.sumT, row && styles.sumTRow]} numberOfLines={2}>{sm.title}</Text>
+            <Text style={[styles.sumBig, row && styles.sumBigRow]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+              {sm.big}
+            </Text>
+            <Text style={[styles.sumFoot, row && styles.sumFootRow]}>{sm.footer}</Text>
+            {row && sm.canMove && onMoveSet && (
+              <TouchableOpacity style={styles.wrong} onPress={onMoveSet} accessibilityLabel="Wrong athlete? Move set">
+                <Text style={styles.wrongTxt}>Wrong athlete? Move set</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <View style={[styles.sumBoxes, row && styles.sumBoxesRow]}>
+            {summaryBoxes(sm).map(([k, x]) => (
+              <View key={k} style={[styles.bx, tight && styles.bxTight]}>
+                <Text style={styles.k}>{k}</Text>
+                <Text style={[styles.bxX, tight && styles.bxXTight]} numberOfLines={1}>{x}</Text>
+              </View>
+            ))}
+          </View>
+          {!row && sm.canMove && onMoveSet && (
+            <TouchableOpacity style={styles.wrong} onPress={onMoveSet} accessibilityLabel="Wrong athlete? Move set">
+              <Text style={styles.wrongTxt}>Wrong athlete? Move set</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <View style={[styles.card, row ? styles.cardRow : styles.cardCol, c && styles.cardC]}>
+    <View style={[styles.card, row ? styles.cardRow : styles.cardCol, c && styles.cardC]} onLayout={onLayout}>
       <View style={[styles.ah, row && styles.ahRow]}>
         <View style={styles.av}>
           <Text style={styles.avTxt}>{a?.initials ?? ''}</Text>
@@ -133,34 +182,6 @@ export default function AthleteCard({
         </LinearGradient>
       </TouchableOpacity>
 
-      {view.summary && (
-        // Column (landscape card): title / big / boxes / footer. Row (portrait,
-        // ~190 tall): text block beside the boxes so it fits the card's inset.
-        <View style={[styles.summary, row && styles.summaryRow]}>
-          <View style={[styles.sumText, row && styles.sumTextRow]}>
-            <Text style={styles.sumT}>{view.summary.title}</Text>
-            <Text style={styles.sumBig}>{view.summary.big}</Text>
-            {row && <Text style={styles.sumFoot}>{view.summary.footer}</Text>}
-          </View>
-          <View style={[styles.sumCol, row && styles.sumColRow]}>
-            <View style={[styles.sumRow, row && styles.sumRowWrap]}>
-              {summaryBoxes(view.summary).map(([k, x]) => (
-                <View key={k} style={[styles.bx, view.summary!.avgW != null && styles.bxTight]}>
-                  <Text style={styles.k}>{k}</Text>
-                  <Text style={[styles.bxX, view.summary!.avgW != null && styles.bxXTight]}>{x}</Text>
-                </View>
-              ))}
-            </View>
-            {view.summary.canMove && onMoveSet && (
-              <TouchableOpacity style={styles.wrong} onPress={onMoveSet} accessibilityLabel="Wrong athlete? Move set">
-                <Text style={styles.wrongTxt}>Wrong athlete? Move set</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          {!row && <Text style={styles.sumFoot}>{view.summary.footer}</Text>}
-        </View>
-      )}
-
       {view.open && (
         <View style={styles.open}>
           <Text style={styles.openB}>{rackName} is open</Text>
@@ -206,28 +227,22 @@ const styles = StyleSheet.create({
   done: { height: 72, alignItems: 'center', justifyContent: 'center' },
   doneRow: { height: undefined, flex: 1 },
   doneTxt: { color: '#06202E', fontSize: 22, fontWeight: '900' },
-  // Same 20 px inset as the card; the content block is centred inside it.
-  summary: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(8,9,10,0.94)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    borderRadius: 18,
-    padding: 20,
-  },
-  summaryRow: { flexDirection: 'row', gap: 28 },
-  sumText: { alignItems: 'center', gap: 12 },
-  sumTextRow: { alignItems: 'flex-start', gap: 8 },
+  // Summary: in the card's own 20 px padding, centred; never overlaps.
+  cardRowSum: { flexDirection: 'row', alignItems: 'stretch' },
+  sum: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  sumRowL: { flexDirection: 'row', alignItems: 'center', gap: 24 },
+  sumText: { alignItems: 'center', gap: 8, maxWidth: '100%' },
+  sumTextRow: { flex: 1, minWidth: 0, alignItems: 'flex-start' },
+  sumBigRow: { fontSize: 34 },
+  sumFootRow: { textAlign: 'left' },
+  sumTRow: { textAlign: 'left', paddingHorizontal: 0 },
+  sumBoxes: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, maxWidth: '100%' },
+  sumBoxesRow: { flexShrink: 1, maxWidth: 440, justifyContent: 'flex-end' },
   sumT: { fontSize: 12, fontWeight: '900', letterSpacing: 2, color: RACK_COLORS.acc, textAlign: 'center', paddingHorizontal: 12 },
   note: { fontSize: 18, color: 'rgba(255,255,255,0.55)', marginTop: 6 },
   loadNote: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.55)', marginTop: 4, textAlign: 'center' },
   sumBig: { fontSize: 44, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
-  sumCol: { alignItems: 'center', gap: 10 },
-  sumColRow: { alignItems: 'flex-start' },
-  sumRow: { flexDirection: 'row', gap: 12, justifyContent: 'center' },
-  sumRowWrap: { flexWrap: 'wrap', maxWidth: 420, gap: 8 },
-  bx: { borderWidth: 1, borderColor: RACK_COLORS.line, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 16, alignItems: 'center' },
+  bx: { minWidth: 76, borderWidth: 1, borderColor: RACK_COLORS.line, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14, alignItems: 'center' },
   bxTight: { paddingHorizontal: 9, paddingVertical: 8 },
   bxX: { fontSize: 24, fontWeight: '800', color: '#fff', fontVariant: ['tabular-nums'] },
   bxXTight: { fontSize: 18 },

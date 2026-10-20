@@ -621,3 +621,30 @@ describe('iPad REPS follow the phone: the context carries the phone’s reps', (
     expect('p_reps_target' in rpc.mock.calls[2][1]).toBe(false); // remembered
   });
 });
+
+describe('strip never sits on a finished set (owner: advance after any end)', () => {
+  const reRow = (id: string) => ({
+    id, exercise_id: `ex-${id}`, sets: 3, velocity_min_mps: null, velocity_max_mps: null,
+    enabled_measurements: ['weight'], exercises: { name: id, is_placeholder: false },
+  });
+  const instance = rackInstanceFromLogger('wi', [{ id: 'r', scheme: 'straight', routine_exercises: [reRow('squat')] }] as any);
+  const sess = (over: any = {}) => ({
+    active_athlete_id: 'me', workout_instance_id: 'wi', routine_exercise_id: 'squat', state: 'idle', set_number: 1, load_lb: null,
+    pending_workout_instance_id: null, pending_routine_exercise_id: null, pending_set_number: null, pending_load_lb: null, ...over,
+  });
+  const logs = [
+    { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 1, isComplete: true }, // idle-saved
+    { workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 2, isComplete: true },
+  ];
+  const base = { instance, logs, athleteId: 'me', workoutInstanceId: 'wi', openExerciseId: null, isEcho: () => false };
+
+  it('the row still holds idle-ended set 1 (reopen window) → the strip shows set 3', () => {
+    expect(phoneRackNow({ ...base, session: sess() })).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+  });
+  it('a rep reopens set 1 (row lifting) → the strip shows set 1', () => {
+    expect(phoneRackNow({ ...base, session: sess({ state: 'lifting' }) })).toEqual({ routineExerciseId: 'squat', setNumber: 1, source: 'live' });
+  });
+  it("a coach's explicit re-do of a done set is shown exactly", () => {
+    expect(phoneRackNow({ ...base, session: sess(), chosen: { routineExerciseId: 'squat', setNumber: 1 } })).toMatchObject({ setNumber: 1, source: 'ipad' });
+  });
+});

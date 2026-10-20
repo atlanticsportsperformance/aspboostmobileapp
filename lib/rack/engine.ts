@@ -813,16 +813,27 @@ export function nextSetNumber(s: RackEngineState, athleteId: string): number | n
   return numberFor(s, athleteId, nextContext(s)).setNumber;
 }
 
+/**
+ * The set number the SCREENS show for the athlete's next set (owner ruling):
+ * after any end — idle included — the next not-done set, never the finished
+ * one. The idle hold still applies behind the scenes (`nextSetNumber`): a rep
+ * inside REOPEN_MS reopens the idle-ended set, and the live set then shows it.
+ */
+export function nextDisplaySetNumber(s: RackEngineState, athleteId: string): number | null {
+  return numberFor(s, athleteId, nextContext(s), true).setNumber;
+}
+
 function numberFor(
   s: RackEngineState,
   athleteId: string,
   raw: RackContext,
+  ignoreHold = false,
 ): { setNumber: number | null; reopen: boolean } {
   if (isFree(raw)) return { setNumber: raw.setNumber, reopen: false };
   // A coach's explicit set (a re-do of a done set included) is used as is.
   if (resolvedFor(s, athleteId) && s.localContext?.exact && raw.setNumber != null) return { setNumber: raw.setNumber, reopen: false };
   const prev = s.lastEndByAthlete[athleteId];
-  if (prev && prev.hold && holdMatches(s, athleteId, prev.rawContext, raw)) {
+  if (!ignoreHold && prev && prev.hold && holdMatches(s, athleteId, prev.rawContext, raw)) {
     // Idle end, same exercise: same set_number, reps carried forward.
     return { setNumber: prev.setNumber, reopen: true };
   }

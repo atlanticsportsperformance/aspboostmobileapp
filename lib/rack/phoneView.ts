@@ -775,7 +775,23 @@ export interface PhoneRackNow {
  * wouldn't auto-pick) as the override. A set the row has ahead of the phone
  * (the rack's write not landed yet) wins over the phone's older logs.
  */
-export function phoneRackNow(i: {
+export function phoneRackNow(i: PhoneRackNowInput): PhoneRackNow | null {
+  const now = phoneRackNowRaw(i);
+  // Owner rule (same as the iPad card): after a set ends — idle included —
+  // the strip shows the NEXT set, never a finished one. A live set (incl. an
+  // idle reopen) and a coach's explicit set are shown exactly.
+  if (!now || now.source === 'live' || (i.chosen && now.source === 'ipad')) return now;
+  const done = new Set(
+    i.logs
+      .filter(l => l.isComplete && l.workoutInstanceId === i.workoutInstanceId && l.routineExerciseId === now.routineExerciseId)
+      .map(l => l.setNumber),
+  );
+  let n = now.setNumber;
+  while (done.has(n)) n++;
+  return n === now.setNumber ? now : { ...now, setNumber: n };
+}
+
+type PhoneRackNowInput = {
   instance: RackSetInstance | null;
   logs: RackSetLog[];
   session: SessionLike | null;
@@ -788,7 +804,9 @@ export function phoneRackNow(i: {
   isEcho: (ctx: RackCtx) => boolean;
   /** A coach's explicit exercise + set (coachSetChoice) — honoured exactly. */
   chosen?: { routineExerciseId: string; setNumber: number } | null;
-}): PhoneRackNow | null {
+};
+
+function phoneRackNowRaw(i: PhoneRackNowInput): PhoneRackNow | null {
   const s = i.session;
   if (!s || s.active_athlete_id !== i.athleteId) return null;
   const live = liveRackSet(s, i.athleteId, i.workoutInstanceId);

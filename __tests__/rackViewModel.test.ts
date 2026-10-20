@@ -184,6 +184,28 @@ describe('rack view model', () => {
     expect(v.bars).toHaveLength(2); // the ended set stays on screen
   });
 
+  it('idle end: the card / SET / tile show the NEXT set at once (set 2 done → set 3); a rep within 30 s reopens set 1', () => {
+    const r = rig();
+    r.sync({ set_number: 1, queue: [] });
+    // Set 2 already done today (seeded complete).
+    r.send({ type: 'seedHighWater', athleteId: 'tyler', workoutInstanceId: 'wi-1', routineExerciseId: 're-squat', setNumber: 2 } as any);
+    r.send({ type: 'rep', rep: ovr(0.55) }, T0 + 1000);
+    expect(view(r.s, r.now).setNumber).toBe(1);
+    const endAt = T0 + 1000 + IDLE_END_MS;
+    r.send({ type: 'tick' }, endAt);
+    const v = view(r.s, endAt);
+    expect(v.summary?.title).toBe('SET 1 SAVED · 60 S NO REPS'); // the summary names the saved set
+    expect(v.setNumber).toBe(3);
+    expect(v.exerciseLine).toBe('Back Squat · Set 3 of 3');
+    expect(v.tiles.find(t => t.athleteId === 'tyler')!.subtitle).toBe('Back Squat · Set 3 of 3');
+    // Behind the scenes the hold is kept: a rep inside the reopen window reopens set 1.
+    r.send({ type: 'rep', rep: ovr(0.52) }, endAt + 10_000);
+    const re = view(r.s, endAt + 10_000);
+    expect(re.lifting).toBe(true);
+    expect(re.setNumber).toBe(1);
+    expect(re.statusText).toBe('Tyler is up · Reopened set 1');
+  });
+
   it('iPad Done → summary that auto-hides after SUMMARY_MS', () => {
     const r = rig();
     r.sync();

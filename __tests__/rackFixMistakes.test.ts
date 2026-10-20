@@ -570,7 +570,8 @@ describe('summary "Wrong athlete? Move set" — only within 2 minutes', () => {
     expect(at(120_000)?.canMove).toBe(false);
     expect(at(1_000)?.moveUntilMs).toBe(endedAt + 120_000);
     const C = read('components/rack/AthleteCard.tsx');
-    expect(C).toContain('{view.summary.canMove && onMoveSet && (');
+    expect(C).toContain('{row && sm.canMove && onMoveSet && (');
+    expect(C).toContain('{!row && sm.canMove && onMoveSet && (');
     expect(C).toContain('Wrong athlete? Move set');
     const S = read('screens/rack/RackModeScreen.tsx');
     expect(S).toContain("onMoveSet={() => openMove('after')}");

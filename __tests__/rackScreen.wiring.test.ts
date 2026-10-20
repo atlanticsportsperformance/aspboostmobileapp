@@ -315,11 +315,13 @@ describe('fix round 3 wiring', () => {
     expect(P).toContain('Pick an exercise');
     expect(P).toContain('{exercises.map(e => {'); // the live picker lists every exercise with its progress
   });
-  it('summary overlay has the card\'s 20 px inset and a row variant for the portrait card', () => {
-    const sum = CARD.slice(CARD.indexOf('  summary: {'), CARD.indexOf('  summaryRow:'));
-    expect(sum).toContain('padding: 20,');
-    expect(sum).toContain("justifyContent: 'center',");
-    expect(CARD).toContain('<View style={[styles.summary, row && styles.summaryRow]}>');
+  it('summary replaces the card contents: opaque card background/radius, keeps the card height, boxes wrap; no "Move last set" chip under it', () => {
+    const sumBranch = CARD.slice(CARD.indexOf('  if (view.summary) {'), CARD.indexOf('  return (\n    <View style={[styles.card, row ? styles.cardRow'));
+    expect(sumBranch).toContain('<View style={[styles.card, row ? styles.cardRowSum : styles.cardCol, c && styles.cardC, { minHeight: contentH || undefined }]}>');
+    expect(sumBranch).not.toContain('Move last set');
+    expect(sumBranch).not.toContain('absoluteFill');
+    expect(CARD).toContain("sumBoxes: { flexDirection: 'row', flexWrap: 'wrap'");
+    expect(CARD).not.toContain("backgroundColor: 'rgba(8,9,10,0.94)'");
   });
   it('the add sheet avoids the keyboard', () => {
     const A = read('components/rack/AddAthleteSheet.tsx');
