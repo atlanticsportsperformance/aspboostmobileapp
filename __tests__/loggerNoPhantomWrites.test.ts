@@ -117,8 +117,9 @@ describe('I3: a value that synced in (the rack LB) is saved when the athlete com
   it('sync alone → no write; Log Set → the row carries actual_weight', () => {
     const r = rig();
     r.load('squat', [{ reps: 5 }, {}]);
-    // the rack's load lands in the set-2 LB cell (commitInputs only — no draft)
+    // the rack's load lands in the set-2 LB cell (commitInputs + noteLocal — no draft)
     const inputs: Record<string, unknown> = { weight: '55' };
+    r.w.noteLocal('squat:1', 'weight');
     r.flush();
     expect(r.upserts).toHaveLength(0);
     // Log Set: pending draft fields + every shown value the server doesn't hold
@@ -128,6 +129,18 @@ describe('I3: a value that synced in (the rack LB) is saved when the athlete com
     expect(row).toMatchObject({ actual_weight: 55, is_complete: true });
     // already saved values are not re-sent; vbt never counts
     expect(r.w.unsaved('squat:0', { reps: 5, vbt: { avg_v: 0.7 } })).toEqual([]);
+  });
+  it('N3: completion never re-sends loaded server values — only what changed on THIS device (a coach web edit wins)', () => {
+    const r = rig();
+    r.load('squat', [{ reps: 5, weight: 100 }]);
+    // the phone shows a value it never touched (stale vs the server) → not sent
+    expect(r.w.unsaved('squat:0', { reps: 6, weight: 95 })).toEqual([]);
+    // a value the athlete typed (drafted) or the rack synced here → sent
+    r.w.noteLocal('squat:0', 'weight');
+    expect(r.w.unsaved('squat:0', { reps: 6, weight: 95 })).toEqual(['weight']);
+    // once saved, it is no longer "local"
+    r.w.markSaved('squat:0', ['weight'], { weight: 95 });
+    expect(r.w.unsaved('squat:0', { weight: 95 })).toEqual([]);
   });
   it('wiring: Next / the circle complete with completionFields', () => {
     expect(S).toContain('const draftFields = completionFields(activeExerciseId, currentSetIndex);');

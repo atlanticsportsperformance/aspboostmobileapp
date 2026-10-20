@@ -76,6 +76,8 @@ export interface StoredRep {
   pv: number;
   rom: number;
   partial: boolean;
+  /** vbt_reps.received_at (the idle check). */
+  receivedAt?: string | null;
 }
 
 /**
@@ -478,13 +480,25 @@ export function createRackExecutor(opts: {
     }
   };
 
-  // ---------------------------------------------------------------- killed-iPad recovery (I1)
+  // ---------------------------------------------------------------- killed-iPad recovery (I1 / N1)
 
-  /** A recovery in progress: its own rpcEndSet goes out after the set row is queued. */
-  let recovering: { athleteId: string; done: Promise<void> } | null = null;
+  /**
+   * A killed-set recovery for the active athlete's row. `inflight` = its
+   * flush + read is running; `timer` = waiting for the set to go idle.
+   */
+  let recovering: {
+    athleteId: string;
+    key: string;
+    row: RackSessionRow;
+    cancelled: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+    done: Promise<void>;
+  } | null = null;
   const recoveredStarts = new Set<string>();
   /** The last recovered set per athlete (the engine's own rpcEndSet for it is dropped — never two). */
   const recoveredLast = new Map<string, string>();
+  /** A rep cancelled a recovery: the engine's next set adopts that set (same exercise + set number). */
+  let adoptSet: { athleteId: string; workoutInstanceId: string; routineExerciseId: string; exerciseId: string | null; setNumber: number } | null = null;
   const recoveryKeyOf = (r: RackSessionRow | null): string | null =>
     r && r.active_athlete_id ? `${r.active_athlete_id}:${r.set_started_at ?? ''}:${r.routine_exercise_id}:${r.set_number}` : null;
   const recoveredKeyFor = (athleteId: string) => recoveredLast.get(athleteId) ?? '∅';
@@ -492,63 +506,120 @@ export function createRackExecutor(opts: {
   /**
    * The server row says a set is lifting (or the phone asked to end it) but
    * this engine never lifted anything since it started: the iPad was killed
-   * mid-set. End that set from the reps already in vbt_reps — write its set
-   * row, then rack_end_set — so the set lands (the phone leaves "Saving…") and
-   * the resolver moves on instead of re-serving that set.
+   * mid-set. The rack never ends a set on its own while it may still be
+   * lifted — it recovers only a FINISHED set: pending_end / leave_requested,
+   * or 60 s (IDLE_END_MS) since the newest stored rep (re-checked on a timer
+   * so the rack never stays "lifting" forever). Then it writes the set row
+   * from vbt_reps (queued reps flushed first) and calls rack_end_set once. Any
+   * rep first cancels it: the engine continues that set (stored + new reps,
+   * one write, rack_recompute_set counts them all).
    */
   const maybeRecover = () => {
     const r = state.session;
     const rackId = state.rackId;
     if (state.mode !== 'rack' || !r || !rackId || recovering) return;
-    if (r.state !== 'lifting' && !r.pending_end) return;
+    if (r.state !== 'lifting' && !r.pending_end && !r.leave_requested) return;
     if (state.live || state.lastEnded) return; // this engine owns / owned the set
     const athleteId = r.active_athlete_id;
     if (!athleteId || !r.workout_instance_id || !r.routine_exercise_id || r.set_number == null) return;
     const key = recoveryKeyOf(r)!;
     if (recoveredStarts.has(key)) return;
-    recoveredStarts.add(key);
-    recoveredLast.set(athleteId, key);
-    const row = r;
-    const done = (async () => {
-      try {
-        const reps = api.setReps
-          ? await withTimeout(
-              api.setReps(rackId, {
-                athleteId,
-                workoutInstanceId: row.workout_instance_id!,
-                routineExerciseId: row.routine_exercise_id!,
-                setNumber: row.set_number!,
-                since: row.set_started_at,
-              }),
-              RPC_TIMEOUT_MS,
-              'setReps',
-            )
-          : [];
-        if (reps.length) {
-          const exerciseId = row.exercise_id ?? state.exerciseByRoutineExercise[row.routine_exercise_id!] ?? null;
-          const meta = exerciseId ? state.metaByExercise[exerciseId] : undefined;
-          const zone: [number, number] | null = meta && meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
-          const summary = recoveredSummary(rackId, row, reps, { exerciseId, zone, nowIso: new Date(now()).toISOString() });
-          rackWritten.set(`${athleteId}:${row.workout_instance_id}:${row.routine_exercise_id}:${row.set_number}`, {
-            athleteId,
-            workoutInstanceId: row.workout_instance_id!,
-            routineExerciseId: row.routine_exercise_id!,
-            setNumber: row.set_number!,
-            isComplete: true,
-            seq: ++seq,
-          });
-          await durably('endSet', () => persist.endSet(withExercise(summary)), () => unsavedSets.push({ kind: 'endSet', summary: withExercise(summary) }));
-          void flushSoon().then(() => readLogs(athleteId));
-          reresolve();
-        }
-      } catch (e) {
-        log('killed-set recovery: reps read failed; releasing the rack anyway', e);
+    const rec = { athleteId, key, row: r, cancelled: false, timer: null as ReturnType<typeof setTimeout> | null, done: Promise.resolve() };
+    recovering = rec;
+    rec.done = attemptRecovery(rec);
+  };
+
+  const attemptRecovery = async (rec: NonNullable<typeof recovering>): Promise<void> => {
+    const rackId = state.rackId!;
+    const row = rec.row;
+    const athleteId = rec.athleteId;
+    try {
+      await flushSoon(true); // reps still in the local queue count too
+      if (rec.cancelled) return;
+      const reps = api.setReps
+        ? await withTimeout(
+            api.setReps(rackId, {
+              athleteId,
+              workoutInstanceId: row.workout_instance_id!,
+              routineExerciseId: row.routine_exercise_id!,
+              setNumber: row.set_number!,
+              since: row.set_started_at,
+            }),
+            RPC_TIMEOUT_MS,
+            'setReps',
+          )
+        : [];
+      if (rec.cancelled) return;
+      const cur = state.session;
+      if (!cur || recoveryKeyOf(cur) !== rec.key || state.live) {
+        // the row moved on (another set / athlete) — nothing to recover
+        if (recovering === rec) recovering = null;
+        return;
       }
+      const flagged = !!cur.pending_end || !!cur.leave_requested;
+      const times = reps.map(x => (x.receivedAt ? Date.parse(x.receivedAt) : NaN)).filter(Number.isFinite);
+      const lastAt = times.length ? Math.max(...times) : cur.set_started_at ? Date.parse(cur.set_started_at) : NaN;
+      const idleFor = Number.isFinite(lastAt) ? now() - lastAt : IDLE_END_MS;
+      if (!flagged && idleFor < IDLE_END_MS) {
+        // Maybe still being lifted: look again once it would be 60 s idle.
+        rec.timer = setTimeout(() => {
+          rec.timer = null;
+          if (rec.cancelled || recovering !== rec) return;
+          rec.done = attemptRecovery(rec);
+        }, IDLE_END_MS - idleFor + 50);
+        return;
+      }
+      recoveredStarts.add(rec.key);
+      recoveredLast.set(athleteId, rec.key);
+      if (reps.length) {
+        const exerciseId = row.exercise_id ?? state.exerciseByRoutineExercise[row.routine_exercise_id!] ?? null;
+        const meta = exerciseId ? state.metaByExercise[exerciseId] : undefined;
+        const zone: [number, number] | null = meta && meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
+        const summary = withExercise(recoveredSummary(rackId, cur, reps, { exerciseId, zone, nowIso: new Date(now()).toISOString() }));
+        rackWritten.set(`${athleteId}:${row.workout_instance_id}:${row.routine_exercise_id}:${row.set_number}`, {
+          athleteId,
+          workoutInstanceId: row.workout_instance_id!,
+          routineExerciseId: row.routine_exercise_id!,
+          setNumber: row.set_number!,
+          isComplete: true,
+          seq: ++seq,
+        });
+        await durably('endSet', () => persist.endSet(summary), () => unsavedSets.push({ kind: 'endSet', summary }));
+        void flushSoon().then(() => readLogs(athleteId));
+      }
+      if (recovering === rec) recovering = null;
+      reresolve();
       runRpc({ type: 'rpcEndSet', athleteId });
-    })().finally(() => {
-      recovering = null;
-    });
-    recovering = { athleteId, done };
+    } catch (e) {
+      log('killed-set recovery failed; re-checking', e);
+      if (!rec.cancelled && recovering === rec && running) {
+        rec.timer = setTimeout(() => {
+          rec.timer = null;
+          if (rec.cancelled || recovering !== rec) return;
+          rec.done = attemptRecovery(rec);
+        }, SEED_RETRY_MS);
+      } else if (recovering === rec) {
+        recovering = null;
+      }
+    }
+  };
+
+  /** A rep arrived first: cancel the recovery; the next set adopts that set. */
+  const cancelRecovery = () => {
+    const rec = recovering;
+    if (!rec || rec.athleteId !== state.activeAthleteId) return;
+    rec.cancelled = true;
+    if (rec.timer) clearTimeout(rec.timer);
+    rec.timer = null;
+    recovering = null;
+    recoveredStarts.add(rec.key); // never recover that set later
+    adoptSet = {
+      athleteId: rec.athleteId,
+      workoutInstanceId: rec.row.workout_instance_id!,
+      routineExerciseId: rec.row.routine_exercise_id!,
+      exerciseId: rec.row.exercise_id ?? null,
+      setNumber: rec.row.set_number!,
+    };
   };
 
   // ---------------------------------------------------------------- log reads (one athlete)
@@ -839,6 +910,12 @@ export function createRackExecutor(opts: {
         if (extra && !extra.none && extra.reason === 'extra-set') res = extra;
       }
       applyResolution(athleteId, res);
+      // The set a crash interrupted continues (same exercise + set number).
+      if (adoptSet && adoptSet.athleteId === athleteId) {
+        const a = adoptSet;
+        adoptSet = null;
+        applyResolution(athleteId, { workoutInstanceId: a.workoutInstanceId, routineExerciseId: a.routineExerciseId, exerciseId: a.exerciseId, setNumber: a.setNumber, reason: 'reopen' });
+      }
     } finally {
       resolving = false;
     }
@@ -1533,6 +1610,8 @@ export function createRackExecutor(opts: {
     const at = atMs ?? now();
     // A first rep is waiting for its log read: queue EVERYTHING (ticks, rows,
     // Done, taps) and replay in order on release.
+    // A rep while a killed-set recovery waits: the set is still being lifted — adopt it.
+    if (event.type === 'rep' && recovering) cancelRecovery();
     if (queued(() => dispatch(event, at))) return;
     let starting = false;
     if (event.type === 'rep' && startsSet(at)) {
@@ -1652,6 +1731,7 @@ export function createRackExecutor(opts: {
     },
     stop() {
       releaseHold();
+      if (recovering?.timer) clearTimeout(recovering.timer);
       running = false;
       timers.forEach(clearInterval);
       timers = [];

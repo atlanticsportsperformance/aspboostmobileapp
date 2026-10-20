@@ -813,16 +813,17 @@ describe('fix round (owner): banner = rack row; iPad REPS follow the phone', () 
   });
 });
 
-describe('I1: the iPad was killed mid-set — the relaunched executor ends that set from vbt_reps', () => {
-  const stored = (n: number) => Array.from({ length: n }, (_, i) => ({ v: 0.7 - i * 0.02, pv: 1, rom: 20, partial: false }));
-  async function killed(over: Partial<RackSessionRow>, reps: ReturnType<typeof stored>) {
+describe('I1 / N1: the iPad was killed mid-set — recover only a FINISHED set, never a live one', () => {
+  const stored = (n: number, ageMs: number, t: number) =>
+    Array.from({ length: n }, (_, i) => ({ v: 0.7 - i * 0.02, pv: 1, rom: 20, partial: false, receivedAt: iso(t - ageMs - (n - 1 - i) * 2000) }));
+  function killedRig(reps: (t: number) => ReturnType<typeof stored>) {
     const r = rig(logRows('squat', 1));
-    (r.api as any).setReps = jest.fn(async () => reps);
+    (r.api as any).setReps = jest.fn(async () => reps(r.t));
     const order: string[] = [];
     const realWrite = (r.persist.endSet as jest.Mock).getMockImplementation()!;
     (r.persist.endSet as jest.Mock).mockImplementation(async (sm: any) => {
-      order.push('endSet');
-      await realWrite(sm); // the DB holds the row once it is sent
+      order.push(`endSet#${sm.setNumber}`);
+      await realWrite(sm);
     });
     const end = r.api.endSet as jest.Mock;
     const realEnd = end.getMockImplementation()!;
@@ -831,37 +832,88 @@ describe('I1: the iPad was killed mid-set — the relaunched executor ends that 
       return realEnd(...a);
     });
     r.ex.setToday([SIM()]);
-    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2, state: 'lifting', set_started_at: iso(T0 - 30_000), ...over });
-    await settle();
-    await r.ex.idle();
     return { r, order };
   }
+  const liftingRow = (r: ReturnType<typeof rig>, over: Partial<RackSessionRow> = {}) =>
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2, state: 'lifting', set_started_at: iso(r.t - 90_000), ...over });
 
-  it('state=lifting, no live engine set → the set row is written from its reps, then rack_end_set', async () => {
-    const { r, order } = await killed({}, stored(3));
-    expect((r.api as any).setReps).toHaveBeenCalledWith(RACK, expect.objectContaining({ athleteId: 'tyler', routineExerciseId: 'squat', setNumber: 2 }));
+  it('lifting, last stored rep ≥ 60 s ago → the set row from its reps, then ONE rack_end_set; the resolver moves on', async () => {
+    const { r, order } = killedRig(t => stored(3, 61_000, t));
+    liftingRow(r);
+    await settle();
+    await r.ex.idle();
     expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, fullReps: 3, source: 'rack' });
-    expect(order).toEqual(['endSet', 'rack_end_set']);
-    // the resolver moves on (never re-serves set 2)
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
     expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
   });
 
-  it('pending_end (phone Done reached a killed rack) → still ONE rack_end_set, after the row', async () => {
-    const { order } = await killed({ pending_end: true }, stored(2));
-    expect(order).toEqual(['endSet', 'rack_end_set']);
+  it('pending_end (phone Done reached a killed rack) → recovered at once, still ONE rack_end_set after the row', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    liftingRow(r, { pending_end: true });
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
   });
 
-  it('no reps stored → no set row; the rack is still released (the phone leaves "Saving…" by its timeout)', async () => {
-    const { r, order } = await killed({ pending_end: true }, []);
+  it('pending_end with no reps stored → no set row; the rack is still released', async () => {
+    const { r, order } = killedRig(() => []);
+    liftingRow(r, { pending_end: true });
+    await settle();
+    await r.ex.idle();
     expect(r.persist.endSet).not.toHaveBeenCalled();
     expect(order).toEqual(['rack_end_set']);
   });
 
-  it('phone wiring: past 10 s with no row the set is handed back (pending + "Saving…" cleared) in every case', () => {
+  it('N1: lifting, last rep 5 s ago → no end; a rep then CONTINUES set 2 (adopted) — one write, one rack_end_set', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    liftingRow(r);
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual([]); // the rack never ends a set it may still be lifting
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.66) }, r.advance(3000));
+    await settle();
+    expect(r.ex.getState().live?.context).toMatchObject({ routineExerciseId: 'squat', setNumber: 2 });
+    r.ex.dispatch({ type: 'ipadDone' }, r.advance(2000));
+    await settle();
+    await r.ex.idle();
+    expect(order.filter(o => o.startsWith('endSet'))).toEqual(['endSet#2']);
+    expect(order.filter(o => o === 'rack_end_set')).toHaveLength(1);
+  });
+
+  it('N1: lifting and idle → recovered by the timer once it is 60 s idle — exactly once', async () => {
+    jest.useFakeTimers();
+    try {
+      const { r, order } = killedRig(t => stored(2, 5_000, t - (r.t - t0)));
+      const t0 = r.t;
+      liftingRow(r);
+      await jest.advanceTimersByTimeAsync(0);
+      for (let k = 0; k < 5; k++) await Promise.resolve();
+      expect(order).toEqual([]);
+      r.advance(56_000); // the clock the idle check reads
+      await jest.advanceTimersByTimeAsync(56_000);
+      for (let k = 0; k < 20; k++) await jest.advanceTimersByTimeAsync(10);
+      expect(order).toEqual(['endSet#2', 'rack_end_set']);
+      // another row for the same (now ended) set never recovers again
+      liftingRow(r, { set_started_at: iso(t0 - 90_000) });
+      for (let k = 0; k < 20; k++) await jest.advanceTimersByTimeAsync(10);
+      expect(order.filter(o => o === 'rack_end_set')).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('N2 phone wiring: past 10 s with no row → "Saved on the rack · pull to refresh" + "Log it here"; only that action hands the set back', () => {
     const L = readFileSync(join(__dirname, '..', 'screens/WorkoutLoggerScreen.tsx'), 'utf8');
-    const t = L.slice(L.indexOf('if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {'));
-    expect(t.slice(0, 600)).toContain('delete rackPendingRef.current[key];');
-    expect(t.slice(0, 600)).not.toContain("'timeout'");
+    const D = readFileSync(join(__dirname, '..', 'screens/exercise-detail-view.tsx'), 'utf8');
+    const t = L.slice(L.indexOf('if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {')).slice(0, 500);
+    expect(t).toContain("{ ...prev, [key]: 'timeout' }");
+    expect(t).not.toContain('delete rackPendingRef.current[key];');
+    const logHere = L.slice(L.indexOf('const handleRackLogHere'), L.indexOf('// Real pull-to-refresh'));
+    expect(logHere).toContain('delete rackPendingRef.current[key];');
+    expect(L).toContain('onLogHere: (setIndex: number) => handleRackLogHere(reId, setIndex),');
+    expect(D).toContain('Saved on the rack · pull to refresh');
+    expect(D).toContain('onPress={() => rack.onLogHere?.(i)}');
+    expect(D).toContain('>Log it here<');
   });
 });
 

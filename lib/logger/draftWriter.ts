@@ -35,10 +35,13 @@ export interface DraftWriter {
   pending(key: string): string[];
   /** What the phone last knew the server holds for a set (the baseline drafts diff against). */
   savedOf(key: string): Record<string, unknown> | undefined;
+  /** A value landed in a cell on THIS device without an edit (the rack's synced LB). */
+  noteLocal(key: string, field: string): void;
   /**
-   * Fields whose shown value differs from what the server holds (a value that
-   * synced in — the rack's LB — and was never drafted). Sent when the athlete
-   * COMPLETES the set, so the value shown is the value saved; never on sync.
+   * Fields changed on THIS device since load (typed, or synced in) whose
+   * shown value the server doesn't hold. Sent when the athlete COMPLETES the
+   * set, so the value shown is the value saved — never on sync, and never a
+   * loaded server value (a coach's web edit wins).
    */
   unsaved(key: string, values: Record<string, unknown>): string[];
 }
@@ -56,6 +59,13 @@ export function createDraftWriter(opts: {
   };
   const saved = new Map<string, Record<string, unknown>>();
   const fieldsOf = new Map<string, Set<string>>();
+  /** Fields changed on this device since the server's value was last known. */
+  const localOf = new Map<string, Set<string>>();
+  const touch = (key: string, field: string) => {
+    const s = localOf.get(key) ?? new Set<string>();
+    s.add(field);
+    localOf.set(key, s);
+  };
   const timerOf = new Map<string, unknown>();
 
   const cancelTimer = (key: string) => {
@@ -67,13 +77,20 @@ export function createDraftWriter(opts: {
   return {
     setSaved(key, values) {
       saved.set(key, { ...values });
+      localOf.delete(key);
     },
     markSaved(key, fields, values) {
       const cur = { ...(saved.get(key) ?? {}) };
       for (const f of fields) cur[f] = values[f];
       saved.set(key, cur);
+      const l = localOf.get(key);
+      if (l) for (const f of fields) l.delete(f);
+    },
+    noteLocal(key, field) {
+      touch(key, field);
     },
     edit(key, field, value) {
+      touch(key, field);
       const pending = fieldsOf.get(key) ?? new Set<string>();
       if (sameValue(value, saved.get(key)?.[field])) {
         // No real change (a re-apply, a keypad closed untouched, edited back).
@@ -107,8 +124,9 @@ export function createDraftWriter(opts: {
     savedOf: key => saved.get(key),
     unsaved(key, values) {
       const base = saved.get(key) ?? {};
+      const local = localOf.get(key) ?? new Set<string>();
       return Object.entries(values)
-        .filter(([f, v]) => f !== 'vbt' && (v == null || typeof v !== 'object') && !sameValue(v, base[f]))
+        .filter(([f, v]) => local.has(f) && f !== 'vbt' && (v == null || typeof v !== 'object') && !sameValue(v, base[f]))
         .map(([f]) => f);
     },
   };

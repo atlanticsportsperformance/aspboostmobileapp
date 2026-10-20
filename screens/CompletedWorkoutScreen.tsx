@@ -17,7 +17,6 @@ import { resetWorkout } from '../lib/logger/resetWorkout';
 import { createRackApi, type RackClient } from '../lib/rack/api';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
-import { loggerOutbox } from '../lib/logger/outbox';
 import { markWorkoutListDirty } from '../lib/workoutRefreshSignal';
 
 interface ExerciseLog {

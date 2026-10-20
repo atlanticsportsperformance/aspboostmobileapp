@@ -99,6 +99,8 @@ export interface ExerciseRackProps extends RackScreenProps {
   onEditingChange?: (editing: boolean) => void;
   /** Real pull-to-refresh: rack state + pending set rows. */
   onPullRefresh: () => void;
+  /** "Log it here": the rack never saved this set (10 s, no row) — the phone takes it back. */
+  onLogHere?: (setIndex: number) => void;
   refreshing: boolean;
   /** Pull-to-refresh only when the org has racks (not for the phone sensor alone). */
   canRefresh?: boolean;
@@ -1165,7 +1167,21 @@ export default function ExerciseDetailView({
             <LiveRepRow source={rackLive.source} rackName={rackLive.rackName} chips={rackLive.chips} powerText={rackLive.powerText} onLongPressChip={chipPress(i)} />
           )}
           {rackSaving(i) === 'saving' && <Text style={styles.caption}>Saving…</Text>}
-          {rackSaving(i) === 'timeout' && <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>}
+          {rackSaving(i) === 'timeout' && (
+            <View style={styles.rackTimeout}>
+              <Text style={styles.caption}>Saved on the rack · pull to refresh</Text>
+              {rack?.onLogHere && (
+                <TouchableOpacity
+                  onPress={() => rack.onLogHere?.(i)}
+                  style={styles.logHere}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Log set ${i + 1} here`}
+                >
+                  <Text style={styles.logHereTxt}>Log it here</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
           {rack?.hasRacks && rack.idleSaved.includes(i) && !isOpen && (
             <Text style={styles.caption}>Saved · tap to edit</Text>
           )}
@@ -1607,7 +1623,7 @@ export default function ExerciseDetailView({
                 ? liveDoneLabel(rackLive.fullReps)
                 : currentSetCompleted
                   ? null
-                  : rackSaving(currentSetIndex)
+                  : rackSaving(currentSetIndex) === 'saving'
                     ? 'Saving…'
                     : null;
               const label = rackLive?.lifting && rackLabel
@@ -2062,6 +2078,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontStyle: 'italic',
   },
+  rackTimeout: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
+  logHere: { borderWidth: 1, borderColor: 'rgba(155,221,255,0.45)', borderRadius: 8, paddingVertical: 4, paddingHorizontal: 10, minHeight: 32, justifyContent: 'center' },
+  logHereTxt: { color: '#9BDDFF', fontSize: 12, fontWeight: '700' },
   caption: {
     paddingLeft: 48,
     paddingRight: 16,

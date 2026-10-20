@@ -607,18 +607,11 @@ describe('iPad REPS follow the phone: the context carries the phone’s reps', (
     expect(send.mock.calls[1][1]).toMatchObject({ repsTarget: 5 });
     expect(s.isEcho({ workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 1, loadLb: 185 })).toBe(true);
   });
-  it('rack_set_phone_context sends p_reps_target; before the migration it falls back to the 5-argument call once', async () => {
-    const rpc = jest
-      .fn()
-      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST202', message: 'no function' } })
-      .mockResolvedValue({ data: { rack_id: 'r' }, error: null });
+  it('rack_set_phone_context always sends p_reps_target (the 6-argument function is live)', async () => {
+    const rpc = jest.fn().mockResolvedValue({ data: { rack_id: 'r' }, error: null });
     const api = createRackApi({ rpc, from: jest.fn() });
-    const ctx = { workoutInstanceId: 'wi', routineExerciseId: 're', setNumber: 1, loadLb: null, repsTarget: 5 };
-    await api.setPhoneContext('r', ctx);
-    await api.setPhoneContext('r', ctx);
-    expect(rpc.mock.calls[0][1]).toMatchObject({ p_reps_target: 5 });
-    expect('p_reps_target' in rpc.mock.calls[1][1]).toBe(false);
-    expect('p_reps_target' in rpc.mock.calls[2][1]).toBe(false); // remembered
+    await api.setPhoneContext('r', { workoutInstanceId: 'wi', routineExerciseId: 're', setNumber: 1, loadLb: null, repsTarget: 5 });
+    expect(rpc).toHaveBeenCalledWith('rack_set_phone_context', expect.objectContaining({ p_reps_target: 5 }));
   });
 });
 

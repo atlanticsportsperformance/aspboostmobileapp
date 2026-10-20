@@ -1343,16 +1343,10 @@ export default function WorkoutLoggerScreen() {
         console.warn('[rack phone] set read failed', e);
       }
       if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {
-        // I1: no rack row after 10 s (e.g. rack_end_set wrote none) — leave
-        // "Saving…" in every case and hand the set back to the phone (manual
-        // logging works); a row that lands later still arrives via the diff.
-        delete rackPendingRef.current[key];
-        setRackSavingState(prev => {
-          if (!(key in prev)) return prev;
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
+        // No rack row after 10 s: leave "Saving…" (→ "Saved on the rack · pull
+        // to refresh" + "Log it here"). The set stays the rack's — re-reads
+        // continue — until the athlete taps "Log it here" (never a silent uncheck).
+        setRackSavingState(prev => (prev[key] === 'saving' ? { ...prev, [key]: 'timeout' } : prev));
       }
     }
   }, [workoutInstanceId, applyRackWrittenLog]);
@@ -1487,6 +1481,20 @@ export default function WorkoutLoggerScreen() {
     return () => clearTimeout(release);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rackActive]);
+
+  // "Log it here": the rack never saved this set — the athlete takes it back
+  // (manual logging works again). A rack row that lands later still arrives via the diff.
+  const handleRackLogHere = useCallback((reId: string, setIndex: number) => {
+    const key = `${reId}:${setIndex}`;
+    delete rackPendingRef.current[key];
+    setRackSavingState(prev => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Real pull-to-refresh: my rack state + every pending set row.
   const handleRackPullRefresh = useCallback(async () => {
@@ -1820,6 +1828,8 @@ export default function WorkoutLoggerScreen() {
       while (data.length <= idx) data.push({});
       data[idx] = { ...data[idx], weight: String(v) };
       commitInputs({ ...inputsRef.current, [reId]: data });
+      // Synced in on this device: saved when the athlete completes the set (never on sync).
+      draftWriter.noteLocal(`${reId}:${idx}`, 'weight');
     };
     const liveNow = s.state === 'lifting' ? liveRackSet(s, athleteId, workoutInstanceId) : null;
     if (liveNow) {
@@ -2122,6 +2132,7 @@ export default function WorkoutLoggerScreen() {
       rackNextAfter,
       refreshing: rackRefreshing,
       onPullRefresh: handleRackPullRefresh,
+      onLogHere: (setIndex: number) => handleRackLogHere(reId, setIndex),
       onEditingChange: handleRackEditingChange,
       onLiveDone: () => {
         // Solo: this phone ends the set (engine Done → its own set row).
