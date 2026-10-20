@@ -666,6 +666,47 @@ export function loadSyncValue(i: {
   return i.rackLoad;
 }
 
+/**
+ * The rack's load for the set it is on NOW (the live set while lifting, else
+ * the row's set) → the phone's LB cell, live: the rack's value whenever it
+ * differs from the cell, unless the athlete is typing or edited the cell in
+ * the last 3 s. Never a prescribed number that differs from what the rack
+ * records. null = leave the cell.
+ */
+export function rackCellLoad(i: {
+  rackLoad: number | null;
+  phoneLoad: number | null;
+  lastEditAt: number;
+  now: number;
+  editing?: boolean;
+}): number | null {
+  if (i.editing || i.rackLoad == null) return null;
+  if (i.phoneLoad === i.rackLoad) return null;
+  if (i.now - i.lastEditAt < LOAD_EDIT_GUARD_MS) return null;
+  return i.rackLoad;
+}
+
+/** The rack's load for a set of this exercise right now (live set, else the row's set), or null. */
+export function rackLoadForSet(
+  s: SessionLike | null,
+  athleteId: string,
+  workoutInstanceId: string,
+  routineExerciseId: string,
+  setIndex: number,
+): number | null {
+  if (!s || s.active_athlete_id !== athleteId) return null;
+  if (s.workout_instance_id && s.workout_instance_id !== workoutInstanceId) return null;
+  if (s.routine_exercise_id !== routineExerciseId || s.set_number !== setIndex + 1) return null;
+  return numOrNull(s.load_lb);
+}
+
+/** "90% of set 1 · 45" next to a rack recording 50 → "90% of set 1" (the computed number is hidden). */
+export function captionWithRackLoad(caption: string | null, computed: number | null, rackLoad: number | null): string | null {
+  if (!caption || rackLoad == null || computed == null || computed === rackLoad) return caption;
+  const i = caption.indexOf(' · ');
+  return i < 0 ? caption : caption.slice(0, i);
+}
+
 /** First set not complete (0-based), or null when every set is done. */
 export function firstIncompleteSet(completed: boolean[] | undefined, sets: number): number | null {
   for (let k = 0; k < sets; k++) if (completed?.[k] !== true) return k;

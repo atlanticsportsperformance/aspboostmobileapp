@@ -62,6 +62,8 @@ import {
   livePowerText,
   loadFromInput,
   loadSyncValue,
+  rackCellLoad,
+  rackLoadForSet,
   pressDone,
   rackContextOf,
   rackSafeWrite,
@@ -1788,6 +1790,30 @@ export default function WorkoutLoggerScreen() {
         return !!ex && firstIncompleteSet(completedRef.current[reId], ex.sets ?? 1) == null;
       },
     });
+    // Load, live: the set the rack is recording NOW (the live set's row load) →
+    // its LB cell, unless the athlete edited it in the last 3 s.
+    const setCell = (reId: string, idx: number, v: number) => {
+      const data = [...(inputsRef.current[reId] || [])];
+      while (data.length <= idx) data.push({});
+      data[idx] = { ...data[idx], weight: String(v) };
+      commitInputs({ ...inputsRef.current, [reId]: data });
+    };
+    const liveNow = s.state === 'lifting' ? liveRackSet(s, athleteId, workoutInstanceId) : null;
+    if (liveNow) {
+      const reId = liveNow.routineExerciseId;
+      const idx = liveNow.setNumber - 1;
+      const ex = allExercises.find(x => x.id === reId);
+      if (ex && idx >= 0 && idx < ex.sets) {
+        const v = rackCellLoad({
+          rackLoad: rackLoadForSet(s, athleteId, workoutInstanceId, reId, idx),
+          phoneLoad: loadFromInput(inputsRef.current[reId]?.[idx]?.weight),
+          lastEditAt: rackWeightEditAtRef.current[`${reId}:${idx}`] ?? 0,
+          now,
+          editing: rackEditingRef.current,
+        });
+        if (v != null) setCell(reId, idx, v);
+      }
+    }
     // Load: the rack's LB → the phone's LB cell for the SAME (exercise, set) the
     // rack is set up for (pending group mid-set → the next set's row).
     if (ctx.routineExerciseId && (!ctx.workoutInstanceId || ctx.workoutInstanceId === workoutInstanceId)) {
@@ -1803,12 +1829,7 @@ export default function WorkoutLoggerScreen() {
           now,
           editing: rackEditingRef.current,
         });
-        if (v != null) {
-          const data = [...(inputsRef.current[reId] || [])];
-          while (data.length <= idx) data.push({});
-          data[idx] = { ...data[idx], weight: String(v) };
-          commitInputs({ ...inputsRef.current, [reId]: data });
-        }
+        if (v != null) setCell(reId, idx, v);
       }
     }
     rackSeenRef.current = { exercise: ctx.routineExerciseId, load: ctx.loadLb, set: ctx.setNumber };
@@ -2073,6 +2094,7 @@ export default function WorkoutLoggerScreen() {
       idleSaved,
       extraSets: extraRackSets(reId, currentExercise.sets ?? 1),
       savedChips: setIndex => savedRackChips(reId, setIndex + 1),
+      rackLoadFor: setIndex => (rack.hasRacks ? rackLoadForSet(rack.activeSession, athleteId, workoutInstanceId, reId, setIndex) : null),
       onRemoveRep: (clientRepId, setIndex) => void removeRackRep(reId, clientRepId, setIndex),
       rackNextAfter,
       refreshing: rackRefreshing,

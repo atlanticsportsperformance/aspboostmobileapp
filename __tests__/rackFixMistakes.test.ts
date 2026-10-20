@@ -20,7 +20,7 @@ import { createRackPersist, MOVE_QUEUE_KEY, REMOVAL_QUEUE_KEY, REP_QUEUE_KEY, SE
 import type { RepWrite, SetSummary } from '../lib/rack/engine';
 import { buildRackView, lastSetMoveOf, moveCandidates, MOVE_WINDOW_MS as VIEW_MOVE_WINDOW_MS, removeRepTitle } from '../lib/rack/viewModel';
 import { addRepRow, type ChipSet } from '../lib/rack/phone';
-import { rackRowDiff, rackRowsGone } from '../lib/rack/phoneView';
+import { captionWithRackLoad, rackCellLoad, rackLoadForSet, rackRowDiff, rackRowsGone } from '../lib/rack/phoneView';
 import { createDraftWriter } from '../lib/logger/draftWriter';
 import { dropPct } from '../lib/ovr/protocol';
 import type { OvrRep } from '../lib/ovr/protocol';
@@ -950,5 +950,53 @@ describe('fix round 3 C1: the set re-read is a diff of rack keys only', () => {
       pending: () => [],
     });
     expect(d).toEqual({ changes: [], gone: [0] });
+  });
+});
+
+describe('E2E fix: the phone LB follows the rack’s live load; NEXT SET only after the first rep', () => {
+  it('iPad: a bar step before the first rep is the live set’s load (no NEXT SET); after it, NEXT SET', async () => {
+    const r = rig();
+    await tylerUpWithJakeToday(r);
+    r.advance(1_000);
+    r.ex.setBarLoad(50);
+    await r.ex.idle();
+    r.advance(2_000);
+    r.ex.dispatch({ type: 'rep', rep: ovr(0.6) });
+    await r.ex.idle();
+    expect(r.ex.getState().live!.context.loadLb).toBe(50);
+    expect(r.ex.barLoad()).toEqual({ lb: 50, next: false });
+    r.advance(1_000);
+    r.ex.setBarLoad(55);
+    expect(r.ex.barLoad()).toEqual({ lb: 55, next: true });
+    expect(r.ex.getState().live!.context.loadLb).toBe(50);
+  });
+
+  const live = row({ state: 'lifting', workout_instance_id: 'wi-1', routine_exercise_id: 're-squat', set_number: 2, load_lb: 50 });
+
+  it('phone: the live set’s LB cell shows the rack’s value (not the prescription), unless edited < 3 s ago or typing', () => {
+    const rackLoad = rackLoadForSet(live, 'tyler', 'wi-1', 're-squat', 1);
+    expect(rackLoad).toBe(50);
+    expect(rackLoadForSet(live, 'tyler', 'wi-1', 're-squat', 0)).toBeNull(); // another set
+    expect(rackLoadForSet(live, 'jake', 'wi-1', 're-squat', 1)).toBeNull(); // not active
+    expect(rackLoadForSet({ ...live, workout_instance_id: 'wi-other' }, 'tyler', 'wi-1', 're-squat', 1)).toBeNull();
+    // Empty cell (the prescription "90% S1" → 45 was only a placeholder): the rack's 50 goes in.
+    expect(rackCellLoad({ rackLoad, phoneLoad: null, lastEditAt: 0, now: T0 })).toBe(50);
+    expect(rackCellLoad({ rackLoad, phoneLoad: 45, lastEditAt: 0, now: T0 })).toBe(50);
+    expect(rackCellLoad({ rackLoad, phoneLoad: 50, lastEditAt: 0, now: T0 })).toBeNull();
+    expect(rackCellLoad({ rackLoad, phoneLoad: 55, lastEditAt: T0 - 2_000, now: T0 })).toBeNull(); // athlete's edit wins
+    expect(rackCellLoad({ rackLoad, phoneLoad: 55, lastEditAt: T0 - 3_000, now: T0 })).toBe(50);
+    expect(rackCellLoad({ rackLoad, phoneLoad: 45, lastEditAt: 0, now: T0, editing: true })).toBeNull();
+    const L = read('screens/WorkoutLoggerScreen.tsx');
+    expect(L).toContain("const liveNow = s.state === 'lifting' ? liveRackSet(s, athleteId, workoutInstanceId) : null;");
+    expect(L).toContain('rackLoad: rackLoadForSet(s, athleteId, workoutInstanceId, reId, idx),');
+  });
+
+  it('phone caption hides a computed weight that differs from the rack’s load', () => {
+    expect(captionWithRackLoad('90% of set 1 · 45', 45, 50)).toBe('90% of set 1');
+    expect(captionWithRackLoad('90% of set 1 · 41 → 45', 45, 50)).toBe('90% of set 1');
+    expect(captionWithRackLoad('90% of set 1 · 50', 50, 50)).toBe('90% of set 1 · 50');
+    expect(captionWithRackLoad('90% of set 1 · 45', 45, null)).toBe('90% of set 1 · 45');
+    const D = read('screens/exercise-detail-view.tsx');
+    expect(D).toContain("if (t && m === 'weight') return captionWithRackLoad(t, resolveTarget(targetArgs(setIndex, m)), rack?.rackLoadFor?.(setIndex) ?? null);");
   });
 });

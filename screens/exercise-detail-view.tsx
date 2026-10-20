@@ -51,7 +51,7 @@ import RackBanner, { type RackScreenProps } from '../components/logger/RackBanne
 import SensorButton, { type SensorButtonProps } from '../components/logger/SensorButton';
 import LiveRepRow from '../components/logger/LiveRepRow';
 import RemoveRepSheet from '../components/rack/RemoveRepSheet';
-import { RACK_COLORS, liveDoneLabel, loadFromInput, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
+import { RACK_COLORS, captionWithRackLoad, liveDoneLabel, loadFromInput, rackSummaryLine, type ChipView, type LiveSource } from '../lib/rack/phoneView';
 
 interface ExerciseHistorySet {
   set_number: number;
@@ -112,6 +112,8 @@ export interface ExerciseRackProps extends RackScreenProps {
   rackNextAfter?: (setIndex: number) => { reId: string; name: string } | null;
   /** Rep chips of a SAVED rack row (0-based set of THIS exercise) — long-press removes one. */
   savedChips?: (setIndex: number) => ChipView[];
+  /** The rack's load for a set right now (live / the row's set), else null — the caption never contradicts it. */
+  rackLoadFor?: (setIndex: number) => number | null;
   /** Remove a bad rep (the athlete themself): rack_remove_rep, then the row re-reads. */
   onRemoveRep?: (clientRepId: string, setIndex: number) => void;
 }
@@ -647,6 +649,8 @@ export default function ExerciseDetailView({
   const intensityCaption = (setIndex: number): string | null => {
     for (const m of metricFields) {
       const t = intensityCaptionText(targetArgs(setIndex, m));
+      // On a rack: never show a computed weight that differs from what the rack records.
+      if (t && m === 'weight') return captionWithRackLoad(t, resolveTarget(targetArgs(setIndex, m)), rack?.rackLoadFor?.(setIndex) ?? null);
       if (t) return t;
     }
     return null;

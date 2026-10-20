@@ -1503,7 +1503,11 @@ export function createRackExecutor(opts: {
       const id = state.activeAthleteId;
       if (!bar || !id || bar.athleteId !== id) return null;
       const live = state.setState === 'lifting' ? state.live : null;
-      if (live) return live.context.workoutInstanceId === bar.wi && live.context.routineExerciseId === bar.re ? { lb: bar.lb, next: true } : null;
+      if (live) {
+        if (live.context.workoutInstanceId !== bar.wi || live.context.routineExerciseId !== bar.re) return null;
+        // Changed before the set's first rep = the live set's own load (no "NEXT SET").
+        return { lb: bar.lb, next: bar.at >= live.startedAtMs };
+      }
       return { lb: bar.lb, next: false };
     },
     pickerRows: (athleteId: string) => {
