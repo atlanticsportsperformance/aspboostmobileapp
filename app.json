@@ -3,7 +3,7 @@
     "name": "ASP Boost",
     "slug": "aspboost-mobile",
     "scheme": "aspboost",
-    "version": "1.5.32",
+    "version": "1.5.33",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

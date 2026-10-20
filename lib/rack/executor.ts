@@ -52,6 +52,7 @@ import { prescribedWeightFor, percentWeightTarget, type SetLogRow, type TodayAth
 import { LOAD_EDIT_GUARD_MS } from './phoneView';
 import { pickerRowsOf, rackInstancesOf, resolveRackSet, type PickerRow, type RackExerciseRef, type RackSetLog, type ResolvedRackSet } from './resolveRackSet';
 import { intensityFor, type LoggedSets } from '../logger/targets';
+import { dropPct as dropPctOf } from '../ovr/protocol';
 import { setKeyOf, withTimeout, type FixItem, type RackPersist, type SetRef } from './persist';
 
 export const TICK_MS = 1_000;
@@ -69,10 +70,59 @@ export const CONTINUE_MS = IDLE_END_MS;
 /** A just-ended set can be moved to the right athlete for this long. */
 export const MOVE_WINDOW_MS = 120_000;
 
+/** One rep of a set read back from vbt_reps (killed-iPad recovery). */
+export interface StoredRep {
+  v: number;
+  pv: number;
+  rom: number;
+  partial: boolean;
+}
+
+/**
+ * I1 — the iPad was killed mid-set: the reps are durable in vbt_reps but no
+ * set row was written. The set's summary rebuilt from them (same math as the
+ * engine's summarize: full reps only for avg / best / drop).
+ */
+export function recoveredSummary(
+  rackId: string,
+  row: RackSessionRow,
+  reps: StoredRep[],
+  opts: { exerciseId: string | null; zone: [number, number] | null; nowIso: string },
+): SetSummary {
+  const full = reps.filter(r => !r.partial);
+  const bestV = full.length ? Math.max(...full.map(r => r.v)) : null;
+  const avgV = full.length ? Math.round((full.reduce((a, r) => a + r.v, 0) / full.length) * 1000) / 1000 : null;
+  const last = full[full.length - 1];
+  return {
+    rackId,
+    source: 'rack',
+    athleteId: row.active_athlete_id!,
+    workoutInstanceId: row.workout_instance_id,
+    routineExerciseId: row.routine_exercise_id,
+    exerciseId: opts.exerciseId,
+    setNumber: row.set_number,
+    loadLb: row.load_lb == null ? null : Number(row.load_lb),
+    setStartedAt: row.set_started_at ?? opts.nowIso,
+    reps: reps.map(r => ({ v: r.v, pv: r.pv, rom: r.rom, partial: r.partial })),
+    fullReps: full.length,
+    avgV,
+    bestV,
+    dropPct: bestV != null && last ? dropPctOf(bestV, last.v) : null,
+    zone: opts.zone,
+    endedBy: row.pending_end ? 'phone' : 'idle',
+    free: false,
+  };
+}
+
 export interface ExecutorApi {
   startSet(rackId: string, athleteId: string, startedAt: string): Promise<RackSessionRow>;
   setActive(rackId: string, athleteId: string): Promise<RackSessionRow>;
   endSet(rackId: string, athleteId: string): Promise<RackSessionRow>;
+  /** The set's non-removed vbt_reps (rep order) since `since` — killed-iPad recovery. Optional (tests). */
+  setReps?(
+    rackId: string,
+    q: { athleteId: string; workoutInstanceId: string; routineExerciseId: string; setNumber: number; since: string | null },
+  ): Promise<StoredRep[]>;
   /** One athlete's set rows today (rack_athlete_sets) — resolveRackSet's logs. */
   athleteSets(rackId: string, athleteId: string): Promise<SetLogRow[]>;
   /** Last logged weight for (athlete, exercise) — the load fallback when
@@ -387,6 +437,8 @@ export function createRackExecutor(opts: {
           break;
         }
         case 'rpcEndSet':
+          // A killed-set recovery ends that set itself (after its row is queued).
+          if ((recovering && recovering.athleteId === fx.athleteId) || recoveryKeyOf(state.session) === recoveredKeyFor(fx.athleteId)) break;
           if (setWriteFailed) {
             dispatch({ type: 'rpcFailed', kind: 'endSet', athleteId: fx.athleteId });
             break;
@@ -424,6 +476,79 @@ export function createRackExecutor(opts: {
         }
       }
     }
+  };
+
+  // ---------------------------------------------------------------- killed-iPad recovery (I1)
+
+  /** A recovery in progress: its own rpcEndSet goes out after the set row is queued. */
+  let recovering: { athleteId: string; done: Promise<void> } | null = null;
+  const recoveredStarts = new Set<string>();
+  /** The last recovered set per athlete (the engine's own rpcEndSet for it is dropped — never two). */
+  const recoveredLast = new Map<string, string>();
+  const recoveryKeyOf = (r: RackSessionRow | null): string | null =>
+    r && r.active_athlete_id ? `${r.active_athlete_id}:${r.set_started_at ?? ''}:${r.routine_exercise_id}:${r.set_number}` : null;
+  const recoveredKeyFor = (athleteId: string) => recoveredLast.get(athleteId) ?? '∅';
+
+  /**
+   * The server row says a set is lifting (or the phone asked to end it) but
+   * this engine never lifted anything since it started: the iPad was killed
+   * mid-set. End that set from the reps already in vbt_reps — write its set
+   * row, then rack_end_set — so the set lands (the phone leaves "Saving…") and
+   * the resolver moves on instead of re-serving that set.
+   */
+  const maybeRecover = () => {
+    const r = state.session;
+    const rackId = state.rackId;
+    if (state.mode !== 'rack' || !r || !rackId || recovering) return;
+    if (r.state !== 'lifting' && !r.pending_end) return;
+    if (state.live || state.lastEnded) return; // this engine owns / owned the set
+    const athleteId = r.active_athlete_id;
+    if (!athleteId || !r.workout_instance_id || !r.routine_exercise_id || r.set_number == null) return;
+    const key = recoveryKeyOf(r)!;
+    if (recoveredStarts.has(key)) return;
+    recoveredStarts.add(key);
+    recoveredLast.set(athleteId, key);
+    const row = r;
+    const done = (async () => {
+      try {
+        const reps = api.setReps
+          ? await withTimeout(
+              api.setReps(rackId, {
+                athleteId,
+                workoutInstanceId: row.workout_instance_id!,
+                routineExerciseId: row.routine_exercise_id!,
+                setNumber: row.set_number!,
+                since: row.set_started_at,
+              }),
+              RPC_TIMEOUT_MS,
+              'setReps',
+            )
+          : [];
+        if (reps.length) {
+          const exerciseId = row.exercise_id ?? state.exerciseByRoutineExercise[row.routine_exercise_id!] ?? null;
+          const meta = exerciseId ? state.metaByExercise[exerciseId] : undefined;
+          const zone: [number, number] | null = meta && meta.zoneMin != null && meta.zoneMax != null ? [meta.zoneMin, meta.zoneMax] : null;
+          const summary = recoveredSummary(rackId, row, reps, { exerciseId, zone, nowIso: new Date(now()).toISOString() });
+          rackWritten.set(`${athleteId}:${row.workout_instance_id}:${row.routine_exercise_id}:${row.set_number}`, {
+            athleteId,
+            workoutInstanceId: row.workout_instance_id!,
+            routineExerciseId: row.routine_exercise_id!,
+            setNumber: row.set_number!,
+            isComplete: true,
+            seq: ++seq,
+          });
+          await durably('endSet', () => persist.endSet(withExercise(summary)), () => unsavedSets.push({ kind: 'endSet', summary: withExercise(summary) }));
+          void flushSoon().then(() => readLogs(athleteId));
+          reresolve();
+        }
+      } catch (e) {
+        log('killed-set recovery: reps read failed; releasing the rack anyway', e);
+      }
+      runRpc({ type: 'rpcEndSet', athleteId });
+    })().finally(() => {
+      recovering = null;
+    });
+    recovering = { athleteId, done };
   };
 
   // ---------------------------------------------------------------- log reads (one athlete)
@@ -861,7 +986,10 @@ export function createRackExecutor(opts: {
       phoneCtx = null;
       lastAttemptKey = null;
     }
-    if (event.type === 'sessionSync') notePhoneCtx();
+    if (event.type === 'sessionSync') {
+      notePhoneCtx();
+      maybeRecover();
+    }
     if (state.activeAthleteId !== before) {
       // (handled above)
     } else if (event.type === 'sessionSync' && override && !publishInFlight && phoneOwnsRow() && refSig(phoneRef()) !== override.phoneSig) {
@@ -1535,6 +1663,7 @@ export function createRackExecutor(opts: {
       // (and a first rep waiting for its log re-read).
       for (let i = 0; i < 20; i++) {
         if (held) await held.done;
+        if (recovering) await recovering.done;
         const e = effectChain;
         const r = rpcChain;
         await e;

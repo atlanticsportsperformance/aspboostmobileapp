@@ -122,8 +122,9 @@ export function useRackPhone(opts: {
     let cancelled = false;
     (async () => {
       try {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
+        // The local session (no GoTrue round trip per logger mount — M4).
+        const { data: auth } = await supabase.auth.getSession();
+        const uid = auth?.session?.user?.id;
         if (!uid) return;
         const { data } = await supabase.from('athletes').select('id').eq('user_id', uid);
         if (!cancelled) setIsSelf(((data as { id: string }[]) ?? []).some(a => a.id === athleteId));

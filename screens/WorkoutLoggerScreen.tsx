@@ -740,6 +740,15 @@ export default function WorkoutLoggerScreen() {
   // written — the caller's write carries them instead, so nothing typed in
   // the last 500 ms is lost.
   const cancelDraft = (exerciseId: string, setIndex: number): string[] => draftWriter.take(`${exerciseId}:${setIndex}`);
+  // Completing a set: its pending draft + every value shown that the server
+  // doesn't hold yet (e.g. the rack's LB synced into the cell) — the value
+  // shown is the value saved. A sync alone never writes.
+  const completionFields = (exerciseId: string, setIndex: number): string[] => {
+    const key = `${exerciseId}:${setIndex}`;
+    const fields = new Set(draftWriter.take(key));
+    for (const f of draftWriter.unsaved(key, inputsRef.current[exerciseId]?.[setIndex] || {})) fields.add(f);
+    return [...fields];
+  };
 
   // Save one set (spec §7 / §11.2 / final review I4): build a row with ONLY
   // what this write means to change, put it in the device outbox (merged per
@@ -777,17 +786,22 @@ export default function WorkoutLoggerScreen() {
         rpe: write.rpe ? rpeRef.current[`${exerciseId}:${setIndex}`] ?? null : undefined,
       },
     );
-    // The server will hold these values (the real-edit guard compares against them).
-    if ((write.fields ?? []).length) {
-      draftWriter.markSaved(`${exerciseId}:${setIndex}`, write.fields ?? [], inputsRef.current[exerciseId]?.[setIndex] || {});
-    }
+    // The server will hold these values (the real-edit guard compares against
+    // them) — marked only once the write is safely queued / sent (M2).
+    const sentValues = { ...(inputsRef.current[exerciseId]?.[setIndex] || {}) };
+    const markSent = () => {
+      if ((write.fields ?? []).length) draftWriter.markSaved(`${exerciseId}:${setIndex}`, write.fields ?? [], sentValues);
+    };
     try {
       await loggerOutbox.enqueue(row);
     } catch (error) {
       // Device storage failed — fall back to a direct write.
       console.error('logger outbox enqueue failed, writing directly:', error);
-      return (await upsertSet(supabase, row)).ok;
+      const ok = (await upsertSet(supabase, row)).ok;
+      if (ok) markSent();
+      return ok;
     }
+    markSent();
     void loggerOutbox.flush();
     return true;
   }, [allExercises, athleteId, orgId, workoutInstanceId]);
@@ -995,7 +1009,7 @@ export default function WorkoutLoggerScreen() {
     };
     commitCompleted(activeExerciseId, markDone, exercise.sets);
     if (!wasDone) checkPRsRef.current(activeExerciseId, currentSetIndex);
-    const draftFields = cancelDraft(activeExerciseId, currentSetIndex);
+    const draftFields = completionFields(activeExerciseId, currentSetIndex);
     persistSet(activeExerciseId, currentSetIndex, { complete: true, fields: draftFields }).then(ok => {
       if (ok && !wasDone) startRestAfter(activeExerciseId, currentSetIndex);
     });
@@ -1134,7 +1148,7 @@ export default function WorkoutLoggerScreen() {
     // carries the set's full values (incl. the auto-fill just applied).
     completionInFlightRef.current.add(inFlightKey);
     // Sends is_complete plus any fields edited/auto-filled since the last save.
-    const draftFields = cancelDraft(activeExerciseId, setIndex);
+    const draftFields = currentlyCompleted ? cancelDraft(activeExerciseId, setIndex) : completionFields(activeExerciseId, setIndex);
     persistSet(activeExerciseId, setIndex, { complete: !currentlyCompleted, fields: draftFields })
       .then(ok => {
         if (ok && !currentlyCompleted) startRestAfter(activeExerciseId, setIndex);
@@ -1329,7 +1343,16 @@ export default function WorkoutLoggerScreen() {
         console.warn('[rack phone] set read failed', e);
       }
       if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {
-        setRackSavingState(prev => (prev[key] === 'saving' ? { ...prev, [key]: 'timeout' } : prev));
+        // I1: no rack row after 10 s (e.g. rack_end_set wrote none) — leave
+        // "Saving…" in every case and hand the set back to the phone (manual
+        // logging works); a row that lands later still arrives via the diff.
+        delete rackPendingRef.current[key];
+        setRackSavingState(prev => {
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
       }
     }
   }, [workoutInstanceId, applyRackWrittenLog]);

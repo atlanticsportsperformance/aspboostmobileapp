@@ -31,6 +31,8 @@ describe('Restart / Discard really reset the workout', () => {
     store[SET_QUEUE_KEY] = JSON.stringify([{ key: 'wi:re:1', row: row('wi', 1) }, { key: 'other:re:1', row: row('other', 1) }]);
     const solo = soloPersistKeys('tyler').sets;
     store[solo] = JSON.stringify([{ key: 'wi:re:2', row: row('wi', 2) }]);
+    const soloReps = soloPersistKeys('tyler').reps;
+    store[soloReps] = JSON.stringify([{ client_rep_id: 'a', workout_instance_id: 'wi' }, { client_rep_id: 'b', workout_instance_id: 'other' }]);
     const calls: string[] = [];
     const client = {
       from: (t: string) => {
@@ -61,6 +63,7 @@ describe('Restart / Discard really reset the workout', () => {
     expect(store['workout_wi']).toBeUndefined();
     expect(JSON.parse(store[SET_QUEUE_KEY]).map((i: any) => i.key)).toEqual(['other:re:1']);
     expect(store[solo]).toBeUndefined();
+    expect(JSON.parse(store[soloReps]).map((x: any) => x.client_rep_id)).toEqual(['b']);
     expect(calls.some(c => c.includes('vbt_reps'))).toBe(false); // history stays
   });
 
@@ -77,5 +80,18 @@ describe('Restart / Discard really reset the workout', () => {
     expect(discard).toContain(".update({ status: 'not_started' })");
     const { RESTART_CONFIRM } = require('../lib/logger/resetWorkout');
     expect(`${RESTART_CONFIRM.title} ${RESTART_CONFIRM.message}`).toBe('Restart workout? This clears every set you logged in this workout.');
+  });
+});
+
+describe('final review', () => {
+  const C = readFileSync(join(__dirname, '..', 'screens/CompletedWorkoutScreen.tsx'), 'utf8');
+  const P = readFileSync(join(__dirname, '..', 'screens/PerformanceScreen.tsx'), 'utf8');
+  it('I2: metric_data readers skip vbt (no "[object Object]", no phantom "Vbt" metric)', () => {
+    expect(C).toContain("if (key === 'vbt' || typeof value === 'object') continue;");
+    expect(P).toContain("if (key === 'vbt' || (v !== null && typeof v === 'object')) return;");
+  });
+  it('M3: the Completed-screen reset uses the same resetWorkout (rack leave + queue clearing)', () => {
+    const fn = C.slice(C.indexOf('async function handleResetWorkout'), C.indexOf('setShowResetModal(false);', C.indexOf('async function handleResetWorkout')));
+    expect(fn).toContain('await resetWorkout(workoutInstanceId, workout?.athlete_id ?? null, {');
   });
 });

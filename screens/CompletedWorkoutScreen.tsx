@@ -13,6 +13,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import { resetWorkout } from '../lib/logger/resetWorkout';
+import { createRackApi, type RackClient } from '../lib/rack/api';
 import { LOGGER_COLORS } from '../lib/logger/theme';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
 import { loggerOutbox } from '../lib/logger/outbox';
@@ -256,16 +258,14 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
     try {
       setResetting(true);
 
-      // Drop this workout's unsynced set writes first — a queued row would
-      // otherwise re-insert a set into the reset workout and overlay it on
-      // the next open.
-      await loggerOutbox.drop(workoutInstanceId);
-
-      // Delete all exercise logs for this workout
-      await supabase
-        .from('exercise_logs')
-        .delete()
-        .eq('workout_instance_id', workoutInstanceId);
+      // The same reset as Restart / Discard (lib/logger/resetWorkout, M3):
+      // leave the rack, drop this workout's queued writes (outbox, completion,
+      // progress, rack/solo set rows) so nothing re-inserts a set, then
+      // delete its exercise_logs.
+      await resetWorkout(workoutInstanceId, workout?.athlete_id ?? null, {
+        client: supabase as any,
+        leaveRack: rackId => createRackApi(supabase as unknown as RackClient).leave(rackId),
+      });
 
       // Reset workout instance status
       await supabase
@@ -371,6 +371,8 @@ export default function CompletedWorkoutScreen({ route, navigation }: any) {
     if (log.metric_data) {
       for (const [key, value] of Object.entries(log.metric_data)) {
         if (value == null || value === '' || key === 'reps' || key === 'weight') continue;
+        // Rack / sensor data (metric_data.vbt) and any other non-scalar is not a metric.
+        if (key === 'vbt' || typeof value === 'object') continue;
         const info = labelForMetricId(key);
         parts.push(info.unit ? `${value} ${info.unit}` : `${value}`);
         if (info.group) groups.add(info.group);

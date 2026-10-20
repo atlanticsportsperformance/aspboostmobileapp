@@ -35,6 +35,12 @@ export interface DraftWriter {
   pending(key: string): string[];
   /** What the phone last knew the server holds for a set (the baseline drafts diff against). */
   savedOf(key: string): Record<string, unknown> | undefined;
+  /**
+   * Fields whose shown value differs from what the server holds (a value that
+   * synced in — the rack's LB — and was never drafted). Sent when the athlete
+   * COMPLETES the set, so the value shown is the value saved; never on sync.
+   */
+  unsaved(key: string, values: Record<string, unknown>): string[];
 }
 
 export function createDraftWriter(opts: {
@@ -99,5 +105,11 @@ export function createDraftWriter(opts: {
     },
     pending: key => [...(fieldsOf.get(key) ?? [])],
     savedOf: key => saved.get(key),
+    unsaved(key, values) {
+      const base = saved.get(key) ?? {};
+      return Object.entries(values)
+        .filter(([f, v]) => f !== 'vbt' && (v == null || typeof v !== 'object') && !sameValue(v, base[f]))
+        .map(([f]) => f);
+    },
   };
 }

@@ -35,7 +35,8 @@ describe('rack phone wiring', () => {
   });
 
   it('I5: self only — the hook is inert unless athletes.user_id = auth.uid() is this athlete', () => {
-    expect(H).toContain('supabase.auth.getUser()');
+    expect(H).toContain('supabase.auth.getSession()');
+    expect(H).not.toContain('supabase.auth.getUser()');
     expect(H).toContain(".from('athletes').select('id').eq('user_id', uid)");
     expect(H).toContain('const hasRacks = isSelf && list.length > 0;');
     expect(H).toMatch(/const refresh = useCallback\(async \(\) => \{\s*if \(!isSelf\) return;/);

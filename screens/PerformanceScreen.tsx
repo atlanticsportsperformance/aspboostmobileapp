@@ -1906,7 +1906,10 @@ function ExercisePerformanceCard({
     logs.forEach(log => {
       if (log.metric_data) {
         Object.keys(log.metric_data).forEach(key => {
-          if (log.metric_data[key] !== null) {
+          // Rack / sensor data (metric_data.vbt) and any other non-scalar is not a metric.
+          const v: unknown = log.metric_data[key];
+          if (key === 'vbt' || (v !== null && typeof v === 'object')) return;
+          if (v !== null) {
             metricSet.add(key);
           }
         });

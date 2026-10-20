@@ -813,6 +813,58 @@ describe('fix round (owner): banner = rack row; iPad REPS follow the phone', () 
   });
 });
 
+describe('I1: the iPad was killed mid-set — the relaunched executor ends that set from vbt_reps', () => {
+  const stored = (n: number) => Array.from({ length: n }, (_, i) => ({ v: 0.7 - i * 0.02, pv: 1, rom: 20, partial: false }));
+  async function killed(over: Partial<RackSessionRow>, reps: ReturnType<typeof stored>) {
+    const r = rig(logRows('squat', 1));
+    (r.api as any).setReps = jest.fn(async () => reps);
+    const order: string[] = [];
+    const realWrite = (r.persist.endSet as jest.Mock).getMockImplementation()!;
+    (r.persist.endSet as jest.Mock).mockImplementation(async (sm: any) => {
+      order.push('endSet');
+      await realWrite(sm); // the DB holds the row once it is sent
+    });
+    const end = r.api.endSet as jest.Mock;
+    const realEnd = end.getMockImplementation()!;
+    end.mockImplementation(async (...a: any[]) => {
+      order.push('rack_end_set');
+      return realEnd(...a);
+    });
+    r.ex.setToday([SIM()]);
+    r.sync({ workout_instance_id: 'wi', routine_exercise_id: 'squat', set_number: 2, state: 'lifting', set_started_at: iso(T0 - 30_000), ...over });
+    await settle();
+    await r.ex.idle();
+    return { r, order };
+  }
+
+  it('state=lifting, no live engine set → the set row is written from its reps, then rack_end_set', async () => {
+    const { r, order } = await killed({}, stored(3));
+    expect((r.api as any).setReps).toHaveBeenCalledWith(RACK, expect.objectContaining({ athleteId: 'tyler', routineExerciseId: 'squat', setNumber: 2 }));
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ routineExerciseId: 'squat', setNumber: 2, fullReps: 3, source: 'rack' });
+    expect(order).toEqual(['endSet', 'rack_end_set']);
+    // the resolver moves on (never re-serves set 2)
+    expect(r.ex.getState().localContext).toMatchObject({ routineExerciseId: 'squat', setNumber: 3 });
+  });
+
+  it('pending_end (phone Done reached a killed rack) → still ONE rack_end_set, after the row', async () => {
+    const { order } = await killed({ pending_end: true }, stored(2));
+    expect(order).toEqual(['endSet', 'rack_end_set']);
+  });
+
+  it('no reps stored → no set row; the rack is still released (the phone leaves "Saving…" by its timeout)', async () => {
+    const { r, order } = await killed({ pending_end: true }, []);
+    expect(r.persist.endSet).not.toHaveBeenCalled();
+    expect(order).toEqual(['rack_end_set']);
+  });
+
+  it('phone wiring: past 10 s with no row the set is handed back (pending + "Saving…" cleared) in every case', () => {
+    const L = readFileSync(join(__dirname, '..', 'screens/WorkoutLoggerScreen.tsx'), 'utf8');
+    const t = L.slice(L.indexOf('if (key in rackPendingRef.current && Date.now() - p.started >= RACK_WRITE_TIMEOUT_MS) {'));
+    expect(t.slice(0, 600)).toContain('delete rackPendingRef.current[key];');
+    expect(t.slice(0, 600)).not.toContain("'timeout'");
+  });
+});
+
 describe('wiring: no bare high-water + 1', () => {
   const E = readFileSync(join(__dirname, '..', 'lib/rack/engine.ts'), 'utf8');
   const X = readFileSync(join(__dirname, '..', 'lib/rack/executor.ts'), 'utf8');

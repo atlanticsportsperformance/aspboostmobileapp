@@ -99,7 +99,10 @@ describe('opening / selecting never writes; drafts only on real edits', () => {
   it('wiring: the screen drafts through the guard, loaded / saved / rack rows set the baseline, keypad auto-fill only after typing', () => {
     expect(S).toContain('draftWriter.edit(timerKey, field, value);');
     expect(S).toContain('draftWriter.setSaved(`${ex.id}:${setIndex}`, setsData[setIndex]);');
-    expect(S).toContain('draftWriter.markSaved(`${exerciseId}:${setIndex}`, write.fields ?? [], inputsRef.current[exerciseId]?.[setIndex] || {});');
+    expect(S).toContain('if ((write.fields ?? []).length) draftWriter.markSaved(`${exerciseId}:${setIndex}`, write.fields ?? [], sentValues);');
+    // M2: the baseline moves only after the write is queued
+    const ps = S.slice(S.indexOf('const markSent = () =>'), S.indexOf('draftPersistRef.current = (re, idx, w)'));
+    expect(ps.indexOf('await loggerOutbox.enqueue(row);')).toBeLessThan(ps.lastIndexOf('markSent();'));
     expect(S).toContain('draftWriter.setSaved(key, res.inputs[res.setIndex] ?? {});');
     expect(S).not.toContain('draftTimersRef');
     // selecting a row only moves the current set index — no write
@@ -107,5 +110,28 @@ describe('opening / selecting never writes; drafts only on real edits', () => {
     expect(sel).not.toMatch(/persistSet|handleInputChange|draftWriter/);
     // keypad Done auto-fills siblings only after a real keystroke in that field
     expect(D).toContain('if (typedHere && currentValue != null && currentValue !== \'\') {');
+  });
+});
+
+describe('I3: a value that synced in (the rack LB) is saved when the athlete completes the set', () => {
+  it('sync alone → no write; Log Set → the row carries actual_weight', () => {
+    const r = rig();
+    r.load('squat', [{ reps: 5 }, {}]);
+    // the rack's load lands in the set-2 LB cell (commitInputs only — no draft)
+    const inputs: Record<string, unknown> = { weight: '55' };
+    r.flush();
+    expect(r.upserts).toHaveLength(0);
+    // Log Set: pending draft fields + every shown value the server doesn't hold
+    const fields = [...new Set([...r.w.take('squat:1'), ...r.w.unsaved('squat:1', inputs)])];
+    expect(fields).toEqual(['weight']);
+    const row = buildLogRow({ workoutInstanceId: 'wi', routineExerciseId: 'squat', setNumber: 2 }, inputs, { fields, athleteId: 'a', exerciseId: 'ex', complete: true });
+    expect(row).toMatchObject({ actual_weight: 55, is_complete: true });
+    // already saved values are not re-sent; vbt never counts
+    expect(r.w.unsaved('squat:0', { reps: 5, vbt: { avg_v: 0.7 } })).toEqual([]);
+  });
+  it('wiring: Next / the circle complete with completionFields', () => {
+    expect(S).toContain('const draftFields = completionFields(activeExerciseId, currentSetIndex);');
+    expect(S).toContain('const draftFields = currentlyCompleted ? cancelDraft(activeExerciseId, setIndex) : completionFields(activeExerciseId, setIndex);');
+    expect(S).toContain('for (const f of draftWriter.unsaved(key, inputsRef.current[exerciseId]?.[setIndex] || {})) fields.add(f);');
   });
 });

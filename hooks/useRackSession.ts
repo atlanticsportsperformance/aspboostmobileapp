@@ -17,7 +17,7 @@ import type { OvrDevice } from '../lib/ovr/ovr-device';
 
 export interface UseRackSession {
   state: RackEngineState;
-  /** Reps held until today's written sets load (show "Syncing…"). */
+  /** The rep athlete's logs haven't loaded yet ("Syncing…" pill — display only). */
   syncing: boolean;
   dispatch: (event: RackEvent) => void;
   executor: RackExecutor;

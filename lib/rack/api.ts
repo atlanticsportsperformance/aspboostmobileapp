@@ -460,6 +460,31 @@ export function createRackApi(client: RackClient = supabase as unknown as RackCl
       return w != null && w > 0 ? w : null;
     },
 
+    /** A set's non-removed reps in rep order (killed-iPad recovery: rebuild the set row). */
+    async setReps(
+      rackId: string,
+      q: { athleteId: string; workoutInstanceId: string; routineExerciseId: string; setNumber: number; since: string | null },
+    ): Promise<{ v: number; pv: number; rom: number; partial: boolean }[]> {
+      let b = client
+        .from('vbt_reps')
+        .select('mean_velocity, peak_velocity, rom_in, is_partial, rep_index, received_at')
+        .eq('rack_id', rackId)
+        .eq('athlete_id', q.athleteId)
+        .eq('workout_instance_id', q.workoutInstanceId)
+        .eq('routine_exercise_id', q.routineExerciseId)
+        .eq('set_number', q.setNumber)
+        .is('removed_at', null);
+      if (q.since) b = b.gte('received_at', q.since);
+      const { data, error } = await b.order('rep_index');
+      if (error) throw new RackRpcError('vbt_reps', error);
+      return ((data as any[]) ?? []).map(r => ({
+        v: Number(r.mean_velocity),
+        pv: Number(r.peak_velocity),
+        rom: Number(r.rom_in),
+        partial: r.is_partial === true,
+      }));
+    },
+
     /**
      * ONE athlete's set rows (set_number + is_complete, drafts too) on their
      * instances scheduled `today` — resolveRackSet's logs on the iPad.

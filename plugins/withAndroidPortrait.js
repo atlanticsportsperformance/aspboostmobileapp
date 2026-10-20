@@ -1,8 +1,8 @@
 /**
  * Keeps Android phones on their native portrait lock.
  *
- * app.json `orientation` is "default" so the iPad rack can go landscape (iOS
- * starts portrait via expo-screen-orientation's initialOrientation). On
+ * app.json `orientation` is "default" so the iPad rack can go landscape (the
+ * iOS plist sets portrait for iPhone, all four for iPad). On
  * Android "default" would make MainActivity `unspecified`, so this sets
  * android:screenOrientation="portrait" back on MainActivity. Rack mode is
  * iOS-only; a runtime ScreenOrientation.lockAsync still overrides this.

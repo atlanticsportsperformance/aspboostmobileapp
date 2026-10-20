@@ -3,16 +3,16 @@
 // logger opens fresh and nothing queued re-inserts a set afterwards:
 //   - the logger outbox rows (unsynced sets / drafts) and a queued completion;
 //   - the saved progress key (`workout_<id>`, elapsed time);
-//   - rack / phone-direct (solo) set writes queued for that instance.
+//   - rack / phone-direct (solo) set writes and reps queued for that instance.
 // The rack: leave it first when the athlete is up or queued (rack_leave).
 // Server: exercise_logs of the instance are deleted (as Discard always did).
-// vbt_reps are history — athletes can't delete them; they stay.
+// Server-side, deleting a set's exercise_logs row retires its vbt_reps.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { loggerOutbox } from './outbox';
 import { pendingCompletions } from './pendingComplete';
 import { removeQueued } from '../offline/queue';
-import { SET_QUEUE_KEY } from '../rack/persist';
+import { REP_QUEUE_KEY, SET_QUEUE_KEY } from '../rack/persist';
 import { SOLO_PERSIST_KEYS, soloPersistKeys } from '../rack/solo';
 
 export const RESTART_CONFIRM = {
@@ -37,11 +37,15 @@ export interface ResetDeps {
 export async function clearWorkoutLocalState(instanceId: string, athleteId: string | null): Promise<void> {
   const ofInstance = (i: { row?: { workout_instance_id?: string } }) => i?.row?.workout_instance_id === instanceId;
   const setKeys = [SET_QUEUE_KEY, SOLO_PERSIST_KEYS.sets, ...(athleteId ? [soloPersistKeys(athleteId).sets] : [])];
+  // Queued reps too: a solo rep flushed after the reset would re-attach to it.
+  const repKeys = [REP_QUEUE_KEY, SOLO_PERSIST_KEYS.reps, ...(athleteId ? [soloPersistKeys(athleteId).reps] : [])];
+  const repOfInstance = (r: { workout_instance_id?: string | null }) => r?.workout_instance_id === instanceId;
   await Promise.all([
     loggerOutbox.drop(instanceId),
     pendingCompletions.clear(instanceId),
     AsyncStorage.removeItem(`workout_${instanceId}`),
     ...setKeys.map(k => removeQueued(k, ofInstance)),
+    ...repKeys.map(k => removeQueued(k, repOfInstance)),
   ]);
 }
 
