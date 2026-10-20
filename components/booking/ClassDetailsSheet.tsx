@@ -16,6 +16,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useStripe, initStripe } from '@stripe/stripe-react-native';
+import { stripeInitParams } from '../../lib/stripePair';
 import { supabase } from '../../lib/supabase';
 import {
   BookableEvent,
@@ -128,6 +129,7 @@ export default function ClassDetailsSheet({
         athlete_id: athleteId,
         event_id: event.id,
         embedded: true, // Use PaymentIntent for mobile Payment Sheet
+        stripe_client: 'direct',
       };
 
       const response = await fetch(`${API_URL}/api/stripe/create-drop-in-checkout`, {
@@ -161,7 +163,7 @@ export default function ClassDetailsSheet({
         throw new Error(friendly);
       }
 
-      const { client_secret, customer_id, ephemeral_key, stripe_account, payment_intent_id } = data;
+      const { client_secret, customer_id, ephemeral_key, stripe_account, publishable_key, payment_intent_id } = data;
 
       if (!client_secret) {
         throw new Error('No client secret returned from server');
@@ -174,17 +176,18 @@ export default function ClassDetailsSheet({
 
       console.log('stripe_account received:', stripe_account);
 
-      // For Stripe Connect, we need to reinitialize the SDK with the connected account
-      // This is required because stripeAccountId must be set at the provider level
-      if (stripe_account) {
-        console.log('Reinitializing Stripe with connected account:', stripe_account);
-        await initStripe({
-          publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '',
-          stripeAccountId: stripe_account,
-          merchantIdentifier: 'merchant.com.aspboost',
-          urlScheme: 'aspboost',
-        });
-      }
+      // Always init with exactly the server's (publishable_key, stripe_account) pair.
+      // initStripe is global state: a null account must still re-init so a
+      // previously-set connected account is cleared.
+      await initStripe({
+        ...stripeInitParams(
+          publishable_key,
+          stripe_account,
+          process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''
+        ),
+        merchantIdentifier: 'merchant.com.aspboost',
+        urlScheme: 'aspboost',
+      });
 
       // Initialize the Payment Sheet
       const initParams: any = {

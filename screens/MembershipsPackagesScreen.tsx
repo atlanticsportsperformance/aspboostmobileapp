@@ -18,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeInDown, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { initStripe, initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
+import { stripeInitParams } from '../lib/stripePair';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 import {
@@ -958,11 +959,13 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
             membership_type_id: selectedItem.id,
             ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
             ...(selectedPricingOptionId != null && { pricing_option_id: selectedPricingOptionId }),
+            stripe_client: 'direct',
           }
         : {
             athlete_id: targetAthleteId,
             package_type_id: selectedItem.id,
             ...(couponCodeForCheckout && { coupon_code: couponCodeForCheckout }),
+            stripe_client: 'direct',
           };
 
       const response = await fetch(endpoint, {
@@ -1006,20 +1009,22 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
 
       console.log('[Checkout] Initializing Payment Sheet with mode:', mode, 'account:', stripe_account);
 
-      // CRITICAL: For Stripe Connect, must call initStripe with the connected account BEFORE initPaymentSheet
-      if (stripe_account) {
-        const stripePublishableKey = publishable_key || process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
-        console.log('[Checkout] Calling initStripe with connected account:', stripe_account);
-        console.log('[Checkout] Using publishable key:', stripePublishableKey.substring(0, 20) + '...');
-
-        await initStripe({
-          publishableKey: stripePublishableKey,
-          stripeAccountId: stripe_account,
-          merchantIdentifier: 'merchant.com.aspboost',
-          urlScheme: 'aspboost',
-        });
-        console.log('[Checkout] initStripe completed');
-      }
+      // CRITICAL: always init with exactly the server's (publishable_key, stripe_account)
+      // pair BEFORE initPaymentSheet. initStripe is global state, so a null account must
+      // still re-init (it clears any connected account a previous flow set).
+      const stripeParams = stripeInitParams(
+        publishable_key,
+        stripe_account,
+        process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''
+      );
+      console.log('[Checkout] Calling initStripe, account:', stripeParams.stripeAccountId ?? '(none)');
+      console.log('[Checkout] Using publishable key:', stripeParams.publishableKey.substring(0, 20) + '...');
+      await initStripe({
+        ...stripeParams,
+        merchantIdentifier: 'merchant.com.aspboost',
+        urlScheme: 'aspboost',
+      });
+      console.log('[Checkout] initStripe completed');
 
       // Initialize the Payment Sheet - use setupIntentClientSecret for recurring, paymentIntentClientSecret for one-time
       const initConfig: any = {

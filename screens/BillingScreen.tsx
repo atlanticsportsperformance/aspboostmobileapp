@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { useStripe, initStripe, CardField, useConfirmSetupIntent } from '@stripe/stripe-react-native';
+import { stripeInitParams } from '../lib/stripePair';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://aspboostapp.vercel.app';
 
@@ -231,7 +232,7 @@ export default function BillingScreen({ navigation }: any) {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { 'Authorization': `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ athlete_id: athleteId }),
+        body: JSON.stringify({ athlete_id: athleteId, stripe_client: 'direct' }),
       });
 
       const data = await response.json();
@@ -243,17 +244,19 @@ export default function BillingScreen({ navigation }: any) {
       }
 
       setSetupIntentClientSecret(data.client_secret);
-      setStripeAccountId(data.stripe_account);
+      setStripeAccountId(data.stripe_account ?? null);
 
-      // Reinitialize Stripe with connected account
-      if (data.stripe_account) {
-        await initStripe({
-          publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '',
-          stripeAccountId: data.stripe_account,
-          merchantIdentifier: 'merchant.com.aspboost',
-          urlScheme: 'aspboost',
-        });
-      }
+      // Always init with exactly the server's (publishable_key, stripe_account) pair.
+      // A null account must still re-init so a previously-set connected account is cleared.
+      await initStripe({
+        ...stripeInitParams(
+          data.publishable_key,
+          data.stripe_account,
+          process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || ''
+        ),
+        merchantIdentifier: 'merchant.com.aspboost',
+        urlScheme: 'aspboost',
+      });
 
       setShowAddCardModal(true);
       setAddingCard(false);
