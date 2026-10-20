@@ -181,7 +181,11 @@ describe('rack view model', () => {
       drop: '9%',
       footer: 'Saved · tap to edit on the phone',
     });
-    expect(v.bars).toHaveLength(2); // the ended set stays on screen
+    // The display is on the next set: the saved numbers live only in the summary.
+    expect(v.bars).toEqual([]);
+    expect(v.lastRep).toBeNull();
+    expect(v.fullReps).toBe(0);
+    expect(v.dropPct).toBeNull();
   });
 
   it('idle end: the card / SET / tile show the NEXT set at once (set 2 done → set 3); a rep within 30 s reopens set 1', () => {
@@ -228,7 +232,12 @@ describe('rack view model', () => {
     // nowMs may lag (minute clock): the summary is still up.
     const during = view(r.s, T0);
     expect(during.summary).toMatchObject({ title: 'SET 3 SAVED · DONE ON IPAD', big: '2 reps × 205 lb', avg: '0.54', best: '0.55', drop: '5%' });
-    expect(during.bars).toHaveLength(2);
+    // Live stats reset at once (owner): dial, REPS, SPEED DROP, bars.
+    expect(during.bars).toEqual([]);
+    expect(during.lastRep).toBeNull();
+    expect(during.fullReps).toBe(0);
+    expect(during.dropPct).toBeNull();
+    expect(during.setNumber).toBe(4);
     const after = view(r.s, T0 + 5000 + SUMMARY_MS + 1);
     expect(after.summary).toBeNull();
     expect(after.bars).toEqual([]);

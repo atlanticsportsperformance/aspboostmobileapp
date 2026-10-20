@@ -452,6 +452,8 @@ function RackLive({ rack, orgId, onLock }: { rack: RackDevice; orgId: string; on
           </Text>
         </View>
         <RepBars
+          // Remount on rotation: a fresh measurement, never a portrait one reused.
+          key={layout.mode}
           bars={view.bars}
           zone={view.zone}
           dropLineV={view.dropLineV}
@@ -552,7 +554,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   dialCard: { flexDirection: 'column' },
-  barsCard: { flex: 1, flexDirection: 'column' },
+  barsCard: { flex: 1, flexDirection: 'column', overflow: 'hidden' },
   cardh: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 12, minHeight: 16 },
   k: { fontSize: 11, fontWeight: '900', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)' },
   s: { fontSize: 12, color: RACK_COLORS.mut, flexShrink: 1 },

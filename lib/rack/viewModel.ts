@@ -449,15 +449,14 @@ export function buildRackView({ state: s, today, rackName, nowMs, phoneContexts 
   // The ended set stays on screen only while its summary is up; after that
   // the screen moves to the NEXT set (bars + dial reset, SET advances).
   const summaryUp = summaryVisible(s, nowMs);
-  const shownSet: LiveSet | null = lifting
-    ? s.live
-    : summaryUp && s.lastEnded && s.lastEnded.athleteId === activeId
-      ? s.lastEnded
-      : null;
+  // Owner ruling: once a set ends the display is on the NEXT set — the dial,
+  // REPS, SPEED DROP and THIS SET bars reset at once (—, 0 of N, —, empty).
+  // The saved set's numbers appear only in the summary.
+  const shownSet: LiveSet | null = lifting ? s.live : null;
 
   // The CARD / SET bubble / tile describe the live set, else the NEXT set —
   // never a finished one (owner): right after any end (idle included) they
-  // advance. Bars, dial and the summary keep the just-ended set (shownSet).
+  // advance; so do the dial, REPS, SPEED DROP and bars (shownSet = live only).
   const cardSet: LiveSet | null = lifting ? s.live : null;
   const ctx: RackContext = cardSet ? cardSet.context : nextContext(s);
   const ex = exerciseFor(active, ctx);

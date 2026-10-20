@@ -401,3 +401,14 @@ describe('BAR · LB: an unresolved % load shows — plus the prescription captio
     expect(CARD).not.toMatch(/styles\.note, c && styles\.xC\]\} numberOfLines=\{1\}>\{view\.loadNote\}/);
   });
 });
+
+describe('THIS SET bars stay inside their card after a rotation', () => {
+  const B = read('components/rack/RepBars.tsx');
+  it('the card clips, the bars remount per orientation and size only from the measured height', () => {
+    expect(S).toContain("barsCard: { flex: 1, flexDirection: 'column', overflow: 'hidden' },");
+    expect(S).toContain('key={layout.mode}');
+    expect(B).toContain('const [measured, setMeasured] = useState(0);');
+    expect(B).toContain('<View style={styles.bars} onLayout={onLayout}>');
+    expect(B).toContain('const h = Math.min(H, ');
+  });
+});

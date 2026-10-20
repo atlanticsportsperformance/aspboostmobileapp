@@ -2,7 +2,8 @@
  * THIS SET rep bars: one bar per rep (zone colour; red at/past the speed-drop
  * stop), with the target band and the −N% drop line — both only when the set
  * has a zone. Partial reps are dimmed and labelled "—". Fills its card: the
- * bar height comes from the measured height (at least `minHeight`).
+ * bar height comes from the measured height, clamped to it (never drawn
+ * outside the card; `minHeight` is only the layout's planning number).
  *
  * Power (rack-power.html), only when the load is known (`showWatts`):
  *   - 'speed': the bars as above + a small "### W" under each bar;
@@ -23,6 +24,7 @@ export interface RepBarsProps {
   dropLineV: number | null;
   dropStopPct: number | null;
   scaleV: number;
+  /** Layout planning minimum (kept for callers; the bars never force it). */
   minHeight?: number;
   /** The load is known: watts under the bars / the power view. */
   showWatts?: boolean;
@@ -41,22 +43,26 @@ function Dashed({ bottom }: { bottom: number }) {
 
 const W_LABEL_H = 15;
 
-function RepBars({ bars, zone, dropLineV, dropStopPct, scaleV, minHeight = 90, showWatts = false, metric = 'speed', onPressBar }: RepBarsProps) {
-  const [measured, setMeasured] = useState(150);
+function RepBars({ bars, zone, dropLineV, dropStopPct, scaleV, showWatts = false, metric = 'speed', onPressBar }: RepBarsProps) {
+  // The bars area's MEASURED size (re-measured on every layout change, e.g. a
+  // rotation — the screen also remounts this on an orientation change). 0 =
+  // not measured yet: draw no bars rather than size them from a stale value.
+  const [measured, setMeasured] = useState(0);
   const power = showWatts && metric === 'power';
   const wattsUnder = showWatts && !power;
-  const height = Math.max(minHeight, measured);
-  const H = height - 20 - (wattsUnder ? W_LABEL_H : 0); // room for the value label (+ the W line)
+  const H = Math.max(0, measured - 20 - (wattsUnder ? W_LABEL_H : 0)); // room for the value label (+ the W line)
   const base = wattsUnder ? W_LABEL_H : 0;
   const pMax = Math.max(1, ...bars.map(b => b.watts ?? 0)) * 1.15;
-  const y = (v: number) => (Math.min(v, scaleV) / scaleV) * H;
-  const yp = (w: number) => (Math.min(w, pMax) / pMax) * H;
+  const y = (v: number) => (Math.min(Math.max(v, 0), scaleV) / scaleV) * H;
+  const yp = (w: number) => (Math.min(Math.max(w, 0), pMax) / pMax) * H;
   const onLayout = (e: LayoutChangeEvent) => {
     const h = Math.round(e.nativeEvent.layout.height);
     if (h > 0 && h !== measured) setMeasured(h);
   };
   return (
-    <View style={[styles.bars, { minHeight }]} onLayout={onLayout}>
+    // No minHeight here: a minimum taller than the card would push the bars out
+    // of it. The card clips (overflow hidden); every bar is ≤ the measured height.
+    <View style={styles.bars} onLayout={onLayout}>
       {!power && zone && (
         <>
           <View style={[styles.band, { bottom: base + y(zone[0]), height: Math.max(y(zone[1]) - y(zone[0]), 1) }]} />
@@ -74,9 +80,9 @@ function RepBars({ bars, zone, dropLineV, dropStopPct, scaleV, minHeight = 90, s
           <Text style={styles.emptyTxt}>{power ? 'Lift — watts show here' : 'Lift — reps show here'}</Text>
         </View>
       )}
-      {bars.map(b => {
+      {measured > 0 && bars.map(b => {
         const c = power ? (b.partial ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.85)') : repColor(b, !!zone);
-        const h = power ? Math.max(yp(b.watts ?? 0), 8) : Math.max(y(b.v), 8);
+        const h = Math.min(H, power ? Math.max(yp(b.watts ?? 0), 8) : Math.max(y(b.v), 8));
         const top = power ? (b.partial || b.watts == null ? '—' : String(b.watts)) : b.label;
         const topColor = b.partial ? 'rgba(255,255,255,0.35)' : power ? 'rgba(255,255,255,0.9)' : c;
         return (
