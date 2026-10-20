@@ -1484,8 +1484,24 @@ export default function WorkoutLoggerScreen() {
 
   // "Log it here": the rack never saved this set — the athlete takes it back
   // (manual logging works again). A rack row that lands later still arrives via the diff.
-  const handleRackLogHere = useCallback((reId: string, setIndex: number) => {
+  const handleRackLogHere = useCallback(async (reId: string, setIndex: number) => {
     const key = `${reId}:${setIndex}`;
+    // R2: one last read first — if the rack's row has landed, apply it instead.
+    try {
+      const { data } = await supabase
+        .from('exercise_logs')
+        .select('*')
+        .eq('workout_instance_id', workoutInstanceId)
+        .eq('routine_exercise_id', reId)
+        .eq('set_number', setIndex + 1)
+        .maybeSingle();
+      if (data && (data as any).is_complete === true && (data as any).metric_data?.vbt) {
+        applyRackWrittenLog(data as Record<string, any>);
+        return;
+      }
+    } catch (e) {
+      console.warn('[rack phone] log-it-here re-read failed; handing the set back', e);
+    }
     delete rackPendingRef.current[key];
     setRackSavingState(prev => {
       if (!(key in prev)) return prev;
@@ -1494,7 +1510,7 @@ export default function WorkoutLoggerScreen() {
       return next;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [workoutInstanceId, applyRackWrittenLog]);
 
   // Real pull-to-refresh: my rack state + every pending set row.
   const handleRackPullRefresh = useCallback(async () => {
@@ -2132,7 +2148,7 @@ export default function WorkoutLoggerScreen() {
       rackNextAfter,
       refreshing: rackRefreshing,
       onPullRefresh: handleRackPullRefresh,
-      onLogHere: (setIndex: number) => handleRackLogHere(reId, setIndex),
+      onLogHere: (setIndex: number) => void handleRackLogHere(reId, setIndex),
       onEditingChange: handleRackEditingChange,
       onLiveDone: () => {
         // Solo: this phone ends the set (engine Done → its own set row).

@@ -902,6 +902,63 @@ describe('I1 / N1: the iPad was killed mid-set — recover only a FINISHED set, 
     }
   });
 
+  it('R1: crash, relaunch (last rep 5 s ago), then phone Done → recovered right away: one write, one rack_end_set', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    const start = iso(r.t - 90_000);
+    liftingRow(r, { set_started_at: start });
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual([]); // waiting for 60 s idle
+    r.sync({ pending_end: true }, r.advance(1000)); // phone Done — same set_started_at
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
+    // a late duplicate of that lifting + pending_end row never recovers / ends twice
+    liftingRow(r, { pending_end: true, set_started_at: start });
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
+  });
+
+  it('R1: Leave during the wait also recovers at once', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    liftingRow(r);
+    await settle();
+    r.sync({ leave_requested: true }, r.advance(1000));
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
+  });
+
+  it('R3: a tile switch during the wait lands the crashed set first (no merge into the next set), no extra rack_end_set', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    liftingRow(r);
+    await settle();
+    r.sync({ active_athlete_id: 'jake', state: 'idle', set_started_at: null, workout_instance_id: null, routine_exercise_id: null, set_number: null }, r.advance(1000));
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2']);
+    expect((r.persist.endSet as jest.Mock).mock.calls[0][0]).toMatchObject({ athleteId: 'tyler', setNumber: 2 });
+  });
+
+  it('R3: stop() clears a waiting recovery, so a later start can recover again', async () => {
+    const { r, order } = killedRig(t => stored(2, 5_000, t));
+    liftingRow(r);
+    await settle();
+    r.ex.stop();
+    r.sync({ pending_end: true }, r.advance(1000));
+    await settle();
+    await r.ex.idle();
+    expect(order).toEqual(['endSet#2', 'rack_end_set']);
+  });
+
+  it('R2 phone wiring: "Log it here" re-reads the set row first and applies a landed rack row instead', () => {
+    const L = readFileSync(join(__dirname, '..', 'screens/WorkoutLoggerScreen.tsx'), 'utf8');
+    const fn = L.slice(L.indexOf('const handleRackLogHere'), L.indexOf('// Real pull-to-refresh'));
+    expect(fn.indexOf(".from('exercise_logs')")).toBeLessThan(fn.indexOf('delete rackPendingRef.current[key];'));
+    expect(fn).toContain('applyRackWrittenLog(data as Record<string, any>);\n        return;');
+  });
+
   it('N2 phone wiring: past 10 s with no row → "Saved on the rack · pull to refresh" + "Log it here"; only that action hands the set back', () => {
     const L = readFileSync(join(__dirname, '..', 'screens/WorkoutLoggerScreen.tsx'), 'utf8');
     const D = readFileSync(join(__dirname, '..', 'screens/exercise-detail-view.tsx'), 'utf8');
@@ -910,7 +967,7 @@ describe('I1 / N1: the iPad was killed mid-set — recover only a FINISHED set, 
     expect(t).not.toContain('delete rackPendingRef.current[key];');
     const logHere = L.slice(L.indexOf('const handleRackLogHere'), L.indexOf('// Real pull-to-refresh'));
     expect(logHere).toContain('delete rackPendingRef.current[key];');
-    expect(L).toContain('onLogHere: (setIndex: number) => handleRackLogHere(reId, setIndex),');
+    expect(L).toContain('onLogHere: (setIndex: number) => void handleRackLogHere(reId, setIndex),');
     expect(D).toContain('Saved on the rack · pull to refresh');
     expect(D).toContain('onPress={() => rack.onLogHere?.(i)}');
     expect(D).toContain('>Log it here<');

@@ -491,6 +491,8 @@ export function createRackExecutor(opts: {
     key: string;
     row: RackSessionRow;
     cancelled: boolean;
+    /** The rack switched athlete during the wait: land the set now, no rack_end_set. */
+    forced?: boolean;
     timer: ReturnType<typeof setTimeout> | null;
     done: Promise<void>;
   } | null = null;
@@ -517,8 +519,20 @@ export function createRackExecutor(opts: {
   const maybeRecover = () => {
     const r = state.session;
     const rackId = state.rackId;
-    if (state.mode !== 'rack' || !r || !rackId || recovering) return;
+    if (state.mode !== 'rack' || !r || !rackId) return;
+    if (recovering) {
+      // R1: phone Done / Leave for the set being recovered — no 60 s wait.
+      const rec = recovering;
+      if (rec.timer && rec.key === recoveryKeyOf(r) && (r.pending_end || r.leave_requested)) {
+        clearTimeout(rec.timer);
+        rec.timer = null;
+        rec.done = attemptRecovery(rec);
+      }
+      return;
+    }
     if (r.state !== 'lifting' && !r.pending_end && !r.leave_requested) return;
+    // An idle row (no set start) holds no set to recover — the engine's release path covers its flags.
+    if (r.state !== 'lifting' && !r.set_started_at) return;
     if (state.live || state.lastEnded) return; // this engine owns / owned the set
     const athleteId = r.active_athlete_id;
     if (!athleteId || !r.workout_instance_id || !r.routine_exercise_id || r.set_number == null) return;
@@ -550,13 +564,17 @@ export function createRackExecutor(opts: {
           )
         : [];
       if (rec.cancelled) return;
-      const cur = state.session;
-      if (!cur || recoveryKeyOf(cur) !== rec.key || state.live) {
+      // force = the rack switched athlete during the wait: land the crashed set
+      // now (from the row it had), so it never merges into their next set.
+      const force = rec.forced;
+      const cur = force ? rec.row : state.session;
+      if (!force && (!cur || recoveryKeyOf(cur) !== rec.key || state.live)) {
         // the row moved on (another set / athlete) — nothing to recover
         if (recovering === rec) recovering = null;
         return;
       }
-      const flagged = !!cur.pending_end || !!cur.leave_requested;
+      if (!cur) return;
+      const flagged = force || !!cur.pending_end || !!cur.leave_requested;
       const times = reps.map(x => (x.receivedAt ? Date.parse(x.receivedAt) : NaN)).filter(Number.isFinite);
       const lastAt = times.length ? Math.max(...times) : cur.set_started_at ? Date.parse(cur.set_started_at) : NaN;
       const idleFor = Number.isFinite(lastAt) ? now() - lastAt : IDLE_END_MS;
@@ -584,11 +602,14 @@ export function createRackExecutor(opts: {
           isComplete: true,
           seq: ++seq,
         });
+        if (rec.cancelled) return; // a rep adopted the set meanwhile
         await durably('endSet', () => persist.endSet(summary), () => unsavedSets.push({ kind: 'endSet', summary }));
         void flushSoon().then(() => readLogs(athleteId));
       }
       if (recovering === rec) recovering = null;
       reresolve();
+      // R3: never end a set a rep adopted; after a switch the rack is already released.
+      if (rec.cancelled || rec.forced) return;
       runRpc({ type: 'rpcEndSet', athleteId });
     } catch (e) {
       log('killed-set recovery failed; re-checking', e);
@@ -1055,6 +1076,16 @@ export function createRackExecutor(opts: {
     // logged sets since). Non-blocking.
     if ((target !== targetBefore || state.activeAthleteId !== before) && (target || state.activeAthleteId)) {
       void readLogs();
+    }
+    if (state.activeAthleteId !== before && recovering && recovering.athleteId !== state.activeAthleteId) {
+      // R3: a tile switch during the recovery wait — land the crashed set first.
+      const rec = recovering;
+      rec.forced = true;
+      if (rec.timer) {
+        clearTimeout(rec.timer);
+        rec.timer = null;
+        rec.done = attemptRecovery(rec);
+      } // else: the attempt in flight sees `forced`
     }
     if (state.activeAthleteId !== before) {
       if (override && override.athleteId !== state.activeAthleteId) override = null;
@@ -1732,6 +1763,7 @@ export function createRackExecutor(opts: {
     stop() {
       releaseHold();
       if (recovering?.timer) clearTimeout(recovering.timer);
+      recovering = null; // a later start() can recover again
       running = false;
       timers.forEach(clearInterval);
       timers = [];
