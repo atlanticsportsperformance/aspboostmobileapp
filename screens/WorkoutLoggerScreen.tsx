@@ -42,6 +42,7 @@ import { buildLogRow, completeForEdit, upsertSet } from '../lib/logger/saveSet';
 import { loggerOutbox } from '../lib/logger/outbox';
 import { pendingCompletions } from '../lib/logger/pendingComplete';
 import { flushWithCap, syncAll } from '../lib/logger/syncAll';
+import { lookupExerciseIds } from '../lib/logger/exerciseIds';
 import SessionRpeSheet from '../components/logger/SessionRpeSheet';
 import { prCandidates } from '../lib/logger/pr';
 import { restAfter } from '../lib/logger/rest';
@@ -377,13 +378,17 @@ export default function WorkoutLoggerScreen() {
         });
       });
 
-      // Fetch athlete's maxes for all needed exercises
-      const { data: maxes } = await supabase
-        .from('athlete_maxes')
-        .select('exercise_id, metric_id, max_value, achieved_on')
-        .eq('athlete_id', athleteId)
-        .in('exercise_id', Array.from(exerciseIdsToFetch))
-        .order('achieved_on', { ascending: false });
+      // Fetch athlete's maxes for all needed exercises. Notes-only rows have
+      // no exercise_id; a null in the list fails the whole lookup, so skip it.
+      const maxExerciseIds = lookupExerciseIds(exerciseIdsToFetch);
+      const { data: maxes } = maxExerciseIds.length
+        ? await supabase
+            .from('athlete_maxes')
+            .select('exercise_id, metric_id, max_value, achieved_on')
+            .eq('athlete_id', athleteId)
+            .in('exercise_id', maxExerciseIds)
+            .order('achieved_on', { ascending: false })
+        : { data: [] as any[] };
 
       // Group by exercise_id -> metric_id, keeping most recent
       const maxesMap: Record<string, Record<string, number>> = {};
@@ -462,37 +467,41 @@ export default function WorkoutLoggerScreen() {
       setRackExtra(extraMap);
 
       // Fetch previous workout history for all exercises
-      const exerciseIds = exercises.map((ex: RoutineExercise) => ex.exercise_id);
-      const uniqueExerciseIds = [...new Set(exerciseIds)];
+      // Same rule as the maxes lookup: no null ids (notes-only rows).
+      const uniqueExerciseIds = lookupExerciseIds(
+        exercises.map((ex: RoutineExercise) => ex.exercise_id),
+      );
 
-      const { data: historyData } = await supabase
-        .from('exercise_logs')
-        .select(`
-          id,
-          routine_exercise_id,
-          set_number,
-          actual_reps,
-          actual_weight,
-          actual_duration_seconds,
-          actual_distance,
-          notes,
-          metric_data,
-          workout_instances!inner (
-            id,
-            scheduled_date,
-            completed_at,
-            athlete_id
-          ),
-          routine_exercises!inner (
-            exercise_id
-          )
-        `)
-        .eq('workout_instances.athlete_id', athleteId)
-        .in('routine_exercises.exercise_id', uniqueExerciseIds)
-        .neq('workout_instances.id', workoutInstanceId)
-        .not('workout_instances.completed_at', 'is', null)
-        .order('workout_instances(completed_at)', { ascending: false })
-        .limit(100);
+      const { data: historyData } = !uniqueExerciseIds.length
+        ? { data: [] as any[] }
+        : await supabase
+            .from('exercise_logs')
+            .select(`
+              id,
+              routine_exercise_id,
+              set_number,
+              actual_reps,
+              actual_weight,
+              actual_duration_seconds,
+              actual_distance,
+              notes,
+              metric_data,
+              workout_instances!inner (
+                id,
+                scheduled_date,
+                completed_at,
+                athlete_id
+              ),
+              routine_exercises!inner (
+                exercise_id
+              )
+            `)
+            .eq('workout_instances.athlete_id', athleteId)
+            .in('routine_exercises.exercise_id', uniqueExerciseIds)
+            .neq('workout_instances.id', workoutInstanceId)
+            .not('workout_instances.completed_at', 'is', null)
+            .order('workout_instances(completed_at)', { ascending: false })
+            .limit(100);
 
       // Group history by exercise_id, then by workout date
       const historyMap: Record<string, any[]> = {};
