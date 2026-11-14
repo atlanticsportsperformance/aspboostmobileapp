@@ -651,15 +651,17 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         };
       }
 
+      // Invite-link-only plans are bought through the facility's web link, never
+      // listed in the app (server refuses them without the link's key anyway).
       setAvailableMembershipTypes(
-        cleaned.map((t: any) => ({
+        cleaned.filter((t: any) => !t.link_only).map((t: any) => ({
           ...t,
           ...mergeAnyEligible(t.id, 'eligibilityByMembershipTypeId'),
         }))
       );
 
       setAvailablePackageTypes(
-        (packageTypesData || []).map((t: any) => ({
+        (packageTypesData || []).filter((t: any) => !t.link_only).map((t: any) => ({
           ...t,
           ...mergeAnyEligible(t.id, 'eligibilityByPackageTypeId'),
         }))
@@ -786,8 +788,9 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
         console.error('Error fetching purchasable eligibility:', e);
       }
 
+      // Invite-link-only plans: web link only, never listed in the app.
       setAvailableMembershipTypes(
-        cleaned.map((t: any) => {
+        cleaned.filter((t: any) => !t.link_only).map((t: any) => {
           const gate = eligibilityByMembershipTypeId.get(t.id);
           return {
             ...t,
@@ -799,7 +802,7 @@ export default function MembershipsPackagesScreen({ navigation, route }: any) {
       );
 
       setAvailablePackageTypes(
-        (packageTypesData || []).map((t: any) => {
+        (packageTypesData || []).filter((t: any) => !t.link_only).map((t: any) => {
           const gate = eligibilityByPackageTypeId.get(t.id);
           return {
             ...t,
