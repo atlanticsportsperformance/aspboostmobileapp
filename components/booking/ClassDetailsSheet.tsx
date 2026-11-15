@@ -247,11 +247,11 @@ export default function ClassDetailsSheet({
         // This is a critical error - payment taken but no booking
         console.error('Failed to confirm booking after payment:', confirmData.error);
         Alert.alert(
-          'Booking Issue',
-          'Your payment was successful, but we encountered an issue creating your booking. Please contact support with your payment confirmation.',
+          'Booking Not Completed',
+          'We could not complete your booking. If your payment went through, it will be refunded automatically. Please contact the facility if you have questions.',
           [{ text: 'OK' }]
         );
-        onPaymentSuccess?.();
+        // Do not run the success flow; just close so the parent reloads current state.
         onClose();
         return;
       }
