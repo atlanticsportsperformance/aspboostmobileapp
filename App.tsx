@@ -284,11 +284,6 @@ function AppContent() {
             <Stack.Screen name="CoachRoster" getComponent={() => require('./screens/CoachRosterScreen').default} />
             <Stack.Screen name="AthleteProgram" getComponent={() => require('./screens/AthleteProgramScreen').default} />
             <Stack.Screen name="CoachCoverage" getComponent={() => require('./screens/CoachCoverageScreen').default} />
-            <Stack.Screen name="LeagueHub" getComponent={() => require('./screens/LeagueHubScreen').default} />
-            <Stack.Screen name="LeagueSchedule" getComponent={() => require('./screens/LeagueScheduleScreen').default} />
-            <Stack.Screen name="LeagueStats" getComponent={() => require('./screens/LeagueStatsScreen').default} />
-            <Stack.Screen name="LeagueGameLog" getComponent={() => require('./screens/LeagueGameLogScreen').default} />
-            <Stack.Screen name="LeagueGameDetail" getComponent={() => require('./screens/LeagueGameDetailScreen').default} />
             {/* Rack mode (staff, iPad only) — unlocked orientation on iPad via lib/rack/orientation */}
             <Stack.Screen name="RackSetup" getComponent={() => require('./screens/rack/RackSetupScreen').default} />
             <Stack.Screen name="RackMode" options={{ gestureEnabled: false }} getComponent={() => require('./screens/rack/RackModeScreen').default} />

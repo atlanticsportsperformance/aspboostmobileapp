@@ -9,10 +9,6 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import { useAcdlMembership } from '../hooks/useAcdlMembership';
-import { ACDL_CREAM, ACDL_NAVY, ACDL_LINE } from './league/acdlTheme';
-import { AcdlCrest } from './league/AcdlCrest';
 
 export interface FABMenuItem {
   id: string;
@@ -23,8 +19,6 @@ export interface FABMenuItem {
   isActive?: boolean;
   badge?: number;
   isBookButton?: boolean;
-  /** League item gets the ACDL sky-blue accent + crest icon. */
-  isLeague?: boolean;
 }
 
 interface FABMenuProps {
@@ -32,12 +26,6 @@ interface FABMenuProps {
   onToggle: () => void;
   items: FABMenuItem[];
   totalBadgeCount?: number;
-  /**
-   * The athlete whose FAB this is. Passed to the auto-injected "ACDL"
-   * item so it gates on (and navigates for) the right athlete — defaults to the
-   * resolved athlete (athlete account or selected child) when omitted.
-   */
-  athleteId?: string | null;
 }
 
 export default function FABMenu({
@@ -45,45 +33,8 @@ export default function FABMenu({
   onToggle,
   items,
   totalBadgeCount = 0,
-  athleteId = null,
 }: FABMenuProps) {
-  const navigation = useNavigation<any>();
-
-  // Auto-inject an "ACDL" item, gated cheaply on league membership
-  // (useAcdlMembership reuses the resolved athlete id; only rostered athletes
-  // ever see it). Inserted after "Performance" when present, else at the top.
-  const { inLeague } = useAcdlMembership(athleteId);
-
-  const leagueItem: FABMenuItem = {
-    id: 'acdl-league',
-    label: 'ACDL',
-    icon: 'trophy',
-    isLeague: true,
-    onPress: () => navigation.navigate('LeagueHub', athleteId ? { athleteId } : {}),
-  };
-
-  const resolvedItems: FABMenuItem[] = React.useMemo(() => {
-    if (!inLeague) return items;
-    if (items.some((i) => i.id === 'acdl-league')) return items;
-    const next = [...items];
-    // Place ACDL directly below Home; fall back to just above the Book button, else top.
-    const homeIdx = items.findIndex((i) => i.id === 'home');
-    const bookIdx = items.findIndex((i) => i.isBookButton);
-    const insertAt =
-      homeIdx >= 0 ? homeIdx + 1 : bookIdx >= 0 ? bookIdx : 0;
-    next.splice(insertAt, 0, leagueItem);
-    return next;
-    // athleteId in deps so a parent child-switch rebuilds the league item's
-    // onPress with the new id (stale-id fix).
-  }, [items, inLeague, athleteId]); // eslint-disable-line react-hooks/exhaustive-deps
   const renderIcon = (item: FABMenuItem) => {
-    // ACDL League item shows the real crest (white circle reads on dark).
-    if (item.isLeague) {
-      return (
-        <AcdlCrest size={22} />
-      );
-    }
-
     const iconColor = item.isActive
       ? '#9BDDFF'
       : item.isBookButton
@@ -143,7 +94,7 @@ export default function FABMenu({
           onPress={onToggle}
         >
           <View style={styles.fabMenu} onStartShouldSetResponder={() => true}>
-            {resolvedItems.map((item) => {
+            {items.map((item) => {
               if (item.isBookButton) {
                 return (
                   <TouchableOpacity
@@ -166,7 +117,6 @@ export default function FABMenu({
                   style={[
                     styles.fabMenuItem,
                     item.isActive && styles.fabMenuItemActive,
-                    item.isLeague && styles.fabMenuItemLeague,
                   ]}
                   onPress={() => {
                     onToggle();
@@ -187,7 +137,6 @@ export default function FABMenu({
                     style={[
                       styles.fabMenuLabel,
                       item.isActive && styles.fabMenuLabelActive,
-                      item.isLeague && styles.fabMenuLabelLeague,
                     ]}
                   >
                     {item.label}
@@ -259,15 +208,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(155, 221, 255, 0.3)',
   },
-  fabMenuItemLeague: {
-    backgroundColor: ACDL_CREAM,
-    borderWidth: 1,
-    borderColor: ACDL_LINE,
-  },
-  leagueCrest: {
-    width: 22,
-    height: 22,
-  },
   fabMenuLabel: {
     fontSize: 16,
     color: '#FFFFFF',
@@ -275,9 +215,6 @@ const styles = StyleSheet.create({
   },
   fabMenuLabelActive: {
     color: '#9BDDFF',
-  },
-  fabMenuLabelLeague: {
-    color: ACDL_NAVY,
   },
   fabMenuIconContainer: {
     position: 'relative',

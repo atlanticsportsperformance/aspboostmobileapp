@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { fetchLeagueCalendarEvents, leagueEventLabel, leagueWindow, LEAGUE_EVENT_COLOR } from '../lib/leagueCalendar';
 import {
   View,
   Text,
@@ -611,22 +610,7 @@ export default function ParentDashboardScreen({ navigation }: any) {
         };
       }).filter((b: any) => b.event_id && b.start_time);
 
-      const lw = leagueWindow();
-      const leaguePerAthlete = await Promise.all(
-        athletes.map(async (a) => (await fetchLeagueCalendarEvents(supabase, a.athlete_id, lw.from, lw.to)).map((e) => ({
-          id: `league-${e.id}-${a.athlete_id}`,
-          athlete_id: a.athlete_id,
-          athlete_name: `${a.first_name} ${a.last_name}`,
-          athlete_color: a.color || '#9BDDFF',
-          start_time: e.start_at,
-          end_time: e.end_at,
-          event_name: leagueEventLabel(e),
-          event_id: e.id,
-          category_name: 'ACDL',
-          category_color: LEAGUE_EVENT_COLOR,
-        }))),
-      );
-      setBookings([...bookingsWithAthleteInfo, ...leaguePerAthlete.flat()]);
+      setBookings(bookingsWithAthleteInfo);
 
       // Transform bookings to UpcomingEvent interface (reuse bookingsData instead of duplicate query)
       console.log('[ParentDashboard] Formatting upcoming events from bookingsData');

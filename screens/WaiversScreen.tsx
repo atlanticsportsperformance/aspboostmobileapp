@@ -148,10 +148,8 @@ export default function WaiversScreen({ navigation, route }: any) {
   const handleSigningComplete = async () => {
     setShowSigningSheet(false);
     setWaiversToSign([]);
-    // FIX 1: loadData() refreshes pendingWaivers from /api/athletes/[id]/waivers
-    // which DOES include league participation pendings. We then gate the
-    // blocking-clear off the real refreshed list — not the athlete_pending_waivers
-    // table, which never contains league waivers.
+    // FIX 1: loadData() refreshes pendingWaivers from /api/athletes/[id]/waivers.
+    // We then gate the blocking-clear off the real refreshed list.
     await loadData();
     if (blocking) {
       // pendingWaivers is set synchronously by setPendingWaivers inside
