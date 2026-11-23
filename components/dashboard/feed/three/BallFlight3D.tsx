@@ -15,6 +15,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Canvas, useFrame } from '@react-three/fiber/native';
 import * as THREE from 'three';
 import { supabase } from '../../../../lib/supabase';
+import { useInView } from '../../../../hooks/useInView';
 
 type Swing = { exit_velocity: number; launch_angle: number; horizontal_angle: number | null; distance: number };
 type Arc = { points: THREE.Vector3[]; color: string };
@@ -114,7 +115,9 @@ function Field() {
   }, []);
 }
 
-function Scene({ arcs }: { arcs: Arc[] }) {
+function Scene({ arcs, active }: { arcs: Arc[]; active: boolean }) {
+  // Own wall clock (not R3F's) so the loop starts when the section scrolls
+  // into view and restarts each time it comes back.
   const t0 = useRef<number | null>(null);
   const ball = useRef<THREE.Mesh>(null);
   const items = useMemo(
@@ -132,8 +135,17 @@ function Scene({ arcs }: { arcs: Arc[] }) {
   );
 
   useFrame((state) => {
-    if (t0.current == null) t0.current = state.clock.elapsedTime;
-    const t = state.clock.elapsedTime - t0.current;
+    if (!active) {
+      t0.current = null;
+      items.forEach((it) => {
+        it.line.geometry.setDrawRange(0, 0);
+        it.land.visible = false;
+      });
+      if (ball.current) ball.current.visible = false;
+      return;
+    }
+    if (t0.current == null) t0.current = Date.now();
+    const t = (Date.now() - t0.current) / 1000;
     const n = arcs.length;
     // Throw every one in turn, hold the full picture, then clear and replay.
     const loopLen = n * SECONDS_PER_BALL + HOLD_SECONDS;
@@ -179,11 +191,12 @@ function Scene({ arcs }: { arcs: Arc[] }) {
 
 export function BallFlight3D({ athleteId }: { athleteId?: string | null }) {
   const arcs = useArcs(athleteId);
+  const { ref, inView } = useInView();
   if (!arcs || arcs.length === 0) return null;
   return (
-    <View style={styles.wrap}>
+    <View ref={ref} style={styles.wrap} collapsable={false}>
       <Canvas style={styles.canvas} camera={{ position: [0, 1.6, 1.9], fov: 46, near: 0.05, far: 100 }}>
-        <Scene arcs={arcs} />
+        <Scene arcs={arcs} active={inView} />
       </Canvas>
       <View style={styles.legend} pointerEvents="none">
         {[['95+ mph', '#fb923c'], ['90–95', '#fdba74'], ['<90', '#8d939c']].map(([l, c]) => (

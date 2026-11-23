@@ -17,6 +17,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Canvas, useFrame } from '@react-three/fiber/native';
 import * as THREE from 'three';
 import { supabase } from '../../../../lib/supabase';
+import { useInView } from '../../../../hooks/useInView';
 import { pitchDisplay } from '../pitchTypeDisplay';
 
 type PitchRow = {
@@ -121,7 +122,9 @@ function lineObject(points: THREE.Vector3[], color: string, opacity = 1) {
   return new THREE.Line(g, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity }));
 }
 
-function Scene({ paths }: { paths: Path[] }) {
+function Scene({ paths, active }: { paths: Path[]; active: boolean }) {
+  // Own wall clock (not R3F's) so the loop starts when the section scrolls
+  // into view and restarts each time it comes back.
   const t0 = useRef<number | null>(null);
   const ball = useRef<THREE.Mesh>(null);
 
@@ -209,8 +212,17 @@ function Scene({ paths }: { paths: Path[] }) {
     // Pin the framing every frame (R3F can reset a lookAt set once in onCreated).
     state.camera.position.set(0, 3.6, -9);
     state.camera.lookAt(0, 3.0, 30);
-    if (t0.current == null) t0.current = state.clock.elapsedTime;
-    const t = state.clock.elapsedTime - t0.current;
+    if (!active) {
+      t0.current = null;
+      trails.forEach((it) => {
+        it.line.geometry.setDrawRange(0, 0);
+        it.dot.visible = false;
+      });
+      if (ball.current) ball.current.visible = false;
+      return;
+    }
+    if (t0.current == null) t0.current = Date.now();
+    const t = (Date.now() - t0.current) / 1000;
     const n = paths.length;
     if (!n) return;
     // Throw every one in turn, hold the full picture, then clear and replay.
@@ -253,6 +265,7 @@ function Scene({ paths }: { paths: Path[] }) {
 
 export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
   const paths = usePitchPaths(athleteId);
+  const { ref, inView } = useInView();
   const legend = useMemo(() => {
     const seen = new Map<string, string>();
     (paths ?? []).forEach((p) => seen.set(p.type, p.color));
@@ -262,12 +275,12 @@ export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
   if (!paths || paths.length === 0) return null;
 
   return (
-    <View style={styles.wrap}>
+    <View ref={ref} style={styles.wrap} collapsable={false}>
       <Canvas
         style={styles.canvas}
         camera={{ position: [0, 3.6, -9], fov: 26, near: 0.05, far: 200 }}
       >
-        <Scene paths={paths} />
+        <Scene paths={paths} active={inView} />
       </Canvas>
       <View style={styles.legend} pointerEvents="none">
         {legend.map(([type, color]) => (

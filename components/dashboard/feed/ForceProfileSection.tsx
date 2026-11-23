@@ -25,6 +25,7 @@ import Svg, {
   RadialGradient,
   Stop,
 } from 'react-native-svg';
+import { useInView } from '../../../hooks/useInView';
 
 interface MetricEntry {
   name: string;
@@ -136,11 +137,12 @@ export function ForceProfileSection({
   const tier = getTier(data.percentile_rank);
   const axes = useMemo(() => buildAxes(data.metrics ?? []), [data.metrics]);
   const tested = axes.filter((a) => a.percentile != null).length;
-  const progress = useGrowProgress(axes.map((a) => a.percentile ?? 0).join(','));
+  const { ref: viewRef, inView } = useInView(0.3);
+  const progress = useGrowProgress(axes.map((a) => a.percentile ?? 0).join(','), inView);
   const composite = Math.round(data.composite_score * easeOut(Math.min(1, progress / 1.3)));
 
   return (
-    <View style={styles.section}>
+    <View ref={viewRef} collapsable={false} style={styles.section}>
       <View style={styles.hairline} />
 
       <Pressable onPress={onOpen} hitSlop={6} style={styles.eyebrowRow}>
@@ -208,9 +210,13 @@ export function ForceProfileSection({
 // ─────────────────────────────────────────────────────────────
 
 const GROW_SECONDS = 1.8;
-function useGrowProgress(key: string): number {
+function useGrowProgress(key: string, active: boolean): number {
   const [t, setT] = useState(0);
   useEffect(() => {
+    if (!active) {
+      setT(0);
+      return;
+    }
     let raf = 0;
     const t0 = Date.now();
     const tick = () => {
@@ -220,7 +226,7 @@ function useGrowProgress(key: string): number {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [key]);
+  }, [key, active]);
   return t;
 }
 const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);

@@ -15,6 +15,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
 import Svg, { Path, Circle as SvgCircle } from 'react-native-svg';
+import { useInView } from '../../../hooks/useInView';
 import { peakZone, ZONE_COLORS, type Zone } from '../../../lib/armcare/zones';
 
 interface ArmCareShape {
@@ -65,7 +66,8 @@ const TEST_DISPLAY = {
 export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
   const score = data.latest.arm_score;
   const zone = getZone(score);
-  const progress = useGrow(`${score}-${data.pr.arm_score}`);
+  const { ref: viewRef, inView } = useInView(0.3);
+  const progress = useGrow(`${score}-${data.pr.arm_score}`, inView);
 
   const svRatio =
     maxVelocity && maxVelocity > 0 && data.latest.total_strength > 0
@@ -82,7 +84,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
     : null;
 
   return (
-    <View style={styles.section}>
+    <View ref={viewRef} collapsable={false} style={styles.section}>
       <View style={styles.hairline} />
 
       <Pressable onPress={onOpen} hitSlop={6} style={styles.eyebrowRow}>
@@ -192,9 +194,13 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
 // ─────────────────────────────────────────────────────────────
 
 const GROW_S = 1.8;
-function useGrow(key: string): number {
+function useGrow(key: string, active: boolean): number {
   const [t, setT] = useState(0);
   useEffect(() => {
+    if (!active) {
+      setT(0);
+      return;
+    }
     let raf = 0;
     const t0 = Date.now();
     const tick = () => {
@@ -204,7 +210,7 @@ function useGrow(key: string): number {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [key]);
+  }, [key, active]);
   return t;
 }
 const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);

@@ -10,6 +10,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Animated, Easing } from 'react-native';
+import { useInView } from '../../../hooks/useInView';
 import { LEVELS, type Level, type Pcts, percentileFor } from '../../../lib/norms';
 
 export type LadderMetric = {
@@ -31,11 +32,12 @@ const SHORT: Record<Level, string> = { Youth: 'Youth', 'High School': 'HS', Coll
 
 export function PercentileLadder({ metrics, defaultLevel }: { metrics: LadderMetric[]; defaultLevel: Level | null }) {
   const [level, setLevel] = useState<Level>(defaultLevel ?? 'High School');
+  const { ref, inView } = useInView(0.3);
   const rows = metrics.filter((m) => m.value != null);
   if (rows.length === 0) return null;
 
   return (
-    <View style={styles.wrap}>
+    <View ref={ref} collapsable={false} style={styles.wrap}>
       <View style={styles.headRow}>
         <Text style={styles.head}>PERCENTILE VS</Text>
       </View>
@@ -53,13 +55,13 @@ export function PercentileLadder({ metrics, defaultLevel }: { metrics: LadderMet
         ))}
       </View>
       {rows.map((m, i) => (
-        <Row key={m.label} metric={m} level={level} delay={i * 90} />
+        <Row key={m.label} metric={m} level={level} delay={i * 90} active={inView} />
       ))}
     </View>
   );
 }
 
-function Row({ metric, level, delay }: { metric: LadderMetric; level: Level; delay: number }) {
+function Row({ metric, level, delay, active }: { metric: LadderMetric; level: Level; delay: number; active: boolean }) {
   const norms = metric.norms[level];
   const pct = norms ? percentileFor(metric.value!, norms) : null;
   const tier = pct != null ? tierFor(pct) : null;
@@ -67,6 +69,10 @@ function Row({ metric, level, delay }: { metric: LadderMetric; level: Level; del
   const [width, setWidth] = useState(0);
 
   useEffect(() => {
+    if (!active) {
+      anim.setValue(0);
+      return;
+    }
     Animated.timing(anim, {
       toValue: pct ?? 0,
       duration: 900,
@@ -74,7 +80,7 @@ function Row({ metric, level, delay }: { metric: LadderMetric; level: Level; del
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
-  }, [pct, delay, anim]);
+  }, [pct, delay, anim, active]);
 
   const left = anim.interpolate({ inputRange: [0, 100], outputRange: [0, Math.max(0, width - 4)] });
   const tierIdx = tier ? 3 - TIERS.indexOf(tier) : -1;
