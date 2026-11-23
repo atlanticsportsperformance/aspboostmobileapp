@@ -37,6 +37,7 @@ const ZONE_BOTTOM = 1.6;
 const ZONE_TOP = 3.5;
 const MAX_PITCHES = 12;
 const SECONDS_PER_PITCH = 1.1;
+const HOLD_SECONDS = 1.6;
 const FLIGHT_SHARE = 0.7;
 
 /** Time (s) at which the fitted trajectory reaches depth y (ft). */
@@ -212,9 +213,13 @@ function Scene({ paths }: { paths: Path[] }) {
     const t = state.clock.elapsedTime - t0.current;
     const n = paths.length;
     if (!n) return;
-    const cyc = t / SECONDS_PER_PITCH;
-    const idx = Math.floor(cyc) % n;
-    const k = cyc % 1;
+    // Throw every one in turn, hold the full picture, then clear and replay.
+    const loopLen = n * SECONDS_PER_PITCH + HOLD_SECONDS;
+    const lt = t % loopLen;
+    const holding = lt >= n * SECONDS_PER_PITCH;
+    const cyc = holding ? n - 0.0001 : lt / SECONDS_PER_PITCH;
+    const idx = Math.min(n - 1, Math.floor(cyc));
+    const k = holding ? 0.9999 : cyc % 1;
     const kk = Math.min(1, k / FLIGHT_SHARE);
     trails.forEach((tr, i) => {
       // Each cycle clears and redraws, so the session keeps replaying.

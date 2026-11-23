@@ -22,6 +22,7 @@ type Arc = { points: THREE.Vector3[]; color: string };
 const S = 0.01; // 1 unit = 100 ft
 const MAX_SWINGS = 8;
 const SECONDS_PER_BALL = 1.6;
+const HOLD_SECONDS = 1.6;
 const FLIGHT_SHARE = 0.75;
 const FENCE = (deg: number) => (400 - (Math.abs(deg) / 45) * 70) * S;
 
@@ -134,9 +135,13 @@ function Scene({ arcs }: { arcs: Arc[] }) {
     if (t0.current == null) t0.current = state.clock.elapsedTime;
     const t = state.clock.elapsedTime - t0.current;
     const n = arcs.length;
-    const cyc = t / SECONDS_PER_BALL;
-    const idx = Math.floor(cyc) % n;
-    const k = cyc % 1;
+    // Throw every one in turn, hold the full picture, then clear and replay.
+    const loopLen = n * SECONDS_PER_BALL + HOLD_SECONDS;
+    const lt = t % loopLen;
+    const holding = lt >= n * SECONDS_PER_BALL;
+    const cyc = holding ? n - 0.0001 : lt / SECONDS_PER_BALL;
+    const idx = Math.min(n - 1, Math.floor(cyc));
+    const k = holding ? 0.9999 : cyc % 1;
     const kk = Math.min(1, k / FLIGHT_SHARE);
     items.forEach((it, i) => {
       // Each cycle clears and redraws, so the session keeps replaying.
