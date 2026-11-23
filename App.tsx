@@ -35,7 +35,6 @@ SplashScreen.preventAutoHideAsync();
 
 // Entry screens stay eagerly imported (shown immediately on launch / after auth).
 import LoginScreen from './screens/LoginScreen';
-import JoinGroupScreen from './screens/JoinGroupScreen';
 import UpdatePasswordScreen from './screens/UpdatePasswordScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import ParentDashboardScreen from './screens/ParentDashboardScreen';
@@ -242,7 +241,6 @@ function AppContent() {
             {/* Eager entry screens */}
             <Stack.Screen name="Loading" component={LoadingScreen} />
             <Stack.Screen name="Login" component={LoginScreen} />
-            <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
             <Stack.Screen name="UpdatePassword" component={UpdatePasswordScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="ParentDashboard" component={ParentDashboardScreen} />
@@ -276,7 +274,6 @@ function AppContent() {
             <Stack.Screen name="Booking" getComponent={() => require('./screens/BookingScreen').default} />
             <Stack.Screen name="MembershipsPackages" getComponent={() => require('./screens/MembershipsPackagesScreen').default} />
             <Stack.Screen name="Billing" getComponent={() => require('./screens/BillingScreen').default} />
-            <Stack.Screen name="PublicBooking" getComponent={() => require('./screens/PublicBookingScreen').default} />
             <Stack.Screen name="Waivers" getComponent={() => require('./screens/WaiversScreen').default} />
             <Stack.Screen name="CoachTools" getComponent={() => require('./screens/CoachToolsScreen').default} />
             <Stack.Screen name="CoachArmCareSearch" getComponent={() => require('./screens/CoachArmCareSearchScreen').default} />
