@@ -29,6 +29,15 @@ export interface MocapSession {
   mocap_pitches: MocapPitch
 }
 
+/** Pitching events (seconds from capture start). */
+export interface PitchingEventTimes { pkh: number; fp: number; mer: number; br: number }
+/** Hitting events (seconds from capture start). */
+export interface HittingEventTimes { load: number; fp: number; fm: number; peakRot: number }
+export type MocapEventTimes = Partial<PitchingEventTimes> & Partial<HittingEventTimes>
+
+/** normalized_curves: metric key → 301-pt two-phase grid (PKH@50, FP@150, BR@250). */
+export type MocapCurves = Record<string, (number | null)[]>
+
 export interface MocapPitchDetail {
   pitch: {
     id: string
@@ -36,9 +45,32 @@ export interface MocapPitchDetail {
     velocity: number | null
     pitchNumber: number
     scalarMetrics: Record<string, number>
+    // Fields below arrive with the redesigned-viewer API deploy; older
+    // deployments omit them, so every one is optional and may be null.
+    batSpeed?: number | null
+    exitVelo?: number | null
+    category?: string | null
+    eventTimes?: MocapEventTimes | null
+    curves?: MocapCurves | null
+    handedness?: string | null
+    playLevel?: string | null
+    sex?: string | null
+    heightM?: number | null
+    massKg?: number | null
+    cameraCount?: number | null
+    calibRmse?: number | null
+    cohortEligible?: boolean | null
   }
+  windmillHistory?: unknown
   videoUrl: string | null
   c3dUrl: string | null
+}
+
+/** True for hitting categories (baseball_hitting, softball_hitting). */
+export function isHittingDetail(d: MocapPitchDetail | null | undefined): boolean {
+  const c = d?.pitch?.category
+  if (c) return c.includes('hitting')
+  return d?.pitch?.batSpeed != null || d?.pitch?.exitVelo != null
 }
 
 export interface PercentileCohortResponse {

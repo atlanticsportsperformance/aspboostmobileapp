@@ -1,0 +1,215 @@
+<title>Mocap Redesign Steel</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: four phone frames (sessions · motion · report · energy) wrapping to one column on phones. Single dark Steel look, same tokens as components/hitting/steel.tsx; mocap accent = purple */
+:root{--bg:#000;--card:#0c1016;--rule:rgba(255,255,255,.07);--hair:rgba(255,255,255,.12);--text:#fff;--sub:#9ca3af;--mute:#6b7280;--past:#4b5563;--acc:#a78bfa;--ice:#5ce1ff;--good:#34d399;--bad:#ef4444;--warn:#fbbf24;
+--elite:#22D3EE;--prof:#22C55E;--dev:#A6ABB5;--found:#EF4444;color-scheme:dark}
+body{background:#05070a;color:var(--text);font:14px -apple-system,system-ui,sans-serif;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px}
+h1{font-size:15px;color:var(--sub);font-weight:600;margin:0 0 18px;text-align:center}
+.row{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
+.phone{width:375px;max-width:100%;background:var(--bg);border:1px solid #1b2430;border-radius:40px;padding:18px 16px 30px;box-sizing:border-box}
+.cap{color:var(--mute);font-size:11px;letter-spacing:2px;font-weight:800;text-align:center;margin:10px 0}
+.back{color:var(--sub);font-size:16px;font-weight:600}
+.title{font-size:32px;font-weight:800;letter-spacing:-.6px;margin:6px 0 2px}
+.subt{color:var(--sub);font-size:13.5px}
+.sec{padding:18px 0}.sec+.sec{border-top:1px solid var(--hair)}
+.eb{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;gap:8px}
+.eb b{font-size:11px;font-weight:800;letter-spacing:2px;color:#e5e7eb}.eb a{color:var(--acc);font-size:12px;font-weight:700}.eb span{color:var(--mute);font-size:11px}
+.kr{display:flex;gap:12px}.k{flex:1}.kl{color:var(--mute);font-size:10px;font-weight:800;letter-spacing:1.3px}
+.kv{font-weight:800;font-size:24px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}.kv small{font-size:11px;color:var(--mute)}
+.chips{display:flex;gap:8px;overflow:auto}.chip{padding:7px 12px;border-radius:99px;background:var(--card);border:1px solid var(--rule);color:var(--sub);font-size:12px;font-weight:700;white-space:nowrap}.chip.on{background:#1b2430;color:#fff}
+.seg{display:flex;background:var(--card);border-radius:99px;padding:3px}.seg span{flex:1;text-align:center;padding:8px 0;border-radius:99px;color:var(--sub);font-weight:700;font-size:12px}.seg .on{background:#1b2430;color:#fff}
+.bleed{margin:0 -16px;background:#05070a;position:relative}
+.it{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-top:1px solid var(--rule);gap:10px}
+.it .dt{font-weight:700}.m{color:var(--mute);font-size:11.5px}.v{font-weight:800;font-variant-numeric:tabular-nums;text-align:right}
+.bar{width:3px;align-self:stretch;border-radius:2px;background:var(--acc);margin-right:10px}
+.tier{font-size:10px;font-weight:800;letter-spacing:1.2px;padding:3px 8px;border-radius:99px}
+.pl{display:grid;grid-template-columns:26px 1fr 54px 64px;gap:4px;padding:9px 0;border-top:1px solid var(--rule);font-size:12.5px;font-variant-numeric:tabular-nums;align-items:center}
+.ev{display:flex;gap:6px}.ev span{font-size:11px;font-weight:800;padding:6px 10px;border-radius:99px;background:var(--card);color:var(--sub);border:1px solid var(--rule)}.ev .on{color:#000;background:var(--acc)}
+.scrub{height:28px;position:relative;margin-top:12px}.scrub .t{position:absolute;top:13px;left:0;right:0;height:3px;background:#1b2430;border-radius:2px}.scrub .f{position:absolute;top:13px;left:0;width:56%;height:3px;background:var(--acc);border-radius:2px}
+.scrub .mk{position:absolute;top:4px;font-size:9px;font-weight:800;color:var(--sub);transform:translateX(-50%)}.scrub .mk::after{content:"";display:block;width:1px;height:10px;background:var(--sub);margin:2px auto 0}
+.ctl{display:flex;justify-content:space-between;align-items:center;margin-top:10px;color:var(--sub);font-weight:700;font-size:13px}
+.met{display:grid;grid-template-columns:1fr 58px 1fr;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--rule);font-size:12.5px}
+.track{height:6px;background:#1b2430;border-radius:3px;position:relative}.track i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+.track b{position:absolute;top:-3px;width:2px;height:12px;background:#fff;opacity:.35;left:50%}
+.opp{display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--rule);font-size:13px}
+.note{max-width:1250px;margin:26px auto 0;color:var(--sub);font-size:13px;line-height:1.6}
+code{color:#e5e7eb}
+</style>
+
+<h1>Motion Capture redesign v1 — Steel. Mocap accent = purple. Tiers = Foundation / Developing / Proficient / Elite.</h1>
+<div class="row">
+
+<!-- ========== SESSIONS ========== -->
+<div>
+<div class="cap">MOTION CAPTURE · SESSIONS</div>
+<div class="phone">
+ <div class="back">‹ Back</div>
+ <div class="title">Motion Capture</div>
+ <div class="subt">6 sessions · 41 throws · Theia markerless</div>
+ <div class="sec">
+  <div class="chips"><span class="chip on">All 6</span><span class="chip">Pitching 4</span><span class="chip">Hitting 2</span></div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>LATEST ASSESSMENT</b><a>Open ›</a></div>
+  <div style="display:flex;gap:16px;align-items:center">
+   <svg width="108" height="108" viewBox="0 0 108 108"><circle cx="54" cy="54" r="46" fill="none" stroke="#1b2430" stroke-width="8"/><circle cx="54" cy="54" r="46" fill="none" stroke="var(--prof)" stroke-width="8" stroke-dasharray="289" stroke-dashoffset="98" transform="rotate(-90 54 54)" stroke-linecap="round"/><text x="54" y="60" text-anchor="middle" fill="#fff" font-size="28" font-weight="800">66</text></svg>
+   <div><div class="tier" style="background:rgba(34,197,94,.15);color:var(--prof);display:inline-block">PROFICIENT</div>
+   <div style="font-weight:800;font-size:17px;margin-top:6px">Mechanical composite</div>
+   <div class="m">Nov 18 · Fastball 84.2 mph · vs 90+ mph cohort (n=412)</div>
+   <div style="color:var(--good);font-size:12px;font-weight:700;margin-top:4px">▲ 7 since Sep 30</div></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>COMPOSITE OVER TIME</b></div>
+  <svg viewBox="0 0 343 90" width="100%"><line x1="0" y1="45" x2="343" y2="45" stroke="#fff" stroke-opacity=".12" stroke-dasharray="4 4"/><text x="0" y="41" fill="#6b7280" font-size="9">50th</text><polyline points="20,62 120,55 220,40 330,30" fill="none" stroke="var(--acc)" stroke-width="2.5"/><circle cx="330" cy="30" r="5" fill="var(--acc)"/></svg>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>SESSIONS</b></div>
+  <div class="it"><div style="display:flex"><i class="bar"></i><div><div class="dt">Nov 18 <span class="m">· Pitching · RHP</span></div><div class="m">8 throws · ▶ video · 4 cams</div></div></div><div class="v">84.2<div class="m">top mph</div></div></div>
+  <div class="it"><div style="display:flex"><i class="bar" style="background:#fb923c"></i><div><div class="dt">Nov 2 <span class="m">· Hitting · RHH</span></div><div class="m">10 swings · ▶ video</div></div></div><div class="v">71.0<div class="m">bat mph</div></div></div>
+  <div class="it"><div style="display:flex"><i class="bar"></i><div><div class="dt">Sep 30 <span class="m">· Pitching · RHP</span></div><div class="m">7 throws</div></div></div><div class="v">82.9<div class="m">top mph</div></div></div>
+ </div>
+</div>
+</div>
+
+<!-- ========== MOTION ========== -->
+<div>
+<div class="cap">THROW · MOTION</div>
+<div class="phone">
+ <div class="back">‹ Nov 18</div>
+ <div class="title">Fastball #4</div>
+ <div class="subt">84.2 mph · Proficient 66 · 4 cams · good capture</div>
+ <div class="sec" style="padding-bottom:8px"><div class="seg"><span class="on">Motion</span><span>Report</span><span>Energy</span></div></div>
+ <div class="bleed">
+  <svg viewBox="0 0 375 360" width="100%" style="display:block">
+   <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0f16"/><stop offset="1" stop-color="#05070a"/></linearGradient></defs>
+   <rect width="375" height="360" fill="url(#g)"/>
+   <g stroke="#1b2430"><line x1="0" y1="300" x2="375" y2="300"/><line x1="40" y1="300" x2="-60" y2="360"/><line x1="187" y1="300" x2="187" y2="360"/><line x1="335" y1="300" x2="435" y2="360"/></g>
+   <g stroke="#e5e7eb" stroke-width="7" stroke-linecap="round" fill="none">
+    <line x1="190" y1="118" x2="175" y2="190"/><line x1="175" y1="190" x2="120" y2="240"/><line x1="120" y1="240" x2="90" y2="298"/>
+    <line x1="175" y1="190" x2="230" y2="235"/><line x1="230" y1="235" x2="262" y2="296"/>
+    <line x1="190" y1="125" x2="140" y2="130"/><line x1="140" y1="130" x2="112" y2="160"/>
+   </g>
+   <g stroke="var(--acc)" stroke-width="7" stroke-linecap="round"><line x1="190" y1="125" x2="232" y2="108"/><line x1="232" y1="108" x2="246" y2="62"/></g>
+   <circle cx="194" cy="100" r="13" fill="#e5e7eb"/>
+   <circle cx="180" cy="196" r="6" fill="var(--warn)"/><path d="M120 300 Q180 296 240 298" stroke="var(--warn)" stroke-width="2" stroke-dasharray="3 4" fill="none"/>
+   <text x="16" y="24" fill="var(--acc)" font-size="11" font-weight="800" letter-spacing="1">MAX EXTERNAL ROTATION</text>
+   <text x="16" y="42" fill="#9ca3af" font-size="11">frame 412 · 1.144 s</text>
+   <g font-size="11" font-weight="700" fill="#9ca3af"><text x="296" y="24">Side</text><text x="296" y="42" fill="#fff">Front</text><text x="296" y="60">Top</text><text x="296" y="78">Follow</text></g>
+   <rect x="16" y="222" width="104" height="62" rx="8" fill="#0c1016" stroke="#1b2430"/><text x="68" y="257" fill="#6b7280" font-size="10" text-anchor="middle">VIDEO ▢</text>
+   <text x="359" y="346" fill="#46505c" font-size="9" font-weight="700" letter-spacing="1" text-anchor="end">DRAG TO ORBIT · COM ●</text>
+  </svg>
+ </div>
+ <div class="scrub"><div class="t"></div><div class="f"></div>
+  <span class="mk" style="left:38%">FP</span><span class="mk" style="left:56%;color:var(--acc)">MER</span><span class="mk" style="left:64%">BR</span></div>
+ <div class="ctl"><span>◂◂ ▶ ▸▸</span><span>1.144 s</span><span class="chips"><span class="chip">1×</span><span class="chip on">¼×</span><span class="chip">⅒×</span></span></div>
+ <div class="sec">
+  <div class="eb"><b>JUMP TO</b></div>
+  <div class="ev"><span>Leg lift</span><span>Foot plant</span><span class="on">Max ER</span><span>Release</span></div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>AT THIS FRAME</b></div>
+  <div class="kr">
+   <div class="k"><div class="kl">SHOULDER ER</div><div class="kv">172<small>°</small></div></div>
+   <div class="k"><div class="kl">LEAD KNEE</div><div class="kv">38<small>°</small></div></div>
+   <div class="k"><div class="kl">SEPARATION</div><div class="kv">21<small>°</small></div></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>OTHER THROWS</b><span>tap to load</span></div>
+  <div class="pl"><span class="m">#</span><span class="m">PITCH</span><span class="m">MPH</span><span class="m">SCORE</span></div>
+  <div class="pl" style="color:var(--acc)"><span>4</span><span>Fastball ★</span><span>84.2</span><span>66</span></div>
+  <div class="pl"><span>5</span><span>Fastball</span><span>83.6</span><span>61</span></div>
+  <div class="pl"><span>7</span><span>Slider</span><span>75.1</span><span>—</span></div>
+ </div>
+</div>
+</div>
+
+<!-- ========== REPORT ========== -->
+<div>
+<div class="cap">THROW · REPORT</div>
+<div class="phone">
+ <div class="back">‹ Nov 18</div>
+ <div class="title">Fastball #4</div>
+ <div class="subt">vs 90+ mph college/pro cohort · n=412</div>
+ <div class="sec" style="padding-bottom:8px"><div class="seg"><span>Motion</span><span class="on">Report</span><span>Energy</span></div></div>
+ <div class="sec">
+  <div class="eb"><b>MECHANICAL PROFILE</b><span class="tier" style="background:rgba(34,197,94,.15);color:var(--prof)">PROFICIENT · 66</span></div>
+  <svg viewBox="0 0 343 260" width="100%">
+   <g fill="none" stroke="#fff" stroke-opacity=".08"><polygon points="171,30 265,130 171,230 77,130"/><polygon points="171,80 215,130 171,180 127,130"/></g>
+   <polygon points="171,48 248,130 171,196 110,130" fill="var(--acc)" fill-opacity=".22" stroke="var(--acc)" stroke-width="2"/>
+   <g font-size="10.5" font-weight="800" letter-spacing="1" fill="#e5e7eb" text-anchor="middle"><text x="171" y="18">DRIVE 72</text><text x="300" y="134">BLOCK 81</text><text x="171" y="252">ARM ACTION 58</text><text x="42" y="134">POSTURE 49</text></g>
+  </svg>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>VELOCITY OPPORTUNITY</b><span>est. mph if brought to 50th→75th</span></div>
+  <div class="opp"><span>Hip–shoulder separation</span><b style="color:var(--good)">+1.4</b></div>
+  <div class="opp"><span>Trunk forward tilt at release</span><b style="color:var(--good)">+0.9</b></div>
+  <div class="opp"><span>Stride length (% height)</span><b style="color:var(--good)">+0.6</b></div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>POSTURE & SEPARATION</b><span>49 · Developing</span></div>
+  <div class="met"><span>Hip–shoulder sep.</span><b style="text-align:right">21°</b><div class="track"><i style="width:28%;background:var(--found)"></i><b></b></div></div>
+  <div class="met"><span>Trunk tilt @ BR</span><b style="text-align:right">31°</b><div class="track"><i style="width:44%;background:var(--dev)"></i><b></b></div></div>
+  <div class="met"><span>Lateral tilt @ BR</span><b style="text-align:right">24°</b><div class="track"><i style="width:63%;background:var(--prof)"></i><b></b></div></div>
+  <div class="met"><span>Torso counter-rot.</span><b style="text-align:right">-34°</b><div class="track"><i style="width:81%;background:var(--elite)"></i><b></b></div></div>
+  <div class="m" style="margin-top:8px">Tap any metric → what it is, how it's scored, your value vs cohort P50 & distribution. Missing values show "—", never 50th.</div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>GROUPS</b></div>
+  <div class="chips"><span class="chip">Drive 72</span><span class="chip on">Posture 49</span><span class="chip">Block 81</span><span class="chip">Arm 58</span></div>
+ </div>
+</div>
+</div>
+
+<!-- ========== ENERGY ========== -->
+<div>
+<div class="cap">THROW · ENERGY</div>
+<div class="phone">
+ <div class="back">‹ Nov 18</div>
+ <div class="title">Fastball #4</div>
+ <div class="subt">Kinematic sequence & energy flow</div>
+ <div class="sec" style="padding-bottom:8px"><div class="seg"><span>Motion</span><span>Report</span><span class="on">Energy</span></div></div>
+ <div class="sec">
+  <div class="eb"><b>KINEMATIC SEQUENCE</b><span>°/s</span></div>
+  <svg viewBox="0 0 343 190" width="100%">
+   <g stroke="#fff" stroke-opacity=".08"><line x1="30" y1="20" x2="343" y2="20"/><line x1="30" y1="90" x2="343" y2="90"/><line x1="30" y1="160" x2="343" y2="160"/></g>
+   <g fill="#6b7280" font-size="9"><text x="0" y="24">5000</text><text x="0" y="94">2500</text><text x="16" y="164">0</text></g>
+   <line x1="140" y1="10" x2="140" y2="170" stroke="#9ca3af" stroke-dasharray="3 4"/><text x="134" y="182" fill="#9ca3af" font-size="9" font-weight="800">FP</text>
+   <line x1="250" y1="10" x2="250" y2="170" stroke="#9ca3af" stroke-dasharray="3 4"/><text x="244" y="182" fill="#9ca3af" font-size="9" font-weight="800">BR</text>
+   <path d="M30 160 C120 155 160 120 190 128 S260 150 340 158" stroke="#fb923c" stroke-width="2.5" fill="none"/>
+   <path d="M30 160 C140 158 190 100 215 110 S280 150 340 158" stroke="#fbbf24" stroke-width="2.5" fill="none"/>
+   <path d="M30 160 C170 160 210 70 235 66 S290 150 340 158" stroke="var(--ice)" stroke-width="2.5" fill="none"/>
+   <path d="M30 160 C190 160 230 30 248 22 S300 150 340 158" stroke="var(--acc)" stroke-width="2.5" fill="none"/>
+  </svg>
+  <div class="chips" style="margin-top:6px"><span class="chip" style="color:#fb923c">Pelvis 690</span><span class="chip" style="color:#fbbf24">Trunk 1,080</span><span class="chip" style="color:var(--ice)">Elbow 2,310</span><span class="chip" style="color:var(--acc)">Shoulder 4,850</span></div>
+  <div class="m" style="margin-top:10px">Order: pelvis → trunk → elbow → shoulder <b style="color:var(--good)">✓ in sequence</b> · trunk peaks 38 ms after pelvis</div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>ENERGY FLOW</b><span>where speed is lost</span></div>
+  <svg viewBox="0 0 343 120" width="100%">
+   <g font-size="10.5" font-weight="800" fill="#e5e7eb" text-anchor="middle"><text x="40" y="112">PELVIS</text><text x="130" y="112">TRUNK</text><text x="220" y="112">ARM</text><text x="305" y="112">HAND</text></g>
+   <rect x="20" y="70" width="40" height="26" rx="4" fill="#fb923c"/><rect x="110" y="40" width="40" height="56" rx="4" fill="#fbbf24"/><rect x="200" y="22" width="40" height="74" rx="4" fill="var(--ice)"/><rect x="285" y="52" width="40" height="44" rx="4" fill="var(--acc)"/>
+   <g fill="#9ca3af" font-size="10" text-anchor="middle"><text x="85" y="62">→ 92%</text><text x="175" y="30">→ 95%</text><text x="262" y="40" fill="var(--bad)">→ 61% leak</text></g>
+  </svg>
+  <div class="m">Biggest leak: arm → hand (elbow extension timing). Estimate from segment kinetic energy; not force-plate.</div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>LEAD LEG BLOCK</b></div>
+  <div class="kr"><div class="k"><div class="kl">KNEE @ FP</div><div class="kv">44°</div></div><div class="k"><div class="kl">KNEE @ BR</div><div class="kv">38°</div></div><div class="k"><div class="kl">EXTENSION</div><div class="kv" style="color:var(--good)">+6°</div></div></div>
+ </div>
+</div>
+</div>
+</div>
+
+<div class="note">
+<b style="color:#fff">What changes vs today</b>
+<ul>
+<li><b>Sessions:</b> latest assessment ring + tier, composite trend, every throw/swing per session (not only the highlight). Category chips kept. Hitting rows show bat speed / exit velo.</li>
+<li><b>Motion:</b> 3D skeleton full-bleed (floor, COM, throwing arm in accent), camera presets, video picture-in-picture, scrubber with FP/MER/BR markers + jump buttons, live joint angles at the current frame. Play/step/speed kept (default ¼×).</li>
+<li><b>Report:</b> same metrics/groups/radar/detail sheet, but app tiers (Foundation/Developing/Proficient/Elite), correct cohort label (90+, n), hitting uses hitting groups, softball skips percentiles + shows Windmill trend, missing data = "—" not 50th. Adds Velocity Opportunity from the web biomech report.</li>
+<li><b>Energy (new):</b> kinematic sequence with event lines, energy-flow leak bars, lead-leg block — computed from the C3D like your Biomech Lab mockup.</li>
+<li>Hitting gets the same three tabs with swing-specific metrics (approach/stride, rotation, posture, bat action; sequence = pelvis → trunk → lead arm → bat).</li>
+</ul>
+</div>

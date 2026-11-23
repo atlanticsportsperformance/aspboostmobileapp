@@ -186,13 +186,18 @@ export const INDUSTRY_MEDIAN: Record<string, { value: number; unit: string }> = 
  * For each metric key, collects all values, sorts ascending, and computes
  * percentiles 1-99 using linear interpolation.
  */
-export function buildPercentileTable(rows: Record<string, number>[]): PercentileTable {
+export function buildPercentileTable(
+  rows: Record<string, number>[],
+  keys: string[] = METRIC_KEYS,
+  cohort: string = '90+',
+): PercentileTable {
   const metrics: Record<string, { percentiles: Record<string, number> }> = {}
 
-  for (const key of METRIC_KEYS) {
+  for (const key of keys) {
     const vals = rows
       .map(r => r[key])
-      .filter(v => v != null && !isNaN(v))
+      .filter(v => v != null && Number.isFinite(Number(v)))
+      .map(Number)
       .sort((a, b) => a - b)
 
     if (vals.length < 2) continue
@@ -210,7 +215,7 @@ export function buildPercentileTable(rows: Record<string, number>[]): Percentile
     metrics[key] = { percentiles }
   }
 
-  return { cohort: '85+', sampleSize: rows.length, metrics }
+  return { cohort, sampleSize: rows.length, metrics }
 }
 
 /**
@@ -307,8 +312,44 @@ export function computeScore(pct: number, scoring: 'higher' | 'goldilocks'): num
   return Math.max(0, 100 - 2 * Math.abs(pct - 50))
 }
 
+/** A metric row where a missing value or missing cohort column is null — never a default 50th. */
+export interface StrictRowData extends Omit<RowData, 'pct' | 'score'> {
+  pct: number | null
+  score: number | null
+  invert?: boolean
+  percentiles: Record<string, number> | null
+}
+
+function finite(v: unknown): number | null {
+  return v == null || !Number.isFinite(Number(v)) ? null : Number(v)
+}
+
 /**
- * Compute RowData for a metric group given scalar metrics and percentile data.
+ * Compute rows for a group. Missing value or missing cohort column → pct/score null
+ * (rendered "—" and excluded from averages). Mirrors the approved mockup.
+ */
+export function computeGroupRows(
+  group: RadarGroup,
+  values: Record<string, number | null | undefined>,
+  percentileData: PercentileTable | null
+): StrictRowData[] {
+  return group.metrics.map((m) => {
+    const raw = finite(values[m.key]) ?? finite(values[m.percKey])
+    const md = getMetricData(m.percKey, percentileData)
+    let pct: number | null = null
+    let score: number | null = null
+    if (raw != null && md && md.percentiles['1'] != null && md.percentiles['99'] != null) {
+      pct = computePercentile(raw, md.percentiles)
+      if (m.invert) pct = 100 - pct
+      score = computeScore(pct, m.scoring)
+    }
+    return { ...m, raw, pct, score, percentiles: md ? md.percentiles : null }
+  })
+}
+
+/**
+ * @deprecated Defaults missing values to the 50th percentile. Use computeGroupRows.
+ * Kept only for the legacy PercentileBreakdown component.
  */
 export function computeGroupData(
   group: RadarGroup,

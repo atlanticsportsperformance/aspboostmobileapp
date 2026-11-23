@@ -1,3 +1,10 @@
+/**
+ * MocapSessionsScreen (route MocapSessions) — Steel layout: category chips,
+ * latest assessment ring, and the session list.
+ *
+ * Data: lib/mocap/api fetchMocapSessions returns one row per session with its
+ * highlight pitch only — no per-session throw counts, so none are shown.
+ */
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
@@ -7,75 +14,48 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Pressable,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import Svg, { Circle } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { fetchMocapSessions, type MocapSession } from '../lib/mocap/api';
 import FABMenu from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
+import { STEEL, fmt, Section, ScreenHeader, steelStyles } from '../components/hitting/steel';
 
-const COLORS = {
-  primary: '#9BDDFF',
-  white: '#FFFFFF',
-  gray400: '#9CA3AF',
-  gray500: '#6B7280',
-  gray600: '#4B5563',
-  cyan400: '#22D3EE',
-};
+const ACCENT = STEEL.purple;
+const PAGE = 20;
 
 // ─── Category metadata ────────────────────────────────────────────────────
-// Each mocap session carries a `category` string from the upstream API
-// (e.g. 'baseball_pitching'). We map known categories to display labels,
-// short titles, and a sport-specific accent so the list reads cleanly when
-// an athlete has a mix of pitching + hitting sessions across two sports.
-// Anything not in the map falls back to a generic gray pill so we don't
-// hide unfamiliar categories from the user.
+// Known categories map to labels + a sport accent; anything unknown falls
+// back to a gray chip so unfamiliar categories are never hidden.
 type CategoryMeta = {
-  label: string;       // pill copy: "Baseball Pitching"
-  short: string;       // session-card secondary line: "Pitching"
-  sport: string;       // session-card primary tag: "Baseball"
+  label: string;
+  short: string;
+  sport: string;
   icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
   accent: string;
-  /** Layout to use for the per-pitch stats row in each session card. */
   layout: 'pitching' | 'hitting';
 };
 
 const CATEGORY_META: Record<string, CategoryMeta> = {
-  baseball_pitching: {
-    label: 'Pitching',
-    short: 'Pitching',
-    sport: 'Baseball',
-    icon: 'baseball',
-    accent: '#9BDDFF',
-    layout: 'pitching',
-  },
-  baseball_hitting: {
-    label: 'Hitting',
-    short: 'Hitting',
-    sport: 'Baseball',
-    icon: 'baseball-bat',
-    accent: '#FBBF24',
-    layout: 'hitting',
-  },
-  softball_pitching: {
-    label: 'Pitching',
-    short: 'Pitching',
-    sport: 'Softball',
-    icon: 'baseball',
-    accent: '#FFD58A',
-    layout: 'pitching',
-  },
-  softball_hitting: {
-    label: 'Hitting',
-    short: 'Hitting',
-    sport: 'Softball',
-    icon: 'baseball-bat',
-    accent: '#A7F3D0',
-    layout: 'hitting',
-  },
+  baseball_pitching: { label: 'Pitching', short: 'Pitching', sport: 'Baseball', icon: 'baseball', accent: '#9BDDFF', layout: 'pitching' },
+  baseball_hitting: { label: 'Hitting', short: 'Hitting', sport: 'Baseball', icon: 'baseball-bat', accent: '#FBBF24', layout: 'hitting' },
+  softball_pitching: { label: 'Pitching', short: 'Pitching', sport: 'Softball', icon: 'baseball', accent: '#FFD58A', layout: 'pitching' },
+  softball_hitting: { label: 'Hitting', short: 'Hitting', sport: 'Softball', icon: 'baseball-bat', accent: '#A7F3D0', layout: 'hitting' },
+};
+
+const FALLBACK_META: CategoryMeta = {
+  label: 'Other',
+  short: 'Session',
+  sport: '',
+  icon: 'human',
+  accent: STEEL.sub,
+  layout: 'pitching',
 };
 
 function metaFor(category: string | null | undefined): CategoryMeta {
@@ -87,9 +67,7 @@ function metaFor(category: string | null | undefined): CategoryMeta {
   };
 }
 
-// `athletes.bats` is constrained to 'Right' | 'Left' | 'Both' in the DB.
-// We render it as the standard short tag a baseball reader recognizes:
-// RHH, LHH, or SH (switch hitter).
+// `athletes.bats` is 'Right' | 'Left' | 'Both' → RHH / LHH / SH.
 function batsTag(bats: string | null | undefined): string | null {
   if (!bats) return null;
   if (bats === 'Right') return 'RHH';
@@ -98,14 +76,37 @@ function batsTag(bats: string | null | undefined): string | null {
   return null;
 }
 
-const FALLBACK_META: CategoryMeta = {
-  label: 'Other',
-  short: 'Session',
-  sport: '',
-  icon: 'human',
-  accent: COLORS.gray400,
-  layout: 'pitching',
-};
+/**
+ * Session date, never 1969/1970: date-only strings are parsed as local days
+ * (new Date('YYYY-MM-DD') is UTC midnight → previous day in US zones); falls
+ * back to started_at, else null.
+ */
+function sessionDate(s: MocapSession): Date | null {
+  for (const raw of [s.session_date, s.started_at]) {
+    if (!raw) continue;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+    const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(raw);
+    if (Number.isFinite(d.getTime()) && d.getFullYear() > 1970) return d;
+  }
+  return null;
+}
+const dateMs = (s: MocapSession) => sessionDate(s)?.getTime() ?? 0;
+const fmtDate = (d: Date | null, withYear = true) =>
+  d ? d.toLocaleDateString('en-US', withYear ? { month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric' }) : 'Undated session';
+
+/** Pitching sessions show release velo; hitting shows bat speed. */
+function topSpeed(s: MocapSession): { value: number | null; label: string } {
+  const p = s.mocap_pitches;
+  if (metaFor(s.category).layout === 'hitting') return { value: p?.bat_speed_mph ?? null, label: 'BAT MPH' };
+  return { value: p?.velocity_mph ?? null, label: 'MPH' };
+}
+
+function sideTag(s: MocapSession, athleteBats: string | null): string | null {
+  if (metaFor(s.category).layout === 'hitting') {
+    return batsTag((s as any).athlete_bats ?? athleteBats);
+  }
+  return s.athlete_throws ? `${s.athlete_throws}HP` : null;
+}
 
 export default function MocapSessionsScreen({ navigation, route }: any) {
   const passedAthleteId = route?.params?.athleteId;
@@ -115,7 +116,7 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
   const [athleteId, setAthleteId] = useState<string | null>(passedAthleteId || null);
   const [userId, setUserId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<MocapSession[]>([]);
-  const [displayedCount, setDisplayedCount] = useState(20);
+  const [displayedCount, setDisplayedCount] = useState(PAGE);
   // 'all' or one of the keys in CATEGORY_META. Filter pills only show for
   // categories that have at least one session, so this rarely outpaces what
   // the athlete actually has.
@@ -202,7 +203,7 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
       }
 
       if (isMountedRef.current) {
-        data.sort((a, b) => new Date(b.session_date).getTime() - new Date(a.session_date).getTime());
+        data.sort((a, b) => dateMs(b) - dateMs(a));
         setSessions(data);
       }
 
@@ -250,12 +251,18 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
 
       const { data: participants } = await supabase.from('conversation_participants').select('conversation_id, last_read_at').eq('user_id', userIdParam).eq('is_archived', false);
       if (participants && participants.length > 0 && isMountedRef.current) {
-        const convIds = participants.map(p => p.conversation_id);
-        let unread = 0;
-        for (const p of participants) {
-          const { count } = await supabase.from('messages').select('id', { count: 'exact', head: true }).eq('conversation_id', p.conversation_id).gt('created_at', p.last_read_at || '1970-01-01');
-          unread += (count || 0);
-        }
+        // One query for every conversation (was one count query per
+        // conversation). Same rule as before: messages newer than that
+        // participant's last_read_at; filtered per conversation client-side.
+        const lastRead = new Map<string, string>();
+        for (const p of participants) lastRead.set(p.conversation_id, p.last_read_at || '1970-01-01');
+        // Head counts in parallel (no message rows downloaded).
+        const counts = await Promise.all(
+          Array.from(lastRead.entries()).map(([cid, lr]) =>
+            supabase.from('messages').select('id', { count: 'exact', head: true }).eq('conversation_id', cid).gt('created_at', lr),
+          ),
+        );
+        const unread = counts.reduce((n, r) => n + (r.count || 0), 0);
         if (isMountedRef.current) setUnreadMessagesCount(unread);
       }
     } catch (err) {
@@ -269,10 +276,7 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
     loadData();
   };
 
-  // Build the filter-pill list from the categories the athlete actually
-  // has, sorted by frequency (most-used category first after "All"). Keeps
-  // the pill row short and relevant — an athlete with only baseball
-  // pitching sessions sees "All" + "Baseball Pitching", nothing else.
+  // Chip list: categories the athlete actually has, most-used first.
   const categoryCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const s of sessions) {
@@ -282,11 +286,10 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
     return m;
   }, [sessions]);
 
-  const visibleCategories = useMemo(() => {
-    return Array.from(categoryCounts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([key]) => key);
-  }, [categoryCounts]);
+  const visibleCategories = useMemo(
+    () => Array.from(categoryCounts.entries()).sort((a, b) => b[1] - a[1]).map(([key]) => key),
+    [categoryCounts]
+  );
 
   const filteredSessions = useMemo(() => {
     if (activeCategory === 'all') return sessions;
@@ -295,221 +298,173 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
 
   const displayedSessions = filteredSessions.slice(0, displayedCount);
 
+  // Latest assessment = newest session (in the active filter) with a highlight.
+  const latest = useMemo(() => filteredSessions.find((s) => s.mocap_pitches) ?? null, [filteredSessions]);
+
+  const openSession = (session: MocapSession) => {
+    const pitch = session.mocap_pitches;
+    if (pitch) {
+      navigation.navigate('MocapPitchDetail', {
+        athleteId,
+        pitchId: pitch.id,
+        sessionId: session.id,
+        sessionDate: session.session_date,
+        category: session.category,
+      });
+    }
+  };
+
+  const insets = useSafeAreaInsets();
+
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Loading mocap sessions...</Text>
-        </View>
-      </SafeAreaView>
+      <View style={[steelStyles.screen, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={ACCENT} />
+        <Text style={styles.loadingText}>Loading mocap sessions...</Text>
+      </View>
     );
   }
 
+  const latestMeta = latest ? metaFor(latest.category) : null;
+  const latestSpeed = latest ? topSpeed(latest) : null;
+
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[steelStyles.screen, { paddingTop: insets.top }]}>
       <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.content}
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 100 }}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} colors={[ACCENT]} progressBackgroundColor="#1A1A1A" />
         }
       >
-        {/* Header */}
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="chevron-back" size={20} color={COLORS.gray400} />
-          <Text style={styles.backText}>Back</Text>
-        </TouchableOpacity>
+        <ScreenHeader
+          title="Motion Capture"
+          // Throw/swing counts aren't in the sessions API (highlight pitch
+          // only), so the subtitle shows session count alone.
+          subtitle={`${sessions.length.toLocaleString()} session${sessions.length !== 1 ? 's' : ''}`}
+          onBack={() => navigation.goBack()}
+        />
 
-        <Text style={styles.title}>Motion Capture</Text>
-        <Text style={styles.subtitle}>Biomechanics analysis sessions</Text>
-
-        {/* Category filter pills — only show if the athlete has more than
-            one category of session. Single-category libraries don't need
-            an "All" + "Baseball Pitching" toggle taking up space. */}
-        {visibleCategories.length > 1 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
-          >
-            <FilterPill
-              label="All"
-              count={sessions.length}
-              active={activeCategory === 'all'}
-              accent={COLORS.primary}
-              onPress={() => {
-                setActiveCategory('all');
-                setDisplayedCount(20);
-              }}
-            />
-            {visibleCategories.map((cat) => {
-              const meta = metaFor(cat);
-              return (
-                <FilterPill
-                  key={cat}
-                  label={meta.label}
-                  count={categoryCounts.get(cat) ?? 0}
-                  active={activeCategory === cat}
-                  accent={meta.accent}
-                  icon={meta.icon}
-                  onPress={() => {
-                    setActiveCategory(cat);
-                    setDisplayedCount(20);
-                  }}
+        <View style={steelStyles.body}>
+          {visibleCategories.length > 1 && (
+            <Section first>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+                <Chip
+                  label="All"
+                  count={sessions.length}
+                  active={activeCategory === 'all'}
+                  onPress={() => { setActiveCategory('all'); setDisplayedCount(PAGE); }}
                 />
-              );
-            })}
-          </ScrollView>
-        )}
+                {visibleCategories.map((cat) => {
+                  const meta = metaFor(cat);
+                  return (
+                    <Chip
+                      key={cat}
+                      label={meta.sport && visibleSports(visibleCategories) > 1 ? `${meta.sport} ${meta.label}` : meta.label}
+                      count={categoryCounts.get(cat) ?? 0}
+                      active={activeCategory === cat}
+                      accent={meta.accent}
+                      onPress={() => { setActiveCategory(cat); setDisplayedCount(PAGE); }}
+                    />
+                  );
+                })}
+              </ScrollView>
+            </Section>
+          )}
 
-        {/* Session Count */}
-        <View style={styles.statsHeader}>
-          <Text style={styles.sectionTitle}>
-            {activeCategory === 'all' ? 'Sessions' : metaFor(activeCategory).label}
-          </Text>
-          <Text style={styles.sessionCountText}>
-            {filteredSessions.length} session{filteredSessions.length !== 1 ? 's' : ''}
-          </Text>
-        </View>
+          {latest && latestMeta && latestSpeed && (
+            <Section first={visibleCategories.length <= 1} title="LATEST ASSESSMENT" right="Open ›" rightColor={ACCENT} onRight={() => openSession(latest)}>
+              <TouchableOpacity activeOpacity={0.7} onPress={() => openSession(latest)} style={styles.latestRow}>
+                {/* TODO(mocap-report): ring should show the composite score +
+                    tier from components/mocap/report useMocapScores(detail)
+                    once that module lands; until then it shows the highlight's
+                    velo / bat speed only — no fabricated score. */}
+                <Ring color={latestMeta.accent}>
+                  <Text style={styles.ringValue}>{fmt(latestSpeed.value)}</Text>
+                  <Text style={styles.ringUnit}>{latestSpeed.label}</Text>
+                </Ring>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.latestTitle}>{latestMeta.layout === 'hitting' ? 'Highlight swing' : 'Highlight throw'}</Text>
+                  <Text style={styles.latestMeta}>
+                    {[
+                      fmtDate(sessionDate(latest), false),
+                      latest.mocap_pitches?.pitch_type || null,
+                      latestSpeed.value != null ? `${fmt(latestSpeed.value)} ${latestMeta.layout === 'hitting' ? 'mph bat' : 'mph'}` : null,
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
+                  <Text style={[styles.latestTag, { color: latestMeta.accent }]}>
+                    {[latestMeta.short.toUpperCase(), sideTag(latest, athleteBats)].filter(Boolean).join(' · ')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </Section>
+          )}
 
-        {/* Session List */}
-        {displayedSessions.length > 0 ? (
-          <View style={styles.sessionsList}>
-            {displayedSessions.map((session, idx) => {
-              const pitch = session.mocap_pitches;
-              const meta = metaFor(session.category);
-              return (
-                <TouchableOpacity
-                  key={`${session.id}-${pitch?.id || idx}`}
-                  style={styles.sessionCard}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    if (pitch) {
-                      navigation.navigate('MocapPitchDetail', {
-                        athleteId,
-                        pitchId: pitch.id,
-                        sessionId: session.id,
-                      });
-                    }
-                  }}
-                >
-                  {/* Left accent bar — color reflects the session's category
-                      so a mixed list reads as visually grouped. */}
-                  <View style={[styles.sessionAccent, { backgroundColor: meta.accent }]} />
-
-                  <View style={styles.sessionBody}>
-                    {/* Header: date + sport/activity tag + chevron */}
-                    <View style={styles.sessionCardHeader}>
-                      <View style={{ flex: 1 }}>
-                        <View style={styles.sessionDateRow}>
-                          <Text style={styles.sessionCardDate}>
-                            {new Date(session.session_date).toLocaleDateString('en-US', {
-                              month: 'short', day: 'numeric', year: 'numeric',
-                            })}
-                          </Text>
-                          {pitch?.is_session_highlight && (
-                            <Ionicons name="star" size={13} color="#FBBF24" style={{ marginLeft: 6 }} />
-                          )}
-                        </View>
-                        <View style={styles.sessionSourceRow}>
-                          {/* Tiny sport icon + activity short label */}
-                          <MaterialCommunityIcons name={meta.icon} size={11} color={meta.accent} />
-                          <Text style={[styles.sessionCategoryTag, { color: meta.accent }]}>
-                            {meta.short}
-                          </Text>
-                          {session.athlete_throws && meta.layout === 'pitching' && (
-                            <Text style={styles.sessionThrows}>· {session.athlete_throws}HP</Text>
-                          )}
-                          {meta.layout === 'hitting' && batsTag(athleteBats) && (
-                            <Text style={styles.sessionThrows}>· {batsTag(athleteBats)}</Text>
-                          )}
-                        </View>
-                      </View>
-                      <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
-                    </View>
-
-                    {/* Per-category stats row */}
-                    {pitch && (
-                      meta.layout === 'hitting' ? (
-                        <View style={styles.sessionStatsRow}>
-                          <Stat
-                            value={`#${pitch.pitch_number}`}
-                            label="Swing"
-                          />
-                          <Stat
-                            value={pitch.pitch_type || '--'}
-                            label="Type"
-                          />
-                          <Stat
-                            value={pitch.exit_velo_mph != null ? `${pitch.exit_velo_mph}` : '--'}
-                            label="Exit (mph)"
-                            accent={meta.accent}
-                          />
-                          <Stat
-                            value={pitch.bat_speed_mph != null ? `${pitch.bat_speed_mph}` : '--'}
-                            label="Bat (mph)"
-                          />
-                          <Stat
-                            value={pitch.r2_video_key ? '●' : '—'}
-                            valueColor={pitch.r2_video_key ? meta.accent : COLORS.gray600}
-                            label="Video"
-                            iconName={pitch.r2_video_key ? 'videocam' : undefined}
-                            iconColor={meta.accent}
-                          />
-                        </View>
-                      ) : (
-                        <View style={styles.sessionStatsRow}>
-                          <Stat value={`#${pitch.pitch_number}`} label="Pitch" />
-                          <Stat value={pitch.pitch_type || '--'} label="Type" />
-                          <Stat
-                            value={pitch.velocity_mph != null ? `${pitch.velocity_mph}` : '--'}
-                            label="Velo (mph)"
-                            accent={meta.accent}
-                          />
-                          <Stat
-                            value={pitch.r2_video_key ? '●' : '—'}
-                            valueColor={pitch.r2_video_key ? meta.accent : COLORS.gray600}
-                            label="Video"
-                            iconName={pitch.r2_video_key ? 'videocam' : undefined}
-                            iconColor={meta.accent}
-                          />
-                        </View>
-                      )
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ) : (
-          <View style={styles.emptyState}>
-            <Ionicons name="body-outline" size={40} color={COLORS.gray500} />
-            <Text style={styles.emptyText}>
-              {activeCategory === 'all'
-                ? 'No mocap sessions available'
-                : `No ${metaFor(activeCategory).label.toLowerCase()} sessions yet`}
-            </Text>
-            <Text style={styles.emptySubtext}>
-              Motion capture data will appear here after your sessions.
-            </Text>
-          </View>
-        )}
-
-        {/* Load More */}
-        {displayedCount < filteredSessions.length && (
-          <TouchableOpacity
-            style={styles.loadMoreButton}
-            onPress={() => setDisplayedCount(c => c + 20)}
+          <Section
+            first={visibleCategories.length <= 1 && !latest}
+            title={activeCategory === 'all' ? 'SESSIONS' : metaFor(activeCategory).label.toUpperCase()}
+            right={`${filteredSessions.length} session${filteredSessions.length !== 1 ? 's' : ''}`}
           >
-            <Text style={styles.loadMoreText}>
-              Load More ({filteredSessions.length - displayedCount} remaining)
-            </Text>
-          </TouchableOpacity>
-        )}
+            {displayedSessions.length > 0 ? (
+              displayedSessions.map((session, idx) => {
+                const pitch = session.mocap_pitches;
+                const meta = metaFor(session.category);
+                const speed = topSpeed(session);
+                const side = sideTag(session, athleteBats);
+                return (
+                  <TouchableOpacity
+                    key={`${session.id}-${pitch?.id || idx}`}
+                    style={styles.sessRow}
+                    activeOpacity={0.7}
+                    onPress={() => openSession(session)}
+                  >
+                    <View style={[styles.sessBar, { backgroundColor: meta.accent }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sessDate}>
+                        {fmtDate(sessionDate(session))}
+                        <Text style={styles.sessInline}>
+                          {'  '}· {meta.short}{side ? ` · ${side}` : ''}
+                        </Text>
+                      </Text>
+                      <Text style={styles.sessMeta}>
+                        {[
+                          pitch?.pitch_type ? pitch.pitch_type.toUpperCase() : null,
+                          pitch ? `${meta.layout === 'hitting' ? 'SWING' : 'THROW'} #${pitch.pitch_number}` : null,
+                        ].filter(Boolean).join(' · ') || meta.sport.toUpperCase()}
+                      </Text>
+                    </View>
+                    {pitch?.r2_video_key ? (
+                      <View style={[styles.clipPill, { borderColor: meta.accent + '59', backgroundColor: meta.accent + '14' }]}>
+                        <Text style={[styles.clipText, { color: meta.accent }]}>▶ VIDEO</Text>
+                      </View>
+                    ) : null}
+                    <View style={styles.sessStat}>
+                      <Text style={[styles.sessStatValue, { color: speed.value == null ? STEEL.past : meta.accent }]}>{fmt(speed.value)}</Text>
+                      <Text style={styles.sessStatLabel}>{speed.label}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            ) : (
+              <View style={styles.emptyState}>
+                <Ionicons name="body-outline" size={40} color={STEEL.past} />
+                <Text style={styles.emptyStateText}>
+                  {activeCategory === 'all'
+                    ? 'No mocap sessions available'
+                    : `No ${metaFor(activeCategory).label.toLowerCase()} sessions yet`}
+                </Text>
+                <Text style={styles.emptyStateSubtext}>Motion capture data will appear here after your sessions.</Text>
+              </View>
+            )}
 
-        <View style={{ height: 100 }} />
+            {displayedCount < filteredSessions.length && (
+              <TouchableOpacity style={styles.loadMoreButton} onPress={() => setDisplayedCount((c) => c + PAGE)}>
+                <Text style={styles.loadMoreText}>Load More ({filteredSessions.length - displayedCount} remaining)</Text>
+              </TouchableOpacity>
+            )}
+          </Section>
+        </View>
       </ScrollView>
 
       <FABMenu
@@ -528,176 +483,91 @@ export default function MocapSessionsScreen({ navigation, route }: any) {
           { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
         ]}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 // ─── Local components ─────────────────────────────────────────────────────
 
-function FilterPill({
-  label,
-  count,
-  active,
-  accent,
-  icon,
-  onPress,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  accent: string;
-  icon?: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-  onPress: () => void;
-}) {
+/** Distinct sports among the visible categories (prefix chip labels when >1). */
+function visibleSports(cats: string[]): number {
+  return new Set(cats.map((c) => metaFor(c).sport).filter(Boolean)).size;
+}
+
+function Chip({ label, count, active, accent, onPress }: { label: string; count: number; active: boolean; accent?: string; onPress: () => void }) {
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={onPress}
-      activeOpacity={0.7}
-      style={[
-        pillStyles.pill,
-        active && {
-          backgroundColor: accent + '1A',
-          borderColor: accent + '66',
-        },
-      ]}
+      style={[styles.chip, active && styles.chipOn, active && accent ? { borderColor: accent + '66' } : null]}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
     >
-      {icon && (
-        <MaterialCommunityIcons
-          name={icon}
-          size={12}
-          color={active ? accent : COLORS.gray500}
-          style={{ marginRight: 5 }}
-        />
-      )}
-      <Text style={[pillStyles.label, active && { color: accent }]}>{label}</Text>
-      <Text style={[pillStyles.count, active && { color: accent }]}>{count}</Text>
-    </TouchableOpacity>
+      {accent ? <View style={[styles.chipDot, { backgroundColor: accent }]} /> : null}
+      <Text style={[styles.chipText, active && styles.chipTextOn]}>{label}</Text>
+      <Text style={[styles.chipCount, active && { color: accent ?? '#fff' }]}>{count}</Text>
+    </Pressable>
   );
 }
 
-const pillStyles = StyleSheet.create({
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    marginRight: 8,
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.gray400,
-    letterSpacing: 0.2,
-  },
-  count: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.gray500,
-    marginLeft: 6,
-  },
-});
+const RING = 96;
+const RING_R = 40;
+const RING_C = 2 * Math.PI * RING_R;
 
-function Stat({
-  value,
-  label,
-  accent,
-  valueColor,
-  iconName,
-  iconColor,
-}: {
-  value: string;
-  label: string;
-  accent?: string;
-  valueColor?: string;
-  iconName?: React.ComponentProps<typeof Ionicons>['name'];
-  iconColor?: string;
-}) {
+/** Full ring (no fill fraction until a composite score is available). */
+function Ring({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <View style={styles.sessionStat}>
-      {iconName ? (
-        <Ionicons name={iconName} size={16} color={iconColor ?? COLORS.primary} />
-      ) : (
-        <Text
-          style={[
-            styles.sessionStatValue,
-            accent ? { color: accent } : null,
-            valueColor ? { color: valueColor } : null,
-          ]}
-        >
-          {value}
-        </Text>
-      )}
-      <Text style={styles.sessionStatLabel}>{label}</Text>
+    <View style={{ width: RING, height: RING, alignItems: 'center', justifyContent: 'center' }}>
+      <Svg width={RING} height={RING} style={StyleSheet.absoluteFill}>
+        <Circle cx={RING / 2} cy={RING / 2} r={RING_R} stroke="#1b2430" strokeWidth={7} fill="none" />
+        <Circle
+          cx={RING / 2}
+          cy={RING / 2}
+          r={RING_R}
+          stroke={color}
+          strokeOpacity={0.35}
+          strokeWidth={7}
+          fill="none"
+          strokeDasharray={`${RING_C} ${RING_C}`}
+        />
+      </Svg>
+      {children}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
-  scrollView: { flex: 1 },
-  content: { padding: 16 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { color: COLORS.gray400, fontSize: 14 },
+  loadingContainer: { justifyContent: 'center', alignItems: 'center' },
+  loadingText: { marginTop: 16, color: STEEL.sub, fontSize: 14 },
 
-  backButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  backText: { color: COLORS.gray400, fontSize: 14, marginLeft: 8 },
-  title: { fontSize: 28, fontWeight: 'bold', color: COLORS.white, marginBottom: 4 },
-  subtitle: { fontSize: 14, color: COLORS.gray400, marginBottom: 24 },
+  chips: { gap: 8, paddingVertical: 2 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, backgroundColor: STEEL.card, borderWidth: 1, borderColor: STEEL.rule },
+  chipOn: { backgroundColor: '#1b2430', borderColor: '#2a3442' },
+  chipDot: { width: 6, height: 6, borderRadius: 3 },
+  chipText: { color: STEEL.sub, fontSize: 12.5, fontWeight: '700' },
+  chipTextOn: { color: '#fff' },
+  chipCount: { color: STEEL.mute, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
 
-  statsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.white },
-  sessionCountText: { fontSize: 12, color: COLORS.gray400 },
+  latestRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  ringValue: { color: '#fff', fontSize: 24, fontWeight: '800', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  ringUnit: { color: STEEL.mute, fontSize: 8.5, fontWeight: '800', letterSpacing: 1 },
+  latestTitle: { color: '#fff', fontSize: 17, fontWeight: '800' },
+  latestMeta: { color: STEEL.sub, fontSize: 12.5, fontWeight: '600', marginTop: 4 },
+  latestTag: { fontSize: 10, fontWeight: '800', letterSpacing: 1, marginTop: 6 },
 
-  sessionsList: { gap: 0 },
-  sessionCard: {
-    flexDirection: 'row',
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  sessionAccent: {
-    width: 3,
-    // Background color is set inline based on the session's category meta.
-  },
-  sessionBody: {
-    flex: 1,
-    padding: 14,
-  },
-  sessionCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sessionDateRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 },
-  sessionCardDate: { fontSize: 15, fontWeight: '700', color: COLORS.white },
-  sessionSourceRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  sessionCategoryTag: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6 },
-  sessionThrows: { fontSize: 10, color: COLORS.gray500 },
+  sessRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: STEEL.rule, gap: 12 },
+  sessBar: { width: 4, alignSelf: 'stretch', borderRadius: 2 },
+  sessDate: { color: STEEL.day, fontSize: 14.5, fontWeight: '700' },
+  sessInline: { color: STEEL.mute, fontSize: 12, fontWeight: '600' },
+  sessMeta: { color: STEEL.mute, fontSize: 9.5, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
+  sessStat: { alignItems: 'flex-end', minWidth: 52 },
+  sessStatValue: { color: STEEL.text, fontSize: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  sessStatLabel: { color: STEEL.mute, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.8, marginTop: 1 },
+  clipPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, borderWidth: 1 },
+  clipText: { fontSize: 9.5, fontWeight: '800', letterSpacing: 0.6 },
 
-  filterRow: {
-    flexDirection: 'row',
-    paddingBottom: 16,
-  },
-  sessionStatsRow: { flexDirection: 'row' },
-  sessionStat: { flex: 1, alignItems: 'center' },
-  sessionStatValue: { fontSize: 17, fontWeight: '800', color: COLORS.white },
-  sessionStatAccent: { color: COLORS.primary },
-  sessionStatLabel: { fontSize: 8, color: COLORS.gray500, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 2 },
-
-  emptyState: { padding: 32, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 12, marginTop: 12, gap: 8 },
-  emptyText: { color: COLORS.gray400, fontSize: 14 },
-  emptySubtext: { color: COLORS.gray500, fontSize: 12, textAlign: 'center' },
-
-  loadMoreButton: {
-    marginTop: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.2)',
-    alignItems: 'center',
-  },
-  loadMoreText: { fontSize: 14, fontWeight: '600', color: '#9BDDFF' },
+  emptyState: { alignItems: 'center', paddingVertical: 40 },
+  emptyStateText: { fontSize: 15, color: STEEL.sub, marginTop: 12, fontWeight: '700' },
+  emptyStateSubtext: { fontSize: 13, color: STEEL.mute, marginTop: 6, textAlign: 'center' },
+  loadMoreButton: { marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: STEEL.hair, alignItems: 'center' },
+  loadMoreText: { fontSize: 13.5, fontWeight: '700', color: ACCENT },
 });

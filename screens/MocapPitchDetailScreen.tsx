@@ -1,402 +1,209 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Dimensions,
-  Alert,
-  RefreshControl,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, ScrollView, Pressable, StyleSheet, ActivityIndicator, Alert, RefreshControl } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
-import {
-  fetchPitchDetail,
-  fetchPercentileCohort,
-  fetchC3DBinary,
-  type MocapPitchDetail,
-} from '../lib/mocap/api';
-import { buildPercentileTable, type PercentileTable } from '../lib/mocap/percentiles';
-import { parseC3D, type C3DData } from '../lib/mocap/c3dParser';
-import PercentileBreakdown from '../components/mocap/PercentileBreakdown';
-import SkeletonViewer3D from '../components/mocap/SkeletonViewer3D';
+import { fetchPitchDetail, isHittingDetail, type MocapPitchDetail } from '../lib/mocap/api';
+import { STEEL, Segmented, fmt, steelStyles } from '../components/hitting/steel';
+import MotionStage, { type MotionStageHandle } from '../components/mocap/MotionStage';
+import { ReportTab, EnergyTab, useMocapScores } from '../components/mocap/report';
 
-const ACCENT = '#9BDDFF';
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const PLAY_SPEEDS = [0.1, 0.25, 0.5, 1.0];
+type Tab = 'motion' | 'report' | 'energy';
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'motion', label: 'Motion' },
+  { key: 'report', label: 'Report' },
+  { key: 'energy', label: 'Energy' },
+];
+const PITCH_ACCENT = STEEL.purple; // #a78bfa
+const HIT_ACCENT = STEEL.hitting; // #fb923c
+
+function capTier(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function backLabel(sessionDate?: string): string {
+  if (!sessionDate) return 'Sessions';
+  const d = new Date(sessionDate.length <= 10 ? `${sessionDate}T12:00:00` : sessionDate);
+  if (isNaN(d.getTime())) return 'Sessions';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
 
 export default function MocapPitchDetailScreen({ navigation, route }: any) {
-  const { athleteId, pitchId } = route.params;
+  // sessionDate / category are optional nav params; the API doesn't return the date.
+  const { athleteId, pitchId, sessionDate } = route.params;
+  const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [pitchData, setPitchData] = useState<MocapPitchDetail | null>(null);
-  const [percentileData, setPercentileData] = useState<PercentileTable | null>(null);
-  const [c3dData, setC3dData] = useState<C3DData | null>(null);
-
-  // Playback state — driven by WebView, displayed in RN controls
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentFrame, setCurrentFrame] = useState(1);
-  const [playSpeed, setPlaySpeed] = useState(0.25);
-
-  const skeletonViewerRef = useRef<any>(null);
-  const [scrollEnabled, setScrollEnabled] = useState(true);
-  const [activeTab, setActiveTab] = useState<'report' | 'motion'>('report');
-  const [motionReady, setMotionReady] = useState(false);
-  const isMountedRef = useRef(true);
+  const [detail, setDetail] = useState<MocapPitchDetail | null>(null);
+  const [tab, setTab] = useState<Tab>('motion');
+  const [scrollLocked, setScrollLocked] = useState(false);
+  const stageRef = useRef<MotionStageHandle>(null);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    isMountedRef.current = true;
-    return () => { isMountedRef.current = false; };
+    mounted.current = true;
+    return () => { mounted.current = false; };
   }, []);
 
-  useEffect(() => { loadAllData(); }, []);
-
-  async function loadAllData() {
+  const load = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { navigation.replace('Login'); return; }
-      const token = session.access_token;
-
-      const [pitchResult, cohortResult] = await Promise.all([
-        fetchPitchDetail(athleteId, pitchId, token),
-        fetchPercentileCohort(85, token),
-      ]);
-
-      if (!isMountedRef.current) return;
-      setPitchData(pitchResult);
-
-      if (cohortResult.metrics?.length > 0) {
-        setPercentileData(buildPercentileTable(cohortResult.metrics));
-      }
-
-      if (pitchResult.c3dUrl) {
-        fetchC3DBinary(pitchResult.c3dUrl)
-          .then(buffer => {
-            if (!isMountedRef.current) return;
-            setC3dData(parseC3D(buffer));
-          })
-          .catch(err => console.error('Error loading C3D:', err));
-      }
+      const res = await fetchPitchDetail(athleteId, pitchId, session.access_token);
+      if (mounted.current) setDetail(res);
     } catch (error) {
       console.error('Error loading pitch detail:', error);
       Alert.alert('Error', 'Failed to load pitch data');
     } finally {
-      if (isMountedRef.current) setLoading(false);
+      if (mounted.current) setLoading(false);
     }
-  }
+  }, [athleteId, pitchId, navigation]);
+
+  useEffect(() => { load(); }, [load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    try {
-      await loadAllData();
-    } finally {
-      if (isMountedRef.current) setRefreshing(false);
-    }
-  }, [athleteId, pitchId]); // eslint-disable-line react-hooks/exhaustive-deps
+    try { await load(); } finally { if (mounted.current) setRefreshing(false); }
+  }, [load]);
 
-  const frameRate = c3dData?.frameRate || 360;
-  const totalFrames = c3dData?.frameCount || 0;
-  const durationSeconds = totalFrames / frameRate;
-  const scrubberPosition = totalFrames > 0 ? currentFrame / totalFrames : 0;
+  const hitting = isHittingDetail(detail) || /hitting/.test(route.params?.category ?? '');
+  const accent = hitting ? HIT_ACCENT : PITCH_ACCENT;
 
-  const togglePlay = useCallback(() => {
-    if (isPlaying) {
-      setIsPlaying(false);
-    } else {
-      if (currentFrame >= totalFrames - 1) setCurrentFrame(0);
-      setIsPlaying(true);
-    }
-  }, [isPlaying, currentFrame, totalFrames]);
-
-  const seekToFrame = useCallback((frame: number) => {
-    const clamped = Math.max(0, Math.min(frame, totalFrames - 1));
-    setCurrentFrame(clamped);
-  }, [totalFrames]);
-
-  const stepFrame = useCallback((dir: 1 | -1) => {
-    seekToFrame(Math.round(currentFrame) + dir);
-  }, [currentFrame, seekToFrame]);
-
-  const changeSpeed = useCallback(() => {
-    const idx = PLAY_SPEEDS.indexOf(playSpeed);
-    setPlaySpeed(PLAY_SPEEDS[(idx + 1) % PLAY_SPEEDS.length]);
-  }, [playSpeed]);
-
-  // WebView reports frames back during playback
-  const onFrameUpdate = useCallback((frame: number) => {
-    setCurrentFrame(frame);
+  const onSelectEvent = useCallback((e: string) => {
+    setTab('motion');
+    stageRef.current?.jumpTo(e);
   }, []);
 
-  const onPlaybackEnd = useCallback(() => {
-    setIsPlaying(false);
-    setCurrentFrame(totalFrames > 0 ? totalFrames - 1 : 0);
-  }, [totalFrames]);
-
-  if (loading) {
+  if (loading || !detail) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ACCENT} />
-          <Text style={styles.loadingText}>Loading biomechanics data...</Text>
-        </View>
-      </SafeAreaView>
+      <View style={[steelStyles.screen, styles.center, { paddingTop: insets.top }]}>
+        {loading ? (
+          <>
+            <ActivityIndicator size="large" color={accent} />
+            <Text style={styles.loadingText}>Loading biomechanics data...</Text>
+          </>
+        ) : (
+          <Pressable onPress={() => navigation.goBack()}>
+            <Text style={styles.loadingText}>Couldn't load this capture. ‹ Back</Text>
+          </Pressable>
+        )}
+      </View>
     );
   }
 
-  const pitch = pitchData?.pitch;
+  return (
+    <DetailBody
+      detail={detail}
+      hitting={hitting}
+      accent={accent}
+      tab={tab}
+      setTab={setTab}
+      back={backLabel(sessionDate)}
+      onBack={() => navigation.goBack()}
+      topInset={insets.top}
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      scrollLocked={scrollLocked}
+      setScrollLocked={setScrollLocked}
+      stageRef={stageRef}
+      onSelectEvent={onSelectEvent}
+    />
+  );
+}
+
+/** Split out so useMocapScores always runs with a loaded detail. */
+function DetailBody(props: {
+  detail: MocapPitchDetail;
+  hitting: boolean;
+  accent: string;
+  tab: Tab;
+  setTab: (t: Tab) => void;
+  back: string;
+  onBack: () => void;
+  topInset: number;
+  refreshing: boolean;
+  onRefresh: () => void;
+  scrollLocked: boolean;
+  setScrollLocked: (b: boolean) => void;
+  stageRef: React.RefObject<MotionStageHandle | null>;
+  onSelectEvent: (e: string) => void;
+}) {
+  const { detail, hitting, accent, tab } = props;
+  const p = detail.pitch;
+  const scores = useMocapScores(detail);
+
+  const title = hitting ? `Swing #${p.pitchNumber ?? ''}` : `${p.pitchType || 'Pitch'} #${p.pitchNumber ?? ''}`;
+  const tierNode = scores?.tier && scores.composite != null ? (
+    <Text style={{ fontWeight: '700', color: scores.tier.color }}>
+      {capTier(scores.tier.label)} {Math.round(scores.composite)}
+    </Text>
+  ) : hitting ? (
+    <Text style={{ fontWeight: '700', color: STEEL.mute }}>no cohort</Text>
+  ) : (
+    <Text>—</Text>
+  );
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Fixed header + tabs */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="chevron-back" size={20} color="#9CA3AF" />
-        </TouchableOpacity>
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>
-            {pitch?.pitchType || 'Pitch'} #{pitch?.pitchNumber || ''}
+    <View style={[steelStyles.screen, { paddingTop: props.topInset }]}>
+      <ScrollView
+        scrollEnabled={!props.scrollLocked}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+        refreshControl={
+          <RefreshControl refreshing={props.refreshing} onRefresh={props.onRefresh} tintColor={accent} colors={[accent]} />
+        }
+      >
+        <View style={styles.hdr}>
+          <Pressable onPress={props.onBack} hitSlop={10} style={styles.back}>
+            <Text style={styles.backText}>‹ {props.back}</Text>
+          </Pressable>
+          <Text style={styles.title}>{title}</Text>
+          <Text style={styles.subtitle}>
+            {hitting ? (
+              <>
+                {fmt(p.batSpeed, 1)} mph bat · {fmt(p.exitVelo, 1)} mph EV · {tierNode}
+              </>
+            ) : (
+              <>
+                {fmt(p.velocity, 1)} mph · {tierNode}
+                {p.cameraCount != null ? ` · ${p.cameraCount} cams` : ''}
+              </>
+            )}
           </Text>
-          {pitch?.velocity != null && (
-            <View style={styles.velocityBadge}>
-              <Text style={styles.velocityText}>{pitch.velocity} mph</Text>
-            </View>
-          )}
         </View>
-      </View>
 
-      {/* Tab bar */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('report')}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.tabText, activeTab === 'report' && styles.tabTextActive]}>Report</Text>
-          {activeTab === 'report' && <View style={styles.tabUnderline} />}
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('motion')}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.tabText, activeTab === 'motion' && styles.tabTextActive]}>Motion</Text>
-          {activeTab === 'motion' && <View style={styles.tabUnderline} />}
-        </TouchableOpacity>
-      </View>
+        <View style={styles.seg}>
+          <Segmented options={TABS} value={tab} onChange={props.setTab} />
+        </View>
 
-      {/* Tab content */}
-      {activeTab === 'report' ? (
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} colors={[ACCENT]} progressBackgroundColor="#1A1A1A" />
-          }
-        >
-          {pitch?.scalarMetrics && (
-            <PercentileBreakdown
-              scalarMetrics={pitch.scalarMetrics}
-              percentileData={percentileData}
-              velocity={pitch.velocity}
-              pitchType={pitch.pitchType}
-            />
-          )}
-          <View style={{ height: 60 }} />
-        </ScrollView>
-      ) : (
-        <View style={styles.scrollView}>
-          {/* Loading overlay until video + skeleton are ready */}
-          {!motionReady && (
-            <View style={styles.motionLoading}>
-              <ActivityIndicator size="large" color={ACCENT} />
-              <Text style={styles.motionLoadingText}>Loading motion data...</Text>
-            </View>
-          )}
-
-          {/* Video + 3D Skeleton */}
-          <SkeletonViewer3D
-            ref={skeletonViewerRef}
-            c3dData={c3dData ? {
-              positions: Array.from(c3dData.positions),
-              rotations: Array.from(c3dData.rotations),
-              frameCount: c3dData.frameCount,
-              segmentCount: c3dData.segmentCount,
-              frameRate: c3dData.frameRate,
-            } : null}
-            videoUrl={pitchData?.videoUrl || null}
-            currentFrame={Math.round(currentFrame)}
-            isPlaying={isPlaying}
-            playSpeed={playSpeed}
-            height={600}
-            onReady={() => setMotionReady(true)}
-            onFrameUpdate={onFrameUpdate}
-            onPlaybackEnd={onPlaybackEnd}
+        {/* Motion stays mounted so switching tabs doesn't reload the stage. */}
+        <View style={tab === 'motion' ? null : styles.gone}>
+          <MotionStage
+            ref={props.stageRef}
+            detail={detail}
+            accent={accent}
+            active={tab === 'motion'}
+            onScrollLock={props.setScrollLocked}
           />
-
-          {/* Playback Controls */}
-          {totalFrames > 0 && (
-            <View style={styles.controls}>
-              <View style={styles.transportRow}>
-                <TouchableOpacity onPress={() => stepFrame(-1)} style={styles.controlButton}>
-                  <Ionicons name="play-back" size={18} color="#FFFFFF" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={togglePlay} style={styles.playButton}>
-                  <Ionicons name={isPlaying ? 'pause' : 'play'} size={22} color="#000000" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => stepFrame(1)} style={styles.controlButton}>
-                  <Ionicons name="play-forward" size={18} color="#FFFFFF" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={changeSpeed} style={styles.speedButton}>
-                  <Text style={styles.speedText}>{playSpeed}x</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Scrubber */}
-              <View
-                style={styles.scrubberContainer}
-                onStartShouldSetResponder={() => true}
-                onMoveShouldSetResponder={() => true}
-                onResponderTerminationRequest={() => false}
-                onResponderGrant={(e) => {
-                  setScrollEnabled(false);
-                  if (isPlaying) setIsPlaying(false);
-                  const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
-                  seekToFrame(Math.round(fraction * totalFrames));
-                }}
-                onResponderMove={(e) => {
-                  const fraction = Math.max(0, Math.min(1, e.nativeEvent.locationX / (SCREEN_WIDTH - 64)));
-                  seekToFrame(Math.round(fraction * totalFrames));
-                }}
-                onResponderRelease={() => setScrollEnabled(true)}
-                onResponderTerminate={() => setScrollEnabled(true)}
-              >
-                <View style={styles.scrubberTrack}>
-                  <View style={[styles.scrubberFill, { width: `${scrubberPosition * 100}%` }]} />
-                </View>
-                <View style={styles.scrubberThumb} pointerEvents="none">
-                  <View style={[styles.scrubberDot, { left: `${scrubberPosition * 100}%` }]} />
-                </View>
-              </View>
-
-              <View style={styles.frameInfo}>
-                <Text style={styles.frameText}>
-                  Frame {Math.round(currentFrame)} / {totalFrames}
-                </Text>
-                <Text style={styles.frameText}>
-                  {((currentFrame / frameRate) || 0).toFixed(2)}s / {durationSeconds.toFixed(2)}s
-                </Text>
-              </View>
-            </View>
-          )}
         </View>
-      )}
-    </SafeAreaView>
+        {tab === 'report' && (
+          <View style={styles.tabBody}><ReportTab detail={detail} accent={accent} /></View>
+        )}
+        {tab === 'energy' && <View style={styles.tabBody}><EnergyTab detail={detail} accent={accent} /></View>}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
-  scrollView: { flex: 1 },
-  content: { paddingBottom: 40 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { color: '#6B7280', fontSize: 14 },
-  motionLoading: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#0A0A0A', zIndex: 10, gap: 12,
-  },
-  motionLoadingText: { color: '#6B7280', fontSize: 13 },
-
-  header: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 16, paddingVertical: 12, gap: 12,
-  },
-  backButton: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  headerInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' },
-  velocityBadge: {
-    paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
-  },
-  velocityText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.78)' },
-
-  tabBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.07)',
-    gap: 22,
-  },
-  tabItem: {
-    position: 'relative',
-    paddingBottom: 10,
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: -0.1,
-    color: 'rgba(255,255,255,0.34)',
-  },
-  tabTextActive: {
-    color: '#FFFFFF',
-  },
-  tabUnderline: {
-    position: 'absolute',
-    left: 0, right: 0, bottom: -1,
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: '#FFFFFF',
-  },
-
-  controls: {
-    paddingHorizontal: 16, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)',
-  },
-  transportRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 16, marginBottom: 12,
-  },
-  controlButton: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  playButton: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: ACCENT,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  speedButton: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  speedText: { fontSize: 13, fontWeight: '600', color: '#FFFFFF' },
-
-  scrubberContainer: { position: 'relative', marginBottom: 8, paddingVertical: 14 },
-  scrubberTrack: {
-    height: 4, borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden',
-  },
-  scrubberFill: {
-    height: '100%', backgroundColor: ACCENT, borderRadius: 2,
-  },
-  scrubberThumb: {
-    position: 'absolute', top: 6, left: 0, right: 0, height: 20,
-  },
-  scrubberDot: {
-    position: 'absolute', top: 0, width: 16, height: 16, borderRadius: 8,
-    backgroundColor: ACCENT, marginLeft: -8, borderWidth: 2, borderColor: '#FFFFFF',
-  },
-
-  frameInfo: { flexDirection: 'row', justifyContent: 'space-between' },
-  frameText: { fontSize: 10, color: '#6B7280', fontFamily: 'Courier' },
+  tabBody: { paddingHorizontal: 16 },
+  center: { justifyContent: 'center', alignItems: 'center', gap: 12 },
+  loadingText: { color: STEEL.mute, fontSize: 14 },
+  hdr: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 6, gap: 4 },
+  back: { paddingVertical: 6, alignSelf: 'flex-start' },
+  backText: { color: STEEL.sub, fontSize: 16, fontWeight: '600' },
+  title: { color: '#fff', fontSize: 32, fontWeight: '800', letterSpacing: -0.6, lineHeight: 35 },
+  subtitle: { color: STEEL.sub, fontSize: 13.5, fontWeight: '500' },
+  seg: { marginTop: 12, marginHorizontal: 16 },
+  gone: { height: 0, overflow: 'hidden' },
 });
