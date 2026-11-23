@@ -1,0 +1,230 @@
+<title>Pitching Redesign Steel</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: three phone frames side by side (hub · session · trends), stacking on narrow screens. Single dark Steel look, same tokens as components/hitting/steel.tsx */
+:root{--bg:#000;--card:#0c1016;--rule:rgba(255,255,255,.07);--hair:rgba(255,255,255,.12);--text:#fff;--sub:#9ca3af;--mute:#6b7280;--past:#4b5563;--pitch:#9BDDFF;--ice:#5ce1ff;--good:#34d399;--bad:#ef4444;--warn:#fbbf24;
+--ff:#ef4444;--si:#fb923c;--sl:#a78bfa;--cb:#22D3EE;--ch:#34d399;color-scheme:dark}
+body{background:#05070a;color:var(--text);font:14px -apple-system,system-ui,sans-serif;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px}
+h1{font-size:15px;color:var(--sub);font-weight:600;margin:0 0 18px}
+.row{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
+.phone{width:375px;max-width:100%;background:var(--bg);border:1px solid #1b2430;border-radius:40px;padding:18px 16px 30px;box-sizing:border-box}
+.cap{color:var(--mute);font-size:11px;letter-spacing:2px;font-weight:800;text-align:center;margin:10px 0}
+.back{color:var(--sub);font-size:16px;font-weight:600}
+.title{font-size:32px;font-weight:800;letter-spacing:-.6px;margin:6px 0 2px}
+.subt{color:var(--sub);font-size:13.5px}
+.sec{padding:18px 0}.sec+.sec{border-top:1px solid var(--hair)}
+.eb{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.eb b{font-size:11px;font-weight:800;letter-spacing:2px;color:#e5e7eb}.eb a{color:var(--pitch);font-size:12px;font-weight:700}
+.kr{display:flex;gap:12px}.k{flex:1}.kl{color:var(--mute);font-size:10px;font-weight:800;letter-spacing:1.3px}
+.kv{font-weight:800;font-size:24px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}.kv small{font-size:11px;color:var(--mute)}
+.d{font-size:11px;font-weight:700}.up{color:var(--good)}.dn{color:var(--bad)}
+.chips{display:flex;gap:8px;overflow:auto}.chip{padding:8px 14px;border-radius:99px;background:var(--card);border:1px solid var(--rule);color:var(--sub);font-size:12.5px;font-weight:700;white-space:nowrap}.chip.on{background:#1b2430;color:#fff}
+.bleed{margin:14px -16px 0;background:#05070a;position:relative}
+.list .it{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-top:1px solid var(--rule)}
+.it .dt{font-weight:700}.it .m{color:var(--mute);font-size:11.5px}.it .v{font-weight:800;font-variant-numeric:tabular-nums;text-align:right}
+.pill{font-size:9.5px;font-weight:800;letter-spacing:1px;padding:3px 7px;border-radius:99px;background:#0f1a24;color:var(--pitch)}
+.ars{display:grid;grid-template-columns:1.3fr .6fr .7fr .7fr .7fr;gap:6px 6px;font-size:12px;font-variant-numeric:tabular-nums}
+.ars .h{color:var(--mute);font-size:9.5px;font-weight:800;letter-spacing:1px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:4px;margin-right:6px}
+.tbl .tr{display:grid;grid-template-columns:24px 1fr 44px 38px 38px 54px;align-items:center;gap:4px;padding:9px 0 9px 8px;border-top:1px solid var(--rule);font-size:12.5px;font-variant-numeric:tabular-nums}
+.tbl .tr.vid{border-left:2px solid var(--pitch)}.tbl .tr.off{color:var(--past)}
+.vp{font-size:9px;font-weight:800;color:#000;background:var(--pitch);padding:2px 6px;border-radius:99px;text-align:center}
+.prev{margin:0 0 6px;border-radius:14px;overflow:hidden;background:linear-gradient(180deg,#1a2330,#06080b);height:150px;position:relative}
+.prev .ov{position:absolute;left:12px;bottom:10px}.prev .big{font-size:30px;font-weight:800}
+.play{position:absolute;right:12px;bottom:12px;background:#fff;color:#000;font-weight:800;font-size:12px;padding:8px 14px;border-radius:99px}
+.player{background:#000;border:1px solid #1b2430;border-radius:40px;width:375px;max-width:100%;padding:18px 16px;box-sizing:border-box}
+.vid-box{height:300px;border-radius:12px;background:radial-gradient(ellipse at 50% 60%,#2a3442,#05070a);position:relative}
+.ctl{display:flex;justify-content:space-between;align-items:center;margin-top:12px;color:var(--sub);font-weight:700;font-size:13px}
+.spd{display:flex;gap:6px}.spd span{padding:5px 9px;border-radius:99px;background:var(--card)}.spd .on{background:#1b2430;color:#fff}
+.scrub{height:4px;background:#1b2430;border-radius:2px;margin-top:14px;position:relative}.scrub i{position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--pitch);border-radius:2px}
+.note{max-width:1200px;margin:26px auto 0;color:var(--sub);font-size:13px;line-height:1.6}
+.note li{margin:3px 0}
+</style>
+
+<h1>Pitching redesign v1 — Steel (same theme as home + hitting). Pitching accent = ice blue.</h1>
+<div class="row">
+
+<!-- ================= HUB / PERFORMANCE ================= -->
+<div>
+<div class="cap">PITCHING · PERFORMANCE</div>
+<div class="phone">
+ <div class="back">‹ Back</div>
+ <div class="title">Pitching</div>
+ <div class="subt">TrackMan · 14 sessions · 1,182 pitches</div>
+ <div class="sec">
+  <div class="eb"><b>PERSONAL BESTS</b></div>
+  <div class="kr">
+   <div class="k"><div class="kl">MAX VELO</div><div class="kv" style="color:var(--pitch)">88.4<small> mph</small></div><div class="d up">▲ 1.2</div></div>
+   <div class="k"><div class="kl">MAX SPIN</div><div class="kv">2,486<small> rpm</small></div></div>
+   <div class="k"><div class="kl">PITCHES</div><div class="kv">1,182</div></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>LAST 30 DAYS</b><span style="color:var(--mute);font-size:11px">by session date</span></div>
+  <div class="kr">
+   <div class="k"><div class="kl">FB AVG</div><div class="kv">85.1<small> mph</small></div><div class="d up">▲ 0.6</div></div>
+   <div class="k"><div class="kl">STRIKE %</div><div class="kv">63<small>%</small></div></div>
+   <div class="k"><div class="kl">STUFF+</div><div class="kv">104</div></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>LATEST PITCH SHAPES</b><a>Session ›</a></div>
+  <div class="bleed">
+   <svg viewBox="0 0 375 200" width="100%">
+    <rect x="152" y="70" width="72" height="88" fill="none" stroke="#fff" stroke-opacity=".7"/>
+    <path d="M60 20 Q140 60 180 110" stroke="var(--ff)" stroke-width="2.5" fill="none"/>
+    <path d="M60 20 Q120 40 205 140" stroke="var(--sl)" stroke-width="2.5" fill="none"/>
+    <path d="M60 20 Q100 10 170 150" stroke="var(--cb)" stroke-width="2.5" fill="none"/>
+    <circle cx="180" cy="110" r="5" fill="#fff"/>
+    <text x="16" y="190" fill="#46505c" font-size="9" font-weight="700" letter-spacing="1">CATCHER VIEW · REPLAYS</text>
+   </svg>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>PERCENTILE · HS VARSITY</b></div>
+  <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--sub)"><span>FB velo</span><b style="color:#fff">78th</b></div>
+  <div style="height:6px;background:#1b2430;border-radius:3px;margin-top:6px"><div style="width:78%;height:6px;background:var(--pitch);border-radius:3px"></div></div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>TOOLS</b></div>
+  <div class="list">
+   <div class="it"><span class="dt">Velocity trends</span><span class="m">›</span></div>
+   <div class="it"><span class="dt">Workload <span class="m">· 212 W today</span></span><span class="m">›</span></div>
+   <div class="it"><span class="dt">Arm Care <span class="m">· ArmScore 71</span></span><span class="m">›</span></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>SESSIONS</b><span class="chips"><span class="chip on">All</span><span class="chip">Video</span></span></div>
+  <div class="list">
+   <div class="it"><div><div class="dt">Nov 21 <span class="pill">▶ 38 CLIPS</span></div><div class="m">Bullpen · 42 pitches</div></div><div class="v">87.9<div class="m">max mph</div></div></div>
+   <div class="it"><div><div class="dt">Nov 14</div><div class="m">Bullpen · 35 pitches</div></div><div class="v">86.8<div class="m">max mph</div></div></div>
+   <div class="it"><div><div class="dt">Nov 7 <span class="pill">▶ 12 CLIPS</span></div><div class="m">Live AB · 28 pitches</div></div><div class="v">88.4<div class="m">max mph</div></div></div>
+  </div>
+ </div>
+</div>
+</div>
+
+<!-- ================= SESSION ================= -->
+<div>
+<div class="cap">SESSION</div>
+<div class="phone">
+ <div class="back">‹ Back</div>
+ <div class="title">Nov 21</div>
+ <div class="subt">Bullpen · ASP Facility · 42 pitches · 38 filmed</div>
+ <div class="sec">
+  <div class="kr">
+   <div class="k"><div class="kl">FB MAX</div><div class="kv" style="color:var(--pitch)">87.9</div></div>
+   <div class="k"><div class="kl">STRIKE %</div><div class="kv">64%</div></div>
+   <div class="k"><div class="kl">STUFF+</div><div class="kv">106</div></div>
+   <div class="k"><div class="kl">EXT</div><div class="kv">6.2<small> ft</small></div></div>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>LOCATION</b><span class="chips"><span class="chip on">3D</span><span class="chip">Zone</span></span></div>
+  <div class="bleed"><svg viewBox="0 0 375 210" width="100%">
+   <rect x="140" y="40" width="96" height="120" fill="none" stroke="#fff" stroke-opacity=".7"/>
+   <g stroke="#fff" stroke-opacity=".15"><line x1="172" y1="40" x2="172" y2="160"/><line x1="204" y1="40" x2="204" y2="160"/><line x1="140" y1="80" x2="236" y2="80"/><line x1="140" y1="120" x2="236" y2="120"/></g>
+   <g><circle cx="170" cy="70" r="6" fill="var(--ff)"/><circle cx="200" cy="95" r="6" fill="var(--ff)"/><circle cx="215" cy="140" r="6" fill="var(--sl)"/><circle cx="250" cy="150" r="6" fill="var(--sl)"/><circle cx="160" cy="170" r="6" fill="var(--cb)"/><circle cx="185" cy="120" r="6" fill="var(--ch)"/><circle cx="125" cy="60" r="6" fill="var(--ff)"/></g>
+   <text x="16" y="200" fill="#46505c" font-size="9" font-weight="700" letter-spacing="1">TAP A PITCH TO WATCH</text>
+  </svg></div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>ARSENAL</b></div>
+  <div class="ars">
+   <span class="h">PITCH</span><span class="h">%</span><span class="h">VELO</span><span class="h">IVB</span><span class="h">STUFF+</span>
+   <span><i class="dot" style="background:var(--ff)"></i>Fastball</span><span>52</span><span>86.1</span><span>17.4</span><span style="color:var(--good)">112</span>
+   <span><i class="dot" style="background:var(--sl)"></i>Slider</span><span>26</span><span>77.3</span><span>2.1</span><span>101</span>
+   <span><i class="dot" style="background:var(--cb)"></i>Curveball</span><span>14</span><span>72.8</span><span>-11.6</span><span>98</span>
+   <span><i class="dot" style="background:var(--ch)"></i>Changeup</span><span>8</span><span>78.9</span><span>9.0</span><span style="color:var(--warn)">88</span>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>MOVEMENT</b><span class="chips"><span class="chip on">All</span><span class="chip">Avg</span></span></div>
+  <svg viewBox="0 0 343 200" width="100%">
+   <line x1="171" y1="10" x2="171" y2="190" stroke="#fff" stroke-opacity=".15"/><line x1="10" y1="100" x2="333" y2="100" stroke="#fff" stroke-opacity=".15"/>
+   <ellipse cx="215" cy="42" rx="30" ry="18" fill="var(--ff)" fill-opacity=".25"/><ellipse cx="120" cy="96" rx="26" ry="14" fill="var(--sl)" fill-opacity=".25"/><ellipse cx="135" cy="160" rx="22" ry="14" fill="var(--cb)" fill-opacity=".25"/><ellipse cx="240" cy="72" rx="18" ry="12" fill="var(--ch)" fill-opacity=".25"/>
+   <text x="176" y="20" fill="#6b7280" font-size="9">IVB in</text><text x="300" y="95" fill="#6b7280" font-size="9">HB in</text>
+  </svg>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>EVERY PITCH</b><span class="chips"><span class="chip">All 42</span><span class="chip on">▶ Video 38</span></span></div>
+  <div class="tbl">
+   <div class="tr" style="color:var(--mute);font-size:9.5px;font-weight:800;letter-spacing:1px;border:0"><span>#</span><span>PITCH</span><span>VELO</span><span>IVB</span><span>HB</span><span></span></div>
+   <div class="tr vid"><span>12</span><span><i class="dot" style="background:var(--ff)"></i>Fastball</span><span>87.4</span><span>18.1</span><span>9.2</span><span class="vp">VIDEO</span></div>
+   <div class="prev"><div class="ov"><div class="m" style="color:var(--sub);font-size:11px">#12 · FASTBALL · CALLED STRIKE</div><div class="big">87.4 <small style="font-size:12px;color:var(--sub)">mph</small></div><div style="color:var(--sub);font-size:11px">IVB 18.1 · HB 9.2</div></div><span class="play">▶ Play ¼×</span></div>
+   <div class="tr vid"><span>13</span><span><i class="dot" style="background:var(--sl)"></i>Slider</span><span>77.9</span><span>1.6</span><span>-6.4</span><span class="vp">VIDEO</span></div>
+   <div class="tr off"><span>14</span><span><i class="dot" style="background:var(--cb)"></i>Curveball</span><span>72.2</span><span>-12.0</span><span>-8.8</span><span></span></div>
+   <div class="tr vid"><span>15</span><span><i class="dot" style="background:var(--ff)"></i>Fastball</span><span>86.9</span><span>17.0</span><span>8.7</span><span class="vp">VIDEO</span></div>
+  </div>
+  <div style="color:var(--mute);font-size:11px;margin-top:10px">Full table (spin, tilt, ext, VAA, spin eff, rel ht/side, Stuff+) scrolls sideways — kept from today.</div>
+ </div>
+</div>
+</div>
+
+<!-- ================= PLAYER ================= -->
+<div>
+<div class="cap">VIDEO PLAYER (full screen)</div>
+<div class="player">
+ <div style="display:flex;justify-content:space-between;color:var(--sub);font-weight:700"><span>✕</span><span>12 of 38 with video</span><span>iPhone</span></div>
+ <div class="vid-box" style="margin-top:12px">
+  <div style="position:absolute;left:12px;top:12px;font-size:10px;font-weight:800;letter-spacing:1px;color:#fff;background:rgba(0,0,0,.5);padding:3px 8px;border-radius:99px">¼× · 60 FPS</div>
+  <div style="position:absolute;left:0;top:45%;color:#fff;opacity:.6;font-size:28px;padding:0 6px">‹</div><div style="position:absolute;right:0;top:45%;color:#fff;opacity:.6;font-size:28px;padding:0 6px">›</div>
+  <div style="position:absolute;left:12px;bottom:12px"><div style="font-size:11px;color:var(--sub);font-weight:700">FASTBALL · CALLED STRIKE</div><div style="font-size:34px;font-weight:800">87.4<small style="font-size:12px;color:var(--sub)"> mph</small></div><div style="font-size:11px;color:var(--sub)">2,402 rpm · IVB 18.1 · HB 9.2</div></div>
+ </div>
+ <div class="scrub"><i></i></div>
+ <div class="ctl"><span>0:01.25</span><span>◂ frame ▸</span><span class="spd"><span>1×</span><span>½×</span><span class="on">¼×</span><span>⅛×</span></span></div>
+ <div class="sec" style="margin-top:6px">
+  <div class="eb"><b>THIS PITCH</b><span class="chips"><span class="chip on">This pitch</span><span class="chip">All</span></span></div>
+  <svg viewBox="0 0 343 150" width="100%"><rect x="130" y="40" width="72" height="86" fill="none" stroke="#fff" stroke-opacity=".7"/><path d="M40 10 Q120 50 168 80" stroke="var(--ff)" stroke-width="3" fill="none"/><circle cx="168" cy="80" r="6" fill="#fff"/></svg>
+ </div>
+ <div style="color:var(--mute);font-size:11px">Swipe or ‹ › for prev/next filmed pitch · tap to pause</div>
+</div>
+</div>
+
+<!-- ================= TRENDS ================= -->
+<div>
+<div class="cap">TRENDS</div>
+<div class="phone">
+ <div class="back">‹ Back</div>
+ <div class="title">Velocity Trends</div>
+ <div class="subt">Max & avg by pitch type</div>
+ <div class="sec"><div class="chips"><span class="chip">1 Month</span><span class="chip on">3 Months</span><span class="chip">6 Months</span><span class="chip">All Time</span></div></div>
+ <div class="sec">
+  <div class="eb"><b>MAX VELO</b><span class="chips"><span class="chip on">Max</span><span class="chip">Avg</span></span></div>
+  <svg viewBox="0 0 343 180" width="100%">
+   <g stroke="#fff" stroke-opacity=".07"><line x1="30" y1="30" x2="340" y2="30"/><line x1="30" y1="80" x2="340" y2="80"/><line x1="30" y1="130" x2="340" y2="130"/></g>
+   <g fill="#6b7280" font-size="9"><text x="0" y="33">88</text><text x="0" y="83">80</text><text x="0" y="133">72</text><text x="30" y="172">Sep 2</text><text x="290" y="172">Nov 21</text></g>
+   <polyline points="30,50 90,45 150,40 210,38 270,34 330,30" fill="none" stroke="var(--ff)" stroke-width="2.5"/>
+   <polyline points="30,100 90,98 150,92 210,94 270,88 330,86" fill="none" stroke="var(--sl)" stroke-width="2.5"/>
+   <polyline points="30,130 90,126 150,128 210,122 270,120 330,118" fill="none" stroke="var(--cb)" stroke-width="2.5"/>
+   <circle cx="330" cy="30" r="4.5" fill="var(--ff)"/>
+  </svg>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>BY PITCH TYPE</b></div>
+  <div class="ars" style="grid-template-columns:1.4fr .8fr .8fr .8fr">
+   <span class="h">PITCH</span><span class="h">MAX</span><span class="h">AVG</span><span class="h">COUNT</span>
+   <span><i class="dot" style="background:var(--ff)"></i>Fastball</span><span>88.4</span><span>85.7</span><span>612</span>
+   <span><i class="dot" style="background:var(--si)"></i>Sinker</span><span>86.2</span><span>84.1</span><span>88</span>
+   <span><i class="dot" style="background:var(--sl)"></i>Slider</span><span>79.0</span><span>77.1</span><span>301</span>
+   <span><i class="dot" style="background:var(--cb)"></i>Curveball</span><span>74.1</span><span>72.6</span><span>140</span>
+  </div>
+ </div>
+ <div class="sec">
+  <div class="eb"><b>STUFF+ TREND</b></div>
+  <svg viewBox="0 0 343 110" width="100%"><line x1="0" y1="60" x2="343" y2="60" stroke="#fff" stroke-opacity=".2" stroke-dasharray="4 4"/><text x="0" y="56" fill="#6b7280" font-size="9">100</text><polyline points="20,70 80,66 140,58 200,60 260,50 330,46" fill="none" stroke="var(--pitch)" stroke-width="2.5"/></svg>
+ </div>
+</div>
+</div>
+</div>
+
+<div class="note">
+<b style="color:#fff">What's in it</b>
+<ul>
+<li>Pitching Hub + Performance merge into one Steel screen (hub cards → Tools list; Workload & Arm Care kept, member gate kept).</li>
+<li>Session: KPI strip, 3D pitch paths / zone toggle, arsenal table, movement (All/Avg), all existing Stuff+/velo/release charts restyled, raw table kept.</li>
+<li>TrackMan video, modeled on Ghost: "Video" filter, filmed rows marked, tap row → inline preview → full-screen expo-video player opening at ¼×, frame step, ⅛–1× speeds, swipe prev/next, metric overlay, "This pitch" path below.</li>
+<li>Backend fix needed for video to load: video-token route builds <code>.mp4</code> (404s) — switch to <code>.mov</code>, per-camera token, add thumbnail.</li>
+<li>Bug fixes: Dec 31 1969 null date, 0.0 mph when empty, 30-day window by session date, pitches without location no longer dropped, TwoSeam → Sinker, dead "Command Data" route removed.</li>
+</ul>
+</div>

@@ -86,13 +86,15 @@ function buildPath(raw: PitchRow): Path | null {
   return { points, color: d.hex, type: d.full, mph: raw.rel_speed };
 }
 
-function usePitchPaths(athleteId: string | null | undefined) {
+function usePitchPaths(athleteId: string | null | undefined, fixedSessionId?: string | number | null, maxPitches = MAX_PITCHES) {
   const [paths, setPaths] = useState<Path[] | null>(null);
   useEffect(() => {
     if (!athleteId) return;
     let cancelled = false;
     (async () => {
-      const { data: latest } = await supabase
+      const { data: latest } = fixedSessionId != null
+        ? { data: [{ session_id: fixedSessionId }] }
+        : await supabase
         .from('trackman_pitch_data')
         .select('session_id')
         .eq('athlete_id', athleteId)
@@ -111,7 +113,7 @@ function usePitchPaths(athleteId: string | null | undefined) {
         .eq('session_id', sessionId)
         .not('a0_y', 'is', null)
         .order('created_at', { ascending: false })
-        .limit(MAX_PITCHES);
+        .limit(maxPitches);
       if (cancelled) return;
       const built = ((data ?? []) as PitchRow[]).map(buildPath).filter(Boolean) as Path[];
       setPaths(built.reverse());
@@ -119,7 +121,7 @@ function usePitchPaths(athleteId: string | null | undefined) {
     return () => {
       cancelled = true;
     };
-  }, [athleteId]);
+  }, [athleteId, fixedSessionId, maxPitches]);
   return paths;
 }
 
@@ -298,8 +300,22 @@ function PitchSvg({ paths, active }: { paths: Path[]; active: boolean }) {
   );
 }
 
-export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
-  const paths = usePitchPaths(athleteId);
+/**
+ * `sessionId` pins the view to one session (the pitching Session screen);
+ * without it the athlete's latest fitted session is shown (home feed).
+ */
+export function PitchPaths3D({
+  athleteId,
+  sessionId,
+  maxPitches,
+  caption = 'LAST SESSION · CATCHER VIEW',
+}: {
+  athleteId?: string | null;
+  sessionId?: string | number | null;
+  maxPitches?: number;
+  caption?: string;
+}) {
+  const paths = usePitchPaths(athleteId, sessionId, maxPitches ?? MAX_PITCHES);
   const { ref, inView } = useInView();
   const legend = useMemo(() => {
     const seen = new Map<string, string>();
@@ -320,7 +336,7 @@ export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
           </View>
         ))}
       </View>
-      <Text style={styles.caption} pointerEvents="none">LAST SESSION · CATCHER VIEW</Text>
+      <Text style={styles.caption} pointerEvents="none">{caption}</Text>
     </View>
   );
 }
