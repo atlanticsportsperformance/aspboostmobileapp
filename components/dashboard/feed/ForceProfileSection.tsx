@@ -14,9 +14,17 @@
  * No card container.
  */
 
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
-import Svg, { Polygon, Line as SvgLine, Circle as SvgCircle } from 'react-native-svg';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
+import Svg, {
+  Polygon,
+  Line as SvgLine,
+  Circle as SvgCircle,
+  Text as SvgText,
+  Defs,
+  RadialGradient,
+  Stop,
+} from 'react-native-svg';
 
 interface MetricEntry {
   name: string;
@@ -127,6 +135,9 @@ export function ForceProfileSection({
 }: Props) {
   const tier = getTier(data.percentile_rank);
   const axes = useMemo(() => buildAxes(data.metrics ?? []), [data.metrics]);
+  const tested = axes.filter((a) => a.percentile != null).length;
+  const progress = useGrowProgress(axes.map((a) => a.percentile ?? 0).join(','));
+  const composite = Math.round(data.composite_score * easeOut(Math.min(1, progress / 1.3)));
 
   return (
     <View style={styles.section}>
@@ -134,52 +145,40 @@ export function ForceProfileSection({
 
       <Pressable onPress={onOpen} hitSlop={6} style={styles.eyebrowRow}>
         <Text style={styles.eyebrow}>FORCE PROFILE</Text>
-        <Text style={[styles.eyebrowAction, { color: tier.hex }]}>View profile →</Text>
+        <Text style={[styles.eyebrowAction, { color: '#9BDDFF' }]}>View profile →</Text>
       </Pressable>
 
-      {/* Radar + composite-score side panel */}
-      <View style={styles.heroRow}>
-        <HexRadar axes={axes} hex={tier.hex} />
-        <View style={styles.scorePanel}>
+      <View style={styles.topRow}>
+        <View>
           <Text style={styles.scoreLabel}>COMPOSITE</Text>
-          <Text style={[styles.scoreNumber, { color: tier.hex }]}>
-            {Math.round(data.composite_score)}
-          </Text>
-          <View
-            style={[
-              styles.tierPill,
-              { backgroundColor: `${tier.hex}1A`, borderColor: `${tier.hex}55` },
-            ]}
-          >
+          <View style={styles.scoreLine}>
+            <Text style={[styles.scoreNumber, { color: tier.hex }]}>{composite}</Text>
+            <Text style={styles.scoreOf}>/100</Text>
+          </View>
+        </View>
+        <View style={styles.topRight}>
+          <View style={[styles.tierPill, { backgroundColor: `${tier.hex}1A`, borderColor: `${tier.hex}55` }]}>
             <Text style={[styles.tierPillText, { color: tier.hex }]}>{tier.label}</Text>
           </View>
-          <Text style={styles.scoreFootnote}>
-            {axes.filter((a) => a.percentile != null).length} of 6 tested
-          </Text>
+          <Text style={styles.scoreFootnote}>{tested} of 6 tested</Text>
         </View>
       </View>
 
-      <View style={styles.metricsBlock}>
-        {data.best_metric && (
-          <MetricRow label="STRONGEST" metric={data.best_metric} hex="#34d399" />
-        )}
-        {data.worst_metric && (
-          <MetricRow label="FOCUS AREA" metric={data.worst_metric} hex="#ef4444" />
-        )}
-      </View>
+      <HexRadar axes={axes} progress={progress} />
 
       {(pitchPrediction || batSpeedPrediction || bodyweight) && (
-        <View style={styles.metaRow}>
+        <View style={styles.predRow}>
           {pitchPrediction && (
-            <Meta label="Predicted pitch" value={`${pitchPrediction.predicted_value.toFixed(1)} mph`} />
+            <Meta label="Predicted pitch velo" value={pitchPrediction.predicted_value.toFixed(1)} unit="mph" />
           )}
           {batSpeedPrediction && (
-            <Meta label="Predicted bat" value={`${batSpeedPrediction.predicted_value.toFixed(1)} mph`} />
+            <Meta label="Predicted bat speed" value={batSpeedPrediction.predicted_value.toFixed(1)} unit="mph" />
           )}
           {bodyweight && (
             <Meta
               label="Bodyweight"
-              value={`${bodyweight.current.toFixed(0)} lbs`}
+              value={bodyweight.current.toFixed(0)}
+              unit="lbs"
               delta={
                 bodyweight.previous && bodyweight.previous > 0
                   ? ((bodyweight.current - bodyweight.previous) / bodyweight.previous) * 100
@@ -189,145 +188,155 @@ export function ForceProfileSection({
           )}
         </View>
       )}
+
+      <View style={styles.metricsBlock}>
+        {data.best_metric && (
+          <MetricRow label="STRONGEST" metric={data.best_metric} hex="#34d399" progress={progress} />
+        )}
+        {data.worst_metric && (
+          <MetricRow label="FOCUS AREA" metric={data.worst_metric} hex="#ef4444" progress={progress} />
+        )}
+      </View>
     </View>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Hexagon radar (or N-gon if there are fewer axes)
+// Grow-in clock: seconds since the data first arrived (or changed),
+// driven by rAF for ~1.8s then frozen. One clock drives the radar
+// burst, composite count-up and bar fills so they stay in step.
 // ─────────────────────────────────────────────────────────────
+
+const GROW_SECONDS = 1.8;
+function useGrowProgress(key: string): number {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const t0 = Date.now();
+    const tick = () => {
+      const s = (Date.now() - t0) / 1000;
+      setT(Math.min(s, GROW_SECONDS));
+      if (s < GROW_SECONDS) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [key]);
+  return t;
+}
+const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
+/** Overshoot-and-settle so each vertex "pops" out of the center. */
+const easeBack = (k: number) => {
+  const c = 1.9;
+  return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2);
+};
+
+// ─────────────────────────────────────────────────────────────
+// Full-width hexagon radar. Tier rings at 25/50/75/100 match the
+// tier cutoffs; the band past 75 is tinted as the Elite zone. Each
+// vertex bursts out from the center in turn. Strongest axis is green,
+// weakest red, both haloed.
+// ─────────────────────────────────────────────────────────────
+
+const LABEL_SPACE = 34;
 
 function HexRadar({
   axes,
-  hex,
+  progress,
 }: {
   axes: Array<{ key: string; label: string; percentile: number | null }>;
-  hex: string;
+  progress: number;
 }) {
-  // Fixed hexagon — 6 axes, top vertex pointing up. Grid is always 6-sided
-  // so the visual identity stays consistent regardless of how much of the
-  // athlete's force-test battery is populated. Empty slots (no data for
-  // that test type) plot at center and label as '—'.
-  const SIZE = 200;
-  const PAD = 22;
-  const CX = SIZE / 2;
-  const CY = SIZE / 2;
-  const R = SIZE / 2 - PAD;
+  const { width } = useWindowDimensions();
+  const W = Math.min(width - 32, 420);
+  const H = W * 0.94;
+  const CX = W / 2;
+  const CY = H / 2;
+  const R = Math.min(W / 2, H / 2) - LABEL_SPACE;
   const N = 6;
-  const angleStep = (2 * Math.PI) / N;
-  const startAngle = -Math.PI / 2;
+  const step = (2 * Math.PI) / N;
+  const start = -Math.PI / 2;
+  const FORCE = '#9BDDFF';
 
-  const point = (axisIndex: number, ratio: number) => ({
-    x: CX + Math.cos(startAngle + axisIndex * angleStep) * R * ratio,
-    y: CY + Math.sin(startAngle + axisIndex * angleStep) * R * ratio,
+  const point = (i: number, ratio: number) => ({
+    x: CX + Math.cos(start + i * step) * R * ratio,
+    y: CY + Math.sin(start + i * step) * R * ratio,
   });
-
-  const gridRings = [0.33, 0.66, 1].map((r) =>
+  const ring = (ratio: number) =>
     Array.from({ length: N }, (_, i) => {
-      const p = point(i, r);
-      return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-    }).join(' '),
-  );
-
-  const fiftyRing = Array.from({ length: N }, (_, i) => {
-    const p = point(i, 0.5);
-    return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-  }).join(' ');
-
-  // Athlete shape — vertex per slot. Empty slots collapse to center (0)
-  // so the polygon still has 6 vertices and the visual is anchored.
-  const shapePoints = axes
-    .map((a, i) => {
-      const ratio =
-        a.percentile == null ? 0 : Math.max(0.04, Math.min(1, a.percentile / 100));
       const p = point(i, ratio);
+      return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+    }).join(' ');
+
+  const filled = axes.filter((a) => a.percentile != null);
+  const pcts = filled.map((a) => a.percentile!);
+  const bestKey = filled.length > 1 ? filled.find((a) => a.percentile === Math.max(...pcts))?.key : undefined;
+  const worstKey = filled.length > 1 ? filled.find((a) => a.percentile === Math.min(...pcts))?.key : undefined;
+
+  // Per-axis animated ratio: staggered burst from the center.
+  const ratios = axes.map((a, i) => {
+    if (a.percentile == null) return 0;
+    const target = Math.max(0.04, Math.min(1, a.percentile / 100));
+    const k = Math.min(1, Math.max(0, (progress - 0.15 - i * 0.07) / 0.75));
+    return target * easeBack(k);
+  });
+  const shape = ratios
+    .map((r, i) => {
+      const p = point(i, r);
       return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
     })
     .join(' ');
-
-  const filledCount = axes.filter((a) => a.percentile != null).length;
+  const elite = point(0, 0.75);
 
   return (
-    <View style={radarStyles.wrap}>
-      <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-        {gridRings.map((pts, i) => (
-          <Polygon
-            key={`grid-${i}`}
-            points={pts}
-            fill="none"
-            stroke="rgba(255,255,255,0.05)"
-            strokeWidth={1}
-          />
+    <View style={{ width: W, height: H, alignSelf: 'center', marginVertical: 4 }}>
+      <Svg width={W} height={H}>
+        <Defs>
+          <RadialGradient id="fpFill" cx="50%" cy="50%" r="55%">
+            <Stop offset="0" stopColor={FORCE} stopOpacity={0.04} />
+            <Stop offset="1" stopColor={FORCE} stopOpacity={0.28} />
+          </RadialGradient>
+        </Defs>
+        {/* Faint top-quartile band (75–100), neutral so only the data carries color */}
+        <Polygon points={ring(1)} fill="#ffffff" fillOpacity={0.025} />
+        <Polygon points={ring(0.75)} fill="#0a0b0d" />
+        {[0.25, 0.5, 1].map((r) => (
+          <Polygon key={r} points={ring(r)} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
         ))}
-        <Polygon
-          points={fiftyRing}
-          fill="none"
-          stroke="rgba(255,255,255,0.18)"
-          strokeWidth={1}
-          strokeDasharray="3 3"
-        />
+        <Polygon points={ring(0.75)} fill="none" stroke="#ffffff" strokeOpacity={0.14} strokeWidth={1} strokeDasharray="2 4" />
         {Array.from({ length: N }).map((_, i) => {
           const p = point(i, 1);
-          return (
-            <SvgLine
-              key={`axis-${i}`}
-              x1={CX}
-              y1={CY}
-              x2={p.x}
-              y2={p.y}
-              stroke="rgba(255,255,255,0.06)"
-              strokeWidth={1}
-            />
-          );
+          return <SvgLine key={i} x1={CX} y1={CY} x2={p.x} y2={p.y} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />;
         })}
-        {filledCount > 0 && (
-          <Polygon
-            points={shapePoints}
-            fill={`${hex}33`}
-            stroke={hex}
-            strokeWidth={1.6}
-            strokeLinejoin="round"
-          />
+        <SvgText x={elite.x + 5} y={elite.y + 3} fill="#6b7280" fontSize={8} fontWeight="700">
+          75
+        </SvgText>
+        {filled.length > 0 && (
+          <>
+            <Polygon points={shape} fill="url(#fpFill)" stroke={FORCE} strokeWidth={2} strokeLinejoin="round" />
+          </>
         )}
         {axes.map((a, i) => {
           if (a.percentile == null) return null;
-          const ratio = Math.max(0.04, Math.min(1, a.percentile / 100));
-          const p = point(i, ratio);
-          return <SvgCircle key={`dot-${a.key}`} cx={p.x} cy={p.y} r={2.5} fill={hex} />;
+          const p = point(i, ratios[i]);
+          const accent = a.key === bestKey ? '#34d399' : a.key === worstKey ? '#ef4444' : FORCE;
+          const big = accent !== FORCE;
+          return (
+            <React.Fragment key={a.key}>
+              <SvgCircle cx={p.x} cy={p.y} r={big ? 4.5 : 3.2} fill={big ? accent : '#0a0b0d'} stroke={accent} strokeWidth={2} />
+            </React.Fragment>
+          );
         })}
       </Svg>
-      {/* Axis labels — six fixed positions so the hexagon always reads
-          IMTP / CMJ / SJ / PPU / HJ / DJ even when some slots are empty. */}
       {axes.map((a, i) => {
-        const p = point(i, 1.18);
-        const above = p.y < CY - 2;
-        const below = p.y > CY + 2;
-        const yOffset = above ? -10 : below ? 0 : -5;
+        const p = point(i, 1 + LABEL_SPACE / R * 0.62);
         const empty = a.percentile == null;
+        const accent = a.key === bestKey ? '#34d399' : a.key === worstKey ? '#ef4444' : '#e5e7eb';
+        const shown = empty ? null : Math.round((ratios[i] / Math.max(0.04, a.percentile! / 100)) * a.percentile!);
         return (
-          <View
-            key={`lbl-${a.key}`}
-            pointerEvents="none"
-            style={[
-              radarStyles.axisLabel,
-              { left: p.x - 28, top: p.y + yOffset },
-            ]}
-          >
-            <Text
-              style={[
-                radarStyles.axisLabelText,
-                empty && { color: '#4b5563' },
-              ]}
-            >
-              {a.label}
-            </Text>
-            <Text
-              style={[
-                radarStyles.axisLabelPct,
-                { color: empty ? '#4b5563' : `${hex}CC` },
-              ]}
-            >
-              {empty ? '—' : Math.round(a.percentile!)}
+          <View key={a.key} pointerEvents="none" style={[radarStyles.axisLabel, { left: p.x - 36, top: p.y - 17 }]}>
+            <Text style={[radarStyles.axisLabelText, empty && { color: '#4b5563' }]}>{a.label}</Text>
+            <Text style={[radarStyles.axisLabelPct, { color: empty ? '#4b5563' : accent }]}>
+              {empty ? '—' : Math.max(0, Math.min(100, shown!))}
             </Text>
           </View>
         );
@@ -344,12 +353,15 @@ function MetricRow({
   label,
   metric,
   hex,
+  progress = GROW_SECONDS,
 }: {
   label: string;
   metric: { name: string; percentile: number; value: number };
   hex: string;
+  progress?: number;
 }) {
   const pct = Math.min(100, Math.max(0, metric.percentile));
+  const shownPct = pct * easeOut(Math.min(1, Math.max(0, (progress - 0.6) / 1)));
   return (
     <View style={metricStyles.row}>
       <View style={metricStyles.headerRow}>
@@ -360,7 +372,7 @@ function MetricRow({
         </Text>
       </View>
       <View style={metricStyles.track}>
-        <View style={[metricStyles.fill, { width: `${pct}%`, backgroundColor: hex }]} />
+        <View style={[metricStyles.fill, { width: `${shownPct}%`, backgroundColor: hex }]} />
       </View>
       <Text style={metricStyles.metricName}>{metric.name}</Text>
     </View>
@@ -370,20 +382,24 @@ function MetricRow({
 function Meta({
   label,
   value,
+  unit,
   delta,
 }: {
   label: string;
   value: string;
+  unit: string;
   delta?: number | null;
 }) {
   return (
     <View style={styles.meta}>
       <Text style={styles.metaLabel}>{label}</Text>
-      <Text style={styles.metaValue}>{value}</Text>
+      <Text style={styles.metaValue}>
+        {value}
+        <Text style={styles.metaUnit}> {unit}</Text>
+      </Text>
       {delta != null && (
-        <Text style={[styles.metaDelta, { color: delta >= 0 ? '#6ee7b7' : '#fca5a5' }]}>
-          {delta >= 0 ? '+' : ''}
-          {delta.toFixed(1)}%
+        <Text style={[styles.metaDelta, { color: delta >= 0 ? '#34d399' : '#ef4444' }]}>
+          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}%
         </Text>
       )}
     </View>
@@ -406,20 +422,15 @@ const styles = StyleSheet.create({
   eyebrow: { color: '#e5e7eb', fontSize: 11, fontWeight: '800', letterSpacing: 2 },
   eyebrowAction: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
 
-  heroRow: {
+  topRow: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 22,
+    alignItems: 'flex-end',
+    marginBottom: 4,
   },
-  scorePanel: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingRight: 4,
-  },
+  topRight: { alignItems: 'flex-end', gap: 6, paddingBottom: 6 },
+  scoreLine: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+  scoreOf: { color: '#6b7280', fontSize: 13, fontWeight: '700' },
   scoreLabel: {
     color: '#6b7280',
     fontSize: 10,
@@ -430,8 +441,8 @@ const styles = StyleSheet.create({
     fontSize: 64,
     fontWeight: '800',
     letterSpacing: -2.6,
-    lineHeight: 64,
-    textAlign: 'center',
+    lineHeight: 66,
+    fontVariant: ['tabular-nums'],
   },
   tierPill: {
     alignSelf: 'center',
@@ -446,12 +457,18 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.3,
-    marginTop: 2,
-    textAlign: 'center',
   },
 
-  metricsBlock: { gap: 16, marginBottom: 18 },
-  metaRow: { flexDirection: 'row', gap: 18, marginTop: 4 },
+  metricsBlock: { gap: 16, marginTop: 18 },
+  predRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+  },
   meta: { flex: 1, gap: 2 },
   metaLabel: {
     color: '#6b7280',
@@ -459,19 +476,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.2,
   },
-  metaValue: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
+  metaValue: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.4, fontVariant: ['tabular-nums'] },
+  metaUnit: { color: '#6b7280', fontSize: 10, fontWeight: '700' },
   metaDelta: { fontSize: 11, fontWeight: '700' },
 });
 
 const radarStyles = StyleSheet.create({
-  wrap: {
-    width: 200,
-    height: 200,
-    position: 'relative',
-  },
   axisLabel: {
     position: 'absolute',
-    width: 56,
+    width: 72,
     alignItems: 'center',
   },
   axisLabelText: {
@@ -481,10 +494,11 @@ const radarStyles = StyleSheet.create({
     letterSpacing: 1.1,
   },
   axisLabelPct: {
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: -0.3,
     marginTop: 1,
+    fontVariant: ['tabular-nums'],
   },
 });
 

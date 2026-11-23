@@ -16,6 +16,10 @@
 
 import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { PitchPaths3D } from './three/PitchPaths3D';
+import { PercentileLadder } from './PercentileLadder';
+import { FB_VELO_NORMS, normalizePlayLevel } from '../../../lib/norms';
+import { pitchDisplay } from './pitchTypeDisplay';
 
 interface StuffPlusEntry {
   pitchType: string;
@@ -51,6 +55,8 @@ interface PitchingShape {
 
 interface Props {
   data: PitchingShape;
+  athleteId?: string | null;
+  playLevel?: string | null;
   onOpen: () => void;
 }
 
@@ -58,34 +64,6 @@ const ACCENT = '#A78BFA';
 
 // Pitch-type display abbrev + accent. Falls back to first 3 chars of the
 // raw type label when an unfamiliar pitch slips through.
-const PITCH_TYPE_DISPLAY: Record<string, { short: string; full: string; hex: string }> = {
-  Fastball: { short: 'FB', full: 'Fastball', hex: '#9BDDFF' },
-  Sinker: { short: 'SI', full: 'Sinker', hex: '#7DD3FC' },
-  Cutter: { short: 'CT', full: 'Cutter', hex: '#A5B4FC' },
-  Slider: { short: 'SL', full: 'Slider', hex: '#FFB84D' },
-  Sweeper: { short: 'SW', full: 'Sweeper', hex: '#FB923C' },
-  Curveball: { short: 'CB', full: 'Curveball', hex: '#A78BFA' },
-  Changeup: { short: 'CH', full: 'Changeup', hex: '#34D399' },
-  Splitter: { short: 'SP', full: 'Splitter', hex: '#10B981' },
-  Knuckleball: { short: 'KN', full: 'Knuckleball', hex: '#F472B6' },
-  'Two-seam': { short: '2S', full: 'Two-seam', hex: '#7DD3FC' },
-  'Four-seam': { short: '4S', full: 'Four-seam', hex: '#9BDDFF' },
-};
-
-function pitchDisplay(pitchType: string) {
-  if (PITCH_TYPE_DISPLAY[pitchType]) return PITCH_TYPE_DISPLAY[pitchType];
-  // Case-insensitive lookup
-  const ci = Object.keys(PITCH_TYPE_DISPLAY).find(
-    (k) => k.toLowerCase() === pitchType.toLowerCase(),
-  );
-  if (ci) return PITCH_TYPE_DISPLAY[ci];
-  return {
-    short: pitchType.slice(0, 3).toUpperCase(),
-    full: pitchType,
-    hex: '#9BDDFF',
-  };
-}
-
 function tierForStuff(v: number): { label: string; hex: string } {
   if (v >= 110) return { label: 'Elite', hex: '#34d399' };
   if (v >= 100) return { label: 'Above avg', hex: '#9BDDFF' };
@@ -93,7 +71,7 @@ function tierForStuff(v: number): { label: string; hex: string } {
   return { label: 'Below avg', hex: '#ef4444' };
 }
 
-export function PitchingSection({ data, onOpen }: Props) {
+export function PitchingSection({ data, athleteId, playLevel, onOpen }: Props) {
   const prVelo = data.prs.max_velo?.value ?? null;
   const avg30 = data.latest.avg_velo_30d;
   const recentAvg = data.latest.avg_velo_recent;
@@ -126,6 +104,13 @@ export function PitchingSection({ data, onOpen }: Props) {
         <Stat label="Latest avg" value={fmt(recentAvg)} unit="MPH" />
         <Stat label="Latest max" value={fmt(recentMax)} unit="MPH" />
       </View>
+
+      <PitchPaths3D athleteId={athleteId} />
+
+      <PercentileLadder
+        defaultLevel={normalizePlayLevel(playLevel)}
+        metrics={[{ label: 'Fastball velo', value: prVelo, unit: 'mph', norms: FB_VELO_NORMS }]}
+      />
 
       {arsenal.length > 0 && (
         <View style={styles.arsenalBlock}>

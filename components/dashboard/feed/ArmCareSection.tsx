@@ -12,8 +12,9 @@
  * stay in sync with the rest of the ArmCare surface (wizard, hub).
  */
 
-import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
+import Svg, { Path, Circle as SvgCircle } from 'react-native-svg';
 import { peakZone, ZONE_COLORS, type Zone } from '../../../lib/armcare/zones';
 
 interface ArmCareShape {
@@ -64,6 +65,7 @@ const TEST_DISPLAY = {
 export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
   const score = data.latest.arm_score;
   const zone = getZone(score);
+  const progress = useGrow(`${score}-${data.pr.arm_score}`);
 
   const svRatio =
     maxVelocity && maxVelocity > 0 && data.latest.total_strength > 0
@@ -90,36 +92,13 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
         </Text>
       </Pressable>
 
-      <View style={styles.heroRow}>
-        <Text style={[styles.heroNumber, { color: zone.hex }]}>
-          {score.toFixed(1)}
-        </Text>
-        <View style={styles.heroSide}>
-          <Text style={styles.heroSideLabel}>ARMSCORE</Text>
-          <View
-            style={[
-              styles.zonePill,
-              { borderColor: `${zone.hex}55`, backgroundColor: `${zone.hex}1A` },
-            ]}
-          >
-            <Text style={[styles.zoneText, { color: zone.hex }]}>{zone.label}</Text>
-          </View>
-          <View style={styles.heroSideMetaRow}>
-            <Text style={styles.heroSideMeta}>
-              PR {data.pr.arm_score.toFixed(1)}
-            </Text>
-            {data.latest.arm_score_avg_30d != null &&
-              data.latest.arm_score_avg_30d > 0 && (
-                <>
-                  <Text style={styles.heroSideMetaDot}>·</Text>
-                  <Text style={styles.heroSideMeta}>
-                    30d {data.latest.arm_score_avg_30d.toFixed(1)}
-                  </Text>
-                </>
-              )}
-          </View>
-        </View>
-      </View>
+      <ArmScoreArc
+        score={score}
+        pr={data.pr.arm_score}
+        avg30={data.latest.arm_score_avg_30d ?? null}
+        zone={zone}
+        progress={progress}
+      />
 
       {/* Per-test % of bodyweight rows — shows the athlete whether each
           shoulder direction is in the normal range from the ArmCare
@@ -140,6 +119,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
             barMaxPct={TEST_DISPLAY.ir.barMaxPct}
             normalThreshold={TEST_DISPLAY.ir.normalThreshold}
             zoneTest="ir"
+            progress={progress}
           />
           <PerTestRow
             label={TEST_DISPLAY.er.label}
@@ -149,6 +129,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
             barMaxPct={TEST_DISPLAY.er.barMaxPct}
             normalThreshold={TEST_DISPLAY.er.normalThreshold}
             zoneTest="er"
+            progress={progress}
           />
           <PerTestRow
             label={TEST_DISPLAY.scap.label}
@@ -158,6 +139,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
             barMaxPct={TEST_DISPLAY.scap.barMaxPct}
             normalThreshold={TEST_DISPLAY.scap.normalThreshold}
             zoneTest="scap"
+            progress={progress}
           />
           <PerTestRow
             label={TEST_DISPLAY.grip.label}
@@ -167,6 +149,7 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
             barMaxPct={TEST_DISPLAY.grip.barMaxPct}
             normalThreshold={TEST_DISPLAY.grip.normalThreshold}
             zoneTest="grip"
+            progress={progress}
           />
           {perTest.erIrRatio != null && (
             <Text style={styles.balanceNote}>
@@ -203,6 +186,102 @@ export function ArmCareSection({ data, maxVelocity, onOpen }: Props) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Full-width ArmScore arc. Half-circle fills to the score on a scale
+// that always leaves headroom past the PR; a white dot marks the PR.
+// Score, zone pill and PR / 30d sit inside the arc.
+// ─────────────────────────────────────────────────────────────
+
+const GROW_S = 1.8;
+function useGrow(key: string): number {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const t0 = Date.now();
+    const tick = () => {
+      const s = (Date.now() - t0) / 1000;
+      setT(Math.min(s, GROW_S));
+      if (s < GROW_S) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [key]);
+  return t;
+}
+const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
+
+function ArmScoreArc({
+  score,
+  pr,
+  avg30,
+  zone,
+  progress,
+}: {
+  score: number;
+  pr: number;
+  avg30: number | null;
+  zone: { label: string; hex: string };
+  progress: number;
+}) {
+  const { width } = useWindowDimensions();
+  const W = Math.min(width - 32, 420);
+  const STROKE = 12;
+  const R = W / 2 - STROKE;
+  const H = R + STROKE + 8;
+  const CX = W / 2;
+  const CY = R + STROKE;
+  const scaleMax = Math.max(100, pr * 1.15, score * 1.05);
+  const k = easeOut(Math.min(1, progress / 1.3));
+  const frac = Math.max(0, Math.min(1, score / scaleMax)) * k;
+  const prFrac = Math.max(0, Math.min(1, pr / scaleMax));
+  const at = (f: number) => {
+    const a = Math.PI + f * Math.PI;
+    return { x: CX + R * Math.cos(a), y: CY + R * Math.sin(a) };
+  };
+  const arcPath = (f: number) => {
+    const s = at(0);
+    const e = at(Math.max(0.0001, f));
+    return `M${s.x},${s.y} A${R},${R} 0 0 1 ${e.x},${e.y}`;
+  };
+  const prPt = at(prFrac);
+
+  return (
+    <View style={{ width: W, height: H, alignSelf: 'center', marginBottom: 10 }}>
+      <Svg width={W} height={H}>
+        <Path d={arcPath(1)} stroke="rgba(255,255,255,0.07)" strokeWidth={STROKE} fill="none" strokeLinecap="round" />
+        {frac > 0 && (
+          <>
+            <Path d={arcPath(frac)} stroke={zone.hex} strokeOpacity={0.25} strokeWidth={STROKE + 8} fill="none" strokeLinecap="round" />
+            <Path d={arcPath(frac)} stroke={zone.hex} strokeWidth={STROKE} fill="none" strokeLinecap="round" />
+          </>
+        )}
+        <SvgCircle cx={prPt.x} cy={prPt.y} r={5} fill="#ffffff" stroke="#05070a" strokeWidth={2} />
+      </Svg>
+      <View style={arcStyles.center} pointerEvents="none">
+        <Text style={arcStyles.label}>ARMSCORE</Text>
+        <Text style={[arcStyles.number, { color: zone.hex }]}>{(score * k).toFixed(1)}</Text>
+        <View style={arcStyles.metaRow}>
+          <View style={[styles.zonePill, { borderColor: `${zone.hex}55`, backgroundColor: `${zone.hex}1A` }]}>
+            <Text style={[styles.zoneText, { color: zone.hex }]}>{zone.label}</Text>
+          </View>
+          <Text style={arcStyles.meta}>
+            PR {pr.toFixed(1)}
+            {avg30 != null && avg30 > 0 ? `  ·  30d ${avg30.toFixed(1)}` : ''}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const arcStyles = StyleSheet.create({
+  center: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', gap: 4 },
+  label: { color: '#6b7280', fontSize: 10, fontWeight: '800', letterSpacing: 1.6 },
+  number: { fontSize: 60, fontWeight: '800', letterSpacing: -2.4, lineHeight: 62, fontVariant: ['tabular-nums'] },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  meta: { color: '#9ca3af', fontSize: 12, fontWeight: '600' },
+});
+
+// ─────────────────────────────────────────────────────────────
 // Per-test % of bodyweight bar
 // ─────────────────────────────────────────────────────────────
 
@@ -214,7 +293,9 @@ function PerTestRow({
   barMaxPct,
   normalThreshold,
   zoneTest,
+  progress = 1,
 }: {
+  progress?: number;
   label: string;
   short: string;
   lbs: number | null;
@@ -227,7 +308,7 @@ function PerTestRow({
 }) {
   const empty = lbs == null;
   const pct = empty ? 0 : (lbs! / bwLbs) * 100;
-  const fillRatio = Math.max(0, Math.min(1, pct / barMaxPct));
+  const fillRatio = Math.max(0, Math.min(1, pct / barMaxPct)) * easeOut(Math.min(1, Math.max(0, (progress - 0.5) / 1)));
   const thresholdRatio = Math.max(0, Math.min(1, normalThreshold / barMaxPct));
 
   const zone: Zone = empty ? 'unknown' : peakZone(zoneTest, lbs!, bwLbs);
@@ -347,68 +428,74 @@ const styles = StyleSheet.create({
   heroSideMeta: { color: '#9ca3af', fontSize: 12, fontWeight: '700' },
   heroSideMetaDot: { color: '#4b5563', fontSize: 12, fontWeight: '700' },
 
-  perTestBlock: { gap: 10, marginBottom: 18 },
+  perTestBlock: { gap: 20, marginTop: 8, marginBottom: 26 },
   perTestHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'baseline',
-    marginBottom: 2,
+    marginBottom: 0,
   },
   perTestLabel: {
     color: '#9ca3af',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1.4,
   },
-  perTestMeta: { color: '#6b7280', fontSize: 10, fontWeight: '700' },
+  perTestMeta: { color: '#9ca3af', fontSize: 12, fontWeight: '600' },
 
   balanceNote: {
     color: '#9ca3af',
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 2,
   },
   balanceNum: { color: '#fff', fontWeight: '800' },
-  balanceCaption: { color: '#6b7280' },
+  balanceCaption: { color: '#9ca3af', fontSize: 12 },
 
-  statsRow: { flexDirection: 'row', gap: 16 },
-  stat: { flex: 1, gap: 4 },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 16,
+    paddingTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.07)',
+  },
+  stat: { flex: 1, gap: 6 },
   statLabel: {
-    color: '#6b7280',
-    fontSize: 9,
+    color: '#9ca3af',
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 1.2,
+    letterSpacing: 1,
   },
   statValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  statValue: { color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: -0.4 },
-  statUnit: { color: '#6b7280', fontSize: 9, fontWeight: '700' },
+  statValue: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.4 },
+  statUnit: { color: '#9ca3af', fontSize: 11, fontWeight: '700' },
 });
 
 const rowStyles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 14,
   },
-  labelCol: { width: 56 },
+  labelCol: { width: 64 },
   label: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   sublabel: {
-    color: '#6b7280',
-    fontSize: 9,
+    color: '#9ca3af',
+    fontSize: 11,
     fontWeight: '600',
     marginTop: 1,
   },
 
-  barCol: { flex: 1, gap: 4 },
+  barCol: { flex: 1, gap: 7 },
   barTrack: {
-    height: 8,
+    height: 10,
     backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 4,
+    borderRadius: 5,
     overflow: 'hidden',
     position: 'relative',
   },
@@ -426,20 +513,20 @@ const rowStyles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'baseline',
   },
-  captionMin: { color: '#4b5563', fontSize: 8, fontWeight: '700' },
+  captionMin: { color: '#6b7280', fontSize: 11, fontWeight: '600' },
   captionThreshold: {
-    color: '#9ca3af',
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+    color: '#d1d5db',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
-  captionMax: { color: '#4b5563', fontSize: 8, fontWeight: '700' },
+  captionMax: { color: '#6b7280', fontSize: 11, fontWeight: '600' },
 
-  valueCol: { width: 56, alignItems: 'flex-end' },
+  valueCol: { width: 64, alignItems: 'flex-end', gap: 2 },
   pctValue: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '800',
     letterSpacing: -0.3,
   },
-  lbsValue: { color: '#6b7280', fontSize: 9, fontWeight: '700' },
+  lbsValue: { color: '#9ca3af', fontSize: 12, fontWeight: '600' },
 });

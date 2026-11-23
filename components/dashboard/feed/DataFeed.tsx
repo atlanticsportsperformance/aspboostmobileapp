@@ -199,6 +199,8 @@ function SectionSlot({
       return (
         <PitchingSection
           data={props.pitchingData}
+          athleteId={props.athleteId}
+          playLevel={props.playLevel ?? null}
           onOpen={props.onOpenPitching}
         />
       );
@@ -207,6 +209,7 @@ function SectionSlot({
       return (
         <HittingSection
           data={props.hittingData}
+          athleteId={props.athleteId}
           playLevel={props.playLevel ?? null}
           onOpen={props.onOpenHitting}
         />

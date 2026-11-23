@@ -2594,9 +2594,17 @@ export default function DashboardScreen({ navigation }: any) {
                       <Text style={styles.dayCountBadgeText}>{dotList.length}</Text>
                     </View>
                   )}
-                  <Text style={[styles.dayNumber, today && styles.dayNumberToday]}>
-                    {date.getDate()}
-                  </Text>
+                  <View style={[styles.dayNumberWrap, today && styles.dayNumberWrapToday]}>
+                    <Text
+                      style={[
+                        styles.dayNumber,
+                        !today && !hasEvents && date < new Date(new Date().setHours(0, 0, 0, 0)) && styles.dayNumberPast,
+                        today && styles.dayNumberToday,
+                      ]}
+                    >
+                      {date.getDate()}
+                    </Text>
+                  </View>
                   {/* Dot strip pinned to the bottom — reserved height so it can
                       never be pushed out of the cell on small screens. */}
                   <View style={styles.dayDots}>
@@ -3519,41 +3527,43 @@ const styles = StyleSheet.create({
     width: CALENDAR_DAY_SIZE,
     height: CALENDAR_DAY_SIZE,
   },
+  // Steel calendar: no cell boxes. Plain numbers, dots underneath,
+  // today is a solid ice disc, past empty days dim back.
   calendarDay: {
     width: CALENDAR_DAY_SIZE,
     height: CALENDAR_DAY_SIZE,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-    borderRadius: 10,
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 2,
+    gap: 3,
   },
-  // Subtle accent tint on days that have any event, so they read as
-  // "has stuff" before you even parse the dots.
-  calendarDayHasEvents: {
-    backgroundColor: 'rgba(155, 221, 255, 0.05)',
-    borderColor: 'rgba(155, 221, 255, 0.18)',
+  calendarDayHasEvents: {},
+  calendarDayToday: {},
+  dayNumberWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  calendarDayToday: {
-    borderColor: '#9BDDFF',
-    backgroundColor: 'rgba(155, 221, 255, 0.10)',
-    shadowColor: '#9BDDFF',
+  dayNumberWrapToday: {
+    backgroundColor: '#5ce1ff',
+    shadowColor: '#5ce1ff',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
   },
   dayNumber: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: '#FFFFFF',
-    lineHeight: 16,
+    fontVariant: ['tabular-nums'],
+  },
+  dayNumberPast: {
+    color: '#46505c',
   },
   dayNumberToday: {
-    color: '#9BDDFF',
+    color: '#001018',
+    fontWeight: '800',
   },
   // Fixed-height bottom strip — one line, never wraps or clips.
   dayDots: {
@@ -3585,15 +3595,15 @@ const styles = StyleSheet.create({
   // Count pill, top-right, for days with 3+ items.
   dayCountBadge: {
     position: 'absolute',
-    top: -5,
-    right: -5,
+    top: 0,
+    right: 2,
     minWidth: 16,
     height: 16,
     paddingHorizontal: 4,
     borderRadius: 8,
-    backgroundColor: '#9BDDFF',
+    backgroundColor: '#5ce1ff',
     borderWidth: 2,
-    borderColor: '#000000',
+    borderColor: '#05070a',
     alignItems: 'center',
     justifyContent: 'center',
   },

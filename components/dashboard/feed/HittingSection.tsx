@@ -10,6 +10,14 @@
 
 import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { BallFlight3D } from './three/BallFlight3D';
+import { PercentileLadder } from './PercentileLadder';
+import {
+  DISTANCE_NORMS,
+  EXIT_VELO_NORMS as EV_NORMS_SHARED,
+  BAT_SPEED_NORMS as BS_NORMS_SHARED,
+  normalizePlayLevel as normalizePlayLevelShared,
+} from '../../../lib/norms';
 import Svg, { Circle } from 'react-native-svg';
 
 interface HittingShape {
@@ -30,6 +38,7 @@ interface Props {
   data: HittingShape;
   /** Athlete's play level — drives the bat-speed percentile ring. */
   playLevel?: string | null;
+  athleteId?: string | null;
   onOpen: () => void;
 }
 
@@ -118,7 +127,7 @@ function tierForPercentile(p: number): { label: string; hex: string } {
   return { label: 'BUILD', hex: '#F87171' };
 }
 
-export function HittingSection({ data, playLevel, onOpen }: Props) {
+export function HittingSection({ data, playLevel, athleteId, onOpen }: Props) {
   const evPr = data.prs.exit_velocity?.value ?? null;
   const bsPr = data.prs.bat_speed?.value ?? null;
   const distPr = data.prs.distance?.value ?? null;
@@ -150,17 +159,26 @@ export function HittingSection({ data, playLevel, onOpen }: Props) {
           value={evPr}
           unit="MPH"
           hex={ACCENT_EV}
-          percentile={evPercentile}
         />
         <PRCol
           label="Bat speed"
           value={bsPr}
           unit="MPH"
           hex={ACCENT_BS}
-          percentile={bsPercentile}
         />
         <PRCol label="Distance" value={distPr} unit="FT" hex={ACCENT_DIST} />
       </View>
+
+      <BallFlight3D athleteId={athleteId} />
+
+      <PercentileLadder
+        defaultLevel={normalizePlayLevelShared(playLevel)}
+        metrics={[
+          { label: 'Max exit velo', value: evPr, unit: 'mph', norms: EV_NORMS_SHARED },
+          { label: 'Max distance', value: distPr, unit: 'ft', decimals: 0, norms: DISTANCE_NORMS },
+          { label: 'Bat speed', value: bsPr, unit: 'mph', norms: BS_NORMS_SHARED },
+        ]}
+      />
 
     </View>
   );
@@ -197,17 +215,7 @@ function PRCol({
       <View style={[styles.prAccent, { backgroundColor: hex }]} />
       <Text style={styles.prCaption}>Personal best</Text>
 
-      {/* Reserved slot — keeps all three PR columns the same height so
-          adding a percentile ring under one doesn't push that column
-          taller than its neighbors. EV/Distance render an empty slot
-          today and will fill in once their norms are wired. */}
-      <View style={styles.prRingSlot}>
-        {percentile != null ? (
-          <MiniPercentileRing percentile={percentile} />
-        ) : pendingNorms ? (
-          <PlaceholderRing />
-        ) : null}
-      </View>
+      {/* Percentile rings removed: the PercentileLadder under the field now ranks these. */}
     </View>
   );
 }
