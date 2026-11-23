@@ -14,7 +14,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Canvas, useFrame } from '@react-three/fiber/native';
+import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
 import * as THREE from 'three';
 import { supabase } from '../../../../lib/supabase';
 import { useInView } from '../../../../hooks/useInView';
@@ -37,9 +37,9 @@ const ZONE_W = 17 / 12;
 const ZONE_BOTTOM = 1.6;
 const ZONE_TOP = 3.5;
 const MAX_PITCHES = 12;
-const SECONDS_PER_PITCH = 1.1;
+const SECONDS_PER_PITCH = 1.5;
 const HOLD_SECONDS = 1.6;
-const FLIGHT_SHARE = 0.7;
+const FLIGHT_SHARE = 0.75;
 
 /** Time (s) at which the fitted trajectory reaches depth y (ft). */
 function timeAtY(r: PitchRow, y: number): number | null {
@@ -208,10 +208,37 @@ function Scene({ paths, active }: { paths: Path[]; active: boolean }) {
     [paths],
   );
 
+  // Auto-frame: back the catcher camera up until every point of every path
+  // (plus the zone) projects inside the view, so slow high-arc throws are
+  // seen release-to-plate instead of dropping in from off-screen.
+  const { size } = useThree();
+  const framing = useMemo(() => {
+    const aspect = size.width / Math.max(1, size.height);
+    const probe = new THREE.PerspectiveCamera(26, aspect, 0.05, 200);
+    const pts: THREE.Vector3[] = [
+      new THREE.Vector3(-ZONE_W / 2, ZONE_BOTTOM, PLATE_FRONT_FT),
+      new THREE.Vector3(ZONE_W / 2, ZONE_TOP, PLATE_FRONT_FT),
+    ];
+    paths.forEach((p) => p.points.forEach((v, i) => i % 4 === 0 && pts.push(v)));
+    for (let back = 9; back <= 60; back += 1) {
+      const pos = new THREE.Vector3(0, 3.2 + back * 0.08, -back);
+      const look = new THREE.Vector3(0, 3.0, 30);
+      probe.position.copy(pos);
+      probe.lookAt(look);
+      probe.updateMatrixWorld();
+      const fits = pts.every((v) => {
+        const q = v.clone().project(probe);
+        return Math.abs(q.x) < 0.92 && q.y < 0.82 && q.y > -0.9;
+      });
+      if (fits) return { pos, look };
+    }
+    return { pos: new THREE.Vector3(0, 8, -60), look: new THREE.Vector3(0, 3, 30) };
+  }, [paths, size.width, size.height]);
+
   useFrame((state) => {
     // Pin the framing every frame (R3F can reset a lookAt set once in onCreated).
-    state.camera.position.set(0, 3.6, -9);
-    state.camera.lookAt(0, 3.0, 30);
+    state.camera.position.copy(framing.pos);
+    state.camera.lookAt(framing.look);
     if (!active) {
       t0.current = null;
       trails.forEach((it) => {
@@ -256,7 +283,7 @@ function Scene({ paths, active }: { paths: Path[]; active: boolean }) {
         </React.Fragment>
       ))}
       <mesh ref={ball}>
-        <sphereGeometry args={[0.16, 20, 20]} />
+        <sphereGeometry args={[0.2, 20, 20]} />
         <meshBasicMaterial color="#ffffff" />
       </mesh>
     </>
