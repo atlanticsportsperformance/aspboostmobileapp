@@ -24,6 +24,18 @@ import Svg, {
   G,
 } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import {
+  STEEL,
+  fmt,
+  Section,
+  Kpi,
+  KpiRow,
+  TimeChips,
+  ScreenHeader,
+  steelStyles,
+  type TimeRange,
+} from '../components/hitting/steel';
+import { BAT_SPEED_NORMS, percentileFor, normalizePlayLevel, type Level } from '../lib/norms';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -42,12 +54,9 @@ async function fetchAllPaginated<T>(
 
   while (hasMore) {
     let q = query().select(selectColumns);
-
-    // Apply filters
     for (const filter of filters) {
       q = q.eq(filter.column, filter.value);
     }
-
     const { data, error } = await q
       .order(orderColumn, { ascending: orderAscending })
       .range(offset, offset + BATCH_SIZE - 1);
@@ -56,7 +65,6 @@ async function fetchAllPaginated<T>(
       console.error('Pagination fetch error:', error);
       break;
     }
-
     if (data && data.length > 0) {
       allData.push(...(data as T[]));
       offset += BATCH_SIZE;
@@ -65,30 +73,25 @@ async function fetchAllPaginated<T>(
       hasMore = false;
     }
   }
-
   return allData;
 }
 
-// Professional color palette matching HittingPerformanceScreen
-const COLORS = {
-  primary: '#9BDDFF',
-  primaryDark: '#7BC5F0',
-  secondary: '#F5F0E6',
-  gold: '#D4AF37',
-  white: '#FFFFFF',
-  gray100: '#F5F5F5',
-  gray300: '#D1D5DB',
-  gray400: '#9CA3AF',
-  gray500: '#6B7280',
-  gray600: '#4B5563',
-  gray700: '#374151',
-  gray800: '#1F2937',
-  gray900: '#111827',
-  black: '#000000',
-  chartPrimary: '#9BDDFF',
-  chartSecondary: '#7BC5F0',
-  chartAccent: '#B0E5FF',
+// Meaning colors for this screen
+const C = {
+  bat: STEEL.hitting, // #fb923c
+  batMax: STEEL.hitting2,
+  aa: STEEL.purple, // #a78bfa
+  conn: STEEL.cyan, // #22D3EE
+  early: '#8d939c',
+  band: STEEL.good,
+  fab: '#9BDDFF',
+  fab2: '#7BC5F0',
 };
+
+const AA_IDEAL: [number, number] = [5, 20];
+const CONN_IDEAL: [number, number] = [80, 95];
+
+const LEVEL_ABBR: Record<Level, string> = { Youth: 'Youth', 'High School': 'HS', College: 'College', Pro: 'Pro' };
 
 interface SessionData {
   date: string;
@@ -99,25 +102,37 @@ interface SessionData {
   avgConnectionAtImpact: number | null;
   avgEarlyConnection: number | null;
   swingCount: number;
+  /** Per-swing values, kept so range-wide KPIs are computed over swings, not session means. */
+  attackAngles: number[];
+  onPlane: number[];
 }
 
-type TimeFilter = '1month' | '3months' | '6months' | 'all';
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const stdDev = (xs: number[]) => {
+  if (xs.length < 2) return null;
+  const m = mean(xs)!;
+  return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / xs.length);
+};
+const ordinal = (n: number) => {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+};
+const pctColor = (p: number) => (p >= 75 ? '#34d399' : p >= 50 ? '#9BDDFF' : p >= 25 ? '#fbbf24' : '#ef4444');
+const formatDate = (dateStr: string) =>
+  new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
 export default function HittingTrendsScreen({ navigation, route }: any) {
   const [allSessionData, setAllSessionData] = useState<SessionData[]>([]);
-  const [filteredData, setFilteredData] = useState<SessionData[]>([]);
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
+  const [timeFilter, setTimeFilter] = useState<TimeRange>('3m');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
+  const [playLevel, setPlayLevel] = useState<Level | null>(null);
 
   useEffect(() => {
     loadAthleteAndData();
   }, []);
-
-  useEffect(() => {
-    applyTimeFilter();
-  }, [timeFilter, allSessionData]);
 
   async function loadAthleteAndData() {
     try {
@@ -127,12 +142,11 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
         return;
       }
 
-      // Use passed athleteId or fallback to looking up by user_id
       let currentAthleteId = athleteId;
       if (!currentAthleteId) {
         const { data: athlete } = await supabase
           .from('athletes')
-          .select('id')
+          .select('id, play_level')
           .eq('user_id', user.id)
           .single();
 
@@ -142,6 +156,14 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
         }
         currentAthleteId = athlete.id;
         setAthleteId(athlete.id);
+        setPlayLevel(normalizePlayLevel(athlete.play_level));
+      } else {
+        const { data: athlete } = await supabase
+          .from('athletes')
+          .select('play_level')
+          .eq('id', currentAthleteId)
+          .maybeSingle();
+        setPlayLevel(normalizePlayLevel(athlete?.play_level));
       }
 
       await fetchTrendsData(currentAthleteId!);
@@ -151,45 +173,22 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
     }
   }
 
-  function applyTimeFilter() {
-    if (allSessionData.length === 0) {
-      setFilteredData([]);
-      return;
-    }
-
-    const now = new Date();
-    let cutoffDate: Date;
-
-    switch (timeFilter) {
-      case '1month':
-        cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case '3months':
-        cutoffDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-        break;
-      case '6months':
-        cutoffDate = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
-        break;
-      case 'all':
-        setFilteredData(allSessionData);
-        return;
-    }
-
-    const filtered = allSessionData.filter(session =>
-      new Date(session.date) >= cutoffDate
-    );
-    setFilteredData(filtered);
-  }
+  const filteredData = useMemo(() => {
+    if (timeFilter === 'all') return allSessionData;
+    const days = timeFilter === '1m' ? 30 : timeFilter === '3m' ? 90 : 180;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    return allSessionData.filter((s) => new Date(s.date) >= cutoff);
+  }, [timeFilter, allSessionData]);
 
   async function fetchTrendsData(id: string, opts?: { silent?: boolean }) {
     if (!opts?.silent) setLoading(true);
 
-    // Use paginated fetch to get ALL blast swings (bypasses 1000 row limit)
     interface BlastSwing {
       bat_speed: number | null;
       attack_angle: number | null;
       connection_at_impact: number | null;
       early_connection: number | null;
+      on_plane_efficiency: number | null;
       recorded_date: string;
     }
 
@@ -197,18 +196,17 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
       session_date: string;
       avg_bat_speed: number | null;
       max_bat_speed: number | null;
-      total_swings: number;
+      total_swings: number | null;
     }
 
     const blastSwings = await fetchAllPaginated<BlastSwing>(
       () => supabase.from('blast_swings'),
-      'bat_speed, attack_angle, connection_at_impact, early_connection, recorded_date',
+      'bat_speed, attack_angle, connection_at_impact, early_connection, on_plane_efficiency, recorded_date',
       [{ column: 'athlete_id', value: id }],
       'recorded_date',
       true
     );
 
-    // Fetch Full Swing sessions for bat speed trends
     const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
       () => supabase.from('fullswing_sessions'),
       'session_date, avg_bat_speed, max_bat_speed, total_swings',
@@ -217,85 +215,88 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
       true
     );
 
-    // If no data from either source, return
     if ((!blastSwings || blastSwings.length === 0) && (!fullSwingSessions || fullSwingSessions.length === 0)) {
+      setAllSessionData([]);
       setLoading(false);
       return;
     }
 
-    const groupedByDate: { [key: string]: { batSpeeds: number[], attackAngles: number[], connectionAtImpacts: number[], earlyConnections: number[], fullSwingAvgBatSpeed?: number, fullSwingMaxBatSpeed?: number, fullSwingSwingCount?: number } } = {};
+    type Bucket = {
+      batSpeeds: number[];
+      attackAngles: number[];
+      connectionAtImpacts: number[];
+      earlyConnections: number[];
+      onPlane: number[];
+      fsSpeedSum: number; // Σ(avg × swings) across Full Swing sessions that day
+      fsSpeedWeight: number;
+      fsMax: number | null;
+      fsSwings: number;
+    };
+    const grouped: Record<string, Bucket> = {};
+    const bucket = (date: string) =>
+      (grouped[date] ??= {
+        batSpeeds: [],
+        attackAngles: [],
+        connectionAtImpacts: [],
+        earlyConnections: [],
+        onPlane: [],
+        fsSpeedSum: 0,
+        fsSpeedWeight: 0,
+        fsMax: null,
+        fsSwings: 0,
+      });
+    const ok = (v: number | null | undefined): v is number => v != null && Number.isFinite(v);
 
-    // Process Blast swings
-    (blastSwings || []).forEach(swing => {
-      const date = swing.recorded_date.split('T')[0];
-      if (!groupedByDate[date]) groupedByDate[date] = { batSpeeds: [], attackAngles: [], connectionAtImpacts: [], earlyConnections: [] };
-
-      if (swing.bat_speed !== null && swing.bat_speed > 0) {
-        groupedByDate[date].batSpeeds.push(swing.bat_speed);
-      }
-      if (swing.attack_angle !== null) {
-        groupedByDate[date].attackAngles.push(swing.attack_angle);
-      }
-      if (swing.connection_at_impact !== null) {
-        groupedByDate[date].connectionAtImpacts.push(swing.connection_at_impact);
-      }
-      if (swing.early_connection !== null) {
-        groupedByDate[date].earlyConnections.push(swing.early_connection);
-      }
+    (blastSwings || []).forEach((swing) => {
+      const b = bucket(swing.recorded_date.split('T')[0]);
+      if (ok(swing.bat_speed) && swing.bat_speed > 0) b.batSpeeds.push(swing.bat_speed);
+      if (ok(swing.attack_angle)) b.attackAngles.push(swing.attack_angle);
+      if (ok(swing.connection_at_impact)) b.connectionAtImpacts.push(swing.connection_at_impact);
+      if (ok(swing.early_connection)) b.earlyConnections.push(swing.early_connection);
+      if (ok(swing.on_plane_efficiency)) b.onPlane.push(swing.on_plane_efficiency);
     });
 
-    // Process Full Swing sessions - merge bat speed data
-    (fullSwingSessions || []).forEach(session => {
-      const date = session.session_date.split('T')[0];
-      if (!groupedByDate[date]) groupedByDate[date] = { batSpeeds: [], attackAngles: [], connectionAtImpacts: [], earlyConnections: [] };
-
-      // Store Full Swing bat speed data
-      if (session.avg_bat_speed !== null) {
-        groupedByDate[date].fullSwingAvgBatSpeed = session.avg_bat_speed;
+    (fullSwingSessions || []).forEach((session) => {
+      const b = bucket(session.session_date.split('T')[0]);
+      const swings = session.total_swings ?? 0;
+      if (ok(session.avg_bat_speed) && session.avg_bat_speed > 0) {
+        const w = Math.max(1, swings);
+        b.fsSpeedSum += session.avg_bat_speed * w;
+        b.fsSpeedWeight += w;
       }
-      if (session.max_bat_speed !== null) {
-        groupedByDate[date].fullSwingMaxBatSpeed = session.max_bat_speed;
-      }
-      groupedByDate[date].fullSwingSwingCount = session.total_swings;
+      if (ok(session.max_bat_speed)) b.fsMax = b.fsMax == null ? session.max_bat_speed : Math.max(b.fsMax, session.max_bat_speed);
+      b.fsSwings += swings;
     });
 
-    const trends: SessionData[] = Object.keys(groupedByDate)
-      .map(date => {
-        const { batSpeeds, attackAngles, connectionAtImpacts, earlyConnections, fullSwingAvgBatSpeed, fullSwingMaxBatSpeed, fullSwingSwingCount } = groupedByDate[date];
+    const trends: SessionData[] = Object.keys(grouped)
+      .map((date) => {
+        const b = grouped[date];
 
-        let attackAngleStdDev = null;
-        if (attackAngles.length > 1) {
-          const mean = attackAngles.reduce((sum, a) => sum + a, 0) / attackAngles.length;
-          const variance = attackAngles.reduce((sum, a) => sum + Math.pow(a - mean, 2), 0) / attackAngles.length;
-          attackAngleStdDev = Math.sqrt(variance);
-        }
+        // Swing-count-weighted average across Blast + Full Swing (was Math.max of the two averages).
+        const blastSum = b.batSpeeds.reduce((s, v) => s + v, 0);
+        const totalW = b.batSpeeds.length + b.fsSpeedWeight;
+        const avgBatSpeed = totalW > 0 ? (blastSum + b.fsSpeedSum) / totalW : null;
 
-        // Combine bat speeds from Blast and Full Swing
-        const blastAvgBatSpeed = batSpeeds.length > 0 ? batSpeeds.reduce((sum, s) => sum + s, 0) / batSpeeds.length : null;
-        const blastMaxBatSpeed = batSpeeds.length > 0 ? Math.max(...batSpeeds) : null;
+        const blastMax = b.batSpeeds.length ? Math.max(...b.batSpeeds) : null;
+        const maxCandidates = [blastMax, b.fsMax].filter(ok);
+        const maxBatSpeed = maxCandidates.length ? Math.max(...maxCandidates) : null;
 
-        // Use combined average/max - prefer higher value if both exist
-        let avgBatSpeed = blastAvgBatSpeed;
-        let maxBatSpeed = blastMaxBatSpeed;
-
-        if (fullSwingAvgBatSpeed !== undefined) {
-          avgBatSpeed = avgBatSpeed !== null ? Math.max(avgBatSpeed, fullSwingAvgBatSpeed) : fullSwingAvgBatSpeed;
-        }
-        if (fullSwingMaxBatSpeed !== undefined) {
-          maxBatSpeed = maxBatSpeed !== null ? Math.max(maxBatSpeed, fullSwingMaxBatSpeed) : fullSwingMaxBatSpeed;
-        }
-
-        const totalSwingCount = batSpeeds.length + (fullSwingSwingCount || 0);
+        const totalSwingCount = b.batSpeeds.length + b.fsSwings;
 
         return {
           date,
           avgBatSpeed,
           maxBatSpeed,
-          avgAttackAngle: attackAngles.length > 0 ? attackAngles.reduce((sum, a) => sum + a, 0) / attackAngles.length : null,
-          attackAngleStdDev,
-          avgConnectionAtImpact: connectionAtImpacts.length > 0 ? connectionAtImpacts.reduce((sum, c) => sum + c, 0) / connectionAtImpacts.length : null,
-          avgEarlyConnection: earlyConnections.length > 0 ? earlyConnections.reduce((sum, e) => sum + e, 0) / earlyConnections.length : null,
-          swingCount: totalSwingCount > 0 ? totalSwingCount : Math.max(attackAngles.length, connectionAtImpacts.length, earlyConnections.length),
+          avgAttackAngle: mean(b.attackAngles),
+          attackAngleStdDev: stdDev(b.attackAngles),
+          avgConnectionAtImpact: mean(b.connectionAtImpacts),
+          avgEarlyConnection: mean(b.earlyConnections),
+          swingCount:
+            totalSwingCount > 0
+              ? totalSwingCount
+              : Math.max(b.attackAngles.length, b.connectionAtImpacts.length, b.earlyConnections.length),
+          attackAngles: b.attackAngles,
+          onPlane: b.onPlane,
         };
       })
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -316,245 +317,211 @@ export default function HittingTrendsScreen({ navigation, route }: any) {
     }
   }, [athleteId]);
 
-  const avgOfAvgs = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgBatSpeed !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgBatSpeed || 0), 0) / validSessions.length
-      : 0;
-  }, [filteredData]);
-
-  const maxOfMaxs = useMemo(() => {
-    return filteredData.length > 0 ? Math.max(...filteredData.map(s => s.maxBatSpeed || 0)) : 0;
-  }, [filteredData]);
-
-  const avgAttackAngle = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgAttackAngle !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgAttackAngle || 0), 0) / validSessions.length
-      : 0;
-  }, [filteredData]);
-
-  const avgConnectionAtImpact = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgConnectionAtImpact !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgConnectionAtImpact || 0), 0) / validSessions.length
-      : null;
-  }, [filteredData]);
-
-  const avgEarlyConnection = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgEarlyConnection !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgEarlyConnection || 0), 0) / validSessions.length
-      : null;
-  }, [filteredData]);
+  const stats = useMemo(() => {
+    const avgOf = (vals: (number | null)[]) => mean(vals.filter((v): v is number => v != null));
+    const speedSessions = filteredData.filter((s) => s.avgBatSpeed != null);
+    const maxes = filteredData.map((s) => s.maxBatSpeed).filter((v): v is number => v != null);
+    const angles = filteredData.flatMap((s) => s.attackAngles);
+    const onPlane = filteredData.flatMap((s) => s.onPlane);
+    const batAvg = avgOf(filteredData.map((s) => s.avgBatSpeed));
+    const batDelta =
+      speedSessions.length >= 2
+        ? speedSessions[speedSessions.length - 1].avgBatSpeed! - speedSessions[0].avgBatSpeed!
+        : null;
+    const norms = playLevel ? BAT_SPEED_NORMS[playLevel] : undefined;
+    const batPct = norms && batAvg != null ? percentileFor(batAvg, norms) : null;
+    return {
+      batAvg,
+      batPeak: maxes.length ? Math.max(...maxes) : null,
+      batDelta,
+      batPct,
+      aaAvg: avgOf(filteredData.map((s) => s.avgAttackAngle)),
+      aaInRange: angles.length
+        ? (angles.filter((a) => a >= AA_IDEAL[0] && a <= AA_IDEAL[1]).length / angles.length) * 100
+        : null,
+      aaStd: stdDev(angles),
+      connImpact: avgOf(filteredData.map((s) => s.avgConnectionAtImpact)),
+      connEarly: avgOf(filteredData.map((s) => s.avgEarlyConnection)),
+      onPlane: mean(onPlane),
+    };
+  }, [filteredData, playLevel]);
 
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color={C.bat} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={steelStyles.screen} edges={['top']}>
       <ScrollView
-        style={styles.scrollView}
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.bat} colors={[C.bat]} progressBackgroundColor="#1A1A1A" />
         }
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons name="arrow-back" size={20} color={COLORS.gray400} />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>Swing Trends</Text>
-          <Text style={styles.subtitle}>
-            Track your performance over time • {filteredData.length} sessions
-          </Text>
-        </View>
+        <ScreenHeader
+          title="Swing Trends"
+          subtitle={`Track your performance over time · ${filteredData.length} sessions`}
+          onBack={() => navigation.goBack()}
+        />
 
-        {/* Time Filter Buttons */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterContainer}
-          contentContainerStyle={styles.filterContent}
-        >
-          {(['1month', '3months', '6months', 'all'] as TimeFilter[]).map((filter) => (
-            <TouchableOpacity
-              key={filter}
-              onPress={() => setTimeFilter(filter)}
-              style={[
-                styles.filterButton,
-                timeFilter === filter && styles.filterButtonActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  timeFilter === filter && styles.filterButtonTextActive,
-                ]}
-              >
-                {filter === '1month' ? '1 Month' :
-                 filter === '3months' ? '3 Months' :
-                 filter === '6months' ? '6 Months' : 'All Time'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {allSessionData.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No swing data available</Text>
-            <Text style={styles.emptySubtext}>Complete Blast Motion sessions to track your trends</Text>
+        <View style={steelStyles.body}>
+          <View style={{ paddingTop: 8, paddingBottom: 4 }}>
+            <TimeChips value={timeFilter} onChange={setTimeFilter} />
           </View>
-        ) : filteredData.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No data for this time period</Text>
-            <Text style={styles.emptySubtext}>Try selecting a different time range</Text>
-          </View>
-        ) : (
-          <>
-            {/* Bat Speed PR Cards */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Bat Speed</Text>
-              <View style={styles.prRow}>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValue}>{avgOfAvgs.toFixed(1)}</Text>
-                  <Text style={styles.prLabel}>Average</Text>
-                  <Text style={styles.prUnit}>mph</Text>
-                </View>
-                <View style={[styles.prItem, styles.prItemBorder]}>
-                  <View style={styles.prValueRow}>
-                    <Ionicons name="star" size={12} color={COLORS.gold} />
-                    <Text style={styles.prValueGold}>{maxOfMaxs.toFixed(1)}</Text>
-                  </View>
-                  <Text style={styles.prLabel}>Peak</Text>
-                  <Text style={styles.prUnit}>mph</Text>
-                </View>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValue}>{filteredData.length}</Text>
-                  <Text style={styles.prLabel}>Sessions</Text>
-                  <Text style={styles.prUnit}>total</Text>
-                </View>
-              </View>
+
+          {allSessionData.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No swing data available</Text>
+              <Text style={styles.emptySubtext}>Complete Blast Motion sessions to track your trends</Text>
             </View>
-
-            {/* Bat Speed Chart */}
-            <BatSpeedChart sessionData={filteredData} />
-
-            {/* Attack Angle Section */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Attack Angle</Text>
-              <View style={styles.singleStatRow}>
-                <Text style={styles.prValue}>{avgAttackAngle.toFixed(1)}°</Text>
-                <Text style={styles.statDescription}>Average swing path • Ideal: 5-20°</Text>
-              </View>
+          ) : filteredData.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No data for this time period</Text>
+              <Text style={styles.emptySubtext}>Try selecting a different time range</Text>
             </View>
+          ) : (
+            <>
+              <Section title="BAT SPEED" right={`${filteredData.length} sessions`}>
+                <KpiRow>
+                  <Kpi label="AVERAGE" value={fmt(stats.batAvg)} unit="mph" color={C.bat} delta={stats.batDelta} />
+                  <Kpi label="PEAK" value={fmt(stats.batPeak)} unit="mph" color={C.batMax} />
+                  <Kpi
+                    label="PERCENTILE"
+                    value={stats.batPct != null ? ordinal(stats.batPct) : '—'}
+                    color={stats.batPct != null ? pctColor(stats.batPct) : STEEL.text}
+                    note={playLevel ? `vs ${LEVEL_ABBR[playLevel]}` : 'Set play level'}
+                  />
+                </KpiRow>
+                <TrendChart
+                  sessionData={filteredData}
+                  height={240}
+                  unit=" mph"
+                  domain={(vals) => [Math.floor(Math.min(...vals) / 10) * 10, Math.ceil(Math.max(...vals) / 10) * 10]}
+                  series={[
+                    { key: 'avg', label: 'Avg Speed', color: C.bat, area: true, get: (s) => s.avgBatSpeed },
+                    { key: 'max', label: 'Max Speed', color: C.batMax, dashed: true, get: (s) => s.maxBatSpeed },
+                  ]}
+                />
+              </Section>
 
-            {/* Attack Angle Chart */}
-            <AttackAngleChart sessionData={filteredData} />
+              <Section title="ATTACK ANGLE" right="Ideal 5–20°">
+                <KpiRow>
+                  <Kpi label="AVERAGE" value={fmt(stats.aaAvg)} unit="°" color={C.aa} />
+                  <Kpi
+                    label="IN RANGE"
+                    value={fmt(stats.aaInRange, 0)}
+                    unit="%"
+                    color={stats.aaInRange != null && stats.aaInRange >= 50 ? STEEL.good : STEEL.text}
+                  />
+                  <Kpi label="STD DEV" value={fmt(stats.aaStd)} unit="°" />
+                </KpiRow>
+                <TrendChart
+                  sessionData={filteredData}
+                  height={220}
+                  unit="°"
+                  emptyText="No attack angle data available"
+                  band={AA_IDEAL}
+                  bandLabel="Ideal (5-20°)"
+                  domain={() => {
+                    const lows = filteredData.map((s) =>
+                      s.avgAttackAngle != null ? s.avgAttackAngle - (s.attackAngleStdDev ?? 0) : null
+                    ).filter((v): v is number => v != null);
+                    const highs = filteredData.map((s) =>
+                      s.avgAttackAngle != null ? s.avgAttackAngle + (s.attackAngleStdDev ?? 0) : null
+                    ).filter((v): v is number => v != null);
+                    return [Math.floor(Math.min(...lows) / 5) * 5, Math.ceil(Math.max(...highs) / 5) * 5];
+                  }}
+                  series={[{ key: 'aa', label: 'Attack Angle', color: C.aa, get: (s) => s.avgAttackAngle }]}
+                />
+              </Section>
 
-            {/* Connection Section */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Connection Metrics</Text>
-              <View style={styles.prRow}>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValue}>
-                    {avgConnectionAtImpact !== null ? avgConnectionAtImpact.toFixed(1) : '--'}°
-                  </Text>
-                  <Text style={styles.prLabel}>At Impact</Text>
-                  <Text style={styles.prUnit}>connection</Text>
-                </View>
-                <View style={[styles.prItem, styles.prItemBorder]}>
-                  <Text style={styles.prValue}>
-                    {avgEarlyConnection !== null ? avgEarlyConnection.toFixed(1) : '--'}°
-                  </Text>
-                  <Text style={styles.prLabel}>Early</Text>
-                  <Text style={styles.prUnit}>connection</Text>
-                </View>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValueSmall}>80-95°</Text>
-                  <Text style={styles.prLabel}>Ideal</Text>
-                  <Text style={styles.prUnit}>range</Text>
-                </View>
-              </View>
-            </View>
+              <Section title="CONNECTION" right="Ideal 80–95°">
+                <KpiRow>
+                  <Kpi label="AT IMPACT" value={fmt(stats.connImpact)} unit="°" color={C.conn} />
+                  <Kpi label="EARLY" value={fmt(stats.connEarly)} unit="°" color={STEEL.day} />
+                  <Kpi label="ON-PLANE" value={fmt(stats.onPlane, 0)} unit="%" />
+                </KpiRow>
+                <TrendChart
+                  sessionData={filteredData}
+                  height={220}
+                  unit="°"
+                  emptyText="No connection data available"
+                  band={CONN_IDEAL}
+                  bandLabel="Ideal"
+                  domain={(vals) => [
+                    Math.min(Math.floor(Math.min(...vals) / 10) * 10, 70),
+                    Math.max(Math.ceil(Math.max(...vals) / 10) * 10, 100),
+                  ]}
+                  series={[
+                    { key: 'impact', label: 'At Impact', color: C.conn, get: (s) => s.avgConnectionAtImpact },
+                    { key: 'early', label: 'Early', color: C.early, dashed: true, get: (s) => s.avgEarlyConnection },
+                  ]}
+                />
+              </Section>
 
-            {/* Connection Chart */}
-            <ConnectionChart sessionData={filteredData} />
-
-            {/* Session Details Table */}
-            <View style={styles.tableContainer}>
-              <Text style={styles.sectionTitle}>Session Details</Text>
-              <View style={styles.table}>
+              <Section title="SESSION DETAILS" right="Last 15">
                 <View style={styles.tableHeader}>
-                  <Text style={[styles.tableHeaderText, { flex: 1.2 }]}>Date</Text>
-                  <Text style={[styles.tableHeaderText, { flex: 0.6 }]}>Swings</Text>
-                  <Text style={[styles.tableHeaderText, { flex: 0.8 }]}>Avg</Text>
-                  <Text style={[styles.tableHeaderText, { flex: 0.8 }]}>Max</Text>
-                  <Text style={[styles.tableHeaderText, { flex: 0.7 }]}>AA</Text>
+                  <Text style={[styles.th, { flex: 1.2, textAlign: 'left' }]}>DATE</Text>
+                  <Text style={[styles.th, { flex: 0.7 }]}>SWINGS</Text>
+                  <Text style={[styles.th, { flex: 0.8 }]}>AVG</Text>
+                  <Text style={[styles.th, { flex: 0.8 }]}>MAX</Text>
+                  <Text style={[styles.th, { flex: 0.7 }]}>AA</Text>
                 </View>
-                {filteredData.slice().reverse().slice(0, 15).map((session, index) => (
-                  <View key={index} style={[styles.tableRow, index % 2 === 0 && styles.tableRowEven]}>
-                    <Text style={[styles.tableCell, { flex: 1.2, color: COLORS.white }]}>
-                      {new Date(session.date).toLocaleDateString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                      })}
+                {filteredData.slice().reverse().slice(0, 15).map((session) => (
+                  <View key={session.date} style={styles.tableRow}>
+                    <Text style={[styles.td, { flex: 1.2, textAlign: 'left', color: STEEL.text, fontWeight: '700' }]}>
+                      {formatDate(session.date)}
                     </Text>
-                    <Text style={[styles.tableCell, { flex: 0.6 }]}>{session.swingCount}</Text>
-                    <Text style={[styles.tableCell, { flex: 0.8, color: COLORS.primary, fontWeight: '600' }]}>
-                      {session.avgBatSpeed?.toFixed(1) || '--'}
-                    </Text>
-                    <Text style={[styles.tableCell, { flex: 0.8, color: COLORS.secondary, fontWeight: '600' }]}>
-                      {session.maxBatSpeed?.toFixed(1) || '--'}
-                    </Text>
-                    <Text style={[styles.tableCell, { flex: 0.7, color: COLORS.gray300, fontWeight: '600' }]}>
-                      {session.avgAttackAngle?.toFixed(1) || '--'}°
+                    <Text style={[styles.td, { flex: 0.7 }]}>{session.swingCount}</Text>
+                    <Text style={[styles.td, styles.tdNum, { flex: 0.8, color: C.bat }]}>{fmt(session.avgBatSpeed)}</Text>
+                    <Text style={[styles.td, styles.tdNum, { flex: 0.8, color: C.batMax }]}>{fmt(session.maxBatSpeed)}</Text>
+                    <Text style={[styles.td, styles.tdNum, { flex: 0.7, color: C.aa }]}>
+                      {session.avgAttackAngle != null ? `${fmt(session.avgAttackAngle)}°` : '—'}
                     </Text>
                   </View>
                 ))}
-              </View>
-            </View>
-          </>
-        )}
+              </Section>
+            </>
+          )}
+        </View>
 
         <View style={{ height: 100 }} />
       </ScrollView>
 
       {/* Floating Back Button */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => navigation.goBack()}
-      >
-        <LinearGradient
-          colors={[COLORS.primary, COLORS.primaryDark]}
-          style={styles.fabGradient}
-        >
-          <Ionicons name="chevron-back" size={24} color={COLORS.black} />
+      <TouchableOpacity style={styles.fab} onPress={() => navigation.goBack()}>
+        <LinearGradient colors={[C.fab, C.fab2]} style={styles.fabGradient}>
+          <Ionicons name="chevron-back" size={24} color="#000" />
         </LinearGradient>
       </TouchableOpacity>
     </SafeAreaView>
   );
 }
 
-// Tooltip Component
-function Tooltip({ x, y, value, label, date, color }: { x: number; y: number; value: string; label: string; date: string; color: string }) {
+// ─── Shared chart helpers (one chart, three configurations) ───────────────────
+
+type Series = {
+  key: string;
+  label: string;
+  color: string;
+  dashed?: boolean;
+  area?: boolean;
+  get: (s: SessionData) => number | null;
+};
+type Pt = { x: number; y: number; value: number; date: string };
+
+function Tooltip({ x, y, value, label, date, color, chartWidth }: { x: number; y: number; value: string; label: string; date: string; color: string; chartWidth: number }) {
   const tooltipWidth = 90;
   const tooltipHeight = 48;
-  const adjustedX = Math.max(10, Math.min(x - tooltipWidth / 2, SCREEN_WIDTH - 32 - tooltipWidth - 10));
-  const adjustedY = y - tooltipHeight - 12;
-
+  const left = Math.max(4, Math.min(x - tooltipWidth / 2, chartWidth - tooltipWidth - 4));
+  const top = Math.max(0, y - tooltipHeight - 12);
   return (
-    <View style={[styles.tooltip, { left: adjustedX, top: Math.max(5, adjustedY) }]}>
+    <View pointerEvents="none" style={[styles.tooltip, { left, top, borderColor: color + '66' }]}>
       <Text style={[styles.tooltipValue, { color }]}>{value}</Text>
       <Text style={styles.tooltipLabel}>{label}</Text>
       <Text style={styles.tooltipDate}>{date}</Text>
@@ -562,622 +529,184 @@ function Tooltip({ x, y, value, label, date, color }: { x: number; y: number; va
   );
 }
 
-// Bat Speed Chart Component
-function BatSpeedChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; type: 'avg' | 'max'; date: string } | null>(null);
+function TrendChart({
+  sessionData,
+  series,
+  height,
+  unit,
+  domain,
+  band,
+  bandLabel,
+  emptyText,
+}: {
+  sessionData: SessionData[];
+  series: Series[];
+  height: number;
+  unit: string;
+  domain: (vals: number[]) => [number, number];
+  band?: [number, number];
+  bandLabel?: string;
+  emptyText?: string;
+}) {
+  const [selected, setSelected] = useState<(Pt & { key: string }) | null>(null);
 
   if (sessionData.length === 0) return null;
 
+  const allVals = sessionData.flatMap((s) => series.map((sr) => sr.get(s))).filter((v): v is number => v != null && Number.isFinite(v));
+  if (allVals.length === 0) {
+    return emptyText ? <Text style={styles.emptyChartText}>{emptyText}</Text> : null;
+  }
+
   const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 264;
-  const padding = { top: 20, right: 35, bottom: 35, left: 40 };
+  const padding = { top: 16, right: 12, bottom: 24, left: 32 };
   const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
+  const innerHeight = height - padding.top - padding.bottom;
 
-  const allSpeeds = sessionData.flatMap(s => [s.avgBatSpeed, s.maxBatSpeed]).filter((v): v is number => v !== null);
-  const minSpeed = Math.floor(Math.min(...allSpeeds) / 10) * 10;
-  const maxSpeed = Math.ceil(Math.max(...allSpeeds) / 10) * 10;
+  let [lo, hi] = domain(allVals);
+  if (!(hi > lo)) {
+    lo -= 5;
+    hi += 5;
+  }
+  const yOf = (v: number) => padding.top + innerHeight - ((v - lo) / (hi - lo)) * innerHeight;
+  const xOf = (i: number) => padding.left + (sessionData.length === 1 ? innerWidth / 2 : (i / (sessionData.length - 1)) * innerWidth);
 
-  const avgPoints = sessionData
-    .map((session, index) => {
-      if (session.avgBatSpeed === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgBatSpeed - minSpeed) / (maxSpeed - minSpeed)) * innerHeight;
-      return { x, y, value: session.avgBatSpeed, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
+  const pointsBy = series.map((sr) =>
+    sessionData
+      .map((s, i) => {
+        const v = sr.get(s);
+        return v != null && Number.isFinite(v) ? { x: xOf(i), y: yOf(v), value: v, date: s.date } : null;
+      })
+      .filter((p): p is Pt => p !== null)
+  );
+  const linePath = (pts: Pt[]) => pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const bottom = padding.top + innerHeight;
 
-  const maxPoints = sessionData
-    .map((session, index) => {
-      if (session.maxBatSpeed === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.maxBatSpeed - minSpeed) / (maxSpeed - minSpeed)) * innerHeight;
-      return { x, y, value: session.maxBatSpeed, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
+  const steps = 4;
+  const grid = Array.from({ length: steps + 1 }, (_, i) => ({
+    y: padding.top + innerHeight - (i / steps) * innerHeight,
+    value: lo + (i * (hi - lo)) / steps,
+  }));
 
-  const avgLinePath = avgPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const maxLinePath = maxPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const avgAreaPath = avgPoints.length > 0
-    ? `${avgLinePath} L ${avgPoints[avgPoints.length - 1].x} ${padding.top + innerHeight} L ${padding.left} ${padding.top + innerHeight} Z`
-    : '';
-
-  const yAxisSteps = 4;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minSpeed + (i * (maxSpeed - minSpeed)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
+  let bandRect: { y: number; h: number } | null = null;
+  if (band && band[1] >= lo && band[0] <= hi) {
+    const yTop = yOf(Math.min(band[1], hi));
+    const yBot = yOf(Math.max(band[0], lo));
+    bandRect = { y: yTop, h: yBot - yTop };
+  }
+  const degree = unit === '°';
 
   return (
-    <View style={styles.chartContainer}>
-      <Svg width={chartWidth} height={chartHeight}>
+    <View style={styles.chart}>
+      <Svg width={chartWidth} height={height}>
         <Defs>
-          <SvgLinearGradient id="avgGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <Stop offset="0%" stopColor={COLORS.primary} stopOpacity="0.3" />
-            <Stop offset="100%" stopColor={COLORS.primary} stopOpacity="0.02" />
-          </SvgLinearGradient>
+          {series.filter((s) => s.area).map((s) => (
+            <SvgLinearGradient key={s.key} id={`area-${s.key}`} x1="0%" y1="0%" x2="0%" y2="100%">
+              <Stop offset="0%" stopColor={s.color} stopOpacity="0.28" />
+              <Stop offset="100%" stopColor={s.color} stopOpacity="0.01" />
+            </SvgLinearGradient>
+          ))}
         </Defs>
 
-        <Rect x={padding.left} y={padding.top} width={innerWidth} height={innerHeight} fill="rgba(0,0,0,0.3)" stroke={COLORS.gray700} strokeWidth={1} rx={4} />
+        {bandRect && <Rect x={padding.left} y={bandRect.y} width={innerWidth} height={bandRect.h} fill={C.band} opacity={0.07} />}
 
-        {gridLines.map((line, i) => (
+        {grid.map((g, i) => (
           <G key={i}>
-            <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke={COLORS.gray700} strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
-            <SvgText x={padding.left - 6} y={line.y + 4} textAnchor="end" fontSize={9} fill={COLORS.gray500}>{Math.round(line.value)}</SvgText>
+            <Line x1={padding.left} y1={g.y} x2={padding.left + innerWidth} y2={g.y} stroke={STEEL.rule} strokeWidth={1} />
+            <SvgText x={padding.left - 6} y={g.y + 3} textAnchor="end" fontSize={9} fill={STEEL.mute}>
+              {Math.round(g.value)}{degree ? '°' : ''}
+            </SvgText>
           </G>
         ))}
 
-        <Path d={avgAreaPath} fill="url(#avgGradient)" />
-        <Path d={avgLinePath} fill="none" stroke={COLORS.primary} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        {series.map((sr, si) => {
+          const pts = pointsBy[si];
+          if (pts.length === 0) return null;
+          const d = linePath(pts);
+          return (
+            <G key={sr.key}>
+              {sr.area && (
+                <Path d={`${d} L ${pts[pts.length - 1].x} ${bottom} L ${pts[0].x} ${bottom} Z`} fill={`url(#area-${sr.key})`} />
+              )}
+              <Path
+                d={d}
+                fill="none"
+                stroke={sr.color}
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={sr.dashed ? '6,3' : undefined}
+              />
+              {pts.map((p, i) => {
+                const on = selected?.key === sr.key && selected.x === p.x;
+                return <Circle key={i} cx={p.x} cy={p.y} r={on ? 5.5 : 3} fill={sr.dashed ? STEEL.bg : sr.color} stroke={sr.color} strokeWidth={on ? 2 : 1.5} />;
+              })}
+            </G>
+          );
+        })}
 
-        {avgPoints.map((point, i) => (
-          <Circle key={`avg-${i}`} cx={point.x} cy={point.y} r={selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? 6 : 4} fill={COLORS.primary} stroke={COLORS.primaryDark} strokeWidth={2} />
-        ))}
-
-        <Path d={maxLinePath} fill="none" stroke={COLORS.secondary} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6,3" />
-
-        {maxPoints.map((point, i) => (
-          <Circle key={`max-${i}`} cx={point.x} cy={point.y} r={selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? 6 : 4} fill={COLORS.secondary} stroke={COLORS.gold} strokeWidth={2} />
-        ))}
-
-        <SvgText x={chartWidth / 2} y={chartHeight - 6} textAnchor="middle" fontSize={10} fill={COLORS.gray500}>Sessions</SvgText>
+        <SvgText x={chartWidth / 2} y={height - 6} textAnchor="middle" fontSize={9} fill={STEEL.mute}>Sessions</SvgText>
       </Svg>
 
-      {/* Touch targets for avg points */}
-      {avgPoints.map((point, i) => (
-        <TouchableOpacity
-          key={`avg-touch-${i}`}
-          style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-          onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? null : { ...point, type: 'avg' })}
-        />
-      ))}
-
-      {/* Touch targets for max points */}
-      {maxPoints.map((point, i) => (
-        <TouchableOpacity
-          key={`max-touch-${i}`}
-          style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-          onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? null : { ...point, type: 'max' })}
-        />
-      ))}
-
-      {/* Tooltip */}
-      {selectedPoint && (
-        <Tooltip
-          x={selectedPoint.x}
-          y={selectedPoint.y}
-          value={`${selectedPoint.value.toFixed(1)} mph`}
-          label={selectedPoint.type === 'avg' ? 'Average' : 'Max'}
-          date={formatDate(selectedPoint.date)}
-          color={selectedPoint.type === 'avg' ? COLORS.primary : COLORS.secondary}
-        />
+      {series.map((sr, si) =>
+        pointsBy[si].map((p, i) => (
+          <TouchableOpacity
+            key={`${sr.key}-t-${i}`}
+            style={[styles.touchTarget, { left: p.x - 15, top: p.y - 15 }]}
+            onPress={() => setSelected(selected?.key === sr.key && selected.x === p.x ? null : { ...p, key: sr.key })}
+          />
+        ))
       )}
 
+      {selected && (() => {
+        const sr = series.find((s) => s.key === selected.key)!;
+        return (
+          <Tooltip
+            x={selected.x}
+            y={selected.y}
+            chartWidth={chartWidth}
+            value={`${fmt(selected.value)}${unit}`}
+            label={sr.label}
+            date={formatDate(selected.date)}
+            color={sr.color}
+          />
+        );
+      })()}
+
       <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Avg Speed</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.secondary }]} />
-          <Text style={styles.legendText}>Max Speed</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// Attack Angle Chart Component
-function AttackAngleChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; date: string } | null>(null);
-
-  if (sessionData.length === 0) return null;
-
-  const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 240;
-  const padding = { top: 20, right: 35, bottom: 35, left: 40 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
-
-  const allAngles = sessionData.map(s => s.avgAttackAngle).filter((v): v is number => v !== null);
-
-  if (allAngles.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No attack angle data available</Text>
-      </View>
-    );
-  }
-
-  const minAngleWithStdDev = Math.min(...sessionData.map((s) =>
-    s.avgAttackAngle !== null && s.attackAngleStdDev !== null
-      ? s.avgAttackAngle - s.attackAngleStdDev
-      : s.avgAttackAngle || 0
-  ));
-  const maxAngleWithStdDev = Math.max(...sessionData.map((s) =>
-    s.avgAttackAngle !== null && s.attackAngleStdDev !== null
-      ? s.avgAttackAngle + s.attackAngleStdDev
-      : s.avgAttackAngle || 0
-  ));
-
-  const minAngle = Math.floor(minAngleWithStdDev / 5) * 5;
-  const maxAngle = Math.ceil(maxAngleWithStdDev / 5) * 5;
-
-  const avgPoints = sessionData
-    .map((session, index) => {
-      if (session.avgAttackAngle === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgAttackAngle - minAngle) / (maxAngle - minAngle)) * innerHeight;
-      return { x, y, value: session.avgAttackAngle, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const avgLinePath = avgPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const yAxisSteps = 4;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minAngle + (i * (maxAngle - minAngle)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
-
-  const idealMin = 5;
-  const idealMax = 20;
-  const yIdealMax = padding.top + innerHeight - ((idealMax - minAngle) / (maxAngle - minAngle)) * innerHeight;
-  const yIdealMin = padding.top + innerHeight - ((idealMin - minAngle) / (maxAngle - minAngle)) * innerHeight;
-  const idealHeight = yIdealMin - yIdealMax;
-  const showIdealRange = idealMax >= minAngle && idealMin <= maxAngle;
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-
-  return (
-    <View style={styles.chartContainer}>
-      <Svg width={chartWidth} height={chartHeight}>
-        <Rect x={padding.left} y={padding.top} width={innerWidth} height={innerHeight} fill="rgba(0,0,0,0.3)" stroke={COLORS.gray700} strokeWidth={1} rx={4} />
-
-        {showIdealRange && (
-          <Rect x={padding.left} y={Math.max(padding.top, yIdealMax)} width={innerWidth} height={Math.min(idealHeight, innerHeight)} fill={COLORS.primary} opacity={0.08} />
+        {series.map((sr) => (
+          <View key={sr.key} style={styles.legendItem}>
+            <View style={[styles.legendLine, { backgroundColor: sr.color, opacity: sr.dashed ? 0.7 : 1 }]} />
+            <Text style={styles.legendText}>{sr.label}</Text>
+          </View>
+        ))}
+        {band && (
+          <View style={styles.legendItem}>
+            <View style={styles.legendBox} />
+            <Text style={styles.legendText}>{bandLabel ?? 'Ideal'}</Text>
+          </View>
         )}
-
-        {gridLines.map((line, i) => (
-          <G key={i}>
-            <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke={COLORS.gray700} strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
-            <SvgText x={padding.left - 6} y={line.y + 4} textAnchor="end" fontSize={9} fill={COLORS.gray500}>{Math.round(line.value)}°</SvgText>
-          </G>
-        ))}
-
-        <Path d={avgLinePath} fill="none" stroke={COLORS.primary} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-
-        {avgPoints.map((point, i) => (
-          <Circle key={`attack-${i}`} cx={point.x} cy={point.y} r={selectedPoint?.x === point.x ? 6 : 4} fill={COLORS.primary} stroke={COLORS.primaryDark} strokeWidth={2} />
-        ))}
-
-        <SvgText x={chartWidth / 2} y={chartHeight - 6} textAnchor="middle" fontSize={10} fill={COLORS.gray500}>Sessions</SvgText>
-      </Svg>
-
-      {/* Touch targets */}
-      {avgPoints.map((point, i) => (
-        <TouchableOpacity
-          key={`attack-touch-${i}`}
-          style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-          onPress={() => setSelectedPoint(selectedPoint?.x === point.x ? null : point)}
-        />
-      ))}
-
-      {/* Tooltip */}
-      {selectedPoint && (
-        <Tooltip
-          x={selectedPoint.x}
-          y={selectedPoint.y}
-          value={`${selectedPoint.value.toFixed(1)}°`}
-          label="Attack Angle"
-          date={formatDate(selectedPoint.date)}
-          color={COLORS.primary}
-        />
-      )}
-
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Attack Angle</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: 'rgba(155, 221, 255, 0.15)', borderColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Ideal (5-20°)</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// Connection Chart Component
-function ConnectionChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; type: 'impact' | 'early'; date: string } | null>(null);
-
-  if (sessionData.length === 0) return null;
-
-  const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 240;
-  const padding = { top: 20, right: 35, bottom: 35, left: 40 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
-
-  const allConnections = sessionData.flatMap(s => [s.avgConnectionAtImpact, s.avgEarlyConnection]).filter((v): v is number => v !== null);
-
-  if (allConnections.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No connection data available</Text>
-      </View>
-    );
-  }
-
-  const minConnection = Math.min(Math.floor(Math.min(...allConnections) / 10) * 10, 70);
-  const maxConnection = Math.max(Math.ceil(Math.max(...allConnections) / 10) * 10, 100);
-
-  const connectionAtImpactPoints = sessionData
-    .map((session, index) => {
-      if (session.avgConnectionAtImpact === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgConnectionAtImpact - minConnection) / (maxConnection - minConnection)) * innerHeight;
-      return { x, y, value: session.avgConnectionAtImpact, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const earlyConnectionPoints = sessionData
-    .map((session, index) => {
-      if (session.avgEarlyConnection === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgEarlyConnection - minConnection) / (maxConnection - minConnection)) * innerHeight;
-      return { x, y, value: session.avgEarlyConnection, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const connectionAtImpactLinePath = connectionAtImpactPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const earlyConnectionLinePath = earlyConnectionPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const idealMin = 80;
-  const idealMax = 95;
-  const idealMinY = padding.top + innerHeight - ((idealMin - minConnection) / (maxConnection - minConnection)) * innerHeight;
-  const idealMaxY = padding.top + innerHeight - ((idealMax - minConnection) / (maxConnection - minConnection)) * innerHeight;
-  const idealBandHeight = idealMinY - idealMaxY;
-
-  const yAxisSteps = 4;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minConnection + (i * (maxConnection - minConnection)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-
-  return (
-    <View style={styles.chartContainer}>
-      <Svg width={chartWidth} height={chartHeight}>
-        <Rect x={padding.left} y={padding.top} width={innerWidth} height={innerHeight} fill="rgba(0,0,0,0.3)" stroke={COLORS.gray700} strokeWidth={1} rx={4} />
-
-        {gridLines.map((line, i) => (
-          <G key={i}>
-            <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke={COLORS.gray700} strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
-            <SvgText x={padding.left - 6} y={line.y + 4} textAnchor="end" fontSize={9} fill={COLORS.gray500}>{Math.round(line.value)}°</SvgText>
-          </G>
-        ))}
-
-        <Rect x={padding.left} y={idealMaxY} width={innerWidth} height={idealBandHeight} fill={COLORS.primary} opacity={0.08} />
-
-        <Path d={connectionAtImpactLinePath} fill="none" stroke={COLORS.primary} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-
-        {connectionAtImpactPoints.map((point, i) => (
-          <Circle key={`conn-impact-${i}`} cx={point.x} cy={point.y} r={selectedPoint?.x === point.x && selectedPoint?.type === 'impact' ? 6 : 4} fill={COLORS.primary} stroke={COLORS.primaryDark} strokeWidth={2} />
-        ))}
-
-        <Path d={earlyConnectionLinePath} fill="none" stroke={COLORS.gray400} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6,3" />
-
-        {earlyConnectionPoints.map((point, i) => (
-          <Circle key={`early-conn-${i}`} cx={point.x} cy={point.y} r={selectedPoint?.x === point.x && selectedPoint?.type === 'early' ? 6 : 4} fill={COLORS.gray400} stroke={COLORS.gray500} strokeWidth={2} />
-        ))}
-
-        <SvgText x={chartWidth / 2} y={chartHeight - 6} textAnchor="middle" fontSize={10} fill={COLORS.gray500}>Sessions</SvgText>
-      </Svg>
-
-      {/* Touch targets for impact points */}
-      {connectionAtImpactPoints.map((point, i) => (
-        <TouchableOpacity
-          key={`impact-touch-${i}`}
-          style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-          onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'impact' ? null : { ...point, type: 'impact' })}
-        />
-      ))}
-
-      {/* Touch targets for early points */}
-      {earlyConnectionPoints.map((point, i) => (
-        <TouchableOpacity
-          key={`early-touch-${i}`}
-          style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-          onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'early' ? null : { ...point, type: 'early' })}
-        />
-      ))}
-
-      {/* Tooltip */}
-      {selectedPoint && (
-        <Tooltip
-          x={selectedPoint.x}
-          y={selectedPoint.y}
-          value={`${selectedPoint.value.toFixed(1)}°`}
-          label={selectedPoint.type === 'impact' ? 'At Impact' : 'Early'}
-          date={formatDate(selectedPoint.date)}
-          color={selectedPoint.type === 'impact' ? COLORS.primary : COLORS.gray400}
-        />
-      )}
-
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>At Impact</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.gray400 }]} />
-          <Text style={styles.legendText}>Early</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: 'rgba(155, 221, 255, 0.15)', borderColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Ideal</Text>
-        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.black,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: COLORS.black,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollView: {
-    flex: 1,
-    paddingHorizontal: 16,
-  },
-  header: {
-    paddingTop: 8,
-    marginBottom: 16,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backText: {
-    color: COLORS.gray400,
-    fontSize: 14,
-    marginLeft: 8,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: COLORS.white,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: COLORS.gray400,
-  },
-  filterContainer: {
-    marginBottom: 20,
-  },
-  filterContent: {
-    gap: 8,
-  },
-  filterButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  filterButtonActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.15)',
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  filterButtonText: {
-    color: COLORS.gray400,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  filterButtonTextActive: {
-    color: COLORS.primary,
-  },
-  emptyState: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: COLORS.gray400,
-    fontSize: 16,
-  },
-  emptySubtext: {
-    color: COLORS.gray500,
-    fontSize: 14,
-    marginTop: 8,
-  },
-  prSection: {
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: COLORS.white,
-    marginBottom: 12,
-  },
-  prRow: {
-    flexDirection: 'row',
-  },
-  prItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  prItemBorder: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  prValueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  prValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.white,
-  },
-  prValueGold: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.secondary,
-  },
-  prValueSmall: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.gray400,
-  },
-  prLabel: {
-    fontSize: 9,
-    color: COLORS.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginTop: 2,
-  },
-  prUnit: {
-    fontSize: 12,
-    color: COLORS.gray400,
-  },
-  singleStatRow: {
-    alignItems: 'center',
-  },
-  statDescription: {
-    fontSize: 12,
-    color: COLORS.gray500,
-    marginTop: 4,
-  },
-  chartContainer: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    marginBottom: 16,
-    position: 'relative',
-  },
-  emptyChartText: {
-    color: COLORS.gray400,
-    fontSize: 14,
-    textAlign: 'center',
-    paddingVertical: 32,
-  },
-  legend: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 20,
-    marginTop: 8,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  legendLine: {
-    width: 16,
-    height: 2,
-    borderRadius: 1,
-  },
-  legendBox: {
-    width: 12,
-    height: 8,
-    borderRadius: 2,
-    borderWidth: 1,
-  },
-  legendText: {
-    fontSize: 10,
-    color: COLORS.gray400,
-  },
-  tableContainer: {
-    marginTop: 8,
-  },
-  table: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    overflow: 'hidden',
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-  },
-  tableHeaderText: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: COLORS.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    textAlign: 'center',
-  },
-  tableRow: {
-    flexDirection: 'row',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.03)',
-  },
-  tableRowEven: {
-    backgroundColor: 'rgba(255,255,255,0.01)',
-  },
-  tableCell: {
-    fontSize: 12,
-    color: COLORS.gray300,
-    textAlign: 'center',
-  },
+  loadingContainer: { flex: 1, backgroundColor: STEEL.bg, justifyContent: 'center', alignItems: 'center' },
+  emptyState: { paddingVertical: 40, alignItems: 'center' },
+  emptyText: { color: STEEL.sub, fontSize: 15, fontWeight: '600' },
+  emptySubtext: { color: STEEL.mute, fontSize: 13, marginTop: 6 },
+  chart: { marginTop: 14, position: 'relative' },
+  emptyChartText: { color: STEEL.mute, fontSize: 13, textAlign: 'center', paddingVertical: 24 },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 6 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendLine: { width: 14, height: 2, borderRadius: 1 },
+  legendBox: { width: 12, height: 8, borderRadius: 2, backgroundColor: 'rgba(52,211,153,0.18)', borderWidth: 1, borderColor: 'rgba(52,211,153,0.5)' },
+  legendText: { fontSize: 10, color: STEEL.sub },
+  tableHeader: { flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: STEEL.rule },
+  th: { fontSize: 9, fontWeight: '700', color: STEEL.mute, letterSpacing: 1.2, textAlign: 'right' },
+  tableRow: { flexDirection: 'row', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: STEEL.rule },
+  td: { fontSize: 12.5, color: STEEL.sub, textAlign: 'right', fontVariant: ['tabular-nums'] },
+  tdNum: { fontWeight: '800' },
   fab: {
     position: 'absolute',
     bottom: 24,
@@ -1185,47 +714,24 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    shadowColor: COLORS.primary,
+    shadowColor: C.fab,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
   },
-  fabGradient: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  touchTarget: {
-    position: 'absolute',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-  },
+  fabGradient: { width: '100%', height: '100%', borderRadius: 28, justifyContent: 'center', alignItems: 'center' },
+  touchTarget: { position: 'absolute', width: 30, height: 30, borderRadius: 15 },
   tooltip: {
     position: 'absolute',
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    backgroundColor: 'rgba(12,16,22,0.96)',
     borderRadius: 8,
     padding: 8,
     borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
     minWidth: 80,
     alignItems: 'center',
   },
-  tooltipValue: {
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  tooltipLabel: {
-    fontSize: 10,
-    color: COLORS.gray400,
-    marginTop: 2,
-  },
-  tooltipDate: {
-    fontSize: 9,
-    color: COLORS.gray500,
-    marginTop: 2,
-  },
+  tooltipValue: { fontSize: 14, fontWeight: '800' },
+  tooltipLabel: { fontSize: 10, color: STEEL.sub, marginTop: 2 },
+  tooltipDate: { fontSize: 9, color: STEEL.mute, marginTop: 2 },
 });

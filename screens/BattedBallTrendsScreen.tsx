@@ -1,3 +1,10 @@
+/**
+ * BattedBallTrendsScreen — exit velocity, launch angle and distance trends
+ * across HitTrax + Full Swing sessions, field analysis (3D spray, 2D spray
+ * heatmap, field zones), real-size strike-zone grids and session history.
+ * Steel look (components/hitting/steel.tsx).
+ */
+
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
@@ -25,8 +32,24 @@ import Svg, {
   Polygon,
 } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
+import {
+  STEEL,
+  fmt,
+  Section,
+  Kpi,
+  KpiRow,
+  TimeChips,
+  Segmented,
+  ScreenHeader,
+  steelStyles,
+  HARD_HIT_MPH,
+  SWEET_SPOT,
+  type TimeRange,
+} from '../components/hitting/steel';
+import { BallField3D, type BattedBall } from '../components/hitting/BallField3D';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CHART_W = SCREEN_WIDTH - 32;
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -44,8 +67,6 @@ async function fetchAllPaginated<T>(
 
   while (hasMore) {
     let q = query().select(selectColumns);
-
-    // Apply filters
     for (const filter of filters) {
       if (filter.operator === 'in') {
         q = q.in(filter.column, filter.value);
@@ -53,12 +74,9 @@ async function fetchAllPaginated<T>(
         q = q.eq(filter.column, filter.value);
       }
     }
-
-    // Apply additional filters if provided
     if (additionalFilters) {
       q = additionalFilters(q);
     }
-
     const { data, error } = await q
       .order(orderColumn, { ascending: orderAscending })
       .range(offset, offset + BATCH_SIZE - 1);
@@ -67,7 +85,6 @@ async function fetchAllPaginated<T>(
       console.error('Pagination fetch error:', error);
       break;
     }
-
     if (data && data.length > 0) {
       allData.push(...(data as T[]));
       offset += BATCH_SIZE;
@@ -76,27 +93,49 @@ async function fetchAllPaginated<T>(
       hasMore = false;
     }
   }
-
   return allData;
 }
 
-// Professional color palette matching HittingTrendsScreen
-const COLORS = {
-  primary: '#9BDDFF',
-  primaryDark: '#7BC5F0',
-  secondary: '#F5F0E6',
-  gold: '#D4AF37',
-  white: '#FFFFFF',
-  gray100: '#F5F5F5',
-  gray300: '#D1D5DB',
-  gray400: '#9CA3AF',
-  gray500: '#6B7280',
-  gray600: '#4B5563',
-  gray700: '#374151',
-  gray800: '#1F2937',
-  gray900: '#111827',
-  black: '#000000',
-};
+/** Numeric columns can arrive as strings; coerce and drop NaN. */
+function num(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+function mean(xs: number[]): number | null {
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+function parseDay(d: string) {
+  return new Date(`${d}T00:00:00`);
+}
+function shortDate(d: string) {
+  return parseDay(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+const LEVEL_COLORS = { hot: '#dc2626', warm: '#f97316', cool: '#eab308', cold: '#06b6d4', ice: '#3b82f6' };
+
+function levelThresholds(playingLevel: string) {
+  switch (playingLevel) {
+    case 'youth':
+      return { hot: 80, warm: 72, cool: 64, cold: 55 };
+    case 'college':
+      return { hot: 105, warm: 98, cool: 90, cold: 80 };
+    case 'professional':
+      return { hot: 110, warm: 105, cool: 98, cold: 88 };
+    case 'high-school':
+    default:
+      return { hot: 98, warm: 90, cool: 82, cold: 70 };
+  }
+}
+function levelColor(ev: number, t: ReturnType<typeof levelThresholds>) {
+  if (ev >= t.hot) return LEVEL_COLORS.hot;
+  if (ev >= t.warm) return LEVEL_COLORS.warm;
+  if (ev >= t.cool) return LEVEL_COLORS.cool;
+  if (ev >= t.cold) return LEVEL_COLORS.cold;
+  return LEVEL_COLORS.ice;
+}
 
 interface SessionData {
   date: string;
@@ -110,97 +149,47 @@ interface SessionData {
   source: 'hittrax' | 'fullswing';
 }
 
-interface HitTraxSwing {
-  id: string;
-  session_id: string;
-  exit_velocity: number;
-  launch_angle: number | null;
-  distance: number | null;
-  spray_chart_x: number;
-  spray_chart_z: number;
-  poi_x: number | null;
-  poi_y: number | null;
-  poi_z: number | null;
-}
-
-interface FullSwingSession {
-  id: string;
-  session_date: string;
-  avg_exit_velocity: number | null;
-  max_exit_velocity: number | null;
-  avg_launch_angle: number | null;
-  avg_distance: number | null;
-  max_distance: number | null;
-  total_swings: number;
-}
-
-interface FullSwingSwing {
+/** Unified swing (HitTrax + Full Swing). Spray/POI fields may be null. */
+interface SpraySwing {
   id: string;
   session_id: string;
   exit_velocity: number | null;
   launch_angle: number | null;
+  distance: number | null;
+  /** Spray angle in degrees: negative = left field, positive = right field. */
   spray_angle: number | null;
-  distance: number | null;
-}
-
-// Unified swing interface for spray chart (combines HitTrax and Full Swing)
-interface SpraySwing {
-  id: string;
-  session_id: string;
-  exit_velocity: number;
-  launch_angle: number | null;
-  distance: number | null;
-  spray_chart_x: number;
-  spray_chart_z: number;
+  spray_chart_x: number | null;
+  spray_chart_z: number | null;
   poi_x: number | null;
   poi_y: number | null;
   poi_z: number | null;
+  sz_bottom: number | null;
+  sz_top: number | null;
+  sz_width: number | null;
   source: 'hittrax' | 'fullswing';
 }
 
-// Convert Full Swing spray_angle + distance to x/z coordinates
-function convertFullSwingToSpray(swing: FullSwingSwing): SpraySwing | null {
-  if (swing.spray_angle === null || swing.distance === null || swing.exit_velocity === null) {
-    return null;
-  }
+const FIELD_VIEWS: { key: 'spray3d' | 'spray' | 'zones'; label: string }[] = [
+  { key: 'spray3d', label: '3D Spray' },
+  { key: 'spray', label: 'Spray Chart' },
+  { key: 'zones', label: 'Field Zones' },
+];
 
-  const radians = (swing.spray_angle * Math.PI) / 180;
-  return {
-    id: swing.id,
-    session_id: swing.session_id,
-    exit_velocity: swing.exit_velocity,
-    launch_angle: swing.launch_angle,
-    distance: swing.distance,
-    spray_chart_x: swing.distance * Math.sin(radians),
-    spray_chart_z: swing.distance * Math.cos(radians),
-    poi_x: null,
-    poi_y: null,
-    poi_z: null,
-    source: 'fullswing',
-  };
-}
-
-type TimeFilter = '1month' | '3months' | '6months' | 'all';
+const RANGE_DAYS: Record<Exclude<TimeRange, 'all'>, number> = { '1m': 30, '3m': 90, '6m': 180 };
 
 export default function BattedBallTrendsScreen({ navigation, route }: any) {
   const [allSessionData, setAllSessionData] = useState<SessionData[]>([]);
-  const [filteredData, setFilteredData] = useState<SessionData[]>([]);
   const [allSwings, setAllSwings] = useState<SpraySwing[]>([]);
-  const [filteredSwings, setFilteredSwings] = useState<SpraySwing[]>([]);
   const [playingLevel, setPlayingLevel] = useState<string>('high-school');
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('3months');
+  const [timeFilter, setTimeFilter] = useState<TimeRange>('3m');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
-  const [fieldViewIndex, setFieldViewIndex] = useState(0);
+  const [fieldView, setFieldView] = useState<'spray3d' | 'spray' | 'zones'>('spray3d');
 
   useEffect(() => {
     loadAthleteAndData();
   }, []);
-
-  useEffect(() => {
-    applyTimeFilter();
-  }, [timeFilter, allSessionData, allSwings]);
 
   async function loadAthleteAndData() {
     try {
@@ -210,7 +199,6 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
         return;
       }
 
-      // Use passed athleteId or fallback to looking up by user_id
       let currentAthleteId = athleteId;
       let playLevel: string | null = null;
 
@@ -229,7 +217,6 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
         setAthleteId(athlete.id);
         playLevel = athlete.play_level;
       } else {
-        // If athleteId passed, fetch play_level
         const { data: athlete } = await supabase
           .from('athletes')
           .select('play_level')
@@ -243,7 +230,7 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
           'Youth': 'youth',
           'High School': 'high-school',
           'College': 'college',
-          'Pro': 'professional'
+          'Pro': 'professional',
         };
         setPlayingLevel(levelMap[playLevel] || 'high-school');
       }
@@ -268,48 +255,18 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
     }
   }, [athleteId]);
 
-  function applyTimeFilter() {
-    if (allSessionData.length === 0) {
-      setFilteredData([]);
-      setFilteredSwings([]);
-      return;
-    }
-
-    const now = new Date();
-    let cutoffDate: Date;
-
-    switch (timeFilter) {
-      case '1month':
-        cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case '3months':
-        cutoffDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-        break;
-      case '6months':
-        cutoffDate = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
-        break;
-      case 'all':
-        setFilteredData(allSessionData);
-        setFilteredSwings(allSwings);
-        return;
-    }
-
-    const filtered = allSessionData.filter(session =>
-      new Date(session.date) >= cutoffDate
-    );
-    setFilteredData(filtered);
-
-    const filteredSessionIds = filtered.map(s => s.sessionId);
-    const filteredSwingsData = allSwings.filter(swing =>
-      filteredSessionIds.includes(swing.session_id)
-    );
-    setFilteredSwings(filteredSwingsData);
-  }
+  // Time filter applied to sessions AND swings (Set lookup, O(n+m)).
+  const { filteredData, filteredSwings } = useMemo(() => {
+    if (timeFilter === 'all') return { filteredData: allSessionData, filteredSwings: allSwings };
+    const cutoff = Date.now() - RANGE_DAYS[timeFilter] * 24 * 60 * 60 * 1000;
+    const sessions = allSessionData.filter((s) => parseDay(s.date).getTime() >= cutoff);
+    const ids = new Set(sessions.map((s) => s.sessionId));
+    return { filteredData: sessions, filteredSwings: allSwings.filter((sw) => ids.has(sw.session_id)) };
+  }, [timeFilter, allSessionData, allSwings]);
 
   async function fetchBattedBallData(id: string, opts?: { silent?: boolean }) {
     if (!opts?.silent) setLoading(true);
 
-    // Interfaces for typed pagination
     interface HittraxSession {
       id: string;
       session_date: string;
@@ -319,1335 +276,881 @@ export default function BattedBallTrendsScreen({ navigation, route }: any) {
       max_distance: number | null;
       total_swings: number | null;
     }
-
-    interface DistanceSwing {
-      session_id: string;
-      distance: number | null;
+    interface FullSwingSession extends HittraxSession {
+      avg_distance: number | null;
     }
 
-    // Fetch HitTrax sessions
-    const hittraxSessions = await fetchAllPaginated<HittraxSession>(
-      () => supabase.from('hittrax_sessions'),
-      'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, max_distance, total_swings',
-      [{ column: 'athlete_id', value: id }],
-      'session_date',
-      true
-    );
+    const [hittraxSessions, fullSwingSessions] = await Promise.all([
+      fetchAllPaginated<HittraxSession>(
+        () => supabase.from('hittrax_sessions'),
+        'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, max_distance, total_swings',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        true
+      ),
+      fetchAllPaginated<FullSwingSession>(
+        () => supabase.from('fullswing_sessions'),
+        'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, total_swings',
+        [{ column: 'athlete_id', value: id }],
+        'session_date',
+        true
+      ),
+    ]);
 
-    // Fetch Full Swing sessions
-    const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
-      () => supabase.from('fullswing_sessions'),
-      'id, session_date, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, total_swings',
-      [{ column: 'athlete_id', value: id }],
-      'session_date',
-      true
-    );
-
-    // Check if we have any data
-    const hasHittrax = hittraxSessions && hittraxSessions.length > 0;
-    const hasFullSwing = fullSwingSessions && fullSwingSessions.length > 0;
-
-    if (!hasHittrax && !hasFullSwing) {
+    if (hittraxSessions.length === 0 && fullSwingSessions.length === 0) {
       setLoading(false);
       setAllSessionData([]);
       setAllSwings([]);
       return;
     }
 
-    // Collect all spray swings from both sources
-    let allSpraySwings: SpraySwing[] = [];
+    // One swings query per source (distance folded in — no second HitTrax fetch).
+    const [hittraxSwings, fullSwingSwings] = await Promise.all([
+      hittraxSessions.length
+        ? fetchAllPaginated<any>(
+            () => supabase.from('hittrax_swings'),
+            'id, session_id, exit_velocity, launch_angle, distance, horizontal_angle, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z, strike_zone_bottom, strike_zone_top, strike_zone_width',
+            [{ column: 'session_id', value: hittraxSessions.map((s) => s.id), operator: 'in' }],
+            'id',
+            true
+          )
+        : Promise.resolve([] as any[]),
+      fullSwingSessions.length
+        ? fetchAllPaginated<any>(
+            () => supabase.from('fullswing_swings'),
+            'id, session_id, exit_velocity, launch_angle, spray_angle, distance',
+            [{ column: 'session_id', value: fullSwingSessions.map((s) => s.id), operator: 'in' }],
+            'id',
+            true
+          )
+        : Promise.resolve([] as any[]),
+    ]);
 
-    // Process HitTrax swings
-    if (hasHittrax) {
-      const hittraxSessionIds = hittraxSessions.map(s => s.id);
-
-      const hittraxSwings = await fetchAllPaginated<HitTraxSwing>(
-        () => supabase.from('hittrax_swings'),
-        'id, session_id, exit_velocity, launch_angle, distance, spray_chart_x, spray_chart_z, poi_x, poi_y, poi_z',
-        [{ column: 'session_id', value: hittraxSessionIds, operator: 'in' }],
-        'id',
-        true,
-        (q) => q.not('spray_chart_x', 'is', null).not('spray_chart_z', 'is', null)
-      );
-
-      // Convert HitTrax swings to SpraySwing format
-      const hittraxSpraySwings: SpraySwing[] = (hittraxSwings || []).map(s => ({
-        ...s,
-        source: 'hittrax' as const,
-      }));
-      allSpraySwings = [...allSpraySwings, ...hittraxSpraySwings];
-    }
-
-    // Process Full Swing swings
-    if (hasFullSwing) {
-      const fullSwingSessionIds = fullSwingSessions.map(s => s.id);
-
-      const fullSwingSwings = await fetchAllPaginated<FullSwingSwing>(
-        () => supabase.from('fullswing_swings'),
-        'id, session_id, exit_velocity, launch_angle, spray_angle, distance',
-        [{ column: 'session_id', value: fullSwingSessionIds, operator: 'in' }],
-        'id',
-        true,
-        (q) => q.not('spray_angle', 'is', null).not('distance', 'is', null)
-      );
-
-      // Convert Full Swing swings to SpraySwing format
-      const fullSwingSpraySwings = (fullSwingSwings || [])
-        .map(convertFullSwingToSpray)
-        .filter((s): s is SpraySwing => s !== null);
-      allSpraySwings = [...allSpraySwings, ...fullSwingSpraySwings];
-    }
-
-    setAllSwings(allSpraySwings);
-
-    // Build session distance maps for HitTrax
-    const hittraxDistances: { [sessionId: string]: number[] } = {};
-    if (hasHittrax) {
-      const hittraxSessionIds = hittraxSessions.map(s => s.id);
-      const allSwingsForDistance = await fetchAllPaginated<DistanceSwing>(
-        () => supabase.from('hittrax_swings'),
-        'session_id, distance',
-        [{ column: 'session_id', value: hittraxSessionIds, operator: 'in' }],
-        'id',
-        true
-      );
-
-      (allSwingsForDistance || []).forEach(swing => {
-        if (swing.distance !== null && swing.distance > 0) {
-          if (!hittraxDistances[swing.session_id]) {
-            hittraxDistances[swing.session_id] = [];
-          }
-          hittraxDistances[swing.session_id].push(swing.distance);
-        }
+    const swings: SpraySwing[] = [];
+    for (const s of hittraxSwings) {
+      let x = num(s.spray_chart_x);
+      let z = num(s.spray_chart_z);
+      let spray = num(s.horizontal_angle);
+      if (spray == null && x != null && z != null && (x !== 0 || z !== 0)) {
+        spray = (Math.atan2(x, z) * 180) / Math.PI;
+      }
+      // Some imports have no spray_chart_x/z; derive from angle + distance.
+      const dist = num(s.distance);
+      if ((x == null || z == null || (x === 0 && z === 0)) && spray != null && dist != null) {
+        const r = (spray * Math.PI) / 180;
+        x = dist * Math.sin(r);
+        z = dist * Math.cos(r);
+      }
+      swings.push({
+        id: s.id,
+        session_id: s.session_id,
+        exit_velocity: num(s.exit_velocity),
+        launch_angle: num(s.launch_angle),
+        distance: num(s.distance),
+        spray_angle: spray,
+        spray_chart_x: x,
+        spray_chart_z: z,
+        poi_x: num(s.poi_x),
+        poi_y: num(s.poi_y),
+        poi_z: num(s.poi_z),
+        sz_bottom: num(s.strike_zone_bottom),
+        sz_top: num(s.strike_zone_top),
+        sz_width: num(s.strike_zone_width),
+        source: 'hittrax',
       });
     }
+    for (const s of fullSwingSwings) {
+      const spray = num(s.spray_angle);
+      const dist = num(s.distance);
+      const rad = spray != null ? (spray * Math.PI) / 180 : null;
+      swings.push({
+        id: s.id,
+        session_id: s.session_id,
+        exit_velocity: num(s.exit_velocity),
+        launch_angle: num(s.launch_angle),
+        distance: dist,
+        spray_angle: spray,
+        spray_chart_x: rad != null && dist != null ? dist * Math.sin(rad) : null,
+        spray_chart_z: rad != null && dist != null ? dist * Math.cos(rad) : null,
+        poi_x: null,
+        poi_y: null,
+        poi_z: null,
+        sz_bottom: null,
+        sz_top: null,
+        sz_width: null,
+        source: 'fullswing',
+      });
+    }
+    setAllSwings(swings);
 
-    // Build session trends combining both sources
-    const hittraxTrends: SessionData[] = (hittraxSessions || []).map(session => {
-      const distances = hittraxDistances[session.id] || [];
-      const avgDistance = distances.length > 0
-        ? distances.reduce((sum, d) => sum + d, 0) / distances.length
-        : null;
+    // Per-session swing aggregates — fallback when the session row's aggregate is null.
+    const bySession = new Map<string, SpraySwing[]>();
+    for (const sw of swings) {
+      const arr = bySession.get(sw.session_id);
+      if (arr) arr.push(sw);
+      else bySession.set(sw.session_id, [sw]);
+    }
+    const agg = (sid: string) => {
+      const list = bySession.get(sid) || [];
+      const evs = list.map((s) => s.exit_velocity).filter((v): v is number => v != null && v > 0);
+      const las = list.filter((s) => s.exit_velocity != null && s.exit_velocity > 0).map((s) => s.launch_angle).filter((v): v is number => v != null);
+      const ds = list.map((s) => s.distance).filter((v): v is number => v != null && v > 0);
+      return {
+        avgEV: mean(evs),
+        maxEV: evs.length ? Math.max(...evs) : null,
+        avgLA: mean(las),
+        avgDist: mean(ds),
+        maxDist: ds.length ? Math.max(...ds) : null,
+        count: list.length,
+      };
+    };
 
+    const build = (
+      session: HittraxSession & { avg_distance?: number | null },
+      source: 'hittrax' | 'fullswing'
+    ): SessionData => {
+      const a = agg(session.id);
       return {
         date: session.session_date.split('T')[0],
         sessionId: session.id,
-        avgExitVelo: session.avg_exit_velocity,
-        maxExitVelo: session.max_exit_velocity,
-        avgLaunchAngle: session.avg_launch_angle,
-        maxDistance: session.max_distance,
-        avgDistance: avgDistance,
-        swingCount: session.total_swings || 0,
-        source: 'hittrax' as const,
+        avgExitVelo: num(session.avg_exit_velocity) ?? a.avgEV,
+        maxExitVelo: num(session.max_exit_velocity) ?? a.maxEV,
+        avgLaunchAngle: num(session.avg_launch_angle) ?? a.avgLA,
+        maxDistance: num(session.max_distance) ?? a.maxDist,
+        // HitTrax has no session avg distance; always from swings.
+        avgDistance: source === 'fullswing' ? num(session.avg_distance) ?? a.avgDist : a.avgDist,
+        swingCount: session.total_swings || a.count,
+        source,
       };
-    });
+    };
 
-    const fullSwingTrends: SessionData[] = (fullSwingSessions || []).map(session => ({
-      date: session.session_date.split('T')[0],
-      sessionId: session.id,
-      avgExitVelo: session.avg_exit_velocity,
-      maxExitVelo: session.max_exit_velocity,
-      avgLaunchAngle: session.avg_launch_angle,
-      maxDistance: session.max_distance,
-      avgDistance: session.avg_distance,
-      swingCount: session.total_swings || 0,
-      source: 'fullswing' as const,
-    }));
-
-    // Combine and sort by date
-    const allTrends = [...hittraxTrends, ...fullSwingTrends]
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const allTrends = [
+      ...hittraxSessions.map((s) => build(s, 'hittrax')),
+      ...fullSwingSessions.map((s) => build(s, 'fullswing')),
+    ].sort((a, b) => parseDay(a.date).getTime() - parseDay(b.date).getTime());
 
     setAllSessionData(allTrends);
     setLoading(false);
   }
 
-  // Calculate overall stats
-  const avgExitVelo = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgExitVelo !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgExitVelo || 0), 0) / validSessions.length
-      : 0;
-  }, [filteredData]);
+  // ---- Stats ----
+  const stats = useMemo(() => {
+    const avgs = filteredData.map((s) => s.avgExitVelo).filter((v): v is number => v != null);
+    const maxes = filteredData.map((s) => s.maxExitVelo).filter((v): v is number => v != null);
+    const las = filteredData.map((s) => s.avgLaunchAngle).filter((v): v is number => v != null);
+    const maxDists = filteredData.map((s) => s.maxDistance).filter((v): v is number => v != null);
 
-  const peakExitVelo = useMemo(() => {
-    const maxVelos = filteredData.map(s => s.maxExitVelo).filter((ev): ev is number => ev !== null);
-    return maxVelos.length > 0 ? Math.max(...maxVelos) : 0;
-  }, [filteredData]);
+    const contact = filteredSwings.filter((s) => s.exit_velocity != null && s.exit_velocity > 0);
+    const withLA = contact.filter((s) => s.launch_angle != null);
+    const dists = filteredSwings.map((s) => s.distance).filter((v): v is number => v != null && v > 0);
 
-  const avgLaunchAngle = useMemo(() => {
-    const validSessions = filteredData.filter(s => s.avgLaunchAngle !== null);
-    return validSessions.length > 0
-      ? validSessions.reduce((sum, s) => sum + (s.avgLaunchAngle || 0), 0) / validSessions.length
-      : 0;
-  }, [filteredData]);
+    const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+    return {
+      avgEV: mean(avgs),
+      peakEV: maxes.length ? Math.max(...maxes) : null,
+      evDelta: avgs.length >= 2 ? avgs[avgs.length - 1] - avgs[0] : null,
+      firstDate: filteredData.find((s) => s.avgExitVelo != null)?.date ?? null,
+      hardHit: pct(contact.filter((s) => s.exit_velocity! >= HARD_HIT_MPH).length, contact.length),
+      avgLA: mean(las),
+      sweetSpot: pct(withLA.filter((s) => s.launch_angle! >= SWEET_SPOT[0] && s.launch_angle! <= SWEET_SPOT[1]).length, withLA.length),
+      groundBall: pct(withLA.filter((s) => s.launch_angle! < SWEET_SPOT[0]).length, withLA.length),
+      maxDist: maxDists.length ? Math.max(...maxDists) : dists.length ? Math.max(...dists) : null,
+      avgDist: mean(dists) ?? mean(filteredData.map((s) => s.avgDistance).filter((v): v is number => v != null)),
+      over300: dists.length ? dists.filter((d) => d >= 300).length : null,
+    };
+  }, [filteredData, filteredSwings]);
 
-  const peakDistance = useMemo(() => {
-    const maxDists = filteredData.map(s => s.maxDistance).filter((d): d is number => d !== null);
-    return maxDists.length > 0 ? Math.max(...maxDists) : 0;
-  }, [filteredData]);
+  const contactSwings = useMemo(
+    () => filteredSwings.filter((s) => s.exit_velocity != null && s.exit_velocity > 0),
+    [filteredSwings]
+  );
+  const sprayChartSwings = useMemo(
+    () => contactSwings.filter((s) => s.spray_chart_x != null && s.spray_chart_z != null),
+    [contactSwings]
+  );
+  const zoneSwings = useMemo(() => contactSwings.filter((s) => s.spray_angle != null), [contactSwings]);
+
+  // Most recent ~30 balls in range for the 3D field.
+  const balls3d = useMemo<BattedBall[]>(() => {
+    const order = new Map(filteredData.map((s, i) => [s.sessionId, i]));
+    return contactSwings
+      .filter((s) => s.distance != null && s.distance > 0 && s.launch_angle != null)
+      .map((s, i) => ({ s, i, o: order.get(s.session_id) ?? -1 }))
+      .sort((a, b) => a.o - b.o || a.i - b.i)
+      .slice(-30)
+      .map(({ s }) => ({
+        exit_velocity: s.exit_velocity,
+        launch_angle: s.launch_angle,
+        horizontal_angle: s.spray_angle,
+        distance: s.distance,
+      }));
+  }, [contactSwings, filteredData]);
+
+  const hasFieldData = sprayChartSwings.length > 0 || zoneSwings.length > 0 || balls3d.length > 0;
+  const hasPoi = contactSwings.some((s) => s.poi_x != null && s.poi_y != null);
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[steelStyles.screen, styles.center]}>
+        <ActivityIndicator size="large" color={STEEL.force} />
       </View>
     );
   }
 
+  const dates = filteredData.map((s) => s.date);
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={steelStyles.screen} edges={['top']}>
       <ScrollView
-        style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} progressBackgroundColor="#1A1A1A" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={STEEL.force} colors={[STEEL.force]} progressBackgroundColor="#1A1A1A" />
         }
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons name="arrow-back" size={20} color={COLORS.gray400} />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>Batted Ball Trends</Text>
-          <Text style={styles.subtitle}>
-            Track your exit velocity and distance • {filteredData.length} sessions
-          </Text>
+        <ScreenHeader
+          title="Batted Ball"
+          subtitle={`Exit velocity, launch and distance · ${filteredData.length} session${filteredData.length === 1 ? '' : 's'}`}
+          onBack={() => navigation.goBack()}
+        />
+
+        <View style={steelStyles.body}>
+          <View style={{ paddingTop: 8, paddingBottom: 4 }}>
+            <TimeChips value={timeFilter} onChange={setTimeFilter} />
+          </View>
+
+          {allSessionData.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No batted ball data available</Text>
+              <Text style={styles.emptySubtext}>Complete HitTrax or Full Swing sessions to track your trends</Text>
+            </View>
+          ) : filteredData.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No data for this time period</Text>
+              <Text style={styles.emptySubtext}>Try selecting a different time range</Text>
+            </View>
+          ) : (
+            <>
+              {/* EXIT VELOCITY */}
+              <Section title="EXIT VELOCITY" right="tap a point" first>
+                <KpiRow>
+                  <Kpi
+                    label="AVG"
+                    value={fmt(stats.avgEV)}
+                    unit="mph"
+                    delta={stats.evDelta}
+                    note={stats.evDelta != null && stats.firstDate ? `since ${shortDate(stats.firstDate)}` : undefined}
+                  />
+                  <Kpi label="PEAK" value={fmt(stats.peakEV)} unit="mph" color={STEEL.hitting} />
+                  <Kpi label="HARD-HIT" value={fmt(stats.hardHit, 0)} unit="%" note={`≥${HARD_HIT_MPH} mph`} />
+                  <Kpi label="SESSIONS" value={String(filteredData.length)} />
+                </KpiRow>
+                <TrendChart
+                  dates={dates}
+                  height={190}
+                  step={10}
+                  series={[
+                    { key: 'avg', label: 'Avg EV', color: STEEL.force, values: filteredData.map((s) => s.avgExitVelo), fill: true, format: (v) => `${v.toFixed(1)} mph` },
+                    { key: 'max', label: 'Peak EV', color: STEEL.hitting, values: filteredData.map((s) => s.maxExitVelo), dashed: true, format: (v) => `${v.toFixed(1)} mph` },
+                  ]}
+                />
+              </Section>
+
+              {/* LAUNCH ANGLE */}
+              <Section title="LAUNCH ANGLE" right={`ideal ${SWEET_SPOT[0]}–${SWEET_SPOT[1]}°`}>
+                <KpiRow>
+                  <Kpi label="AVG" value={fmt(stats.avgLA)} unit="°" />
+                  <Kpi label="SWEET SPOT" value={fmt(stats.sweetSpot, 0)} unit="%" color={STEEL.good} />
+                  <Kpi label="GROUND BALL" value={fmt(stats.groundBall, 0)} unit="%" note={`LA < ${SWEET_SPOT[0]}°`} />
+                </KpiRow>
+                <TrendChart
+                  dates={dates}
+                  height={170}
+                  step={5}
+                  unit="°"
+                  band={SWEET_SPOT}
+                  emptyText="No launch angle data available"
+                  series={[
+                    { key: 'la', label: 'Avg Launch Angle', color: STEEL.purple, values: filteredData.map((s) => s.avgLaunchAngle), fill: true, format: (v) => `${v.toFixed(1)}°` },
+                  ]}
+                />
+              </Section>
+
+              {/* DISTANCE */}
+              <Section title="DISTANCE">
+                <KpiRow>
+                  <Kpi label="MAX" value={fmt(stats.maxDist, 0)} unit="ft" color={STEEL.good} />
+                  <Kpi label="AVG" value={fmt(stats.avgDist, 0)} unit="ft" />
+                  <Kpi label="300+ FT" value={stats.over300 == null ? '—' : String(stats.over300)} note="balls" />
+                </KpiRow>
+                <TrendChart
+                  dates={dates}
+                  height={170}
+                  step={50}
+                  emptyText="No distance data available"
+                  series={[
+                    { key: 'avg', label: 'Avg Distance', color: STEEL.force, values: filteredData.map((s) => s.avgDistance), fill: true, format: (v) => `${v.toFixed(0)} ft` },
+                    { key: 'max', label: 'Max Distance', color: STEEL.good, values: filteredData.map((s) => s.maxDistance), dashed: true, format: (v) => `${v.toFixed(0)} ft` },
+                  ]}
+                />
+              </Section>
+
+              {/* FIELD ANALYSIS */}
+              {hasFieldData && (
+                <Section title="FIELD ANALYSIS" right={fieldView === 'spray3d' ? `last ${balls3d.length} balls` : `${fieldView === 'spray' ? sprayChartSwings.length : zoneSwings.length} balls`}>
+                  <Segmented options={FIELD_VIEWS} value={fieldView} onChange={setFieldView} />
+                  <View style={{ marginTop: 14 }}>
+                    {fieldView === 'spray3d' ? (
+                      balls3d.length > 0 ? (
+                        <BallField3D balls={balls3d} height={240} caption="Most recent balls in range · color = exit velo" />
+                      ) : (
+                        <Text style={steelStyles.empty}>No ball-flight data in this range</Text>
+                      )
+                    ) : fieldView === 'spray' ? (
+                      sprayChartSwings.length > 0 ? (
+                        <ExitVeloHeatmap swings={sprayChartSwings} playingLevel={playingLevel} />
+                      ) : (
+                        <Text style={steelStyles.empty}>No spray data in this range</Text>
+                      )
+                    ) : zoneSwings.length > 0 ? (
+                      <FieldZones swings={zoneSwings} />
+                    ) : (
+                      <Text style={steelStyles.empty}>No spray data in this range</Text>
+                    )}
+                  </View>
+                </Section>
+              )}
+
+              {/* STRIKE ZONE EV */}
+              {contactSwings.length > 0 && (
+                <Section title="STRIKE ZONE · EXIT VELO" right="catcher's view">
+                  <Text style={styles.sectionSub}>Average exit velocity by pitch location</Text>
+                  {hasPoi ? (
+                    <StrikeZoneHeatmap swings={contactSwings} playingLevel={playingLevel} />
+                  ) : (
+                    <Text style={steelStyles.empty}>No pitch location data available</Text>
+                  )}
+                </Section>
+              )}
+
+              {/* STRIKE ZONE LA */}
+              {contactSwings.length > 0 && (
+                <Section title="STRIKE ZONE · LAUNCH ANGLE" right="catcher's view">
+                  <Text style={styles.sectionSub}>Average launch angle by pitch location</Text>
+                  <LaunchAngleStrikeZone swings={contactSwings} />
+                </Section>
+              )}
+
+              {/* SESSION HISTORY */}
+              <Section title="SESSION HISTORY" right={filteredData.length > 10 ? 'latest 10' : undefined}>
+                <View style={styles.tableHeader}>
+                  <Text style={[styles.th, { flex: 1.4, textAlign: 'left' }]}>DATE</Text>
+                  <Text style={[styles.th, { flex: 0.7 }]}>SWINGS</Text>
+                  <Text style={[styles.th, { flex: 0.9 }]}>AVG EV</Text>
+                  <Text style={[styles.th, { flex: 0.9 }]}>MAX EV</Text>
+                  <Text style={[styles.th, { flex: 0.9 }]}>MAX DIST</Text>
+                </View>
+                {[...filteredData].reverse().slice(0, 10).map((session) => (
+                  <View key={session.sessionId} style={styles.tr}>
+                    <View style={{ flex: 1.4, flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={[styles.td, { textAlign: 'left', color: STEEL.day }]}>{shortDate(session.date)}</Text>
+                      <Text style={[styles.sourceTag, session.source === 'fullswing' ? styles.sourceTagFullSwing : styles.sourceTagHittrax]}>
+                        {session.source === 'fullswing' ? 'FS' : 'HT'}
+                      </Text>
+                    </View>
+                    <Text style={[styles.td, { flex: 0.7 }]}>{session.swingCount}</Text>
+                    <Text style={[styles.td, { flex: 0.9, color: STEEL.force }]}>{fmt(session.avgExitVelo)}</Text>
+                    <Text style={[styles.td, { flex: 0.9, color: STEEL.hitting }]}>{fmt(session.maxExitVelo)}</Text>
+                    <Text style={[styles.td, { flex: 0.9, color: STEEL.good }]}>{fmt(session.maxDistance, 0)}</Text>
+                  </View>
+                ))}
+              </Section>
+            </>
+          )}
         </View>
 
-        {/* Time Filter Buttons */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterContainer}
-          contentContainerStyle={styles.filterContent}
-        >
-          {(['1month', '3months', '6months', 'all'] as TimeFilter[]).map((filter) => (
-            <TouchableOpacity
-              key={filter}
-              onPress={() => setTimeFilter(filter)}
-              style={[
-                styles.filterButton,
-                timeFilter === filter && styles.filterButtonActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  timeFilter === filter && styles.filterButtonTextActive,
-                ]}
-              >
-                {filter === '1month' ? '1 Month' :
-                 filter === '3months' ? '3 Months' :
-                 filter === '6months' ? '6 Months' : 'All Time'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {allSessionData.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No batted ball data available</Text>
-            <Text style={styles.emptySubtext}>Complete HitTrax or Full Swing sessions to track your trends</Text>
-          </View>
-        ) : filteredData.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No data for this time period</Text>
-            <Text style={styles.emptySubtext}>Try selecting a different time range</Text>
-          </View>
-        ) : (
-          <>
-            {/* Exit Velocity PR Cards */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Exit Velocity</Text>
-              <View style={styles.prRow}>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValue}>{avgExitVelo.toFixed(1)}</Text>
-                  <Text style={styles.prLabel}>Average</Text>
-                  <Text style={styles.prUnit}>mph</Text>
-                </View>
-                <View style={[styles.prItem, styles.prItemBorder]}>
-                  <View style={styles.prValueRow}>
-                    <Ionicons name="star" size={12} color={COLORS.gold} />
-                    <Text style={styles.prValueGold}>{peakExitVelo.toFixed(1)}</Text>
-                  </View>
-                  <Text style={styles.prLabel}>Peak</Text>
-                  <Text style={styles.prUnit}>mph</Text>
-                </View>
-                <View style={styles.prItem}>
-                  <Text style={styles.prValue}>{filteredData.length}</Text>
-                  <Text style={styles.prLabel}>Sessions</Text>
-                  <Text style={styles.prUnit}>total</Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Exit Velocity Chart */}
-            <ExitVelocityChart sessionData={filteredData} />
-
-            {/* Launch Angle Section */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Launch Angle</Text>
-              <View style={styles.singleStatRow}>
-                <Text style={styles.prValue}>{avgLaunchAngle.toFixed(1)}°</Text>
-                <Text style={styles.statDescription}>Average launch angle • Ideal: 10-30°</Text>
-              </View>
-            </View>
-
-            {/* Launch Angle Chart */}
-            <LaunchAngleChart sessionData={filteredData} />
-
-            {/* Distance Section */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Distance</Text>
-              <View style={styles.prRow}>
-                <View style={styles.prItem}>
-                  <View style={styles.prValueRow}>
-                    <Ionicons name="star" size={12} color={COLORS.gold} />
-                    <Text style={styles.prValueGold}>{peakDistance.toFixed(0)}</Text>
-                  </View>
-                  <Text style={styles.prLabel}>Max Distance</Text>
-                  <Text style={styles.prUnit}>feet</Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Distance Chart */}
-            <DistanceChart sessionData={filteredData} />
-
-            {/* Field Visualizations */}
-            {filteredSwings.length > 0 && (
-              <>
-                <View style={styles.prSection}>
-                  <Text style={styles.sectionTitle}>Field Analysis</Text>
-                </View>
-
-                {/* Toggle buttons */}
-                <View style={styles.fieldToggle}>
-                  <TouchableOpacity
-                    onPress={() => setFieldViewIndex(0)}
-                    style={[styles.fieldToggleButton, fieldViewIndex === 0 && styles.fieldToggleButtonActive]}
-                  >
-                    <Text style={[styles.fieldToggleText, fieldViewIndex === 0 && styles.fieldToggleTextActive]}>Spray Chart</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => setFieldViewIndex(1)}
-                    style={[styles.fieldToggleButton, fieldViewIndex === 1 && styles.fieldToggleButtonActive]}
-                  >
-                    <Text style={[styles.fieldToggleText, fieldViewIndex === 1 && styles.fieldToggleTextActive]}>Field Zones</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {fieldViewIndex === 0 ? (
-                  <ExitVeloHeatmap swings={filteredSwings} playingLevel={playingLevel} />
-                ) : (
-                  <FieldZones swings={filteredSwings} />
-                )}
-              </>
-            )}
-
-            {/* Strike Zone EV Heatmap */}
-            {filteredSwings.length > 0 && (
-              <>
-                <View style={styles.prSection}>
-                  <Text style={styles.sectionTitle}>Strike Zone Exit Velocity</Text>
-                  <Text style={styles.sectionSubtitle}>Average exit velocity by pitch location (catcher's view)</Text>
-                </View>
-                <StrikeZoneHeatmap swings={filteredSwings} playingLevel={playingLevel} />
-              </>
-            )}
-
-            {/* Strike Zone Launch Angle */}
-            {filteredSwings.length > 0 && (
-              <>
-                <View style={styles.prSection}>
-                  <Text style={styles.sectionTitle}>Strike Zone Launch Angle</Text>
-                  <Text style={styles.sectionSubtitle}>Average launch angle by pitch location (catcher's view)</Text>
-                </View>
-                <LaunchAngleStrikeZone swings={filteredSwings} />
-              </>
-            )}
-
-            {/* Session Details Table */}
-            <View style={styles.prSection}>
-              <Text style={styles.sectionTitle}>Session History</Text>
-            </View>
-            <View style={styles.tableContainer}>
-              <View style={styles.tableHeader}>
-                <Text style={[styles.tableHeaderCell, { flex: 1.4 }]}>Date</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 0.7 }]}>Swings</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Avg EV</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Max EV</Text>
-                <Text style={[styles.tableHeaderCell, { flex: 0.9 }]}>Max Dist</Text>
-              </View>
-              {[...filteredData].reverse().slice(0, 10).map((session, idx) => (
-                <View key={idx} style={[styles.tableRow, idx % 2 === 0 && styles.tableRowAlt]}>
-                  <View style={{ flex: 1.4, flexDirection: 'row', alignItems: 'center' }}>
-                    <Text style={styles.tableCell}>
-                      {new Date(session.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </Text>
-                    <Text style={[styles.sourceTag, session.source === 'fullswing' ? styles.sourceTagFullSwing : styles.sourceTagHittrax]}>
-                      {session.source === 'fullswing' ? 'FS' : 'HT'}
-                    </Text>
-                  </View>
-                  <Text style={[styles.tableCell, { flex: 0.7 }]}>{session.swingCount}</Text>
-                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.primary }]}>
-                    {session.avgExitVelo !== null ? `${session.avgExitVelo.toFixed(1)}` : '-'}
-                  </Text>
-                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.secondary }]}>
-                    {session.maxExitVelo !== null ? `${session.maxExitVelo.toFixed(1)}` : '-'}
-                  </Text>
-                  <Text style={[styles.tableCell, { flex: 0.9, color: COLORS.primary }]}>
-                    {session.maxDistance !== null ? `${session.maxDistance.toFixed(0)}` : '-'}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-
-        <View style={{ height: 80 }} />
+        <View style={{ height: 96 }} />
       </ScrollView>
 
       {/* FAB Back Button */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => navigation.goBack()}
-      >
-        <Ionicons name="arrow-back" size={24} color={COLORS.white} />
+      <TouchableOpacity style={styles.fab} onPress={() => navigation.goBack()} accessibilityLabel="Back">
+        <Ionicons name="arrow-back" size={24} color={STEEL.text} />
       </TouchableOpacity>
     </SafeAreaView>
   );
 }
 
-// Exit Velocity Chart Component
-function ExitVelocityChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; type: 'avg' | 'max'; date: string } | null>(null);
+// ---------------------------------------------------------------------------
+// Trend chart: N series over sessions, optional ideal band, tap tooltips.
+// ---------------------------------------------------------------------------
 
-  if (sessionData.length === 0) return null;
+type TrendSeries = {
+  key: string;
+  label: string;
+  color: string;
+  values: (number | null)[];
+  dashed?: boolean;
+  fill?: boolean;
+  format: (v: number) => string;
+};
 
-  const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 264;
-  const padding = { top: 20, right: 35, bottom: 35, left: 40 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
+function TrendChart({
+  dates,
+  series,
+  height,
+  step,
+  unit = '',
+  band,
+  emptyText,
+}: {
+  dates: string[];
+  series: TrendSeries[];
+  height: number;
+  step: number;
+  unit?: string;
+  band?: [number, number];
+  emptyText?: string;
+}) {
+  const [selected, setSelected] = useState<{ key: string; i: number } | null>(null);
+  const pad = { top: 14, right: 12, bottom: 22, left: 36 };
+  const innerW = CHART_W - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const n = dates.length;
 
-  const allEVs = sessionData.flatMap(s => [s.avgExitVelo, s.maxExitVelo]).filter((v): v is number => v !== null);
-  if (allEVs.length === 0) return null;
-
-  const minEV = Math.floor(Math.min(...allEVs) / 10) * 10;
-  const maxEV = Math.ceil(Math.max(...allEVs) / 10) * 10;
-
-  const avgPoints = sessionData
-    .map((session, index) => {
-      if (session.avgExitVelo === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgExitVelo - minEV) / (maxEV - minEV)) * innerHeight;
-      return { x, y, value: session.avgExitVelo, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const maxPoints = sessionData
-    .map((session, index) => {
-      if (session.maxExitVelo === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.maxExitVelo - minEV) / (maxEV - minEV)) * innerHeight;
-      return { x, y, value: session.maxExitVelo, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const avgLinePath = avgPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const maxLinePath = maxPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const yAxisSteps = 5;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minEV + (i * (maxEV - minEV)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
-
-  return (
-    <View style={styles.chartContainer}>
-      <View style={{ position: 'relative' }}>
-        <Svg width={chartWidth} height={chartHeight}>
-          {/* Grid lines */}
-          {gridLines.map((line, i) => (
-            <G key={i}>
-              <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-              <SvgText x={padding.left - 5} y={line.y + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>{Math.round(line.value)}</SvgText>
-            </G>
-          ))}
-
-          {/* Max EV line */}
-          <Path d={maxLinePath} fill="none" stroke={COLORS.secondary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-
-          {/* Avg EV line */}
-          <Path d={avgLinePath} fill="none" stroke={COLORS.primary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-
-          {/* Max EV points */}
-          {maxPoints.map((point, i) => (
-            <Circle
-              key={`max-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r={selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? 7 : 5}
-              fill={COLORS.secondary}
-              stroke={COLORS.black}
-              strokeWidth="2"
-            />
-          ))}
-
-          {/* Avg EV points */}
-          {avgPoints.map((point, i) => (
-            <Circle
-              key={`avg-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r={selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? 7 : 5}
-              fill={COLORS.primary}
-              stroke={COLORS.black}
-              strokeWidth="2"
-            />
-          ))}
-        </Svg>
-
-        {/* Touch targets */}
-        {maxPoints.map((point, i) => (
-          <TouchableOpacity
-            key={`max-touch-${i}`}
-            style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-            onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? null : { ...point, type: 'max' })}
-          />
-        ))}
-        {avgPoints.map((point, i) => (
-          <TouchableOpacity
-            key={`avg-touch-${i}`}
-            style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-            onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? null : { ...point, type: 'avg' })}
-          />
-        ))}
-
-        {/* Tooltip */}
-        {selectedPoint && (
-          <Tooltip
-            x={selectedPoint.x}
-            y={selectedPoint.y}
-            value={`${selectedPoint.value.toFixed(1)} mph`}
-            label={selectedPoint.type === 'avg' ? 'Avg' : 'Max'}
-            date={new Date(selectedPoint.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            color={selectedPoint.type === 'avg' ? COLORS.primary : COLORS.secondary}
-          />
-        )}
-      </View>
-
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Average EV</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.secondary }]} />
-          <Text style={styles.legendText}>Peak EV</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// Launch Angle Chart Component
-function LaunchAngleChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; date: string } | null>(null);
-
-  if (sessionData.length === 0) return null;
-
-  const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 240;
-  const padding = { top: 20, right: 35, bottom: 35, left: 40 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
-
-  const allLAs = sessionData.map(s => s.avgLaunchAngle).filter((la): la is number => la !== null);
-  if (allLAs.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No launch angle data available</Text>
-      </View>
-    );
+  const all = series.flatMap((s) => s.values).filter((v): v is number => v != null && Number.isFinite(v));
+  if (all.length === 0) {
+    return emptyText ? <Text style={steelStyles.empty}>{emptyText}</Text> : null;
   }
 
-  const minLA = Math.floor(Math.min(...allLAs) / 5) * 5 - 5;
-  const maxLA = Math.ceil(Math.max(...allLAs) / 5) * 5 + 5;
+  let lo = Math.min(...all, ...(band ? [band[0]] : []));
+  let hi = Math.max(...all, ...(band ? [band[1]] : []));
+  lo = Math.floor(lo / step) * step;
+  hi = Math.ceil(hi / step) * step;
+  if (hi - lo < step) hi = lo + step;
+  if (hi === lo) hi = lo + step;
 
-  const laPoints = sessionData
-    .map((session, index) => {
-      if (session.avgLaunchAngle === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgLaunchAngle - minLA) / (maxLA - minLA)) * innerHeight;
-      return { x, y, value: session.avgLaunchAngle, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
+  const xAt = (i: number) => pad.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const yAt = (v: number) => pad.top + innerH - ((v - lo) / (hi - lo)) * innerH;
+  const baseY = pad.top + innerH;
 
-  const laLinePath = laPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const pts = series.map((s) => ({
+    s,
+    points: s.values
+      .map((v, i) => (v != null && Number.isFinite(v) ? { i, x: xAt(i), y: yAt(v), v } : null))
+      .filter((p): p is { i: number; x: number; y: number; v: number } => p !== null),
+  }));
 
-  // Ideal range band (10-30 degrees)
-  const idealMin = 10;
-  const idealMax = 30;
-  const idealMinY = padding.top + innerHeight - ((idealMin - minLA) / (maxLA - minLA)) * innerHeight;
-  const idealMaxY = padding.top + innerHeight - ((idealMax - minLA) / (maxLA - minLA)) * innerHeight;
+  const grid = Array.from({ length: 5 }, (_, k) => lo + (k * (hi - lo)) / 4);
+  const gradId = (k: string) => `grad-${series.map((s) => s.key).join('-')}-${k}`;
 
-  const yAxisSteps = 5;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minLA + (i * (maxLA - minLA)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
+  const sel = selected ? pts.find((p) => p.s.key === selected.key)?.points.find((p) => p.i === selected.i) : null;
+  const selSeries = selected ? series.find((s) => s.key === selected.key) : null;
 
   return (
-    <View style={styles.chartContainer}>
+    <View style={{ marginTop: 16 }}>
       <View style={{ position: 'relative' }}>
-        <Svg width={chartWidth} height={chartHeight}>
-          {/* Grid lines */}
-          {gridLines.map((line, i) => (
-            <G key={i}>
-              <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-              <SvgText x={padding.left - 5} y={line.y + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>{Math.round(line.value)}°</SvgText>
+        <Svg width={CHART_W} height={height}>
+          <Defs>
+            {pts.filter((p) => p.s.fill).map(({ s }) => (
+              <SvgLinearGradient key={s.key} id={gradId(s.key)} x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor={s.color} stopOpacity={0.22} />
+                <Stop offset="1" stopColor={s.color} stopOpacity={0} />
+              </SvgLinearGradient>
+            ))}
+          </Defs>
+
+          {grid.map((v, k) => (
+            <G key={k}>
+              <Line x1={pad.left} y1={yAt(v)} x2={pad.left + innerW} y2={yAt(v)} stroke={STEEL.rule} strokeWidth="1" />
+              <SvgText x={pad.left - 6} y={yAt(v) + 3.5} textAnchor="end" fontSize="9.5" fill={STEEL.mute}>
+                {`${Math.round(v)}${unit}`}
+              </SvgText>
             </G>
           ))}
 
-          {/* Ideal range band */}
-          <Rect
-            x={padding.left}
-            y={idealMaxY}
-            width={innerWidth}
-            height={idealMinY - idealMaxY}
-            fill={COLORS.primary}
-            opacity="0.15"
-          />
-
-          {/* Launch angle line */}
-          <Path d={laLinePath} fill="none" stroke={COLORS.primary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-
-          {/* Data points */}
-          {laPoints.map((point, i) => (
-            <Circle
-              key={`la-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r={selectedPoint?.x === point.x ? 7 : 5}
-              fill={COLORS.primary}
-              stroke={COLORS.black}
-              strokeWidth="2"
+          {band && (
+            <Rect
+              x={pad.left}
+              y={yAt(band[1])}
+              width={innerW}
+              height={Math.max(0, yAt(band[0]) - yAt(band[1]))}
+              fill={STEEL.good}
+              opacity={0.07}
             />
-          ))}
-        </Svg>
-
-        {/* Touch targets */}
-        {laPoints.map((point, i) => (
-          <TouchableOpacity
-            key={`la-touch-${i}`}
-            style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-            onPress={() => setSelectedPoint(selectedPoint?.x === point.x ? null : point)}
-          />
-        ))}
-
-        {/* Tooltip */}
-        {selectedPoint && (
-          <Tooltip
-            x={selectedPoint.x}
-            y={selectedPoint.y}
-            value={`${selectedPoint.value.toFixed(1)}°`}
-            label="Launch Angle"
-            date={new Date(selectedPoint.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            color={COLORS.primary}
-          />
-        )}
-      </View>
-
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Avg Launch Angle</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: 'rgba(155,221,255,0.15)', borderColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Ideal Range (10-30°)</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// Distance Chart Component
-function DistanceChart({ sessionData }: { sessionData: SessionData[] }) {
-  const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number; value: number; type: 'avg' | 'max'; date: string } | null>(null);
-
-  if (sessionData.length === 0) return null;
-
-  const chartWidth = SCREEN_WIDTH - 32;
-  const chartHeight = 240;
-  const padding = { top: 20, right: 35, bottom: 35, left: 45 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
-
-  const maxDistances = sessionData.map(s => s.maxDistance).filter((d): d is number => d !== null);
-  const avgDistances = sessionData.map(s => s.avgDistance).filter((d): d is number => d !== null);
-  const allDistances = [...maxDistances, ...avgDistances];
-
-  if (allDistances.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No distance data available</Text>
-      </View>
-    );
-  }
-
-  const minDist = Math.floor(Math.min(...allDistances) / 50) * 50 - 50;
-  const maxDist = Math.ceil(Math.max(...allDistances) / 50) * 50 + 50;
-
-  const maxDistPoints = sessionData
-    .map((session, index) => {
-      if (session.maxDistance === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.maxDistance - minDist) / (maxDist - minDist)) * innerHeight;
-      return { x, y, value: session.maxDistance, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const avgDistPoints = sessionData
-    .map((session, index) => {
-      if (session.avgDistance === null) return null;
-      const x = padding.left + (index / Math.max(1, sessionData.length - 1)) * innerWidth;
-      const y = padding.top + innerHeight - ((session.avgDistance - minDist) / (maxDist - minDist)) * innerHeight;
-      return { x, y, value: session.avgDistance, date: session.date };
-    })
-    .filter((p): p is { x: number; y: number; value: number; date: string } => p !== null);
-
-  const maxDistLinePath = maxDistPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const avgDistLinePath = avgDistPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const yAxisSteps = 5;
-  const gridLines = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
-    const value = minDist + (i * (maxDist - minDist)) / yAxisSteps;
-    const y = padding.top + innerHeight - (i / yAxisSteps) * innerHeight;
-    return { y, value };
-  });
-
-  return (
-    <View style={styles.chartContainer}>
-      <View style={{ position: 'relative' }}>
-        <Svg width={chartWidth} height={chartHeight}>
-          {/* Grid lines */}
-          {gridLines.map((line, i) => (
-            <G key={i}>
-              <Line x1={padding.left} y1={line.y} x2={padding.left + innerWidth} y2={line.y} stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-              <SvgText x={padding.left - 5} y={line.y + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>{Math.round(line.value)}</SvgText>
-            </G>
-          ))}
-
-          {/* Avg distance line (dashed) */}
-          {avgDistPoints.length > 0 && (
-            <Path d={avgDistLinePath} fill="none" stroke={COLORS.primary} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6,4" />
           )}
 
-          {/* Max distance line */}
-          <Path d={maxDistLinePath} fill="none" stroke={COLORS.secondary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          {pts.map(({ s, points }) => {
+            if (points.length === 0) return null;
+            const line = points.map((p, k) => `${k === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+            const area = points.length > 1
+              ? `${line} L ${points[points.length - 1].x} ${baseY} L ${points[0].x} ${baseY} Z`
+              : null;
+            return (
+              <G key={s.key}>
+                {s.fill && area && <Path d={area} fill={`url(#${gradId(s.key)})`} />}
+                <Path
+                  d={line}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={s.dashed ? 1.8 : 2.4}
+                  strokeDasharray={s.dashed ? '5,4' : undefined}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                {points.map((p) => {
+                  const on = selected?.key === s.key && selected.i === p.i;
+                  return (
+                    <Circle key={p.i} cx={p.x} cy={p.y} r={on ? 5.5 : 3.2} fill={s.dashed ? STEEL.bg : s.color} stroke={s.color} strokeWidth={s.dashed ? 1.6 : 0} />
+                  );
+                })}
+              </G>
+            );
+          })}
 
-          {/* Avg distance points */}
-          {avgDistPoints.map((point, i) => (
-            <Circle
-              key={`avg-dist-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r={selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? 6 : 4}
-              fill={COLORS.primary}
-              stroke={COLORS.black}
-              strokeWidth="1.5"
-            />
-          ))}
-
-          {/* Max distance points */}
-          {maxDistPoints.map((point, i) => (
-            <Circle
-              key={`max-dist-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r={selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? 7 : 5}
-              fill={COLORS.secondary}
-              stroke={COLORS.black}
-              strokeWidth="2"
-            />
-          ))}
+          {n > 1 && (
+            <>
+              <SvgText x={pad.left} y={height - 6} fontSize="9.5" fill={STEEL.mute}>{shortDate(dates[0])}</SvgText>
+              <SvgText x={pad.left + innerW} y={height - 6} fontSize="9.5" fill={STEEL.mute} textAnchor="end">{shortDate(dates[n - 1])}</SvgText>
+            </>
+          )}
         </Svg>
 
-        {/* Touch targets */}
-        {maxDistPoints.map((point, i) => (
-          <TouchableOpacity
-            key={`max-dist-touch-${i}`}
-            style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-            onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'max' ? null : { ...point, type: 'max' })}
-          />
-        ))}
-        {avgDistPoints.map((point, i) => (
-          <TouchableOpacity
-            key={`avg-dist-touch-${i}`}
-            style={[styles.touchTarget, { left: point.x - 15, top: point.y - 15 }]}
-            onPress={() => setSelectedPoint(selectedPoint?.x === point.x && selectedPoint?.type === 'avg' ? null : { ...point, type: 'avg' })}
-          />
-        ))}
+        {pts.map(({ s, points }) =>
+          points.map((p) => (
+            <TouchableOpacity
+              key={`${s.key}-t-${p.i}`}
+              style={[styles.touchTarget, { left: p.x - 14, top: p.y - 14 }]}
+              onPress={() => setSelected(selected?.key === s.key && selected.i === p.i ? null : { key: s.key, i: p.i })}
+            />
+          ))
+        )}
 
-        {/* Tooltip */}
-        {selectedPoint && (
-          <Tooltip
-            x={selectedPoint.x}
-            y={selectedPoint.y}
-            value={`${selectedPoint.value.toFixed(0)} ft`}
-            label={selectedPoint.type === 'avg' ? 'Avg Distance' : 'Max Distance'}
-            date={new Date(selectedPoint.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            color={selectedPoint.type === 'avg' ? COLORS.primary : COLORS.secondary}
-          />
+        {sel && selSeries && (
+          <Tooltip x={sel.x} y={sel.y} value={selSeries.format(sel.v)} label={selSeries.label} date={shortDate(dates[sel.i])} color={selSeries.color} />
         )}
       </View>
 
       <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine, { backgroundColor: COLORS.secondary }]} />
-          <Text style={styles.legendText}>Max Distance</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLineDashed, { backgroundColor: COLORS.primary }]} />
-          <Text style={styles.legendText}>Avg Distance</Text>
-        </View>
+        {series.map((s) => (
+          <View key={s.key} style={styles.legendItem}>
+            <View style={[styles.legendLine, { backgroundColor: s.color, opacity: s.dashed ? 0.8 : 1, width: s.dashed ? 10 : 16 }]} />
+            <Text style={styles.legendText}>{s.label}</Text>
+          </View>
+        ))}
+        {band && (
+          <View style={styles.legendItem}>
+            <View style={[styles.legendBox, { backgroundColor: 'rgba(52,211,153,0.18)' }]} />
+            <Text style={styles.legendText}>{`Ideal ${band[0]}–${band[1]}${unit}`}</Text>
+          </View>
+        )}
       </View>
     </View>
   );
 }
 
-// Exit Velocity Heatmap Component (Spray Chart)
-function ExitVeloHeatmap({ swings, playingLevel }: { swings: SpraySwing[]; playingLevel: string }) {
-  const svgWidth = SCREEN_WIDTH - 32;
-  const svgHeight = svgWidth * 0.8;
-  const viewBox = "20 100 360 280";
+// ---------------------------------------------------------------------------
+// Field drawings
+// ---------------------------------------------------------------------------
 
-  const evThresholds = (() => {
-    switch (playingLevel) {
-      case 'youth':
-        return { hot: 80, warm: 72, cool: 64, cold: 55 };
-      case 'high-school':
-        return { hot: 98, warm: 90, cool: 82, cold: 70 };
-      case 'college':
-        return { hot: 105, warm: 98, cool: 90, cold: 80 };
-      case 'professional':
-        return { hot: 110, warm: 105, cool: 98, cold: 88 };
-      default:
-        return { hot: 98, warm: 90, cool: 82, cold: 70 };
-    }
-  })();
-
-  const getHeatmapColor = (ev: number) => {
-    if (ev >= evThresholds.hot) return '#dc2626';
-    if (ev >= evThresholds.warm) return '#f97316';
-    if (ev >= evThresholds.cool) return '#eab308';
-    if (ev >= evThresholds.cold) return '#06b6d4';
-    return '#3b82f6';
-  };
-
-  const swingPoints = swings.map(swing => {
-    const scale = 0.6;
-    const x = 200 + (swing.spray_chart_x * scale);
-    const y = 370 - (swing.spray_chart_z * scale);
-    return { x, y, ev: swing.exit_velocity };
-  });
-
+function FieldOutline() {
   return (
-    <View style={styles.chartContainer}>
-      <View style={styles.fieldContainer}>
-        <Svg width={svgWidth} height={svgHeight} viewBox={viewBox}>
-          <Rect width="400" height="400" fill="#000000" />
+    <>
+      <Line x1="200" y1="370" x2="60" y2="230" stroke={STEEL.past} strokeWidth="1.5" opacity="0.7" />
+      <Line x1="200" y1="370" x2="340" y2="230" stroke={STEEL.past} strokeWidth="1.5" opacity="0.7" />
+      <Path d="M 60 230 Q 100 140 200 136 Q 300 140 340 230" fill="none" stroke={STEEL.mute} strokeWidth="1.5" opacity="0.7" />
+      <Path d="M 162 316 Q 200 292 238 316" fill="none" stroke={STEEL.mute} strokeWidth="1.5" opacity="0.7" />
+    </>
+  );
+}
 
-          {/* Foul lines */}
-          <Line x1="200" y1="370" x2="60" y2="230" stroke={COLORS.gray600} strokeWidth="1.5" opacity="0.6" />
-          <Line x1="200" y1="370" x2="340" y2="230" stroke={COLORS.gray600} strokeWidth="1.5" opacity="0.6" />
-
-          {/* Outfield fence */}
-          <Path d="M 60 230 Q 100 140 200 136 Q 300 140 340 230" fill="none" stroke={COLORS.gray500} strokeWidth="1.5" opacity="0.7" />
-
-          {/* Infield arc */}
-          <Path d="M 162 316 Q 200 292 238 316" fill="none" stroke={COLORS.gray500} strokeWidth="1.5" opacity="0.7" />
-
-          {/* Heatmap circles - larger blurred circles */}
-          {swingPoints.map((point, idx) => (
-            <Circle
-              key={`blur-${idx}`}
-              cx={point.x}
-              cy={point.y}
-              r={18}
-              fill={getHeatmapColor(point.ev)}
-              opacity={0.35}
-            />
-          ))}
-
-          {/* Swing points - smaller solid circles */}
-          {swingPoints.map((point, idx) => (
-            <Circle
-              key={`point-${idx}`}
-              cx={point.x}
-              cy={point.y}
-              r={6}
-              fill={getHeatmapColor(point.ev)}
-              opacity={0.8}
-            />
-          ))}
-        </Svg>
-      </View>
-
-      {/* Legend */}
+function LevelLegend({ playingLevel }: { playingLevel: string }) {
+  return (
+    <>
       <View style={styles.heatmapLegend}>
         <Text style={styles.heatmapLegendLabel}>Cold</Text>
         <View style={styles.heatmapGradient}>
-          <LinearGradient colors={['#3b82f6', '#06b6d4', '#eab308', '#f97316', '#dc2626']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.gradientBar} />
+          <LinearGradient
+            colors={[LEVEL_COLORS.ice, LEVEL_COLORS.cold, LEVEL_COLORS.cool, LEVEL_COLORS.warm, LEVEL_COLORS.hot]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.gradientBar}
+          />
         </View>
         <Text style={styles.heatmapLegendLabel}>Hot</Text>
       </View>
       <Text style={styles.heatmapLevelText}>{playingLevel.replace('-', ' ')} level thresholds</Text>
+    </>
+  );
+}
+
+// Exit Velocity Heatmap (2D spray chart, level thresholds)
+function ExitVeloHeatmap({ swings, playingLevel }: { swings: SpraySwing[]; playingLevel: string }) {
+  const svgWidth = CHART_W;
+  const svgHeight = svgWidth * 0.8;
+  const t = levelThresholds(playingLevel);
+
+  const swingPoints = swings.map((swing) => ({
+    x: 200 + swing.spray_chart_x! * 0.6,
+    y: 370 - swing.spray_chart_z! * 0.6,
+    color: levelColor(swing.exit_velocity!, t),
+  }));
+
+  return (
+    <View>
+      <View style={styles.fieldContainer}>
+        <Svg width={svgWidth} height={svgHeight} viewBox="20 100 360 280">
+          <FieldOutline />
+          {swingPoints.map((p, idx) => (
+            <Circle key={`blur-${idx}`} cx={p.x} cy={p.y} r={18} fill={p.color} opacity={0.3} />
+          ))}
+          {swingPoints.map((p, idx) => (
+            <Circle key={`point-${idx}`} cx={p.x} cy={p.y} r={6} fill={p.color} opacity={0.85} />
+          ))}
+        </Svg>
+      </View>
+      <LevelLegend playingLevel={playingLevel} />
     </View>
   );
 }
 
-// Field Zones Component
+// Field Zones: split by spray angle (left < -15°, center ±15°, right > 15°).
+const ZONE_SPLIT_DEG = 15;
 function FieldZones({ swings }: { swings: SpraySwing[] }) {
-  const svgWidth = SCREEN_WIDTH - 32;
+  const svgWidth = CHART_W;
   const svgHeight = svgWidth * 0.8;
-  const viewBox = "20 100 360 280";
 
-  const leftSwings = swings.filter(s => s.spray_chart_x < -50);
-  const centerSwings = swings.filter(s => s.spray_chart_x >= -50 && s.spray_chart_x <= 50);
-  const rightSwings = swings.filter(s => s.spray_chart_x > 50);
+  const zone = (filter: (a: number) => boolean) => {
+    const list = swings.filter((s) => filter(s.spray_angle!));
+    const evs = list.map((s) => s.exit_velocity!);
+    return {
+      avg: mean(evs),
+      peak: evs.length ? Math.max(...evs) : null,
+      pct: swings.length ? (list.length / swings.length) * 100 : null,
+    };
+  };
+  const left = zone((a) => a < -ZONE_SPLIT_DEG);
+  const center = zone((a) => a >= -ZONE_SPLIT_DEG && a <= ZONE_SPLIT_DEG);
+  const right = zone((a) => a > ZONE_SPLIT_DEG);
 
-  const totalSwings = swings.length;
+  // Divider rays at ±15° from home (200,370), length ~200 view units.
+  const ray = (deg: number) => {
+    const r = (deg * Math.PI) / 180;
+    return { x: 200 + 200 * Math.sin(r), y: 370 - 200 * Math.cos(r) };
+  };
+  const lRay = ray(-ZONE_SPLIT_DEG);
+  const rRay = ray(ZONE_SPLIT_DEG);
 
-  const leftAvg = leftSwings.length > 0 ? leftSwings.reduce((sum, s) => sum + s.exit_velocity, 0) / leftSwings.length : 0;
-  const leftPeak = leftSwings.length > 0 ? Math.max(...leftSwings.map(s => s.exit_velocity)) : 0;
-  const leftPct = totalSwings > 0 ? (leftSwings.length / totalSwings) * 100 : 0;
+  const label = (x: number, y: number, name: string, z: ReturnType<typeof zone>) => (
+    <G>
+      <SvgText x={x} y={y} textAnchor="middle" fontSize="11" fill={STEEL.sub} fontWeight="800" letterSpacing="1.5">{name}</SvgText>
+      <SvgText x={x} y={y + 22} textAnchor="middle" fontSize="20" fill={z.avg == null ? STEEL.past : STEEL.force} fontWeight="800">{fmt(z.avg)}</SvgText>
+      <SvgText x={x} y={y + 36} textAnchor="middle" fontSize="9" fill={STEEL.mute}>avg mph</SvgText>
+      <SvgText x={x} y={y + 54} textAnchor="middle" fontSize="13" fill={z.peak == null ? STEEL.past : STEEL.hitting} fontWeight="800">{fmt(z.peak)}</SvgText>
+      <SvgText x={x} y={y + 66} textAnchor="middle" fontSize="9" fill={STEEL.mute}>peak</SvgText>
+      <SvgText x={x} y={y + 82} textAnchor="middle" fontSize="11" fill={STEEL.day} fontWeight="700">{z.pct == null || z.pct === 0 ? '—' : `${z.pct.toFixed(0)}%`}</SvgText>
+    </G>
+  );
 
-  const centerAvg = centerSwings.length > 0 ? centerSwings.reduce((sum, s) => sum + s.exit_velocity, 0) / centerSwings.length : 0;
-  const centerPeak = centerSwings.length > 0 ? Math.max(...centerSwings.map(s => s.exit_velocity)) : 0;
-  const centerPct = totalSwings > 0 ? (centerSwings.length / totalSwings) * 100 : 0;
-
-  const rightAvg = rightSwings.length > 0 ? rightSwings.reduce((sum, s) => sum + s.exit_velocity, 0) / rightSwings.length : 0;
-  const rightPeak = rightSwings.length > 0 ? Math.max(...rightSwings.map(s => s.exit_velocity)) : 0;
-  const rightPct = totalSwings > 0 ? (rightSwings.length / totalSwings) * 100 : 0;
+  const meanAngle = mean(swings.map((s) => s.spray_angle!)) ?? 0;
+  const position = Math.max(0, Math.min(100, (meanAngle / 45) * 50 + 50));
 
   return (
-    <View style={styles.chartContainer}>
+    <View>
       <View style={styles.fieldContainer}>
-        <Svg width={svgWidth} height={svgHeight} viewBox={viewBox}>
-          <Rect width="400" height="400" fill="#000000" />
-
-          {/* Foul lines */}
-          <Line x1="200" y1="370" x2="60" y2="230" stroke={COLORS.gray600} strokeWidth="1.5" opacity="0.6" />
-          <Line x1="200" y1="370" x2="340" y2="230" stroke={COLORS.gray600} strokeWidth="1.5" opacity="0.6" />
-
-          {/* Outfield fence */}
-          <Path d="M 60 230 Q 100 140 200 136 Q 300 140 340 230" fill="none" stroke={COLORS.gray500} strokeWidth="1.5" opacity="0.7" />
-
-          {/* Infield arc */}
-          <Path d="M 162 316 Q 200 292 238 316" fill="none" stroke={COLORS.gray500} strokeWidth="1.5" opacity="0.7" />
-
-          {/* Zone dividing lines */}
-          <Line x1="200" y1="370" x2="140" y2="180" stroke={COLORS.primary} strokeWidth="2" strokeDasharray="6,4" opacity="0.8" />
-          <Line x1="200" y1="370" x2="260" y2="180" stroke={COLORS.primary} strokeWidth="2" strokeDasharray="6,4" opacity="0.8" />
-
-          {/* Left Field */}
-          <SvgText x="100" y="190" textAnchor="middle" fontSize="12" fill={COLORS.white} fontWeight="bold">LEFT</SvgText>
-          <SvgText x="100" y="207" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Avg:</SvgText>
-          <SvgText x="100" y="224" textAnchor="middle" fontSize="18" fill={COLORS.primary} fontWeight="bold">{leftAvg > 0 ? leftAvg.toFixed(1) : '--'}</SvgText>
-          <SvgText x="100" y="241" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Peak:</SvgText>
-          <SvgText x="100" y="258" textAnchor="middle" fontSize="14" fill={COLORS.secondary} fontWeight="bold">{leftPeak > 0 ? leftPeak.toFixed(1) : '--'}</SvgText>
-          <SvgText x="100" y="273" textAnchor="middle" fontSize="11" fill={COLORS.primaryDark} fontWeight="semibold">{leftPct > 0 ? leftPct.toFixed(0) + '%' : '--'}</SvgText>
-
-          {/* Center Field */}
-          <SvgText x="200" y="155" textAnchor="middle" fontSize="12" fill={COLORS.white} fontWeight="bold">CENTER</SvgText>
-          <SvgText x="200" y="172" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Avg:</SvgText>
-          <SvgText x="200" y="189" textAnchor="middle" fontSize="18" fill={COLORS.primary} fontWeight="bold">{centerAvg > 0 ? centerAvg.toFixed(1) : '--'}</SvgText>
-          <SvgText x="200" y="206" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Peak:</SvgText>
-          <SvgText x="200" y="223" textAnchor="middle" fontSize="14" fill={COLORS.secondary} fontWeight="bold">{centerPeak > 0 ? centerPeak.toFixed(1) : '--'}</SvgText>
-          <SvgText x="200" y="238" textAnchor="middle" fontSize="11" fill={COLORS.primaryDark} fontWeight="semibold">{centerPct > 0 ? centerPct.toFixed(0) + '%' : '--'}</SvgText>
-
-          {/* Right Field */}
-          <SvgText x="300" y="190" textAnchor="middle" fontSize="12" fill={COLORS.white} fontWeight="bold">RIGHT</SvgText>
-          <SvgText x="300" y="207" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Avg:</SvgText>
-          <SvgText x="300" y="224" textAnchor="middle" fontSize="18" fill={COLORS.primary} fontWeight="bold">{rightAvg > 0 ? rightAvg.toFixed(1) : '--'}</SvgText>
-          <SvgText x="300" y="241" textAnchor="middle" fontSize="10" fill={COLORS.gray400}>Peak:</SvgText>
-          <SvgText x="300" y="258" textAnchor="middle" fontSize="14" fill={COLORS.secondary} fontWeight="bold">{rightPeak > 0 ? rightPeak.toFixed(1) : '--'}</SvgText>
-          <SvgText x="300" y="273" textAnchor="middle" fontSize="11" fill={COLORS.primaryDark} fontWeight="semibold">{rightPct > 0 ? rightPct.toFixed(0) + '%' : '--'}</SvgText>
-
-          {/* Home plate */}
-          <Polygon points="200,370 195,365 200,360 205,365" fill={COLORS.primary} opacity="0.8" />
+        <Svg width={svgWidth} height={svgHeight} viewBox="20 100 360 280">
+          <FieldOutline />
+          <Line x1="200" y1="370" x2={lRay.x} y2={lRay.y} stroke={STEEL.force} strokeWidth="1.5" strokeDasharray="6,4" opacity="0.6" />
+          <Line x1="200" y1="370" x2={rRay.x} y2={rRay.y} stroke={STEEL.force} strokeWidth="1.5" strokeDasharray="6,4" opacity="0.6" />
+          {label(100, 190, 'LEFT', left)}
+          {label(200, 150, 'CENTER', center)}
+          {label(300, 190, 'RIGHT', right)}
+          <Polygon points="200,370 195,365 200,360 205,365" fill={STEEL.force} opacity="0.8" />
         </Svg>
       </View>
 
-      {/* Directional Tendency */}
       <View style={styles.tendencyContainer}>
         <View style={styles.tendencyHeader}>
-          <Text style={styles.tendencyLabel}>Pull Side</Text>
-          <Text style={styles.tendencyLabelCenter}>Directional Tendency</Text>
-          <Text style={styles.tendencyLabel}>Opposite Field</Text>
+          <Text style={styles.tendencyLabel}>Left</Text>
+          <Text style={styles.tendencyLabelCenter}>DIRECTIONAL TENDENCY</Text>
+          <Text style={styles.tendencyLabel}>Right</Text>
         </View>
         <View style={styles.tendencyBar}>
           <View style={styles.tendencyCenterMark} />
-          {(() => {
-            const meanX = swings.length > 0
-              ? swings.reduce((sum, s) => sum + s.spray_chart_x, 0) / swings.length
-              : 0;
-            const normalizedPosition = ((meanX / 200) * 50) + 50;
-            const clampedPosition = Math.max(0, Math.min(100, normalizedPosition));
-
-            return (
-              <View
-                style={[
-                  styles.tendencyIndicator,
-                  {
-                    left: `${clampedPosition}%`,
-                    backgroundColor: clampedPosition < 40 ? '#f59e0b' : clampedPosition > 60 ? '#8b5cf6' : COLORS.primary,
-                  }
-                ]}
-              />
-            );
-          })()}
+          <View
+            style={[
+              styles.tendencyIndicator,
+              { left: `${position}%`, backgroundColor: position < 40 ? STEEL.warn : position > 60 ? STEEL.purple : STEEL.force },
+            ]}
+          />
         </View>
+        <Text style={styles.zoneNote}>{`Zones split at ±${ZONE_SPLIT_DEG}° spray angle`}</Text>
       </View>
     </View>
   );
 }
 
-// Strike Zone Heatmap Component
+// ---------------------------------------------------------------------------
+// Strike zone: real zone size. HitTrax per-swing strike_zone_* (inches) when
+// present, else 17" wide × 1.6–3.5 ft. Edges are included.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ZONE = { width: 17, bottom: 1.6 * 12, top: 3.5 * 12 };
+
+function zoneCell(s: SpraySwing, n: number): { row: number; col: number } | null {
+  if (s.poi_x == null || s.poi_y == null || s.poi_y <= 5) return null;
+  let w = s.sz_width ?? DEFAULT_ZONE.width;
+  let b = s.sz_bottom ?? DEFAULT_ZONE.bottom;
+  let t = s.sz_top ?? DEFAULT_ZONE.top;
+  if (!(w > 0) || !(t > b)) {
+    w = DEFAULT_ZONE.width;
+    b = DEFAULT_ZONE.bottom;
+    t = DEFAULT_ZONE.top;
+  }
+  const nx = (s.poi_x + w / 2) / w;
+  const ny = (s.poi_y - b) / (t - b);
+  if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return null;
+  const cx = 1 - nx; // catcher's view
+  return { col: Math.min(n - 1, Math.floor(cx * n)), row: Math.min(n - 1, Math.floor(ny * n)) };
+}
+
+function bucket(swings: SpraySwing[], n: number, value: (s: SpraySwing) => number | null) {
+  const cells = new Map<string, { row: number; col: number; sum: number; count: number }>();
+  let outside = 0;
+  for (const s of swings) {
+    const v = value(s);
+    if (v == null) continue;
+    const c = zoneCell(s, n);
+    if (!c) {
+      if (s.poi_x != null && s.poi_y != null && s.poi_y > 5) outside++;
+      continue;
+    }
+    const k = `${c.row}:${c.col}`;
+    const cell = cells.get(k);
+    if (cell) {
+      cell.sum += v;
+      cell.count++;
+    } else cells.set(k, { ...c, sum: v, count: 1 });
+  }
+  return { cells: [...cells.values()].map((c) => ({ ...c, avg: c.sum / c.count })), outside };
+}
+
+const VB_W = 400;
+const VB_H = 500;
+const ZONE_W = 280;
+const ZONE_H = 360;
+const ZONE_X = (VB_W - ZONE_W) / 2;
+const ZONE_Y = (VB_H - ZONE_H) / 2 - 20;
+
+function ZoneFrame({ color, children }: { color: string; children?: React.ReactNode }) {
+  return (
+    <>
+      {children}
+      <Rect x={ZONE_X} y={ZONE_Y} width={ZONE_W} height={ZONE_H} fill="none" stroke={color} strokeWidth="2" opacity={0.8} />
+      {[1, 2].map((k) => (
+        <G key={k}>
+          <Line x1={ZONE_X + (k * ZONE_W) / 3} y1={ZONE_Y} x2={ZONE_X + (k * ZONE_W) / 3} y2={ZONE_Y + ZONE_H} stroke={color} strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
+          <Line x1={ZONE_X} y1={ZONE_Y + (k * ZONE_H) / 3} x2={ZONE_X + ZONE_W} y2={ZONE_Y + (k * ZONE_H) / 3} stroke={color} strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
+        </G>
+      ))}
+      <SvgText x={ZONE_X - 8} y={ZONE_Y + ZONE_H / 6 + 4} textAnchor="end" fontSize="10" fill={STEEL.mute}>High</SvgText>
+      <SvgText x={ZONE_X - 8} y={ZONE_Y + ZONE_H / 2 + 4} textAnchor="end" fontSize="10" fill={STEEL.mute}>Mid</SvgText>
+      <SvgText x={ZONE_X - 8} y={ZONE_Y + (5 * ZONE_H) / 6 + 4} textAnchor="end" fontSize="10" fill={STEEL.mute}>Low</SvgText>
+      <SvgText x={VB_W / 2} y={VB_H - 20} textAnchor="middle" fontSize="10" fill={STEEL.mute}>Catcher's View</SvgText>
+    </>
+  );
+}
+
+function ZoneStatLabels({ stats, color, format }: { stats: { row: number; col: number; avg: number; count: number }[]; color: string; format: (v: number) => string }) {
+  return (
+    <>
+      {stats.map((stat) => {
+        const svgRow = 2 - stat.row;
+        const cx = ZONE_X + (stat.col * ZONE_W) / 3 + ZONE_W / 6;
+        const cy = ZONE_Y + (svgRow * ZONE_H) / 3 + ZONE_H / 6;
+        return (
+          <G key={`${stat.row}-${stat.col}`}>
+            <Rect x={cx - 35} y={cy - 22} width={70} height={44} fill="#000000" opacity={0.8} rx="6" />
+            <SvgText x={cx} y={cy - 3} textAnchor="middle" fontSize="18" fill={color} fontWeight="bold">{format(stat.avg)}</SvgText>
+            <SvgText x={cx} y={cy + 16} textAnchor="middle" fontSize="10" fill={STEEL.sub}>{`${stat.count} swing${stat.count !== 1 ? 's' : ''}`}</SvgText>
+          </G>
+        );
+      })}
+    </>
+  );
+}
+
 function StrikeZoneHeatmap({ swings, playingLevel }: { swings: SpraySwing[]; playingLevel: string }) {
-  const svgWidth = SCREEN_WIDTH - 32;
+  const svgWidth = CHART_W;
   const svgHeight = svgWidth * 1.25;
+  const t = levelThresholds(playingLevel);
+  const GRID = 12;
+  const cellW = ZONE_W / GRID;
+  const cellH = ZONE_H / GRID;
 
-  // EV thresholds based on playing level
-  const evThresholds = (() => {
-    switch (playingLevel) {
-      case 'youth':
-        return { hot: 80, warm: 72, cool: 64, cold: 55 };
-      case 'high-school':
-        return { hot: 98, warm: 90, cool: 82, cold: 70 };
-      case 'college':
-        return { hot: 105, warm: 98, cool: 90, cold: 80 };
-      case 'professional':
-        return { hot: 110, warm: 105, cool: 98, cold: 88 };
-      default:
-        return { hot: 98, warm: 90, cool: 82, cold: 70 };
-    }
-  })();
+  const ev = (s: SpraySwing) => (s.exit_velocity != null && s.exit_velocity > 0 ? s.exit_velocity : null);
+  const heat = bucket(swings, GRID, ev);
+  const zones = bucket(swings, 3, ev);
 
-  // Filter swings with valid POI data
-  const validSwings = swings.filter(s =>
-    s.poi_x !== null &&
-    s.poi_y !== null &&
-    s.poi_y > 5 &&
-    s.exit_velocity > 0
-  );
-
-  if (validSwings.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No pitch location data available</Text>
-      </View>
-    );
+  if (heat.cells.length === 0) {
+    return <Text style={steelStyles.empty}>No pitches inside the strike zone in this range</Text>;
   }
-
-  // Calculate bounds
-  const allY = validSwings.map(s => s.poi_y!);
-  const minY = Math.min(...allY);
-  const maxY = Math.max(...allY);
-  const allX = validSwings.map(s => s.poi_x!);
-  const minX = Math.min(...allX);
-  const maxX = Math.max(...allX);
-
-  // SVG dimensions for strike zone
-  const viewBoxWidth = 400;
-  const viewBoxHeight = 500;
-  const zoneWidth = 280;
-  const zoneHeight = 360;
-  const zoneX = (viewBoxWidth - zoneWidth) / 2;
-  const zoneY = (viewBoxHeight - zoneHeight) / 2 - 20;
-
-  // 12x12 grid for heatmap
-  const gridCols = 12;
-  const gridRows = 12;
-  const cellWidth = zoneWidth / gridCols;
-  const cellHeight = zoneHeight / gridRows;
-
-  const gridCells: Array<{ row: number; col: number; swings: typeof validSwings; avgEV: number }> = [];
-
-  for (let row = 0; row < gridRows; row++) {
-    for (let col = 0; col < gridCols; col++) {
-      const swingsInCell = validSwings.filter(s => {
-        let normalizedX = (s.poi_x! - minX) / (maxX - minX);
-        let normalizedY = (s.poi_y! - minY) / (maxY - minY);
-        normalizedX = 1 - normalizedX; // Catcher's view
-
-        const colStart = col / gridCols;
-        const colEnd = (col + 1) / gridCols;
-        const rowStart = row / gridRows;
-        const rowEnd = (row + 1) / gridRows;
-
-        return normalizedX >= colStart && normalizedX < colEnd &&
-               normalizedY >= rowStart && normalizedY < rowEnd;
-      });
-
-      if (swingsInCell.length > 0) {
-        const avgEV = swingsInCell.reduce((sum, s) => sum + s.exit_velocity, 0) / swingsInCell.length;
-        gridCells.push({ row, col, swings: swingsInCell, avgEV });
-      }
-    }
-  }
-
-  // Calculate 3x3 zone stats
-  const zoneStats: Array<{ zoneRow: number; zoneCol: number; avgEV: number; count: number }> = [];
-  for (let zoneRow = 0; zoneRow < 3; zoneRow++) {
-    for (let zoneCol = 0; zoneCol < 3; zoneCol++) {
-      const swingsInZone = validSwings.filter(s => {
-        let normalizedX = (s.poi_x! - minX) / (maxX - minX);
-        let normalizedY = (s.poi_y! - minY) / (maxY - minY);
-        normalizedX = 1 - normalizedX;
-
-        const colStart = zoneCol / 3;
-        const colEnd = (zoneCol + 1) / 3;
-        const rowStart = zoneRow / 3;
-        const rowEnd = (zoneRow + 1) / 3;
-
-        return normalizedX >= colStart && normalizedX < colEnd &&
-               normalizedY >= rowStart && normalizedY < rowEnd;
-      });
-
-      if (swingsInZone.length > 0) {
-        const avgEV = swingsInZone.reduce((sum, s) => sum + s.exit_velocity, 0) / swingsInZone.length;
-        zoneStats.push({ zoneRow, zoneCol, avgEV, count: swingsInZone.length });
-      }
-    }
-  }
-
-  const getHeatmapColor = (avgEV: number) => {
-    if (avgEV >= evThresholds.hot) return '#dc2626';
-    if (avgEV >= evThresholds.warm) return '#f97316';
-    if (avgEV >= evThresholds.cool) return '#eab308';
-    if (avgEV >= evThresholds.cold) return '#06b6d4';
-    return '#3b82f6';
-  };
 
   return (
-    <View style={styles.chartContainer}>
+    <View>
       <View style={styles.strikeZoneContainer}>
-        <Svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}>
-          <Rect width={viewBoxWidth} height={viewBoxHeight} fill="#000000" rx="8" />
-
-          {/* Strike zone outline */}
-          <Rect x={zoneX} y={zoneY} width={zoneWidth} height={zoneHeight} fill="none" stroke="#10b981" strokeWidth="2" opacity={0.6} />
-
-          {/* Heatmap cells - blended rectangles for smooth heat effect */}
-          {gridCells.map((cell, idx) => {
-            const cellX = zoneX + (cell.col * cellWidth);
-            const svgRow = (gridRows - 1) - cell.row;
-            const cellY = zoneY + (svgRow * cellHeight);
-            const color = getHeatmapColor(cell.avgEV);
-            // Opacity based on swing count for intensity
-            const baseOpacity = Math.min(0.5 + (cell.swings.length / 8) * 0.4, 0.9);
-
-            return (
-              <G key={idx}>
-                {/* Outer glow - larger, more transparent */}
-                <Rect
-                  x={cellX - cellWidth * 0.3}
-                  y={cellY - cellHeight * 0.3}
-                  width={cellWidth * 1.6}
-                  height={cellHeight * 1.6}
-                  fill={color}
-                  opacity={baseOpacity * 0.3}
-                  rx="4"
-                />
-                {/* Main cell */}
-                <Rect
-                  x={cellX}
-                  y={cellY}
-                  width={cellWidth}
-                  height={cellHeight}
-                  fill={color}
-                  opacity={baseOpacity}
-                />
-              </G>
-            );
-          })}
-
-          {/* Strike zone outline (on top) */}
-          <Rect x={zoneX} y={zoneY} width={zoneWidth} height={zoneHeight} fill="none" stroke="#10b981" strokeWidth="2" opacity={0.8} />
-
-          {/* 3x3 Grid lines */}
-          <Line x1={zoneX + zoneWidth / 3} y1={zoneY} x2={zoneX + zoneWidth / 3} y2={zoneY + zoneHeight} stroke="#10b981" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX + (2 * zoneWidth) / 3} y1={zoneY} x2={zoneX + (2 * zoneWidth) / 3} y2={zoneY + zoneHeight} stroke="#10b981" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX} y1={zoneY + zoneHeight / 3} x2={zoneX + zoneWidth} y2={zoneY + zoneHeight / 3} stroke="#10b981" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX} y1={zoneY + (2 * zoneHeight) / 3} x2={zoneX + zoneWidth} y2={zoneY + (2 * zoneHeight) / 3} stroke="#10b981" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-
-          {/* Zone labels */}
-          <SvgText x={zoneX - 8} y={zoneY + zoneHeight / 6 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>High</SvgText>
-          <SvgText x={zoneX - 8} y={zoneY + zoneHeight / 2 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>Mid</SvgText>
-          <SvgText x={zoneX - 8} y={zoneY + (5 * zoneHeight) / 6 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>Low</SvgText>
-
-          {/* Zone statistics */}
-          {zoneStats.map((stat, idx) => {
-            const svgRow = 2 - stat.zoneRow;
-            const centerX = zoneX + (stat.zoneCol * zoneWidth / 3) + (zoneWidth / 6);
-            const centerY = zoneY + (svgRow * zoneHeight / 3) + (zoneHeight / 6);
-
-            return (
-              <G key={`stat-${idx}`}>
-                <Rect x={centerX - 35} y={centerY - 22} width={70} height={44} fill="#000000" opacity={0.8} rx="6" />
-                <SvgText x={centerX} y={centerY - 3} textAnchor="middle" fontSize="18" fill={COLORS.white} fontWeight="bold">{stat.avgEV.toFixed(1)}</SvgText>
-                <SvgText x={centerX} y={centerY + 16} textAnchor="middle" fontSize="10" fill={COLORS.gray400}>{stat.count} swing{stat.count !== 1 ? 's' : ''}</SvgText>
-              </G>
-            );
-          })}
-
-          {/* Catcher's view label */}
-          <SvgText x={viewBoxWidth / 2} y={viewBoxHeight - 20} textAnchor="middle" fontSize="10" fill={COLORS.gray500}>Catcher's View</SvgText>
+        <Svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${VB_W} ${VB_H}`}>
+          <ZoneFrame color={STEEL.good}>
+            {heat.cells.map((cell) => {
+              const x = ZONE_X + cell.col * cellW;
+              const y = ZONE_Y + (GRID - 1 - cell.row) * cellH;
+              const color = levelColor(cell.avg, t);
+              const op = Math.min(0.5 + (cell.count / 8) * 0.4, 0.9);
+              return (
+                <G key={`${cell.row}-${cell.col}`}>
+                  <Rect x={x - cellW * 0.3} y={y - cellH * 0.3} width={cellW * 1.6} height={cellH * 1.6} fill={color} opacity={op * 0.3} rx="4" />
+                  <Rect x={x} y={y} width={cellW} height={cellH} fill={color} opacity={op} />
+                </G>
+              );
+            })}
+          </ZoneFrame>
+          <ZoneStatLabels stats={zones.cells} color={STEEL.text} format={(v) => v.toFixed(1)} />
         </Svg>
       </View>
-
-      {/* Legend */}
-      <View style={styles.heatmapLegend}>
-        <Text style={styles.heatmapLegendLabel}>Cold</Text>
-        <View style={styles.heatmapGradient}>
-          <LinearGradient colors={['#3b82f6', '#06b6d4', '#eab308', '#f97316', '#dc2626']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.gradientBar} />
-        </View>
-        <Text style={styles.heatmapLegendLabel}>Hot</Text>
-      </View>
-      <Text style={styles.heatmapLevelText}>{playingLevel.replace('-', ' ')} level thresholds</Text>
+      <LevelLegend playingLevel={playingLevel} />
+      {heat.outside > 0 && <Text style={styles.zoneNote}>{`${heat.outside} pitch${heat.outside === 1 ? '' : 'es'} outside the zone not shown`}</Text>}
     </View>
   );
 }
 
-// Launch Angle Strike Zone Component
 function LaunchAngleStrikeZone({ swings }: { swings: SpraySwing[] }) {
-  const svgWidth = SCREEN_WIDTH - 32;
+  const svgWidth = CHART_W;
   const svgHeight = svgWidth * 1.25;
+  const zones = bucket(swings, 3, (s) => s.launch_angle);
 
-  // Filter swings with valid POI data and launch angle
-  const validSwings = swings.filter(s =>
-    s.poi_x !== null &&
-    s.poi_y !== null &&
-    s.poi_y > 5 &&
-    s.launch_angle !== null
-  );
-
-  if (validSwings.length === 0) {
-    return (
-      <View style={styles.chartContainer}>
-        <Text style={styles.emptyChartText}>No launch angle data available</Text>
-      </View>
-    );
-  }
-
-  // Calculate bounds
-  const poiXValues = validSwings.map(s => s.poi_x!);
-  const poiYValues = validSwings.map(s => s.poi_y!);
-  const minX = Math.min(...poiXValues);
-  const maxX = Math.max(...poiXValues);
-  const minY = Math.min(...poiYValues);
-  const maxY = Math.max(...poiYValues);
-
-  // SVG dimensions
-  const viewBoxWidth = 400;
-  const viewBoxHeight = 500;
-  const zoneWidth = 280;
-  const zoneHeight = 360;
-  const zoneX = (viewBoxWidth - zoneWidth) / 2;
-  const zoneY = (viewBoxHeight - zoneHeight) / 2 - 20;
-
-  // Calculate 3x3 zone stats
-  const zoneStats: Array<{ zoneRow: number; zoneCol: number; avgLA: number; count: number }> = [];
-  for (let zoneRow = 0; zoneRow < 3; zoneRow++) {
-    for (let zoneCol = 0; zoneCol < 3; zoneCol++) {
-      const swingsInZone = validSwings.filter(s => {
-        let normalizedX = (s.poi_x! - minX) / (maxX - minX);
-        let normalizedY = (s.poi_y! - minY) / (maxY - minY);
-        normalizedX = 1 - normalizedX; // Catcher's view
-
-        const colStart = zoneCol / 3;
-        const colEnd = (zoneCol + 1) / 3;
-        const rowStart = zoneRow / 3;
-        const rowEnd = (zoneRow + 1) / 3;
-
-        return normalizedX >= colStart && normalizedX < colEnd &&
-               normalizedY >= rowStart && normalizedY < rowEnd;
-      });
-
-      if (swingsInZone.length > 0) {
-        const avgLA = swingsInZone.reduce((sum, s) => sum + s.launch_angle!, 0) / swingsInZone.length;
-        zoneStats.push({ zoneRow, zoneCol, avgLA, count: swingsInZone.length });
-      }
-    }
+  if (zones.cells.length === 0) {
+    return <Text style={steelStyles.empty}>No launch angle data available</Text>;
   }
 
   return (
-    <View style={styles.chartContainer}>
+    <View>
       <View style={styles.strikeZoneContainer}>
-        <Svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}>
-          <Rect width={viewBoxWidth} height={viewBoxHeight} fill="#000000" rx="8" />
-
-          {/* Strike zone outline */}
-          <Rect x={zoneX} y={zoneY} width={zoneWidth} height={zoneHeight} fill="none" stroke="#8b5cf6" strokeWidth="2" opacity={0.6} />
-
-          {/* 3x3 Grid lines */}
-          <Line x1={zoneX + zoneWidth / 3} y1={zoneY} x2={zoneX + zoneWidth / 3} y2={zoneY + zoneHeight} stroke="#8b5cf6" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX + (2 * zoneWidth) / 3} y1={zoneY} x2={zoneX + (2 * zoneWidth) / 3} y2={zoneY + zoneHeight} stroke="#8b5cf6" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX} y1={zoneY + zoneHeight / 3} x2={zoneX + zoneWidth} y2={zoneY + zoneHeight / 3} stroke="#8b5cf6" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-          <Line x1={zoneX} y1={zoneY + (2 * zoneHeight) / 3} x2={zoneX + zoneWidth} y2={zoneY + (2 * zoneHeight) / 3} stroke="#8b5cf6" strokeWidth="1" opacity={0.4} strokeDasharray="4,4" />
-
-          {/* Zone labels */}
-          <SvgText x={zoneX - 8} y={zoneY + zoneHeight / 6 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>High</SvgText>
-          <SvgText x={zoneX - 8} y={zoneY + zoneHeight / 2 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>Mid</SvgText>
-          <SvgText x={zoneX - 8} y={zoneY + (5 * zoneHeight) / 6 + 4} textAnchor="end" fontSize="10" fill={COLORS.gray500}>Low</SvgText>
-
-          {/* Zone statistics */}
-          {zoneStats.map((stat, idx) => {
-            const svgRow = 2 - stat.zoneRow;
-            const centerX = zoneX + (stat.zoneCol * zoneWidth / 3) + (zoneWidth / 6);
-            const centerY = zoneY + (svgRow * zoneHeight / 3) + (zoneHeight / 6);
-
-            return (
-              <G key={idx}>
-                <Rect x={centerX - 35} y={centerY - 22} width={70} height={44} fill="#000000" opacity={0.8} rx="6" />
-                <SvgText x={centerX} y={centerY - 3} textAnchor="middle" fontSize="18" fill="#a78bfa" fontWeight="bold">{stat.avgLA.toFixed(1)}°</SvgText>
-                <SvgText x={centerX} y={centerY + 16} textAnchor="middle" fontSize="10" fill={COLORS.gray400}>{stat.count} swing{stat.count !== 1 ? 's' : ''}</SvgText>
-              </G>
-            );
-          })}
-
-          {/* Catcher's view label */}
-          <SvgText x={viewBoxWidth / 2} y={viewBoxHeight - 20} textAnchor="middle" fontSize="10" fill={COLORS.gray500}>Catcher's View</SvgText>
+        <Svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${VB_W} ${VB_H}`}>
+          <ZoneFrame color={STEEL.purple} />
+          <ZoneStatLabels stats={zones.cells} color={STEEL.purple} format={(v) => `${v.toFixed(1)}°`} />
         </Svg>
       </View>
-
-      {/* Info text */}
-      <Text style={styles.strikeZoneInfoText}>Ideal launch angle: 10-30° for line drives</Text>
+      <Text style={styles.zoneNote}>{`Ideal launch angle: ${SWEET_SPOT[0]}–${SWEET_SPOT[1]}° for line drives and fly balls`}</Text>
     </View>
   );
 }
 
-// Tooltip Component
+// Tooltip
 function Tooltip({ x, y, value, label, date, color }: { x: number; y: number; value: string; label: string; date: string; color: string }) {
-  const tooltipWidth = 90;
+  const tooltipWidth = 96;
   let adjustedX = x - tooltipWidth / 2;
   if (adjustedX < 5) adjustedX = 5;
-  if (adjustedX > SCREEN_WIDTH - 32 - tooltipWidth - 5) adjustedX = SCREEN_WIDTH - 32 - tooltipWidth - 5;
-
+  if (adjustedX > CHART_W - tooltipWidth - 5) adjustedX = CHART_W - tooltipWidth - 5;
   return (
-    <View style={[styles.tooltip, { left: adjustedX, top: Math.max(5, y - 70) }]}>
+    <View pointerEvents="none" style={[styles.tooltip, { left: adjustedX, top: Math.max(0, y - 66), width: tooltipWidth }]}>
       <Text style={[styles.tooltipValue, { color }]}>{value}</Text>
       <Text style={styles.tooltipLabel}>{label}</Text>
       <Text style={styles.tooltipDate}>{date}</Text>
@@ -1656,392 +1159,63 @@ function Tooltip({ x, y, value, label, date, color }: { x: number; y: number; va
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.black,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: COLORS.black,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollView: {
-    flex: 1,
-    paddingHorizontal: 16,
-  },
-  header: {
-    paddingTop: 8,
-    marginBottom: 16,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backText: {
-    color: COLORS.gray400,
-    fontSize: 14,
-    marginLeft: 8,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: COLORS.white,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: COLORS.gray400,
-  },
-  filterContainer: {
-    marginBottom: 20,
-  },
-  filterContent: {
-    gap: 8,
-  },
-  filterButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  filterButtonActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.15)',
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  filterButtonText: {
-    color: COLORS.gray400,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  filterButtonTextActive: {
-    color: COLORS.primary,
-  },
-  emptyState: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: COLORS.gray400,
-    fontSize: 16,
-  },
-  emptySubtext: {
-    color: COLORS.gray500,
-    fontSize: 14,
-    marginTop: 8,
-  },
-  prSection: {
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: COLORS.white,
-    marginBottom: 4,
-  },
-  sectionSubtitle: {
-    fontSize: 12,
-    color: COLORS.gray500,
-    marginBottom: 12,
-  },
-  prRow: {
-    flexDirection: 'row',
-  },
-  prItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  prItemBorder: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  prValueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  prValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.white,
-  },
-  prValueGold: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.secondary,
-  },
-  prLabel: {
-    fontSize: 9,
-    color: COLORS.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginTop: 2,
-  },
-  prUnit: {
-    fontSize: 12,
-    color: COLORS.gray400,
-  },
-  singleStatRow: {
-    alignItems: 'center',
-  },
-  statDescription: {
-    fontSize: 12,
-    color: COLORS.gray500,
-    marginTop: 4,
-  },
-  chartContainer: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    marginBottom: 16,
-  },
-  emptyChartText: {
-    color: COLORS.gray500,
-    fontSize: 14,
-    textAlign: 'center',
-    paddingVertical: 40,
-  },
-  touchTarget: {
-    position: 'absolute',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-  },
-  legend: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: 12,
-    gap: 20,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  legendLine: {
-    width: 20,
-    height: 3,
-    borderRadius: 2,
-    marginRight: 6,
-  },
-  legendLineDashed: {
-    width: 20,
-    height: 3,
-    borderRadius: 2,
-    marginRight: 6,
-  },
-  legendBox: {
-    width: 16,
-    height: 10,
-    borderRadius: 2,
-    marginRight: 6,
-    borderWidth: 1,
-  },
-  legendText: {
-    fontSize: 11,
-    color: COLORS.gray400,
-  },
+  center: { justifyContent: 'center', alignItems: 'center' },
+  emptyState: { alignItems: 'center', paddingVertical: 56, gap: 6 },
+  emptyText: { color: STEEL.day, fontSize: 15, fontWeight: '700' },
+  emptySubtext: { color: STEEL.mute, fontSize: 13, textAlign: 'center' },
+  sectionSub: { color: STEEL.mute, fontSize: 12, marginTop: -6, marginBottom: 8 },
+  touchTarget: { position: 'absolute', width: 28, height: 28 },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 16, marginTop: 8 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendLine: { height: 3, borderRadius: 2 },
+  legendBox: { width: 14, height: 10, borderRadius: 2 },
+  legendText: { color: STEEL.sub, fontSize: 11, fontWeight: '600' },
   tooltip: {
     position: 'absolute',
-    backgroundColor: 'rgba(31,41,55,0.95)',
-    borderRadius: 8,
-    padding: 8,
+    backgroundColor: STEEL.card,
+    borderColor: STEEL.hair,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  tooltipValue: {
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  tooltipLabel: {
-    fontSize: 10,
-    color: COLORS.gray400,
-    marginTop: 2,
-  },
-  tooltipDate: {
-    fontSize: 9,
-    color: COLORS.gray500,
-    marginTop: 1,
-  },
-  fieldToggle: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 8,
-    padding: 4,
-    marginBottom: 12,
-  },
-  fieldToggleButton: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  fieldToggleButtonActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.15)',
-  },
-  fieldToggleText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.gray400,
-  },
-  fieldToggleTextActive: {
-    color: COLORS.primary,
-  },
-  fieldContainer: {
-    alignItems: 'center',
-  },
-  heatmapLegend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 12,
+    borderRadius: 10,
+    paddingVertical: 6,
     paddingHorizontal: 8,
-  },
-  heatmapLegendLabel: {
-    fontSize: 10,
-    color: COLORS.gray500,
-  },
-  heatmapGradient: {
-    flex: 1,
-    marginHorizontal: 8,
-  },
-  gradientBar: {
-    height: 8,
-    borderRadius: 4,
-  },
-  heatmapLevelText: {
-    fontSize: 9,
-    color: COLORS.gray500,
-    textAlign: 'center',
-    marginTop: 4,
-    textTransform: 'capitalize',
-  },
-  tendencyContainer: {
-    marginTop: 16,
-    paddingHorizontal: 8,
-  },
-  tendencyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  tendencyLabel: {
-    fontSize: 9,
-    color: COLORS.gray500,
-  },
-  tendencyLabelCenter: {
-    fontSize: 10,
-    color: COLORS.gray400,
-    fontWeight: '600',
-  },
-  tendencyBar: {
-    height: 12,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 6,
-    position: 'relative',
-  },
-  tendencyCenterMark: {
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    width: 2,
-    height: 12,
-    backgroundColor: COLORS.gray600,
-    marginLeft: -1,
-  },
-  tendencyIndicator: {
-    position: 'absolute',
-    top: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginLeft: -6,
-  },
-  tableContainer: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  tableHeaderCell: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: COLORS.gray400,
-    textTransform: 'uppercase',
-  },
-  tableRow: {
-    flexDirection: 'row',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
-  },
-  tableRowAlt: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-  },
-  tableCell: {
-    fontSize: 12,
-    color: COLORS.white,
-  },
-  sourceTag: {
-    fontSize: 8,
-    fontWeight: '600',
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 3,
-    marginLeft: 4,
-    overflow: 'hidden',
-  },
-  sourceTagHittrax: {
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
-    color: '#22c55e',
-  },
-  sourceTagFullSwing: {
-    backgroundColor: 'rgba(168, 85, 247, 0.2)',
-    color: '#a855f7',
-  },
-  strikeZoneContainer: {
     alignItems: 'center',
   },
-  strikeZoneInfoText: {
-    fontSize: 10,
-    color: COLORS.gray500,
-    textAlign: 'center',
-    marginTop: 12,
-  },
+  tooltipValue: { fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  tooltipLabel: { color: STEEL.sub, fontSize: 10, fontWeight: '600' },
+  tooltipDate: { color: STEEL.mute, fontSize: 10 },
+  fieldContainer: { alignItems: 'center' },
+  strikeZoneContainer: { alignItems: 'center' },
+  heatmapLegend: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 10 },
+  heatmapLegendLabel: { color: STEEL.mute, fontSize: 11, fontWeight: '600' },
+  heatmapGradient: { width: 160, height: 8, borderRadius: 4, overflow: 'hidden' },
+  gradientBar: { flex: 1 },
+  heatmapLevelText: { color: STEEL.mute, fontSize: 10.5, textAlign: 'center', marginTop: 6, textTransform: 'capitalize' },
+  zoneNote: { color: STEEL.mute, fontSize: 10.5, textAlign: 'center', marginTop: 8 },
+  tendencyContainer: { marginTop: 12 },
+  tendencyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  tendencyLabel: { color: STEEL.sub, fontSize: 11, fontWeight: '600' },
+  tendencyLabelCenter: { color: STEEL.mute, fontSize: 10, fontWeight: '800', letterSpacing: 1.3 },
+  tendencyBar: { height: 6, borderRadius: 3, backgroundColor: STEEL.card, position: 'relative', justifyContent: 'center' },
+  tendencyCenterMark: { position: 'absolute', left: '50%', width: 1, height: 12, backgroundColor: STEEL.hair },
+  tendencyIndicator: { position: 'absolute', width: 14, height: 14, borderRadius: 7, marginLeft: -7, borderWidth: 2, borderColor: STEEL.bg },
+  tableHeader: { flexDirection: 'row', paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: STEEL.hair },
+  th: { color: STEEL.mute, fontSize: 9.5, fontWeight: '800', letterSpacing: 1.1, textAlign: 'right' },
+  tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: STEEL.rule },
+  td: { color: STEEL.text, fontSize: 13, fontWeight: '700', textAlign: 'right', fontVariant: ['tabular-nums'] },
+  sourceTag: { fontSize: 8, fontWeight: '800', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 3, marginLeft: 6, overflow: 'hidden' },
+  sourceTagHittrax: { backgroundColor: 'rgba(34, 197, 94, 0.2)', color: '#22c55e' },
+  sourceTagFullSwing: { backgroundColor: 'rgba(168, 85, 247, 0.2)', color: '#a855f7' },
   fab: {
     position: 'absolute',
     bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: COLORS.primary,
+    right: 20,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#1b2430',
+    borderWidth: 1,
+    borderColor: '#2a3442',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
   },
 });

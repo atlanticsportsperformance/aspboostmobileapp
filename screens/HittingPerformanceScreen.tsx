@@ -9,14 +9,36 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Polyline } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import { getOrgIdForAthlete } from '../lib/orgSecurity';
 import { getUnreadMessagesCount } from '../lib/unreadMessages';
 import { useAthlete } from '../contexts/AthleteContext';
 import FABMenu from '../components/FABMenu';
 import { useAthleteLifecycle } from '../lib/useAthleteLifecycle';
+import {
+  STEEL,
+  fmt,
+  Section,
+  Kpi,
+  KpiRow,
+  ScreenHeader,
+  steelStyles,
+  HARD_HIT_MPH,
+  SWEET_SPOT,
+} from '../components/hitting/steel';
+import { BallField3D, type BattedBall } from '../components/hitting/BallField3D';
+import {
+  EXIT_VELO_NORMS,
+  BAT_SPEED_NORMS,
+  DISTANCE_NORMS,
+  percentileFor,
+  normalizePlayLevel,
+  type Level,
+  type Pcts,
+} from '../lib/norms';
 
 // Supabase has a default 1000 row limit - this fetches ALL records with pagination
 const BATCH_SIZE = 1000;
@@ -35,7 +57,6 @@ async function fetchAllPaginated<T>(
   while (hasMore) {
     let q = query().select(selectColumns);
 
-    // Apply filters
     for (const filter of filters) {
       if (filter.operator === 'in') {
         q = q.in(filter.column, filter.value);
@@ -44,7 +65,6 @@ async function fetchAllPaginated<T>(
       }
     }
 
-    // Apply additional filters if provided
     if (additionalFilters) {
       q = additionalFilters(q);
     }
@@ -70,20 +90,55 @@ async function fetchAllPaginated<T>(
   return allData;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const avg = (xs: number[]) => (xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const maxOf = (xs: number[]) => (xs.length > 0 ? Math.max(...xs) : null);
+
+/** 'YYYY-MM-DD' from a date/timestamp string; null when unusable. */
+function dayKey(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (us) return `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
+  return null;
+}
+
+/** Local-midnight Date for a 'YYYY-MM-DD'-ish string (null-safe). */
+function dayDate(raw: string | null | undefined): Date | null {
+  const k = dayKey(raw);
+  if (!k) return null;
+  const [y, mo, d] = k.split('-').map(Number);
+  return new Date(y, mo - 1, d);
+}
+
+type Window = { start: Date; end: Date };
+const inWin = (d: Date | null, w: Window) => d != null && d >= w.start && d < w.end;
+
+interface WindowStats {
+  avgEV: number | null;
+  hardHitPct: number | null;
+  avgLA: number | null;
+  sweetSpotPct: number | null;
+  avgDist: number | null;
+  avgSpray: number | null;
+  avgBatSpeed: number | null;
+  avgAttackAngle: number | null; // Blast-only
+  avgOnPlane: number | null; // Blast-only
+}
+
 interface OverviewStats {
-  totalSwingsAllTime: number;
-  totalSwingsLast30Days: number;
-  hittraxTotalSwingsAllTime: number;
-  highestBatSpeedPR: number;
-  avgBatSpeedLast30Days: number;
-  hittraxMaxExitVelocity: number | null;
-  hittraxAvgExitVelocityLast30Days: number | null;
-  hittraxMaxDistance: number | null;
-  hittraxAvgDistanceLast30Days: number | null;
-  avgAttackAngleLast30Days: number | null;  // Blast-only - null when no Blast data
-  hittraxAvgLaunchAngleLast30Days: number | null;
-  hittraxAvgHorizontalAngleLast30Days: number | null;
-  avgOnPlaneEfficiencyLast30Days: number | null;  // Blast-only - null when no Blast data
+  blastSwingsAllTime: number;
+  hittraxSwingsAllTime: number;
+  batSpeedPR: number | null;
+  exitVeloPR: number | null;
+  distancePR: number | null;
+  last30: WindowStats;
+  prior30: WindowStats;
+  playLevel: Level | null;
+  hittraxSessionCount: number;
+  fullSwingSessionCount: number;
 }
 
 interface Session {
@@ -91,26 +146,28 @@ interface Session {
   session_date: string;
   total_swings: number;
   contact_swings: number;
-  avg_exit_velocity: number;
-  max_exit_velocity: number;
-  max_distance: number;
+  avg_exit_velocity: number | null;
+  max_exit_velocity: number | null;
+  max_distance: number | null;
   hard_hit_count: number;
   source: 'hittrax' | 'blast' | 'fullswing';
   isPaired?: boolean;
   blast_swings_count?: number;
   hittrax_swings_count?: number;
   paired_swings_count?: number;
-  avg_bat_speed?: number;
-  avg_attack_angle?: number;
-  avg_on_plane_efficiency?: number;
+  avg_bat_speed?: number | null;
+  avg_attack_angle?: number | null;
+  avg_on_plane_efficiency?: number | null;
+  evs?: number[]; // HitTrax contact EVs in swing order, for the sparkline
+  balls?: BattedBall[]; // HitTrax batted balls, for the 3D field
 }
 
 interface FullSwingSession {
   id: string;
   athlete_id: string;
-  session_date: string;
-  total_swings: number;
-  contact_swings: number;
+  session_date: string | null;
+  total_swings: number | null;
+  contact_swings: number | null;
   avg_exit_velocity: number | null;
   max_exit_velocity: number | null;
   avg_launch_angle: number | null;
@@ -120,18 +177,165 @@ interface FullSwingSession {
   max_bat_speed: number | null;
   avg_smash_factor: number | null;
   squared_up_rate: number | null;
-  hard_hit_count: number;
+  hard_hit_count: number | null;
   hard_hit_rate: number | null;
 }
 
+const SOURCE_COLOR = {
+  fullswing: '#22D3EE',
+  hittrax: '#9BDDFF',
+  paired: '#A78BFA',
+  blast: '#6B7280',
+};
+
+function tierFor(pct: number) {
+  if (pct >= 75) return { label: 'ELITE', color: '#34d399' };
+  if (pct >= 50) return { label: 'OPTIMIZE', color: '#9BDDFF' };
+  if (pct >= 25) return { label: 'SHARPEN', color: '#fbbf24' };
+  return { label: 'BUILD', color: '#ef4444' };
+}
+
+// Parse Blast timestamp (same logic as web app); null when invalid
+function parseBlastTimestamp(swing: any): Date | null {
+  if (!swing) return null;
+  let d: Date | null = null;
+  if (swing.created_at_utc) {
+    d = new Date(swing.created_at_utc);
+  } else if (swing.recorded_date && swing.recorded_time) {
+    d = new Date(`${swing.recorded_date}T${swing.recorded_time}`);
+  }
+  return d && Number.isFinite(d.getTime()) ? d : null;
+}
+
+// Parse HitTrax timestamp: "10/30/2025 19:18:31.573" (also tolerates ISO); null when unusable
+function parseHitTraxTimestamp(timestamp: string | null | undefined): Date | null {
+  if (!timestamp || typeof timestamp !== 'string') return null;
+  const m = timestamp.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?/);
+  if (m) {
+    const secs = m[6] ? parseFloat(m[6]) : 0;
+    const d = new Date(+m[3], +m[1] - 1, +m[2], +m[4], +m[5], Math.floor(secs), Math.round((secs % 1) * 1000));
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d/.test(timestamp)) {
+    const d = new Date(timestamp);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  return null;
+}
+
+// Match swings by timestamp (7-second window) - like the web app
+function matchSwingsByTime(blastSwings: any[], hittraxSwings: any[], maxTimeDifferenceSeconds: number = 7) {
+  const pairs: { blastSwing: any; hittraxSwing: any }[] = [];
+  const matchedHittraxIds = new Set<string>();
+  const unmatchedBlast: any[] = [];
+
+  const hittraxWithTime = hittraxSwings
+    .map((swing) => ({ swing, t: parseHitTraxTimestamp(swing?.swing_timestamp) }))
+    .filter((x): x is { swing: any; t: Date } => x.t !== null);
+
+  blastSwings.forEach((blastSwing) => {
+    const bt = parseBlastTimestamp(blastSwing);
+    if (!bt) {
+      unmatchedBlast.push(blastSwing);
+      return;
+    }
+    let best: { swing: any; diff: number } | null = null;
+    for (const { swing, t } of hittraxWithTime) {
+      if (matchedHittraxIds.has(swing.id)) continue;
+      const diff = Math.abs(bt.getTime() - t.getTime()) / 1000;
+      if (diff <= maxTimeDifferenceSeconds && (!best || diff < best.diff)) best = { swing, diff };
+    }
+    if (best) {
+      matchedHittraxIds.add(best.swing.id);
+      pairs.push({ blastSwing, hittraxSwing: best.swing });
+    } else {
+      unmatchedBlast.push(blastSwing);
+    }
+  });
+
+  return { pairs, unmatchedBlast };
+}
+
+function formatDate(dateStr: string | null | undefined, opts?: Intl.DateTimeFormatOptions): string {
+  const d = dayDate(dateStr);
+  if (!d) return '—';
+  return d.toLocaleDateString('en-US', opts ?? { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function Sparkline({ values, color = STEEL.hitting, width = 60, height = 18 }: { values: number[]; color?: string; width?: number; height?: number }) {
+  if (values.length < 2) return null;
+  const mn = Math.min(...values);
+  const mx = Math.max(...values);
+  const range = mx - mn || 1;
+  const pts = values
+    .map((v, i) => `${((i / (values.length - 1)) * width).toFixed(1)},${(height - ((v - mn) / range) * (height - 2) - 1).toFixed(1)}`)
+    .join(' ');
+  return (
+    <Svg width={width} height={height} style={{ marginTop: 4 }}>
+      <Polyline points={pts} fill="none" stroke={color} strokeWidth={1.6} strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function PrColumn({
+  label,
+  unit,
+  value,
+  digits,
+  accent,
+  norms,
+  level,
+  missing,
+}: {
+  label: string;
+  unit: string;
+  value: number | null;
+  digits: number;
+  accent: string;
+  norms: Partial<Record<Level, Pcts>>;
+  level: Level | null;
+  missing: string;
+}) {
+  const has = isNum(value) && value > 0;
+  let line: React.ReactNode;
+  if (!has) {
+    line = <Text style={styles.prNote}>{missing}</Text>;
+  } else if (!level) {
+    line = <Text style={styles.prNote}>Set play level</Text>;
+  } else if (!norms[level]) {
+    line = <Text style={styles.prNote}>Not enough {level} data</Text>;
+  } else {
+    const pct = percentileFor(value!, norms[level]!);
+    const tier = tierFor(pct);
+    line = (
+      <Text style={styles.prNote}>
+        <Text style={{ color: STEEL.day, fontWeight: '800' }}>{pct}th</Text>
+        <Text> · </Text>
+        <Text style={{ color: tier.color, fontWeight: '800', letterSpacing: 0.8 }}>{tier.label}</Text>
+      </Text>
+    );
+  }
+  return (
+    <View style={styles.prCol}>
+      <Text style={styles.prLabel}>{label}</Text>
+      <Text style={[styles.prValue, !has && { color: STEEL.past }]}>
+        {has ? fmt(value, digits) : '—'}
+        {has ? <Text style={styles.prUnit}> {unit}</Text> : null}
+      </Text>
+      <View style={[styles.prBar, { backgroundColor: accent }]} />
+      {line}
+    </View>
+  );
+}
+
 export default function HittingPerformanceScreen({ navigation, route }: any) {
+  const insets = useSafeAreaInsets();
   const { isParent, linkedAthletes } = useAthlete();
   const [athleteId, setAthleteId] = useState<string | null>(route?.params?.athleteId || null);
 
   // Guard: If parent arrives without athleteId, go back (they should use FAB which passes athleteId)
   useEffect(() => {
     if (isParent && !route?.params?.athleteId && linkedAthletes.length > 0) {
-      // Parent without athleteId - go back to dashboard where they can select athlete via FAB
       navigation.goBack();
     }
   }, [isParent, route?.params?.athleteId, linkedAthletes]);
@@ -147,7 +351,6 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   const [hasArmCareData, setHasArmCareData] = useState(false);
   const [hasForceData, setHasForceData] = useState(false);
   const [hasMocapData, setHasMocapData] = useState(false);
-  const [hasResourcesData, setHasResourcesData] = useState(false);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [newResourcesCount, setNewResourcesCount] = useState(0);
   const [userId, setUserId] = useState<string | null>(null);
@@ -156,12 +359,10 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   const [displayedSessions, setDisplayedSessions] = useState(20);
   const [allSessions, setAllSessions] = useState<Session[]>([]);
 
-  // Track mounted state and loading to prevent issues
   const isMountedRef = useRef(true);
   const isLoadingRef = useRef(false);
   const lastLoadTimeRef = useRef<number>(0);
 
-  // Use useFocusEffect instead of useEffect to handle app backgrounding properly
   useFocusEffect(
     useCallback(() => {
       isMountedRef.current = true;
@@ -169,7 +370,6 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       const timeSinceLastLoad = now - lastLoadTimeRef.current;
 
       // Only reload if not currently loading and at least 30 seconds since last load
-      // This prevents rapid reloads when switching tabs but allows refresh after backgrounding
       if (!isLoadingRef.current && timeSinceLastLoad > 30000) {
         loadAthleteAndData();
       }
@@ -181,7 +381,6 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   );
 
   async function loadAthleteAndData() {
-    // Prevent concurrent loads
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     lastLoadTimeRef.current = Date.now();
@@ -194,7 +393,6 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
       }
       if (isMountedRef.current) setUserId(user.id);
 
-      // Use passed athleteId or fallback to looking up by user_id
       let currentAthleteId = athleteId;
       if (!currentAthleteId) {
         const { data: athlete } = await supabase
@@ -227,35 +425,30 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 
   async function fetchFabData(athleteId: string, currentUserId: string) {
     try {
-      // Get org_id for security filtering
       const orgId = await getOrgIdForAthlete(athleteId);
       if (!orgId) {
         console.error('[HittingPerformanceScreen] No org_id found for athlete');
         return;
       }
 
-      // Check for pitching data
       const { count: pitchingCount } = await supabase
         .from('trackman_sessions')
         .select('*', { count: 'exact', head: true })
         .eq('athlete_id', athleteId);
       setHasPitchingData((pitchingCount || 0) > 0);
 
-      // Check for arm care data (using armcare_sessions like Dashboard)
       const { count: armCareCount } = await supabase
         .from('armcare_sessions')
         .select('*', { count: 'exact', head: true })
         .eq('athlete_id', athleteId);
       setHasArmCareData((armCareCount || 0) > 0);
 
-      // Check for force profile data (check if they have any CMJ tests)
       const { count: forceCount } = await supabase
         .from('cmj_tests')
         .select('*', { count: 'exact', head: true })
         .eq('athlete_id', athleteId);
       setHasForceData((forceCount || 0) > 0);
 
-      // Check for mocap data
       const { count: mocapCount } = await supabase
         .from('mocap_pitches')
         .select('id', { count: 'exact', head: true })
@@ -263,18 +456,15 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         .not('r2_uploaded_at', 'is', null);
       setHasMocapData((mocapCount || 0) > 0);
 
-      // Check for resources (using resources table like Dashboard)
+      // Resources count gates the new-resources badge lookup below
       const { count: resourcesCount } = await supabase
         .from('resources')
         .select('id', { count: 'exact', head: true })
         .eq('org_id', orgId)
         .eq('athlete_id', currentUserId);
-      setHasResourcesData((resourcesCount || 0) > 0);
 
-      // Get unread messages count
       setUnreadMessagesCount(await getUnreadMessagesCount(currentUserId));
 
-      // Get new resources count (using last_viewed_resources_at like Dashboard)
       if ((resourcesCount || 0) > 0) {
         const { data: athleteWithLastViewed } = await supabase
           .from('athletes')
@@ -299,379 +489,166 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
   }
 
   async function fetchData(id: string) {
-    await Promise.all([
-      fetchOverviewStats(id),
-      fetchSessions(id),
-    ]);
+    await Promise.all([fetchOverviewStats(id), fetchSessions(id)]);
   }
 
   async function fetchOverviewStats(id: string) {
-    const now = new Date();
-    const last30DaysStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const last30DaysStr = last30DaysStart.toISOString().split('T')[0];
-
-    // Type definitions for paginated queries
-    interface BlastSwing {
-      bat_speed: number | null;
-      recorded_date: string;
-      attack_angle: number | null;
-      on_plane_efficiency: number | null;
-    }
-
-    interface HittraxSession {
-      id: string;
-      session_date: string;
-    }
-
-    interface HittraxSwing {
-      exit_velocity: number | null;
-      distance: number | null;
-      launch_angle: number | null;
-      horizontal_angle: number | null;
-    }
-
-    // Get ALL Blast swings with pagination (bypasses 1000 row limit)
-    const blastSwings = await fetchAllPaginated<BlastSwing>(
-      () => supabase.from('blast_swings'),
-      'bat_speed, recorded_date, attack_angle, on_plane_efficiency',
-      [{ column: 'athlete_id', value: id }],
-      'recorded_date',
-      false
-    );
-
-    // Total count is just the length of all fetched swings
-    const totalBlastSwings = blastSwings.length;
-
-    // Get ALL HitTrax sessions with pagination
-    const hittraxSessions = await fetchAllPaginated<HittraxSession>(
-      () => supabase.from('hittrax_sessions'),
-      'id, session_date',
-      [{ column: 'athlete_id', value: id }],
-      'session_date',
-      false
-    );
-
-    const sessionIds = hittraxSessions?.map(s => s.id) || [];
-
-    // Get ALL Full Swing sessions with pagination
-    const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
-      () => supabase.from('fullswing_sessions'),
-      'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, hard_hit_count',
-      [{ column: 'athlete_id', value: id }],
-      'session_date',
-      false
-    );
-
-    let hittraxTotalSwingsAllTime = 0;
-    let hittraxMaxExitVelocity: number | null = null;
-    let hittraxAvgExitVelocityLast30Days: number | null = null;
-    let hittraxMaxDistance: number | null = null;
-    let hittraxAvgDistanceLast30Days: number | null = null;
-    let hittraxAvgLaunchAngleLast30Days: number | null = null;
-    let hittraxAvgHorizontalAngleLast30Days: number | null = null;
-
-    if (sessionIds.length > 0) {
-      // Get ALL HitTrax swings with pagination for total count AND all-time PRs
-      const allHittraxSwings = await fetchAllPaginated<HittraxSwing>(
-        () => supabase.from('hittrax_swings'),
-        'exit_velocity, distance, launch_angle, horizontal_angle',
-        [{ column: 'session_id', value: sessionIds, operator: 'in' }],
-        'created_at',
-        false
-      );
-
-      hittraxTotalSwingsAllTime = allHittraxSwings.length;
-
-      // Calculate ALL-TIME PRs from ALL swings (not just last 30 days)
-      if (allHittraxSwings.length > 0) {
-        const allContactSwings = allHittraxSwings.filter(s => s.exit_velocity && s.exit_velocity > 0);
-
-        if (allContactSwings.length > 0) {
-          // Combine HitTrax + Full Swing exit velocities for PR
-          const hittraxExitVelos = allContactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
-          const fullSwingExitVelos = fullSwingSessions?.filter(s => s.max_exit_velocity !== null).map(s => s.max_exit_velocity!) || [];
-          const allExitVelocities = [...hittraxExitVelos, ...fullSwingExitVelos];
-          if (allExitVelocities.length > 0) {
-            hittraxMaxExitVelocity = Math.max(...allExitVelocities);
-          }
-
-          // Combine HitTrax + Full Swing distances for PR
-          const hittraxDistances = allContactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
-          const fullSwingDistances = fullSwingSessions?.filter(s => s.max_distance !== null).map(s => s.max_distance!) || [];
-          const allDistances = [...hittraxDistances, ...fullSwingDistances];
-          if (allDistances.length > 0) {
-            hittraxMaxDistance = Math.max(...allDistances);
-          }
-        }
-      }
-
-      // Get swings from last 30 days for AVERAGES only
-      const sessionIdsLast30 = hittraxSessions
-        ?.filter(s => new Date(s.session_date) >= last30DaysStart)
-        .map(s => s.id) || [];
-
-      if (sessionIdsLast30.length > 0) {
-        // Get ALL swings from last 30 days with pagination
-        const hittraxLast30Swings = await fetchAllPaginated<HittraxSwing>(
-          () => supabase.from('hittrax_swings'),
-          'exit_velocity, distance, launch_angle, horizontal_angle',
-          [{ column: 'session_id', value: sessionIdsLast30, operator: 'in' }],
-          'created_at',
-          false
-        );
-
-        if (hittraxLast30Swings && hittraxLast30Swings.length > 0) {
-          const contactSwings = hittraxLast30Swings.filter(s => s.exit_velocity && s.exit_velocity > 0);
-
-          if (contactSwings.length > 0) {
-            const exitVelocities = contactSwings.map(s => s.exit_velocity!).filter(v => v !== null);
-            hittraxAvgExitVelocityLast30Days = exitVelocities.reduce((sum, v) => sum + v, 0) / exitVelocities.length;
-
-            const distances = contactSwings.map(s => s.distance).filter((d): d is number => d !== null && d > 0);
-            if (distances.length > 0) {
-              hittraxAvgDistanceLast30Days = distances.reduce((sum, d) => sum + d, 0) / distances.length;
-            }
-
-            const launchAngles = contactSwings.map(s => s.launch_angle).filter((a): a is number => a !== null);
-            if (launchAngles.length > 0) {
-              hittraxAvgLaunchAngleLast30Days = launchAngles.reduce((sum, a) => sum + a, 0) / launchAngles.length;
-            }
-
-            const horizontalAngles = contactSwings.map(s => s.horizontal_angle).filter((a): a is number => a !== null);
-            if (horizontalAngles.length > 0) {
-              hittraxAvgHorizontalAngleLast30Days = horizontalAngles.reduce((sum, a) => sum + a, 0) / horizontalAngles.length;
-            }
-          }
-        }
-      }
-    }
-
-    // Include Full Swing in PRs and last 30 days calculations
-    if (fullSwingSessions && fullSwingSessions.length > 0) {
-      // Full Swing PRs (combine with HitTrax)
-      const fullSwingExitVelos = fullSwingSessions.filter(s => s.max_exit_velocity !== null).map(s => s.max_exit_velocity!);
-      if (fullSwingExitVelos.length > 0) {
-        const fsMaxEV = Math.max(...fullSwingExitVelos);
-        hittraxMaxExitVelocity = hittraxMaxExitVelocity !== null ? Math.max(hittraxMaxExitVelocity, fsMaxEV) : fsMaxEV;
-      }
-      const fullSwingDistances = fullSwingSessions.filter(s => s.max_distance !== null).map(s => s.max_distance!);
-      if (fullSwingDistances.length > 0) {
-        const fsMaxDist = Math.max(...fullSwingDistances);
-        hittraxMaxDistance = hittraxMaxDistance !== null ? Math.max(hittraxMaxDistance, fsMaxDist) : fsMaxDist;
-      }
-
-      // Full Swing last 30 days averages
-      const fullSwingLast30 = fullSwingSessions.filter(s => new Date(s.session_date) >= last30DaysStart);
-      if (fullSwingLast30.length > 0) {
-        // Exit velocity - weighted by contact swings
-        const fsEVData = fullSwingLast30.filter(s => s.avg_exit_velocity !== null && s.contact_swings > 0);
-        if (fsEVData.length > 0) {
-          const totalContactSwings = fsEVData.reduce((sum, s) => sum + s.contact_swings, 0);
-          const weightedEV = fsEVData.reduce((sum, s) => sum + (s.avg_exit_velocity! * s.contact_swings), 0) / totalContactSwings;
-          if (hittraxAvgExitVelocityLast30Days !== null) {
-            // Combine with HitTrax (simple average of both averages for now)
-            hittraxAvgExitVelocityLast30Days = (hittraxAvgExitVelocityLast30Days + weightedEV) / 2;
-          } else {
-            hittraxAvgExitVelocityLast30Days = weightedEV;
-          }
-        }
-
-        // Distance
-        const fsDistData = fullSwingLast30.filter(s => s.avg_distance !== null && s.contact_swings > 0);
-        if (fsDistData.length > 0) {
-          const totalContactSwings = fsDistData.reduce((sum, s) => sum + s.contact_swings, 0);
-          const weightedDist = fsDistData.reduce((sum, s) => sum + (s.avg_distance! * s.contact_swings), 0) / totalContactSwings;
-          if (hittraxAvgDistanceLast30Days !== null) {
-            hittraxAvgDistanceLast30Days = (hittraxAvgDistanceLast30Days + weightedDist) / 2;
-          } else {
-            hittraxAvgDistanceLast30Days = weightedDist;
-          }
-        }
-
-        // Launch angle
-        const fsLAData = fullSwingLast30.filter(s => s.avg_launch_angle !== null && s.contact_swings > 0);
-        if (fsLAData.length > 0) {
-          const totalContactSwings = fsLAData.reduce((sum, s) => sum + s.contact_swings, 0);
-          const weightedLA = fsLAData.reduce((sum, s) => sum + (s.avg_launch_angle! * s.contact_swings), 0) / totalContactSwings;
-          if (hittraxAvgLaunchAngleLast30Days !== null) {
-            hittraxAvgLaunchAngleLast30Days = (hittraxAvgLaunchAngleLast30Days + weightedLA) / 2;
-          } else {
-            hittraxAvgLaunchAngleLast30Days = weightedLA;
-          }
-        }
-      }
-    }
-
-    // Calculate Blast stats
-    const last30Swings = blastSwings?.filter(s => {
-      const swingDate = new Date(s.recorded_date);
-      return swingDate >= last30DaysStart;
-    }) || [];
-
-    // Full Swing last 30 days for bat speed
-    const fullSwingLast30ForBatSpeed = fullSwingSessions?.filter(s =>
-      new Date(s.session_date) >= last30DaysStart && s.avg_bat_speed !== null
-    ) || [];
-
-    const totalSwingsLast30Days = last30Swings.length + fullSwingLast30ForBatSpeed.reduce((sum, s) => sum + s.total_swings, 0);
-
-    // Get highest bat speed PR (all time) - combine Blast + Full Swing
-    const blastBatSpeeds = blastSwings?.filter(s => s.bat_speed !== null).map(s => s.bat_speed!) || [];
-    const fullSwingBatSpeeds = fullSwingSessions?.filter(s => s.max_bat_speed !== null).map(s => s.max_bat_speed!) || [];
-    const allBatSpeeds = [...blastBatSpeeds, ...fullSwingBatSpeeds];
-    const highestBatSpeedPR = allBatSpeeds.length > 0 ? Math.max(...allBatSpeeds) : 0;
-
-    // Average bat speed last 30 days - combine Blast + Full Swing
-    const blastBatSpeedsLast30 = last30Swings.filter(s => s.bat_speed !== null).map(s => s.bat_speed!);
-    const fullSwingAvgBatSpeedsLast30 = fullSwingLast30ForBatSpeed.map(s => ({ avg: s.avg_bat_speed!, count: s.total_swings }));
-
-    let avgBatSpeedLast30Days = 0;
-    const totalBlastBatSpeedSwings = blastBatSpeedsLast30.length;
-    const totalFSBatSpeedSwings = fullSwingAvgBatSpeedsLast30.reduce((sum, s) => sum + s.count, 0);
-    const totalBatSpeedSwings = totalBlastBatSpeedSwings + totalFSBatSpeedSwings;
-
-    if (totalBatSpeedSwings > 0) {
-      const blastSum = blastBatSpeedsLast30.reduce((sum, speed) => sum + speed, 0);
-      const fsSum = fullSwingAvgBatSpeedsLast30.reduce((sum, s) => sum + (s.avg * s.count), 0);
-      avgBatSpeedLast30Days = (blastSum + fsSum) / totalBatSpeedSwings;
-    }
-
-    // Average attack angle last 30 days (Blast-only metric)
-    const attackAnglesLast30 = last30Swings.filter(s => s.attack_angle !== null).map(s => s.attack_angle!);
-    const avgAttackAngleLast30Days = attackAnglesLast30.length > 0
-      ? attackAnglesLast30.reduce((sum, angle) => sum + angle, 0) / attackAnglesLast30.length
-      : null;  // Return null when no Blast data
-
-    // Average on-plane efficiency last 30 days (Blast-only metric)
-    const onPlaneEfficiencyLast30 = last30Swings.filter(s => s.on_plane_efficiency !== null).map(s => s.on_plane_efficiency!);
-    const avgOnPlaneEfficiencyLast30Days = onPlaneEfficiencyLast30.length > 0
-      ? onPlaneEfficiencyLast30.reduce((sum, eff) => sum + eff, 0) / onPlaneEfficiencyLast30.length
-      : null;  // Return null when no Blast data
-
-    setOverviewStats({
-      totalSwingsAllTime: totalBlastSwings || 0,
-      totalSwingsLast30Days,
-      hittraxTotalSwingsAllTime,
-      highestBatSpeedPR,
-      avgBatSpeedLast30Days,
-      hittraxMaxExitVelocity,
-      hittraxAvgExitVelocityLast30Days,
-      hittraxMaxDistance,
-      hittraxAvgDistanceLast30Days,
-      avgAttackAngleLast30Days,
-      hittraxAvgLaunchAngleLast30Days,
-      hittraxAvgHorizontalAngleLast30Days,
-      avgOnPlaneEfficiencyLast30Days,
-    });
-  }
-
-  // Parse Blast timestamp (same logic as web app)
-  function parseBlastTimestamp(swing: any): Date | null {
-    if (swing.created_at_utc) {
-      return new Date(swing.created_at_utc);
-    }
-    if (swing.recorded_date && swing.recorded_time) {
-      return new Date(`${swing.recorded_date}T${swing.recorded_time}`);
-    }
-    return null;
-  }
-
-  // Parse HitTrax timestamp: "10/30/2025 19:18:31.573" format
-  function parseHitTraxTimestamp(timestamp: string | null): Date | null {
-    if (!timestamp) return null;
     try {
-      const [datePart, timePart] = timestamp.split(' ');
-      const [month, day, year] = datePart.split('/');
-      const [hours, minutes, secondsWithMs] = timePart.split(':');
-      const seconds = parseFloat(secondsWithMs);
-      return new Date(
-        parseInt(year),
-        parseInt(month) - 1,
-        parseInt(day),
-        parseInt(hours),
-        parseInt(minutes),
-        seconds
-      );
-    } catch {
-      return null;
-    }
-  }
+      const now = new Date();
+      const last30: Window = { start: new Date(now.getTime() - 30 * DAY_MS), end: new Date(now.getTime() + DAY_MS) };
+      const prior30: Window = { start: new Date(now.getTime() - 60 * DAY_MS), end: last30.start };
 
-  // Match swings by timestamp (7-second window) - exactly like web app
-  function matchSwingsByTime(
-    blastSwings: any[],
-    hittraxSwings: any[],
-    maxTimeDifferenceSeconds: number = 7
-  ) {
-    const swingPairs: any[] = [];
-    const matchedBlastIds = new Set<string>();
-    const matchedHittraxIds = new Set<string>();
+      interface BlastSwing {
+        bat_speed: number | null;
+        recorded_date: string | null;
+        attack_angle: number | null;
+        on_plane_efficiency: number | null;
+      }
+      interface HittraxSession {
+        id: string;
+        session_date: string | null;
+      }
+      interface HittraxSwing {
+        session_id: string;
+        exit_velocity: number | null;
+        distance: number | null;
+        launch_angle: number | null;
+        horizontal_angle: number | null;
+      }
 
-    // Parse all timestamps
-    const blastWithTime = blastSwings
-      .map(swing => ({ swing, timestamp: parseBlastTimestamp(swing) }))
-      .filter((item): item is { swing: any; timestamp: Date } => item.timestamp !== null)
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const [{ data: athleteRow }, blastSwings, hittraxSessions, fullSwingSessions] = await Promise.all([
+        supabase.from('athletes').select('play_level').eq('id', id).maybeSingle(),
+        fetchAllPaginated<BlastSwing>(
+          () => supabase.from('blast_swings'),
+          'bat_speed, recorded_date, attack_angle, on_plane_efficiency',
+          [{ column: 'athlete_id', value: id }],
+          'recorded_date',
+          false
+        ),
+        fetchAllPaginated<HittraxSession>(
+          () => supabase.from('hittrax_sessions'),
+          'id, session_date',
+          [{ column: 'athlete_id', value: id }],
+          'session_date',
+          false
+        ),
+        fetchAllPaginated<FullSwingSession>(
+          () => supabase.from('fullswing_sessions'),
+          'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_launch_angle, avg_distance, max_distance, hard_hit_count',
+          [{ column: 'athlete_id', value: id }],
+          'session_date',
+          false
+        ),
+      ]);
 
-    const hittraxWithTime = hittraxSwings
-      .map(swing => ({ swing, timestamp: parseHitTraxTimestamp(swing.swing_timestamp) }))
-      .filter((item): item is { swing: any; timestamp: Date } => item.timestamp !== null)
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const sessionIds = hittraxSessions.map((s) => s.id);
+      const sessionDate = new Map(hittraxSessions.map((s) => [s.id, dayDate(s.session_date)]));
 
-    // For each Blast swing, find closest HitTrax swing
-    blastWithTime.forEach(({ swing: blastSwing, timestamp: blastTime }) => {
-      let closestMatch: { hittraxSwing: any; timeDiff: number } | null = null;
+      // ALL HitTrax swings once: PRs + both 30-day windows
+      const hittraxSwings =
+        sessionIds.length > 0
+          ? await fetchAllPaginated<HittraxSwing>(
+              () => supabase.from('hittrax_swings'),
+              'session_id, exit_velocity, distance, launch_angle, horizontal_angle',
+              [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+              'created_at',
+              false
+            )
+          : [];
+      const contact = hittraxSwings.filter((s) => isNum(s.exit_velocity) && s.exit_velocity > 0);
 
-      hittraxWithTime.forEach(({ swing: hittraxSwing, timestamp: hittraxTime }) => {
-        if (matchedHittraxIds.has(hittraxSwing.id)) return;
+      const fsEVmax = fullSwingSessions.map((s) => s.max_exit_velocity).filter(isNum);
+      const fsDistMax = fullSwingSessions.map((s) => s.max_distance).filter((d): d is number => isNum(d) && d > 0);
+      const exitVeloPR = maxOf([...contact.map((s) => s.exit_velocity!), ...fsEVmax]);
+      const distancePR = maxOf([
+        ...contact.map((s) => s.distance).filter((d): d is number => isNum(d) && d > 0),
+        ...fsDistMax,
+      ]);
+      const batSpeedPR = maxOf([
+        ...blastSwings.map((s) => s.bat_speed).filter((v): v is number => isNum(v) && v > 0),
+        ...fullSwingSessions.map((s) => s.max_bat_speed).filter((v): v is number => isNum(v) && v > 0),
+      ]);
 
-        const timeDiffSeconds = Math.abs(blastTime.getTime() - hittraxTime.getTime()) / 1000;
-
-        if (timeDiffSeconds <= maxTimeDifferenceSeconds) {
-          if (!closestMatch || timeDiffSeconds < closestMatch.timeDiff) {
-            closestMatch = { hittraxSwing, timeDiff: timeDiffSeconds };
+      // Weighted mean across HitTrax swings (weight 1 each) and Full Swing session averages (weight = swing count)
+      const blend = (htVals: number[], fs: { v: number | null; n: number | null }[]) => {
+        let sum = htVals.reduce((a, b) => a + b, 0);
+        let n = htVals.length;
+        for (const { v, n: w } of fs) {
+          if (isNum(v) && isNum(w) && w > 0) {
+            sum += v * w;
+            n += w;
           }
         }
+        return n > 0 ? sum / n : null;
+      };
+
+      const windowStats = (w: Window): WindowStats => {
+        const ht = contact.filter((s) => inWin(sessionDate.get(s.session_id) ?? null, w));
+        const fs = fullSwingSessions.filter((s) => inWin(dayDate(s.session_date), w));
+        const bl = blastSwings.filter((s) => inWin(dayDate(s.recorded_date), w));
+
+        const evs = ht.map((s) => s.exit_velocity!);
+        const las = ht.map((s) => s.launch_angle).filter(isNum);
+        const dists = ht.map((s) => s.distance).filter((d): d is number => isNum(d) && d > 0);
+
+        // Hard-hit %: HitTrax swings + Full Swing hard_hit_count / contact_swings
+        let hhNum = evs.filter((v) => v >= HARD_HIT_MPH).length;
+        let hhDen = evs.length;
+        for (const s of fs) {
+          if (isNum(s.contact_swings) && s.contact_swings > 0 && isNum(s.hard_hit_count)) {
+            hhNum += s.hard_hit_count;
+            hhDen += s.contact_swings;
+          }
+        }
+
+        const blastBat = bl.map((s) => s.bat_speed).filter((v): v is number => isNum(v) && v > 0);
+
+        return {
+          avgEV: blend(evs, fs.map((s) => ({ v: s.avg_exit_velocity, n: s.contact_swings }))),
+          hardHitPct: hhDen > 0 ? (hhNum / hhDen) * 100 : null,
+          avgLA: blend(las, fs.map((s) => ({ v: s.avg_launch_angle, n: s.contact_swings }))),
+          sweetSpotPct: las.length > 0 ? (las.filter((a) => a >= SWEET_SPOT[0] && a <= SWEET_SPOT[1]).length / las.length) * 100 : null,
+          avgDist: blend(dists, fs.map((s) => ({ v: s.avg_distance, n: s.contact_swings }))),
+          avgSpray: avg(ht.map((s) => s.horizontal_angle).filter(isNum)),
+          avgBatSpeed: blend(blastBat, fs.map((s) => ({ v: s.avg_bat_speed, n: s.total_swings }))),
+          avgAttackAngle: avg(bl.map((s) => s.attack_angle).filter(isNum)),
+          avgOnPlane: avg(bl.map((s) => s.on_plane_efficiency).filter(isNum)),
+        };
+      };
+
+      if (!isMountedRef.current) return;
+      setOverviewStats({
+        blastSwingsAllTime: blastSwings.length,
+        hittraxSwingsAllTime: hittraxSwings.length,
+        batSpeedPR,
+        exitVeloPR,
+        distancePR,
+        last30: windowStats(last30),
+        prior30: windowStats(prior30),
+        playLevel: normalizePlayLevel((athleteRow as any)?.play_level),
+        hittraxSessionCount: hittraxSessions.length,
+        fullSwingSessionCount: fullSwingSessions.length,
       });
-
-      if (closestMatch !== null) {
-        const match = closestMatch as { hittraxSwing: any; timeDiff: number };
-        matchedBlastIds.add(blastSwing.id);
-        matchedHittraxIds.add(match.hittraxSwing.id);
-        swingPairs.push({ blastSwing, hittraxSwing: match.hittraxSwing, paired: true });
-      } else {
-        swingPairs.push({ blastSwing, hittraxSwing: null, paired: false });
-      }
-    });
-
-    // Add unmatched HitTrax swings
-    hittraxWithTime.forEach(({ swing: hittraxSwing }) => {
-      if (!matchedHittraxIds.has(hittraxSwing.id)) {
-        swingPairs.push({ blastSwing: null, hittraxSwing, paired: false });
-      }
-    });
-
-    return swingPairs;
+    } catch (error) {
+      console.error('Error fetching hitting overview:', error);
+    }
   }
 
   async function fetchSessions(id: string) {
     try {
-      // Type definitions for session fetching
       interface BlastSwingSession {
         id: string;
-        recorded_date: string;
+        recorded_date: string | null;
         recorded_time: string | null;
         created_at_utc: string | null;
         bat_speed: number | null;
         attack_angle: number | null;
         on_plane_efficiency: number | null;
       }
-
       interface HittraxSessionData {
         id: string;
-        session_date: string;
+        session_date: string | null;
       }
-
       interface HittraxSwingSession {
         id: string;
         session_id: string;
@@ -679,162 +656,154 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
         exit_velocity: number | null;
         distance: number | null;
         launch_angle: number | null;
+        horizontal_angle: number | null;
       }
 
-      // Get ALL Blast swings with pagination (bypasses 1000 row limit)
-      const blastSwings = await fetchAllPaginated<BlastSwingSession>(
-        () => supabase.from('blast_swings'),
-        'id, recorded_date, recorded_time, created_at_utc, bat_speed, attack_angle, on_plane_efficiency',
-        [{ column: 'athlete_id', value: id }],
-        'recorded_date',
-        false
-      );
+      const [blastSwings, hittraxSessions, fullSwingSessions] = await Promise.all([
+        fetchAllPaginated<BlastSwingSession>(
+          () => supabase.from('blast_swings'),
+          'id, recorded_date, recorded_time, created_at_utc, bat_speed, attack_angle, on_plane_efficiency',
+          [{ column: 'athlete_id', value: id }],
+          'recorded_date',
+          false
+        ),
+        fetchAllPaginated<HittraxSessionData>(
+          () => supabase.from('hittrax_sessions'),
+          'id, session_date',
+          [{ column: 'athlete_id', value: id }],
+          'session_date',
+          false
+        ),
+        fetchAllPaginated<FullSwingSession>(
+          () => supabase.from('fullswing_sessions'),
+          'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_distance, max_distance, hard_hit_count',
+          [{ column: 'athlete_id', value: id }],
+          'session_date',
+          false
+        ),
+      ]);
 
-      // Get ALL HitTrax sessions with pagination
-      const hittraxSessions = await fetchAllPaginated<HittraxSessionData>(
-        () => supabase.from('hittrax_sessions'),
-        'id, session_date',
-        [{ column: 'athlete_id', value: id }],
-        'session_date',
-        false
-      );
-
-      // Get ALL HitTrax swings with pagination
       let hittraxSwings: HittraxSwingSession[] = [];
-      if (hittraxSessions && hittraxSessions.length > 0) {
-        const sessionIds = hittraxSessions.map(s => s.id);
+      if (hittraxSessions.length > 0) {
         hittraxSwings = await fetchAllPaginated<HittraxSwingSession>(
           () => supabase.from('hittrax_swings'),
-          'id, session_id, swing_timestamp, exit_velocity, distance, launch_angle',
-          [{ column: 'session_id', value: sessionIds, operator: 'in' }],
+          'id, session_id, swing_timestamp, exit_velocity, distance, launch_angle, horizontal_angle',
+          [{ column: 'session_id', value: hittraxSessions.map((s) => s.id), operator: 'in' }],
           'swing_timestamp',
           false
         );
       }
 
-      // Get ALL Full Swing sessions with pagination
-      const fullSwingSessions = await fetchAllPaginated<FullSwingSession>(
-        () => supabase.from('fullswing_sessions'),
-        'id, session_date, total_swings, contact_swings, avg_bat_speed, max_bat_speed, avg_exit_velocity, max_exit_velocity, avg_distance, max_distance, hard_hit_count',
-        [{ column: 'athlete_id', value: id }],
-        'session_date',
-        false
-      );
+      // Pair Blast -> HitTrax only when swings actually match within 7s
+      const { pairs, unmatchedBlast } = matchSwingsByTime(blastSwings, hittraxSwings, 7);
+      const pairedBySession = new Map<string, number>();
+      pairs.forEach((p) => pairedBySession.set(p.hittraxSwing.session_id, (pairedBySession.get(p.hittraxSwing.session_id) || 0) + 1));
 
-      // Match swings by timestamp (7-second window)
-      const swingPairs = matchSwingsByTime(blastSwings || [], hittraxSwings, 7);
+      const result: Session[] = [];
 
-      // Group swing pairs by date into sessions
-      const sessionMap = new Map<string, any[]>();
-
-      swingPairs.forEach(pair => {
-        let date: string;
-        if (pair.blastSwing) {
-          const timestamp = parseBlastTimestamp(pair.blastSwing);
-          if (timestamp) {
-            const year = timestamp.getFullYear();
-            const month = String(timestamp.getMonth() + 1).padStart(2, '0');
-            const day = String(timestamp.getDate()).padStart(2, '0');
-            date = `${year}-${month}-${day}`;
-          } else {
-            date = pair.blastSwing.recorded_date || 'unknown';
-          }
-        } else if (pair.hittraxSwing?.swing_timestamp) {
-          const [datePart] = pair.hittraxSwing.swing_timestamp.split(' ');
-          const [month, day, year] = datePart.split('/');
-          date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-        } else {
-          date = 'unknown';
-        }
-
-        if (!sessionMap.has(date)) {
-          sessionMap.set(date, []);
-        }
-        sessionMap.get(date)!.push(pair);
+      // HitTrax: one row per session_id
+      const swingsBySession = new Map<string, HittraxSwingSession[]>();
+      hittraxSwings.forEach((s) => {
+        if (!s?.session_id) return;
+        if (!swingsBySession.has(s.session_id)) swingsBySession.set(s.session_id, []);
+        swingsBySession.get(s.session_id)!.push(s);
       });
 
-      // Convert to Session objects
-      const allSessions: Session[] = [];
+      hittraxSessions.forEach((hs) => {
+        const raw = swingsBySession.get(hs.id) || [];
+        if (raw.length === 0) return;
+        // Chronological order (fallback: reverse of desc query order)
+        const swings = raw
+          .map((s, i) => ({ s, t: parseHitTraxTimestamp(s.swing_timestamp)?.getTime() ?? -i }))
+          .sort((a, b) => a.t - b.t)
+          .map((x) => x.s);
+        const date =
+          dayKey(hs.session_date) ||
+          dayKey(swings.find((s) => s.swing_timestamp)?.swing_timestamp) ||
+          null;
+        if (!date) return;
 
-      sessionMap.forEach((pairs, date) => {
-        if (date === 'unknown') return;
+        const contactSw = swings.filter((s) => isNum(s.exit_velocity) && s.exit_velocity > 0);
+        const evs = contactSw.map((s) => s.exit_velocity!);
+        const distances = contactSw.map((s) => s.distance).filter((d): d is number => isNum(d) && d > 0);
+        const paired = pairedBySession.get(hs.id) || 0;
 
-        const blastSwingsInSession = pairs.filter(p => p.blastSwing).map(p => p.blastSwing);
-        const hittraxSwingsInSession = pairs.filter(p => p.hittraxSwing).map(p => p.hittraxSwing);
-        const actualPairedCount = pairs.filter(p => p.blastSwing && p.hittraxSwing).length;
-
-        const hasBlast = blastSwingsInSession.length > 0;
-        const hasHitTrax = hittraxSwingsInSession.length > 0;
-        const isPaired = hasBlast && hasHitTrax;
-
-        if (hasHitTrax) {
-          // HitTrax session (may also be paired)
-          const contactSwings = hittraxSwingsInSession.filter((s: any) => s.exit_velocity && s.exit_velocity > 0);
-          const exitVelocities = contactSwings.map((s: any) => s.exit_velocity);
-          const distances = contactSwings.map((s: any) => s.distance).filter((d: any): d is number => d !== null && d > 0);
-
-          allSessions.push({
-            id: hittraxSwingsInSession[0]?.session_id || date,
-            session_date: date,
-            total_swings: hittraxSwingsInSession.length,
-            contact_swings: contactSwings.length,
-            avg_exit_velocity: exitVelocities.length > 0 ? exitVelocities.reduce((a: number, b: number) => a + b, 0) / exitVelocities.length : 0,
-            max_exit_velocity: exitVelocities.length > 0 ? Math.max(...exitVelocities) : 0,
-            max_distance: distances.length > 0 ? Math.max(...distances) : 0,
-            hard_hit_count: contactSwings.filter((s: any) => s.exit_velocity && s.exit_velocity >= 95).length,
-            source: 'hittrax',
-            isPaired,
-            blast_swings_count: blastSwingsInSession.length,
-            hittrax_swings_count: hittraxSwingsInSession.length,
-            paired_swings_count: actualPairedCount,
-          });
-        } else if (hasBlast) {
-          // Blast-only session
-          const batSpeeds = blastSwingsInSession.map((s: any) => s.bat_speed).filter((v: any): v is number => v !== null);
-          const attackAngles = blastSwingsInSession.map((s: any) => s.attack_angle).filter((v: any): v is number => v !== null);
-          const onPlaneEffs = blastSwingsInSession.map((s: any) => s.on_plane_efficiency).filter((v: any): v is number => v !== null);
-
-          allSessions.push({
-            id: date,
-            session_date: date,
-            total_swings: blastSwingsInSession.length,
-            contact_swings: 0,
-            avg_exit_velocity: 0,
-            max_exit_velocity: 0,
-            max_distance: 0,
-            hard_hit_count: 0,
-            source: 'blast',
-            isPaired: false,
-            blast_swings_count: blastSwingsInSession.length,
-            avg_bat_speed: batSpeeds.length > 0 ? batSpeeds.reduce((a, b) => a + b, 0) / batSpeeds.length : 0,
-            avg_attack_angle: attackAngles.length > 0 ? attackAngles.reduce((a, b) => a + b, 0) / attackAngles.length : 0,
-            avg_on_plane_efficiency: onPlaneEffs.length > 0 ? onPlaneEffs.reduce((a, b) => a + b, 0) / onPlaneEffs.length : 0,
-          });
-        }
-      });
-
-      // Add Full Swing sessions
-      if (fullSwingSessions && fullSwingSessions.length > 0) {
-        fullSwingSessions.forEach(fs => {
-          allSessions.push({
-            id: fs.id,
-            session_date: fs.session_date,
-            total_swings: fs.total_swings,
-            contact_swings: fs.contact_swings,
-            avg_exit_velocity: fs.avg_exit_velocity || 0,
-            max_exit_velocity: fs.max_exit_velocity || 0,
-            max_distance: fs.max_distance || 0,
-            hard_hit_count: fs.hard_hit_count,
-            source: 'fullswing',
-            avg_bat_speed: fs.avg_bat_speed || undefined,
-          });
+        result.push({
+          id: hs.id,
+          session_date: date,
+          total_swings: swings.length,
+          contact_swings: contactSw.length,
+          avg_exit_velocity: avg(evs),
+          max_exit_velocity: maxOf(evs),
+          max_distance: maxOf(distances),
+          hard_hit_count: evs.filter((v) => v >= HARD_HIT_MPH).length,
+          source: 'hittrax',
+          isPaired: paired > 0,
+          blast_swings_count: paired,
+          hittrax_swings_count: swings.length,
+          paired_swings_count: paired,
+          evs,
+          balls: contactSw.map((s) => ({
+            exit_velocity: s.exit_velocity,
+            launch_angle: s.launch_angle,
+            horizontal_angle: s.horizontal_angle,
+            distance: s.distance,
+          })),
         });
-      }
+      });
 
-      // Sort by date
-      allSessions.sort((a, b) => new Date(b.session_date).getTime() - new Date(a.session_date).getTime());
-      setAllSessions(allSessions);
-      setSessions(allSessions.slice(0, 20));
+      // Blast-only (unpaired swings): grouped by local date
+      const blastByDate = new Map<string, BlastSwingSession[]>();
+      unmatchedBlast.forEach((b: BlastSwingSession) => {
+        const t = parseBlastTimestamp(b);
+        const date = t
+          ? `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+          : dayKey(b.recorded_date);
+        if (!date) return;
+        if (!blastByDate.has(date)) blastByDate.set(date, []);
+        blastByDate.get(date)!.push(b);
+      });
+      blastByDate.forEach((bs, date) => {
+        result.push({
+          id: date,
+          session_date: date,
+          total_swings: bs.length,
+          contact_swings: 0,
+          avg_exit_velocity: null,
+          max_exit_velocity: null,
+          max_distance: null,
+          hard_hit_count: 0,
+          source: 'blast',
+          isPaired: false,
+          blast_swings_count: bs.length,
+          avg_bat_speed: avg(bs.map((s) => s.bat_speed).filter((v): v is number => isNum(v) && v > 0)),
+          avg_attack_angle: avg(bs.map((s) => s.attack_angle).filter(isNum)),
+          avg_on_plane_efficiency: avg(bs.map((s) => s.on_plane_efficiency).filter(isNum)),
+        });
+      });
+
+      // Full Swing sessions
+      fullSwingSessions.forEach((fs) => {
+        const date = dayKey(fs.session_date);
+        if (!date) return;
+        result.push({
+          id: fs.id,
+          session_date: date,
+          total_swings: fs.total_swings ?? 0,
+          contact_swings: fs.contact_swings ?? 0,
+          avg_exit_velocity: fs.avg_exit_velocity,
+          max_exit_velocity: fs.max_exit_velocity,
+          max_distance: fs.max_distance,
+          hard_hit_count: fs.hard_hit_count ?? 0,
+          source: 'fullswing',
+          avg_bat_speed: fs.avg_bat_speed,
+        });
+      });
+
+      result.sort((a, b) => (dayDate(b.session_date)?.getTime() ?? 0) - (dayDate(a.session_date)?.getTime() ?? 0));
+      if (!isMountedRef.current) return;
+      setAllSessions(result);
+      setSessions(result.slice(0, 20));
       setDisplayedSessions(20);
     } catch (error) {
       console.error('Error fetching sessions:', error);
@@ -849,15 +818,8 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     setDisplayedSessions(newCount);
   }
 
-  function formatMetric(value: number | null, decimals: number = 1): string {
-    if (value === null || isNaN(value)) return '--';
-    return value.toFixed(decimals);
-  }
-
-  function formatDate(dateStr: string): string {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  function openSession(session: Session) {
+    navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId, source: session.source });
   }
 
   const onRefresh = async () => {
@@ -877,303 +839,174 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
     );
   }
 
+  const o = overviewStats;
+  const L = o?.last30;
+  const P = o?.prior30;
+  const delta = (a: number | null | undefined, b: number | null | undefined) => (isNum(a) && isNum(b) ? a - b : null);
+  const lastHitTrax = allSessions.find((s) => s.source === 'hittrax' && (s.balls?.length || 0) > 0) || null;
+  const pairedCount = allSessions.filter((s) => s.isPaired).length;
+  const battedBallSessions = (o?.hittraxSessionCount || 0) + (o?.fullSwingSessionCount || 0);
+  const spray = L?.avgSpray ?? null;
+  const sprayWord = isNum(spray) ? (Math.abs(spray) < 0.05 ? 'CENTER' : spray < 0 ? 'PULL' : 'OPPO') : '';
+
   return (
-    <View style={styles.container}>
+    <View style={[steelStyles.screen, { paddingTop: insets.top }]}>
       <ScrollView
-        style={styles.scrollView}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
-        contentContainerStyle={styles.scrollContent}
+        style={{ flex: 1 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={['#9BDDFF']} progressBackgroundColor="#1A1A1A" />}
+        contentContainerStyle={{ paddingBottom: 100 }}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={20} color="#9CA3AF" />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>Hitting Performance</Text>
-          <Text style={styles.subtitle}>Swing metrics and batted ball analysis</Text>
-        </View>
+        <ScreenHeader
+          title="Hitting"
+          subtitle={`Swing metrics and batted-ball analysis · ${(o?.blastSwingsAllTime ?? 0).toLocaleString()} Blast · ${(o?.hittraxSwingsAllTime ?? 0).toLocaleString()} HitTrax swings`}
+          onBack={() => navigation.goBack()}
+        />
 
-        {/* Overview Stats */}
-        {overviewStats && (
-          <View style={styles.statsContainer}>
-            {/* Total Swings */}
-            <View style={styles.swingCountRow}>
-              <Text style={styles.sectionTitle}>All-Time PRs</Text>
-              <View style={styles.swingCounts}>
-                <Text style={styles.swingCountText}>{overviewStats.totalSwingsAllTime.toLocaleString()} <Text style={styles.blastLabel}>Blast</Text></Text>
-                <Text style={styles.swingCountDivider}>|</Text>
-                <Text style={styles.swingCountText}>{overviewStats.hittraxTotalSwingsAllTime.toLocaleString()} <Text style={styles.hittraxLabel}>HitTrax</Text></Text>
-              </View>
-            </View>
+        <View style={steelStyles.body}>
+          {o && (
+            <>
+              <Section first title="ALL-TIME PRS" right={o.playLevel ? `vs ${o.playLevel}` : undefined}>
+                <View style={styles.prRow}>
+                  <PrColumn label="EXIT VELO" unit="mph" value={o.exitVeloPR} digits={1} accent={STEEL.force} norms={EXIT_VELO_NORMS} level={o.playLevel} missing="No HitTrax swings" />
+                  <PrColumn label="BAT SPEED" unit="mph" value={o.batSpeedPR} digits={1} accent={STEEL.hitting} norms={BAT_SPEED_NORMS} level={o.playLevel} missing="No Blast swings" />
+                  <PrColumn label="DISTANCE" unit="ft" value={o.distancePR} digits={0} accent={STEEL.good} norms={DISTANCE_NORMS} level={o.playLevel} missing="No HitTrax swings" />
+                </View>
+              </Section>
 
-            {/* PR Stats Row */}
-            <View style={styles.prRow}>
-              {/* Bat Speed PR */}
-              <View style={styles.prItem}>
-                <View style={styles.prValueRow}>
-                  <Ionicons name="star" size={12} color="#D4AF37" />
-                  <Text style={styles.prValue}>{formatMetric(overviewStats.highestBatSpeedPR)}</Text>
-                </View>
-                <Text style={styles.prLabel}>Bat Speed</Text>
-                <Text style={styles.prUnit}>mph</Text>
-              </View>
-
-              {/* Exit Velocity PR */}
-              <View style={[styles.prItem, styles.prItemBorder]}>
-                <View style={styles.prValueRow}>
-                  <Ionicons name="star" size={12} color="#D4AF37" />
-                  <Text style={styles.prValue}>{formatMetric(overviewStats.hittraxMaxExitVelocity)}</Text>
-                </View>
-                <Text style={styles.prLabel}>Exit Velocity</Text>
-                <Text style={styles.prUnit}>mph</Text>
-              </View>
-
-              {/* Distance PR */}
-              <View style={styles.prItem}>
-                <View style={styles.prValueRow}>
-                  <Ionicons name="star" size={12} color="#D4AF37" />
-                  <Text style={styles.prValue}>{formatMetric(overviewStats.hittraxMaxDistance)}</Text>
-                </View>
-                <Text style={styles.prLabel}>Distance</Text>
-                <Text style={styles.prUnit}>feet</Text>
-              </View>
-            </View>
-
-            {/* 30 Day Averages */}
-            <View style={styles.avgSection}>
-              <Text style={styles.avgSectionTitle}>Last 30 Days</Text>
-
-              {/* Row 1 */}
-              <View style={styles.avgRow}>
-                <View style={styles.avgItem}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.avgBatSpeedLast30Days)}</Text>
-                  <Text style={styles.avgLabel}>Bat Speed</Text>
-                </View>
-                <View style={styles.avgItem}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.hittraxAvgExitVelocityLast30Days)}</Text>
-                  <Text style={styles.avgLabel}>Exit Velo</Text>
-                </View>
-                <View style={styles.avgItem}>
-                  <Text style={styles.avgValue}>{formatMetric(overviewStats.hittraxAvgDistanceLast30Days)}</Text>
-                  <Text style={styles.avgLabel}>Distance</Text>
-                </View>
-              </View>
-
-              {/* Row 2 */}
-              <View style={styles.avgRow}>
-                <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>
-                    {overviewStats.avgAttackAngleLast30Days !== null
-                      ? `${formatMetric(overviewStats.avgAttackAngleLast30Days)}°`
-                      : '--'}
-                  </Text>
-                  <Text style={styles.avgLabel}>Attack Angle</Text>
-                </View>
-                <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>
-                    {overviewStats.hittraxAvgLaunchAngleLast30Days !== null
-                      ? `${formatMetric(overviewStats.hittraxAvgLaunchAngleLast30Days)}°`
-                      : '--'}
-                  </Text>
-                  <Text style={styles.avgLabel}>Launch Angle</Text>
-                </View>
-                <View style={styles.avgItemSmall}>
-                  <View style={styles.directionRow}>
-                    {overviewStats.hittraxAvgHorizontalAngleLast30Days !== null && (
-                      <Ionicons
-                        name="arrow-up"
-                        size={16}
-                        color="#FFFFFF"
-                        style={{ transform: [{ rotate: `${-overviewStats.hittraxAvgHorizontalAngleLast30Days}deg` }] }}
-                      />
-                    )}
-                    <Text style={styles.avgValue}>
-                      {overviewStats.hittraxAvgHorizontalAngleLast30Days !== null
-                        ? `${Math.abs(overviewStats.hittraxAvgHorizontalAngleLast30Days).toFixed(1)}°`
-                        : '--'}
-                    </Text>
+              <Section title="LAST 30 DAYS" right="vs prior 30">
+                <KpiRow>
+                  <Kpi label="AVG EV" value={fmt(L?.avgEV)} unit="MPH" size={20} delta={delta(L?.avgEV, P?.avgEV)} />
+                  <Kpi label="HARD-HIT" value={fmt(L?.hardHitPct, 0)} unit="%" size={20} delta={delta(L?.hardHitPct, P?.hardHitPct)} />
+                  <Kpi label="LAUNCH" value={isNum(L?.avgLA) ? `${fmt(L!.avgLA)}°` : '—'} size={20} delta={delta(L?.avgLA, P?.avgLA)} />
+                  <Kpi label="SWEET SPOT" value={fmt(L?.sweetSpotPct, 0)} unit="%" size={20} delta={delta(L?.sweetSpotPct, P?.sweetSpotPct)} />
+                </KpiRow>
+                <KpiRow style={{ marginTop: 16 }}>
+                  <Kpi label="AVG DIST" value={fmt(L?.avgDist, 0)} unit="FT" size={17} delta={delta(L?.avgDist, P?.avgDist)} />
+                  <Kpi label="BAT SPEED" value={fmt(L?.avgBatSpeed)} unit="MPH" size={17} delta={delta(L?.avgBatSpeed, P?.avgBatSpeed)} />
+                  <View style={{ flex: 1, gap: 3 }}>
+                    <Text style={styles.kpiLabel}>SPRAY</Text>
+                    <View style={styles.sprayRow}>
+                      {isNum(spray) && (
+                        <Ionicons name="arrow-up" size={14} color="#FFFFFF" style={{ transform: [{ rotate: `${-spray}deg` }] }} />
+                      )}
+                      <Text style={[styles.sprayValue, !isNum(spray) && { color: STEEL.past }]}>
+                        {isNum(spray) ? `${Math.abs(spray).toFixed(1)}°` : '—'}
+                      </Text>
+                    </View>
+                    {sprayWord ? <Text style={styles.kpiNote}>{sprayWord}</Text> : null}
                   </View>
-                  <Text style={styles.avgLabel}>Spray Direction</Text>
-                </View>
-                <View style={styles.avgItemSmall}>
-                  <Text style={styles.avgValue}>
-                    {overviewStats.avgOnPlaneEfficiencyLast30Days !== null
-                      ? `${formatMetric(overviewStats.avgOnPlaneEfficiencyLast30Days)}%`
-                      : '--'}
-                  </Text>
-                  <Text style={styles.avgLabel}>On-Plane %</Text>
-                </View>
-              </View>
+                  <Kpi label="ATTACK" value={isNum(L?.avgAttackAngle) ? `${fmt(L!.avgAttackAngle)}°` : '—'} size={17} delta={delta(L?.avgAttackAngle, P?.avgAttackAngle)} />
+                  <Kpi label="ON-PLANE" value={fmt(L?.avgOnPlane, 0)} unit="%" size={17} delta={delta(L?.avgOnPlane, P?.avgOnPlane)} />
+                </KpiRow>
+              </Section>
+            </>
+          )}
+
+          {lastHitTrax && (
+            <Section
+              title={`LAST SESSION · ${formatDate(lastHitTrax.session_date, { month: 'short', day: 'numeric' }).toUpperCase()}`}
+              right="Open →"
+              onRight={() => openSession(lastHitTrax)}
+            >
+              <BallField3D
+                balls={lastHitTrax.balls || []}
+                height={200}
+                caption={`${lastHitTrax.contact_swings} balls in play · max ${fmt(lastHitTrax.max_exit_velocity)} mph`}
+              />
+            </Section>
+          )}
+
+          <Section title="DIG IN">
+            <View style={styles.tiles}>
+              {[
+                {
+                  key: 'bb',
+                  title: 'Batted Ball',
+                  desc: 'EV, launch & spray over time',
+                  status: battedBallSessions > 0 ? `${battedBallSessions} sessions →` : 'No HitTrax yet',
+                  route: 'BattedBallTrends',
+                },
+                {
+                  key: 'sw',
+                  title: 'Swing Trends',
+                  desc: 'Bat speed, attack angle, plane',
+                  status: (o?.blastSwingsAllTime || 0) > 0 ? `${o!.blastSwingsAllTime} swings →` : 'No Blast yet',
+                  route: 'HittingTrends',
+                },
+                {
+                  key: 'pd',
+                  title: 'Paired Data',
+                  desc: 'Blast swing matched to the ball',
+                  status: pairedCount > 0 ? `${pairedCount} sessions →` : 'No paired swings',
+                  route: 'PairedDataTrends',
+                },
+              ].map((t) => (
+                <TouchableOpacity key={t.key} style={styles.tile} activeOpacity={0.7} onPress={() => navigation.navigate(t.route, { athleteId })}>
+                  <Text style={styles.tileTitle}>{t.title}</Text>
+                  <Text style={styles.tileDesc} numberOfLines={2}>{t.desc}</Text>
+                  <Text style={[styles.tileStatus, t.status.endsWith('→') ? { color: STEEL.hitting } : null]}>{t.status}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
+          </Section>
 
-            {/* Analysis Buttons */}
-            <View style={styles.analysisButtons}>
-              <TouchableOpacity
-                style={styles.analysisButton}
-                onPress={() => navigation.navigate('HittingTrends', { athleteId })}
-              >
-                <View style={styles.analysisButtonInner}>
-                  <Ionicons name="trending-up" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Swing Trends</Text>
-                  <Ionicons name="chevron-forward" size={14} color="#4B5563" />
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.analysisButton}
-                onPress={() => navigation.navigate('BattedBallTrends', { athleteId })}
-              >
-                <View style={styles.analysisButtonInner}>
-                  <MaterialCommunityIcons name="baseball" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Batted Ball</Text>
-                  <Ionicons name="chevron-forward" size={14} color="#4B5563" />
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.analysisButton}
-                onPress={() => navigation.navigate('PairedDataTrends', { athleteId })}
-              >
-                <View style={styles.analysisButtonInner}>
-                  <Ionicons name="link" size={16} color="#9BDDFF" />
-                  <Text style={styles.analysisButtonText}>Paired Data</Text>
-                  <Ionicons name="chevron-forward" size={14} color="#4B5563" />
-                </View>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* Sessions List */}
-        <View style={styles.sessionsContainer}>
-          <Text style={styles.sessionsTitle}>Recent Sessions</Text>
-          {sessions.length > 0 ? (
-            sessions.map((session) => (
-              <TouchableOpacity
-                key={session.id}
-                style={styles.sessionCard}
-                onPress={() => navigation.navigate('HittingSession', { sessionId: session.id, date: session.session_date, athleteId, source: session.source })}
-                activeOpacity={0.7}
-              >
-                {/* Left accent bar */}
-                <View style={[styles.sessionAccent, {
-                  backgroundColor: session.source === 'fullswing' ? '#22D3EE' : session.source === 'hittrax' ? '#9BDDFF' : session.isPaired ? '#A78BFA' : '#6B7280'
-                }]} />
-
-                <View style={styles.sessionBody}>
-                  {/* Top row: date + source badge + chevron */}
-                  <View style={styles.sessionHeader}>
+          <Section title="RECENT SESSIONS">
+            {sessions.length > 0 ? (
+              sessions.map((session) => {
+                const color = session.source === 'fullswing' ? SOURCE_COLOR.fullswing : session.source === 'hittrax' ? (session.isPaired ? SOURCE_COLOR.paired : SOURCE_COLOR.hittrax) : SOURCE_COLOR.blast;
+                const label = session.isPaired ? 'HITTRAX + BLAST' : session.source === 'hittrax' ? 'HITTRAX' : session.source === 'fullswing' ? 'FULL SWING' : 'BLAST';
+                const count = session.isPaired ? `${session.total_swings} SWINGS · ${session.paired_swings_count} PAIRED` : `${session.total_swings} SWINGS`;
+                const stats: { v: string; l: string; accent?: boolean }[] =
+                  session.source === 'blast'
+                    ? [
+                        { v: fmt(session.avg_bat_speed), l: 'BAT SPD', accent: true },
+                        { v: isNum(session.avg_attack_angle) ? `${fmt(session.avg_attack_angle)}°` : '—', l: 'ATTACK' },
+                        { v: isNum(session.avg_on_plane_efficiency) ? `${fmt(session.avg_on_plane_efficiency, 0)}%` : '—', l: 'ON-PLANE' },
+                      ]
+                    : session.source === 'fullswing'
+                    ? [
+                        { v: fmt(session.avg_bat_speed), l: 'BAT SPD', accent: true },
+                        { v: fmt(session.max_exit_velocity), l: 'MAX EV', accent: true },
+                        { v: fmt(session.max_distance, 0), l: 'MAX FT' },
+                      ]
+                    : [
+                        { v: fmt(session.max_exit_velocity), l: 'MAX EV', accent: true },
+                        { v: fmt(session.avg_exit_velocity), l: 'AVG EV' },
+                        { v: fmt(session.max_distance, 0), l: 'MAX FT' },
+                      ];
+                return (
+                  <TouchableOpacity key={`${session.source}-${session.id}`} style={styles.sessRow} onPress={() => openSession(session)} activeOpacity={0.7}>
+                    <View style={[styles.sessBar, { backgroundColor: color }]} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.sessionDate}>{formatDate(session.session_date)}</Text>
-                      <View style={styles.sessionSourceRow}>
-                        <Text style={styles.sessionSource}>
-                          {session.isPaired ? 'HITTRAX + BLAST' : session.source === 'hittrax' ? 'HITTRAX' : session.source === 'fullswing' ? 'FULL SWING' : 'BLAST'}
-                        </Text>
-                        <Text style={styles.sessionSwingCount}>
-                          {session.isPaired ? `${session.paired_swings_count} paired` : `${session.total_swings || session.blast_swings_count} swings`}
-                        </Text>
-                        {session.isPaired && session.paired_swings_count && session.paired_swings_count > 0 && (
-                          <View style={styles.pairedBadge}>
-                            <Ionicons name="link" size={9} color="#A78BFA" />
-                          </View>
-                        )}
-                      </View>
+                      <Text style={styles.sessDate}>{formatDate(session.session_date, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</Text>
+                      <Text style={styles.sessMeta}>{label} · {count}</Text>
+                      {session.source === 'hittrax' && session.evs && session.evs.length > 1 && <Sparkline values={session.evs} />}
                     </View>
-                    <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
-                  </View>
-
-                  {/* Stats */}
-                  <View style={styles.sessionStats}>
-                    <View style={styles.sessionStat}>
-                      <Text style={styles.sessionStatValue}>{session.total_swings}</Text>
-                      <Text style={styles.sessionStatLabel}>Swings</Text>
+                    <View style={styles.sessStats}>
+                      {stats.map((st) => (
+                        <View key={st.l} style={styles.sessStat}>
+                          <Text style={[styles.sessStatValue, st.v === '—' ? { color: STEEL.past } : st.accent ? { color: STEEL.force } : null]}>{st.v}</Text>
+                          <Text style={styles.sessStatLabel}>{st.l}</Text>
+                        </View>
+                      ))}
                     </View>
+                  </TouchableOpacity>
+                );
+              })
+            ) : (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons name="baseball-bat" size={40} color="#4B5563" />
+                <Text style={styles.emptyStateText}>No sessions found</Text>
+                <Text style={styles.emptyStateSubtext}>Complete your first HitTrax session to get started</Text>
+              </View>
+            )}
 
-                    {session.source === 'blast' ? (
-                      <>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValueAccent}>
-                            {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Bat Speed</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValue}>
-                            {session.avg_attack_angle ? session.avg_attack_angle.toFixed(1) : '--'}°
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Attack Angle</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValue}>
-                            {session.avg_on_plane_efficiency ? session.avg_on_plane_efficiency.toFixed(1) : '--'}%
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>On-Plane %</Text>
-                        </View>
-                      </>
-                    ) : session.source === 'fullswing' ? (
-                      <>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValueAccent}>
-                            {session.avg_bat_speed ? session.avg_bat_speed.toFixed(1) : '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Bat Speed</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValueAccent}>
-                            {session.max_exit_velocity?.toFixed(1) || '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Max EV</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValue}>
-                            {Math.round(session.max_distance) || '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Max Dist</Text>
-                        </View>
-                      </>
-                    ) : (
-                      <>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValueAccent}>
-                            {session.max_exit_velocity?.toFixed(1) || '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Max EV</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValue}>
-                            {Math.round(session.max_distance) || '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Max Dist</Text>
-                        </View>
-                        <View style={styles.sessionStat}>
-                          <Text style={styles.sessionStatValueAccent}>
-                            {session.avg_exit_velocity?.toFixed(1) || '--'}
-                          </Text>
-                          <Text style={styles.sessionStatLabel}>Avg EV</Text>
-                        </View>
-                      </>
-                    )}
-                  </View>
-                </View>
+            {sessions.length > 0 && displayedSessions < allSessions.length && (
+              <TouchableOpacity style={styles.loadMoreButton} onPress={loadMoreSessions}>
+                <Text style={styles.loadMoreText}>Load More ({allSessions.length - displayedSessions} remaining)</Text>
               </TouchableOpacity>
-            ))
-          ) : (
-            <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="baseball-bat" size={48} color="#4B5563" />
-              <Text style={styles.emptyStateText}>No sessions found</Text>
-              <Text style={styles.emptyStateSubtext}>Complete your first HitTrax session to get started</Text>
-            </View>
-          )}
-
-          {/* Load More Button */}
-          {sessions.length > 0 && displayedSessions < allSessions.length && (
-            <TouchableOpacity style={styles.loadMoreButton} onPress={loadMoreSessions}>
-              <Text style={styles.loadMoreText}>
-                Load More ({allSessions.length - displayedSessions} remaining)
-              </Text>
-            </TouchableOpacity>
-          )}
+            )}
+          </Section>
         </View>
       </ScrollView>
 
@@ -1199,319 +1032,40 @@ export default function HittingPerformanceScreen({ navigation, route }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 16,
-    color: '#9CA3AF',
-    fontSize: 14,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 100,
-  },
-  header: {
-    paddingTop: 60,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backText: {
-    color: '#9CA3AF',
-    fontSize: 14,
-    marginLeft: 8,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#9CA3AF',
-  },
-  statsContainer: {
-    paddingHorizontal: 16,
-  },
-  swingCountRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  swingCounts: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  swingCountText: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  swingCountDivider: {
-    fontSize: 12,
-    color: '#4B5563',
-    marginHorizontal: 8,
-  },
-  blastLabel: {
-    color: '#9CA3AF',
-    fontWeight: '600',
-  },
-  hittraxLabel: {
-    color: '#9CA3AF',
-    fontWeight: '600',
-  },
-  fullswingLabel: {
-    color: '#9CA3AF',
-    fontWeight: '600',
-  },
-  prRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  prItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  prItemBorder: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  prValueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 4,
-  },
-  prValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#F5F0E6',
-  },
-  prLabel: {
-    fontSize: 9,
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  prUnit: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  avgSection: {
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
-  },
-  avgSectionTitle: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#9CA3AF',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  avgRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  avgItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  avgItemSmall: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  avgValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  avgLabel: {
-    fontSize: 8,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  directionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  analysisButtons: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-  analysisButton: {
-    flex: 1,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  analysisButtonInner: {
-    flexDirection: 'row',
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(155,221,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.15)',
-    borderRadius: 10,
-  },
-  analysisButtonText: {
-    flex: 1,
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#E5E7EB',
-    marginLeft: 6,
-  },
-  sessionsContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 24,
-  },
-  sessionsTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  sessionCard: {
-    flexDirection: 'row',
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  sessionAccent: {
-    width: 3,
-  },
-  sessionBody: {
-    flex: 1,
-    padding: 14,
-  },
-  sessionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  sessionDate: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 3,
-  },
-  sessionSourceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  sessionSwingCount: {
-    fontSize: 10,
-    color: '#6B7280',
-  },
-  pairedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    backgroundColor: 'rgba(155,221,255,0.1)',
-    borderRadius: 4,
-  },
-  pairedBadgeText: {
-    fontSize: 9,
-    fontWeight: '500',
-    color: '#9BDDFF',
-  },
-  sessionSource: {
-    fontSize: 9,
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  sessionSourceHighlight: {
-    color: '#9CA3AF',
-  },
-  sessionSourceMuted: {
-    color: '#9CA3AF',
-  },
-  sessionStats: {
-    flexDirection: 'row',
-  },
-  sessionStat: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  sessionStatValue: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
-  sessionStatValueAccent: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#9BDDFF',
-  },
-  sessionStatLabel: {
-    fontSize: 8,
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 2,
-  },
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: 48,
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 24,
-  },
-  emptyStateText: {
-    fontSize: 16,
-    color: '#9CA3AF',
-    marginTop: 16,
-  },
-  emptyStateSubtext: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginTop: 8,
-  },
-  loadMoreButton: {
-    marginTop: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    backgroundColor: 'rgba(155, 221, 255, 0.1)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.2)',
-    alignItems: 'center',
-  },
-  loadMoreText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#9BDDFF',
-  },
+  loadingContainer: { flex: 1, backgroundColor: STEEL.bg, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { marginTop: 16, color: STEEL.sub, fontSize: 14 },
+
+  prRow: { flexDirection: 'row', gap: 12 },
+  prCol: { flex: 1, gap: 4 },
+  prLabel: { color: STEEL.mute, fontSize: 10, fontWeight: '800', letterSpacing: 1.3 },
+  prValue: { color: STEEL.text, fontSize: 30, lineHeight: 33, fontWeight: '900', letterSpacing: -0.8, fontVariant: ['tabular-nums'] },
+  prUnit: { fontSize: 11, fontWeight: '700', color: STEEL.mute, letterSpacing: 0 },
+  prBar: { height: 3, width: 28, borderRadius: 2, marginTop: 2 },
+  prNote: { color: STEEL.mute, fontSize: 10.5, fontWeight: '600', marginTop: 2 },
+
+  kpiLabel: { color: STEEL.mute, fontSize: 10, fontWeight: '800', letterSpacing: 1.3 },
+  kpiNote: { color: STEEL.mute, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.8 },
+  sprayRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  sprayValue: { color: STEEL.text, fontSize: 17, lineHeight: 18, fontWeight: '800', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+
+  tiles: { flexDirection: 'row', gap: 8 },
+  tile: { flex: 1, backgroundColor: '#0c1016', borderWidth: 1, borderColor: STEEL.rule, borderRadius: 14, padding: 12, gap: 4 },
+  tileTitle: { color: STEEL.text, fontSize: 13, fontWeight: '800' },
+  tileDesc: { color: STEEL.sub, fontSize: 10.5, lineHeight: 14, fontWeight: '500', minHeight: 28 },
+  tileStatus: { color: STEEL.mute, fontSize: 10.5, fontWeight: '700', marginTop: 2 },
+
+  sessRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: STEEL.rule, gap: 12 },
+  sessBar: { width: 4, alignSelf: 'stretch', borderRadius: 2 },
+  sessDate: { color: STEEL.day, fontSize: 14.5, fontWeight: '700' },
+  sessMeta: { color: STEEL.mute, fontSize: 9.5, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
+  sessStats: { flexDirection: 'row', gap: 12 },
+  sessStat: { alignItems: 'flex-end', minWidth: 40 },
+  sessStatValue: { color: STEEL.text, fontSize: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  sessStatLabel: { color: STEEL.mute, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.8, marginTop: 1 },
+
+  emptyState: { alignItems: 'center', paddingVertical: 40 },
+  emptyStateText: { fontSize: 15, color: STEEL.sub, marginTop: 12, fontWeight: '700' },
+  emptyStateSubtext: { fontSize: 13, color: STEEL.mute, marginTop: 6 },
+  loadMoreButton: { marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: STEEL.hair, alignItems: 'center' },
+  loadMoreText: { fontSize: 13.5, fontWeight: '700', color: STEEL.force },
 });

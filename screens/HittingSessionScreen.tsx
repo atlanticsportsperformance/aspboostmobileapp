@@ -10,12 +10,25 @@ import {
   Modal,
   Animated,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import Svg, { Rect, Circle, Line, Path, Text as SvgText, G } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 import { useAthlete } from '../contexts/AthleteContext';
 import ContactPoint3D from '../components/ContactPoint3D';
+import FABMenu from '../components/FABMenu';
+import { BallField3D } from '../components/hitting/BallField3D';
+import {
+  STEEL,
+  evColor,
+  fmt,
+  Section,
+  Kpi,
+  KpiRow,
+  ScreenHeader,
+  steelStyles,
+  HARD_HIT_MPH,
+  SWEET_SPOT,
+} from '../components/hitting/steel';
 
 
 interface HitTraxSwing {
@@ -87,6 +100,7 @@ interface FullSwingSession {
   avg_bat_speed: number | null;
   max_bat_speed: number | null;
   avg_smash_factor: number | null;
+  max_smash_factor?: number | null;
   squared_up_rate: number | null;
   hard_hit_count: number;
   hard_hit_rate: number | null;
@@ -111,20 +125,19 @@ function AnimatedSection({ delay = 0, children }: { delay?: number; children: Re
   );
 }
 
-// ── Animated Count-Up ───────────────────────────────────────────────────────
-function CountUp({ value, decimals = 0, delay = 0, style, suffix = '' }: {
-  value: number; decimals?: number; delay?: number; style?: any; suffix?: string;
-}) {
-  const anim = useRef(new Animated.Value(0)).current;
-  const [display, setDisplay] = useState(0);
-  useEffect(() => {
-    const t = setTimeout(() => {
-      Animated.spring(anim, { toValue: value, damping: 22, stiffness: 100, useNativeDriver: false }).start();
-    }, delay);
-    const id = anim.addListener(({ value: v }) => setDisplay(v));
-    return () => { clearTimeout(t); anim.removeListener(id); };
-  }, [value, delay]);
-  return <Text style={style}>{display.toFixed(decimals)}{suffix}</Text>;
+/** Spray chart x/z (ft). Uses HitTrax's own coordinates when present, else
+ *  derives them from horizontal_angle (0 = center, + = right) and distance. */
+function sprayXZ(swing: any): { spray_chart_x: number; spray_chart_z: number } {
+  const x = swing.spray_chart_x != null ? parseFloat(swing.spray_chart_x) : NaN;
+  const z = swing.spray_chart_z != null ? parseFloat(swing.spray_chart_z) : NaN;
+  if (Number.isFinite(x) && Number.isFinite(z) && (x !== 0 || z !== 0)) return { spray_chart_x: x, spray_chart_z: z };
+  const d = swing.distance != null ? parseFloat(swing.distance) : NaN;
+  const a = swing.horizontal_angle != null ? parseFloat(swing.horizontal_angle) : NaN;
+  if (Number.isFinite(d) && Number.isFinite(a)) {
+    const r = (a * Math.PI) / 180;
+    return { spray_chart_x: d * Math.sin(r), spray_chart_z: d * Math.cos(r) };
+  }
+  return { spray_chart_x: 0, spray_chart_z: 0 };
 }
 
 export default function HittingSessionScreen({ route, navigation }: any) {
@@ -317,8 +330,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               launch_angle: swing.launch_angle ? parseFloat(swing.launch_angle) : null,
               distance: swing.distance ? parseFloat(swing.distance) : null,
               horizontal_angle: swing.horizontal_angle ? parseFloat(swing.horizontal_angle) : null,
-              spray_chart_x: parseFloat(swing.spray_chart_x || '0'),
-              spray_chart_z: parseFloat(swing.spray_chart_z || '0'),
+              // Spray position in feet. Some imports have no spray_chart_x/z;
+              // derive it from spray angle + distance so the 2D chart still plots.
+              ...sprayXZ(swing),
               poi_x: swing.poi_x ? parseFloat(swing.poi_x) : null,
               poi_y: swing.poi_y ? parseFloat(swing.poi_y) : null,
               poi_z: swing.poi_z ? parseFloat(swing.poi_z) : null,
@@ -350,7 +364,6 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
         if (blastSwingsData && blastSwingsData.length > 0) {
           setBlastSwings(blastSwingsData as BlastSwing[]);
-          setSessionType('paired');
 
           // Perform timestamp-based matching (7-second window)
           const maxTimeDiff = 7;
@@ -384,7 +397,12 @@ export default function HittingSessionScreen({ route, navigation }: any) {
           });
 
           setPairedSwingData(pairedData);
+          // Paired only when at least one Blast swing matched a HitTrax swing
+          // within the 7s window — same-day Blast data alone is not a pairing.
+          setSessionType(pairedData.length > 0 ? 'paired' : 'hittrax');
         } else {
+          setBlastSwings([]);
+          setPairedSwingData([]);
           setSessionType('hittrax');
         }
       }
@@ -406,34 +424,38 @@ export default function HittingSessionScreen({ route, navigation }: any) {
     }
   }
 
+  // Null-safe helpers: empty sets return null (rendered as "—" via fmt), never NaN/-Infinity.
+  const nums = (arr: Array<number | null | undefined>) =>
+    arr.filter((v): v is number => v != null && Number.isFinite(v));
+  const avgOf = (arr: Array<number | null | undefined>) => {
+    const v = nums(arr);
+    return v.length > 0 ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  const maxOf = (arr: Array<number | null | undefined>) => {
+    const v = nums(arr);
+    return v.length > 0 ? Math.max(...v) : null;
+  };
+
   // Calculate Blast metrics
   const blastStats = {
     totalSwings: blastSwings.length,
-    maxBatSpeed: blastSwings.length > 0
-      ? Math.max(...blastSwings.map(s => s.bat_speed || 0))
-      : 0,
-    avgBatSpeed: blastSwings.length > 0
-      ? blastSwings.filter(s => s.bat_speed).reduce((sum, s) => sum + (s.bat_speed || 0), 0) / blastSwings.filter(s => s.bat_speed).length
-      : 0,
-    avgAttackAngle: blastSwings.length > 0
-      ? blastSwings.filter(s => s.attack_angle).reduce((sum, s) => sum + (s.attack_angle || 0), 0) / blastSwings.filter(s => s.attack_angle).length
-      : 0,
+    maxBatSpeed: maxOf(blastSwings.map(s => s.bat_speed)),
+    avgBatSpeed: avgOf(blastSwings.map(s => s.bat_speed)),
+    avgAttackAngle: avgOf(blastSwings.map(s => s.attack_angle)),
   };
 
   // Calculate HitTrax metrics
+  const htEVs = nums(hittraxSwings.map(s => s.exit_velocity)).filter(v => v > 0);
+  const htLAs = nums(hittraxSwings.map(s => s.launch_angle));
   const hittraxStats = {
     totalSwings: hittraxSwings.length,
-    maxExitVelocity: hittraxSwings.length > 0
-      ? Math.max(...hittraxSwings.map(s => s.exit_velocity))
-      : 0,
-    avgExitVelocity: hittraxSwings.length > 0
-      ? hittraxSwings.reduce((sum, s) => sum + s.exit_velocity, 0) / hittraxSwings.length
-      : 0,
-    maxDistance: hittraxSwings.length > 0
-      ? Math.max(...hittraxSwings.filter(s => s.distance).map(s => s.distance || 0))
-      : 0,
-    avgHorizontalAngle: hittraxSwings.filter(s => s.horizontal_angle !== null).length > 0
-      ? hittraxSwings.filter(s => s.horizontal_angle !== null).reduce((sum, s) => sum + (s.horizontal_angle || 0), 0) / hittraxSwings.filter(s => s.horizontal_angle !== null).length
+    maxExitVelocity: maxOf(htEVs),
+    avgExitVelocity: avgOf(htEVs),
+    maxDistance: maxOf(hittraxSwings.map(s => s.distance)),
+    avgHorizontalAngle: avgOf(hittraxSwings.map(s => s.horizontal_angle)),
+    hardHitPct: htEVs.length > 0 ? (htEVs.filter(v => v >= HARD_HIT_MPH).length / htEVs.length) * 100 : null,
+    sweetSpotPct: htLAs.length > 0
+      ? (htLAs.filter(v => v >= SWEET_SPOT[0] && v <= SWEET_SPOT[1]).length / htLAs.length) * 100
       : null,
   };
 
@@ -441,27 +463,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
   const fullSwingStats = {
     totalSwings: fullSwingSwings.length,
     contactSwings: fullSwingSwings.filter(s => s.exit_velocity && s.exit_velocity > 0).length,
-    maxBatSpeed: fullSwingSwings.length > 0
-      ? Math.max(...fullSwingSwings.filter(s => s.bat_speed).map(s => s.bat_speed || 0))
-      : fullSwingSession?.max_bat_speed || 0,
-    avgBatSpeed: fullSwingSwings.filter(s => s.bat_speed).length > 0
-      ? fullSwingSwings.filter(s => s.bat_speed).reduce((sum, s) => sum + (s.bat_speed || 0), 0) / fullSwingSwings.filter(s => s.bat_speed).length
-      : fullSwingSession?.avg_bat_speed || 0,
-    maxExitVelocity: fullSwingSwings.length > 0
-      ? Math.max(...fullSwingSwings.filter(s => s.exit_velocity).map(s => s.exit_velocity || 0))
-      : fullSwingSession?.max_exit_velocity || 0,
-    avgExitVelocity: fullSwingSwings.filter(s => s.exit_velocity).length > 0
-      ? fullSwingSwings.filter(s => s.exit_velocity).reduce((sum, s) => sum + (s.exit_velocity || 0), 0) / fullSwingSwings.filter(s => s.exit_velocity).length
-      : fullSwingSession?.avg_exit_velocity || 0,
-    maxDistance: fullSwingSwings.length > 0
-      ? Math.max(...fullSwingSwings.filter(s => s.distance).map(s => s.distance || 0))
-      : fullSwingSession?.max_distance || 0,
-    avgSmashFactor: fullSwingSwings.filter(s => s.smash_factor).length > 0
-      ? fullSwingSwings.filter(s => s.smash_factor).reduce((sum, s) => sum + (s.smash_factor || 0), 0) / fullSwingSwings.filter(s => s.smash_factor).length
-      : fullSwingSession?.avg_smash_factor || 0,
-    squaredUpRate: fullSwingSession?.squared_up_rate || null,
+    maxBatSpeed: maxOf(fullSwingSwings.map(s => s.bat_speed)) ?? fullSwingSession?.max_bat_speed ?? null,
+    avgBatSpeed: avgOf(fullSwingSwings.map(s => s.bat_speed)) ?? fullSwingSession?.avg_bat_speed ?? null,
+    maxExitVelocity: maxOf(fullSwingSwings.map(s => s.exit_velocity)) ?? fullSwingSession?.max_exit_velocity ?? null,
+    avgExitVelocity: avgOf(fullSwingSwings.map(s => s.exit_velocity)) ?? fullSwingSession?.avg_exit_velocity ?? null,
+    maxDistance: maxOf(fullSwingSwings.map(s => s.distance)) ?? fullSwingSession?.max_distance ?? null,
+    avgSmashFactor: avgOf(fullSwingSwings.map(s => s.smash_factor)) ?? fullSwingSession?.avg_smash_factor ?? null,
+    squaredUpRate: fullSwingSession?.squared_up_rate ?? null,
     hardHitCount: fullSwingSession?.hard_hit_count || 0,
-    hardHitRate: fullSwingSession?.hard_hit_rate || null,
+    hardHitRate: fullSwingSession?.hard_hit_rate ?? null,
   };
 
   const onRefresh = async () => {
@@ -480,390 +490,352 @@ export default function HittingSessionScreen({ route, navigation }: any) {
     }
   }
 
-  function getColorByEV(ev: number): string {
-    if (ev >= 100) return '#9BDDFF';
-    if (ev >= 90) return '#6BB8DB';
-    if (ev >= 80) return '#4A8FAD';
-    return '#3d4f5f';
-  }
 
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#9BDDFF" />
+        <ActivityIndicator size="large" color={STEEL.hitting} />
         <Text style={styles.loadingText}>Loading session data...</Text>
       </View>
     );
   }
 
+  // Header: weekday + date. Bare YYYY-MM-DD strings are parsed as local dates
+  // (new Date('2026-01-05') is UTC midnight and would show the previous day).
+  function headerTitle(dateStr: string): string {
+    if (!dateStr) return 'Session';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateStr);
+    if (isNaN(d.getTime())) return formatDate(dateStr) || 'Session';
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+
+  const sourceLabel: Record<SessionType, string> = {
+    hittrax: 'HitTrax',
+    paired: 'HitTrax + Blast',
+    blast: 'Blast',
+    fullswing: 'Full Swing',
+  };
+  const swingCount =
+    sessionType === 'blast' ? blastSwings.length
+      : sessionType === 'fullswing' ? fullSwingSwings.length
+        : hittraxSwings.length;
+  const showPairPill = sessionType === 'paired' || (sessionType === 'hittrax' && blastSwings.length > 0);
+
+  // 3D hero balls
+  const heroBalls =
+    sessionType === 'fullswing'
+      ? fullSwingSwings.map(s => ({
+          exit_velocity: s.exit_velocity,
+          launch_angle: s.launch_angle,
+          horizontal_angle: s.spray_angle,
+          distance: s.distance,
+        }))
+      : hittraxSwings.map(s => ({
+          exit_velocity: s.exit_velocity,
+          launch_angle: s.launch_angle,
+          horizontal_angle: s.horizontal_angle,
+          distance: s.distance,
+        }));
+  const heroHasFlight = heroBalls.some(b => b.distance && b.distance > 0 && b.launch_angle != null);
+
+  const pct = (v: number | null) => (v == null ? null : v > 1 ? v : v * 100);
+
+  const evLegend = (
+    <View style={styles.legendRow}>
+      {[
+        { c: '#8d939c', l: `<90` },
+        { c: STEEL.hitting2, l: '90-94' },
+        { c: STEEL.hitting, l: `${HARD_HIT_MPH}+` },
+      ].map(x => (
+        <View key={x.l} style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: x.c }]} />
+          <Text style={styles.legendText}>{x.l} mph</Text>
+        </View>
+      ))}
+    </View>
+  );
+
+  function SprayField({ points }: { points: Array<{ id: string; x: number; z: number; ev: number; onPress?: () => void; r: number }> }) {
+    return (
+      <View style={styles.sprayChartContainer}>
+        <Svg viewBox="20 100 360 280" style={styles.sprayChart}>
+          <Rect width="400" height="400" fill={STEEL.bg} />
+          {/* Foul lines */}
+          <Line x1="200" y1="370" x2="60" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.6} />
+          <Line x1="200" y1="370" x2="340" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.6} />
+          {/* Outfield fence */}
+          <Path d="M 60 230 Q 100 140 200 136 Q 300 140 340 230" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity={0.35} />
+          {/* Infield arc */}
+          <Path d="M 162 316 Q 200 292 238 316" fill="none" stroke="#6b7280" strokeWidth="1.5" opacity={0.8} />
+          {points.map(p => {
+            const scale = 0.6;
+            const x = 200 + p.x * scale;
+            const y = 370 - p.z * scale;
+            return (
+              <Circle
+                key={p.id}
+                cx={Math.max(20, Math.min(380, x))}
+                cy={Math.max(100, Math.min(380, y))}
+                r={String(p.r)}
+                fill={evColor(p.ev)}
+                opacity={0.9}
+                onPress={p.onPress}
+              />
+            );
+          })}
+        </Svg>
+      </View>
+    );
+  }
+
+  const summaryLine = (
+    <Text style={styles.totalSwingsText}>
+      {hittraxStats.totalSwings} HitTrax | {blastStats.totalSwings} Blast | {pairedSwingData.length} Paired
+    </Text>
+  );
+
   return (
     <View style={styles.container}>
       <ScrollView
         style={styles.scrollView}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9BDDFF" colors={["#9BDDFF"]} progressBackgroundColor="#1A1A1A" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={STEEL.hitting} colors={[STEEL.hitting]} progressBackgroundColor="#11161d" />}
         contentContainerStyle={styles.scrollContent}
       >
         {/* Header */}
         <AnimatedSection delay={0}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#9CA3AF" />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-          <View style={styles.titleRow}>
-            <Text style={styles.title}>Session Details</Text>
-            {sessionType === 'paired' && (
-              <View style={styles.pairedBadge}>
-                <Ionicons name="link" size={10} color="#4ADE80" />
-                <Text style={styles.pairedBadgeText}>Paired</Text>
-              </View>
-            )}
+          <View style={{ paddingTop: 44 }}>
+            <ScreenHeader
+              title={headerTitle(sessionDate)}
+              subtitle={`${sourceLabel[sessionType]} session · ${swingCount} swings`}
+              onBack={() => navigation.goBack()}
+            />
+            <View style={styles.headerMetaRow}>
+              <Text style={styles.headerDate}>{formatDate(sessionDate)}</Text>
+              {sessionType === 'paired' ? (
+                <View style={styles.pairedBadge}>
+                  <Ionicons name="link" size={10} color={STEEL.good} />
+                  <Text style={styles.pairedBadgeText}>PAIRED</Text>
+                </View>
+              ) : showPairPill ? (
+                <View style={styles.notPairedBadge}>
+                  <Text style={styles.notPairedBadgeText}>NOT PAIRED</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
-          <Text style={styles.subtitle}>{formatDate(sessionDate)}</Text>
-          <View style={styles.headerAccent} />
-        </View>
         </AnimatedSection>
 
-        {/* Spray Chart (HitTrax & Paired) */}
-        {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
-          <AnimatedSection delay={200}>
-          <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Spray Chart</Text>
-            <View style={styles.sprayChartContainer}>
-              <Svg viewBox="20 100 360 280" style={styles.sprayChart}>
-                <Rect width="400" height="400" fill="#000000" />
-
-                {/* Foul lines */}
-                <Line x1="200" y1="370" x2="60" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.8} />
-                <Line x1="200" y1="370" x2="340" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.8} />
-
-                {/* Outfield fence */}
-                <Path
-                  d="M 60 230 Q 100 140 200 136 Q 300 140 340 230"
-                  fill="none"
-                  stroke="#9BDDFF"
-                  strokeWidth="1.5"
-                  opacity={0.3}
-                />
-
-                {/* Infield arc */}
-                <Path
-                  d="M 162 316 Q 200 292 238 316"
-                  fill="none"
-                  stroke="#6b7280"
-                  strokeWidth="1.5"
-                  opacity={0.8}
-                />
-
-                {/* Plot swings */}
-                {hittraxSwings.map((swing) => {
-                  const scale = 0.6;
-                  const x = 200 + (swing.spray_chart_x * scale);
-                  const y = 370 - (swing.spray_chart_z * scale);
-
-                  return (
-                    <Circle
-                      key={swing.id}
-                      cx={Math.max(20, Math.min(380, x))}
-                      cy={Math.max(100, Math.min(380, y))}
-                      r="8"
-                      fill={getColorByEV(swing.exit_velocity)}
-                      opacity={0.85}
-                      onPress={() => setSelectedSwing(swing)}
-                    />
-                  );
-                })}
-              </Svg>
+        {/* 3D ball-flight hero (HitTrax / Paired / Full Swing) */}
+        {sessionType !== 'blast' && heroHasFlight && (
+          <AnimatedSection delay={100}>
+            <View style={steelStyles.body}>
+              <Section first title="BALL FLIGHT" right={`${heroBalls.filter(b => b.distance && b.distance > 0).length} balls`}>
+                <BallField3D balls={heroBalls} height={260} bleed={16} caption="Every ball in play · colored by exit velo" />
+              </Section>
             </View>
-
-            {/* Legend */}
-            <View style={styles.legendRow}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#3d4f5f' }]} />
-                <Text style={styles.legendText}>&lt;80</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
-                <Text style={styles.legendText}>80-89</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
-                <Text style={styles.legendText}>90-99</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
-                <Text style={styles.legendText}>100+</Text>
-              </View>
-            </View>
-          </View>
           </AnimatedSection>
         )}
 
-        {/* No spray chart message for Blast-only */}
+        {/* No ball flight for Blast-only */}
         {sessionType === 'blast' && (
-          <View style={styles.chartSection}>
-            <View style={styles.noChartContainer}>
-              <Text style={styles.noChartText}>Blast Motion session - No spray chart available</Text>
-            </View>
+          <View style={steelStyles.body}>
+            <Section first title="BALL FLIGHT">
+              <Text style={steelStyles.empty}>No ball-flight data for Blast sessions</Text>
+            </Section>
           </View>
+        )}
+
+        {/* Spray Chart (HitTrax & Paired) — tap a ball for details */}
+        {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
+          <AnimatedSection delay={200}>
+            <View style={steelStyles.body}>
+              <Section title="SPRAY CHART" right="Tap a ball">
+                <SprayField
+                  points={hittraxSwings.map(swing => ({
+                    id: swing.id,
+                    x: swing.spray_chart_x,
+                    z: swing.spray_chart_z,
+                    ev: swing.exit_velocity,
+                    r: 8,
+                    onPress: () => setSelectedSwing(swing),
+                  }))}
+                />
+                {evLegend}
+              </Section>
+            </View>
+          </AnimatedSection>
         )}
 
         {/* Spray Chart for Full Swing */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
-          <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Spray Chart</Text>
-            <View style={styles.sprayChartContainer}>
-              <Svg viewBox="20 100 360 280" style={styles.sprayChart}>
-                <Rect width="400" height="400" fill="#000000" />
-
-                {/* Foul lines */}
-                <Line x1="200" y1="370" x2="60" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.8} />
-                <Line x1="200" y1="370" x2="340" y2="230" stroke="#9ca3af" strokeWidth="1.5" opacity={0.8} />
-
-                {/* Outfield arc */}
-                <Path
-                  d="M 60 230 Q 100 140 200 136 Q 300 140 340 230"
-                  fill="none"
-                  stroke="#9BDDFF"
-                  strokeWidth="1.5"
-                  opacity={0.3}
-                />
-
-                {/* Infield arc */}
-                <Path
-                  d="M 162 316 Q 200 292 238 316"
-                  fill="none"
-                  stroke="#6b7280"
-                  strokeWidth="1.5"
-                  opacity={0.8}
-                />
-
-                {/* Plot Full Swing swings (convert spray_angle + distance to x/z) */}
-                {fullSwingSwings.filter(s => s.spray_angle !== null && s.distance !== null && s.exit_velocity !== null).map((swing) => {
-                  const scale = 0.6;
-                  const radians = (swing.spray_angle! * Math.PI) / 180;
-                  const sprayX = swing.distance! * Math.sin(radians);
-                  const sprayZ = swing.distance! * Math.cos(radians);
-                  const x = 200 + (sprayX * scale);
-                  const y = 370 - (sprayZ * scale);
-
-                  return (
-                    <Circle
-                      key={swing.id}
-                      cx={Math.max(20, Math.min(380, x))}
-                      cy={Math.max(100, Math.min(380, y))}
-                      r="6"
-                      fill={getColorByEV(swing.exit_velocity!)}
-                      opacity={0.9}
-                    />
-                  );
-                })}
-              </Svg>
-            </View>
-
-            {/* Legend */}
-            <View style={styles.legendRow}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#3d4f5f' }]} />
-                <Text style={styles.legendText}>&lt;80</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
-                <Text style={styles.legendText}>80-89</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
-                <Text style={styles.legendText}>90-99</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
-                <Text style={styles.legendText}>100+</Text>
-              </View>
-            </View>
+          <View style={steelStyles.body}>
+            <Section title="SPRAY CHART">
+              <SprayField
+                points={fullSwingSwings
+                  .filter(s => s.spray_angle !== null && s.distance !== null && s.exit_velocity !== null)
+                  .map(swing => {
+                    // convert spray_angle + distance to x/z
+                    const radians = (swing.spray_angle! * Math.PI) / 180;
+                    return {
+                      id: swing.id,
+                      x: swing.distance! * Math.sin(radians),
+                      z: swing.distance! * Math.cos(radians),
+                      ev: swing.exit_velocity!,
+                      r: 6,
+                    };
+                  })}
+              />
+              {evLegend}
+            </Section>
           </View>
         )}
 
         {/* Contact Point 3D (HitTrax & Paired) */}
-        {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
-          <View style={styles.chartSection}>
-            <ContactPoint3D hittraxSwings={hittraxSwings} />
+        {(sessionType === 'hittrax' || sessionType === 'paired') &&
+          hittraxSwings.some((s) => s.poi_x != null && s.poi_z != null) && (
+          <View style={steelStyles.body}>
+            <Section title="CONTACT POINT">
+              <ContactPoint3D hittraxSwings={hittraxSwings} />
+            </Section>
           </View>
         )}
 
         {/* Session Summary Stats */}
         <AnimatedSection delay={400}>
-        <View style={styles.summarySection}>
-          <Text style={styles.summaryTitle}>SESSION SUMMARY</Text>
+          <View style={steelStyles.body}>
+            <Section title="SESSION SUMMARY">
+              {/* Blast Only */}
+              {sessionType === 'blast' && (
+                <KpiRow>
+                  <Kpi label="SWINGS" value={String(blastStats.totalSwings)} />
+                  <Kpi label="MAX BAT" value={fmt(blastStats.maxBatSpeed)} unit="mph" color={STEEL.cyan} />
+                  <Kpi label="AVG BAT" value={fmt(blastStats.avgBatSpeed)} unit="mph" color={STEEL.cyan} />
+                  <Kpi label="AVG AA" value={fmt(blastStats.avgAttackAngle)} unit="°" color={STEEL.purple} />
+                </KpiRow>
+              )}
 
-          {/* Blast Only */}
-          {sessionType === 'blast' && (
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{blastStats.totalSwings}</Text>
-                <Text style={styles.statLabel}>Swings</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#22D3EE' }]}>{blastStats.maxBatSpeed.toFixed(1)}</Text>
-                <Text style={styles.statLabel}>Max Bat Speed</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#22D3EE' }]}>{blastStats.avgBatSpeed.toFixed(1)}</Text>
-                <Text style={styles.statLabel}>Avg Bat Speed</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#A855F7' }]}>{blastStats.avgAttackAngle.toFixed(1)}°</Text>
-                <Text style={styles.statLabel}>Avg Attack Angle</Text>
-              </View>
-            </View>
-          )}
+              {/* HitTrax Only */}
+              {sessionType === 'hittrax' && (
+                <View style={{ gap: 16 }}>
+                  <KpiRow>
+                    <Kpi label="SWINGS" value={String(hittraxStats.totalSwings)} />
+                    <Kpi label="MAX EV" value={fmt(hittraxStats.maxExitVelocity)} unit="mph" color={STEEL.hitting} />
+                    <Kpi label="AVG EV" value={fmt(hittraxStats.avgExitVelocity)} unit="mph" color={STEEL.hitting2} />
+                  </KpiRow>
+                  <KpiRow>
+                    <Kpi label="MAX DIST" value={fmt(hittraxStats.maxDistance, 0)} unit="ft" />
+                    <Kpi label="HARD HIT" value={fmt(hittraxStats.hardHitPct, 0)} unit="%" color={STEEL.hitting} note={`${HARD_HIT_MPH}+ mph`} />
+                    <Kpi label="SWEET SPOT" value={fmt(hittraxStats.sweetSpotPct, 0)} unit="%" color={STEEL.good} note={`${SWEET_SPOT[0]}–${SWEET_SPOT[1]}° LA`} />
+                  </KpiRow>
+                </View>
+              )}
 
-          {/* HitTrax Only */}
-          {sessionType === 'hittrax' && (
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{hittraxStats.totalSwings}</Text>
-                <Text style={styles.statLabel}>Swings</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#9BDDFF' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
-                <Text style={styles.statLabel}>Max EV</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#6BB8DB' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
-                <Text style={styles.statLabel}>Avg EV</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: '#4A8FAD' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
-                <Text style={styles.statLabel}>Max Distance</Text>
-              </View>
-            </View>
-          )}
-
-          {/* Paired */}
-          {sessionType === 'paired' && (
-            <View>
-              {/* HitTrax Row */}
-              <Text style={styles.sourceLabel}>HITTRAX</Text>
-              <View style={styles.statsRow}>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#9BDDFF' }]}>{hittraxStats.maxExitVelocity.toFixed(1)}</Text>
-                  <Text style={styles.statLabel}>Max EV</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#6BB8DB' }]}>{hittraxStats.avgExitVelocity.toFixed(1)}</Text>
-                  <Text style={styles.statLabel}>Avg EV</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#4A8FAD' }]}>{Math.round(hittraxStats.maxDistance)}</Text>
-                  <Text style={styles.statLabel}>Max Dist</Text>
-                </View>
-                <View style={styles.statItem}>
-                  {hittraxStats.avgHorizontalAngle !== null && !isNaN(hittraxStats.avgHorizontalAngle) ? (
-                    <View style={styles.sprayDirectionRow}>
-                      <Ionicons
-                        name="arrow-up"
-                        size={14}
-                        color="#FFFFFF"
-                        style={{ transform: [{ rotate: `${-hittraxStats.avgHorizontalAngle}deg` }] }}
-                      />
-                      <Text style={styles.statValue}>{Math.abs(hittraxStats.avgHorizontalAngle).toFixed(1)}°</Text>
+              {/* Paired */}
+              {sessionType === 'paired' && (
+                <View>
+                  <Text style={styles.sourceLabel}>HITTRAX</Text>
+                  <KpiRow>
+                    <Kpi label="MAX EV" value={fmt(hittraxStats.maxExitVelocity)} unit="mph" color={STEEL.hitting} size={20} />
+                    <Kpi label="AVG EV" value={fmt(hittraxStats.avgExitVelocity)} unit="mph" color={STEEL.hitting2} size={20} />
+                    <Kpi label="MAX DIST" value={fmt(hittraxStats.maxDistance, 0)} unit="ft" size={20} />
+                    <View style={{ flex: 1, gap: 3 }}>
+                      <Text style={styles.kpiLabelLocal}>SPRAY DIR</Text>
+                      {hittraxStats.avgHorizontalAngle !== null ? (
+                        <View style={styles.sprayDirectionRow}>
+                          <Ionicons
+                            name="arrow-up"
+                            size={14}
+                            color="#FFFFFF"
+                            style={{ transform: [{ rotate: `${-hittraxStats.avgHorizontalAngle}deg` }] }}
+                          />
+                          <Text style={styles.kpiValueLocal}>{fmt(Math.abs(hittraxStats.avgHorizontalAngle))}°</Text>
+                        </View>
+                      ) : (
+                        <Text style={[styles.kpiValueLocal, { color: STEEL.past }]}>—</Text>
+                      )}
                     </View>
-                  ) : (
-                    <Text style={styles.statValue}>--</Text>
-                  )}
-                  <Text style={styles.statLabel}>Spray Dir</Text>
-                </View>
-              </View>
+                  </KpiRow>
 
-              {/* Blast Row */}
-              <View style={styles.sourceDivider} />
-              <Text style={[styles.sourceLabel, { color: '#22D3EE' }]}>BLAST</Text>
-              <View style={styles.statsRow}>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#22D3EE' }]}>{blastStats.maxBatSpeed.toFixed(1)}</Text>
-                  <Text style={styles.statLabel}>Max Bat Speed</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#22D3EE' }]}>{blastStats.avgBatSpeed.toFixed(1)}</Text>
-                  <Text style={styles.statLabel}>Avg Bat Speed</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#A855F7' }]}>{blastStats.avgAttackAngle.toFixed(1)}°</Text>
-                  <Text style={styles.statLabel}>Avg Attack Angle</Text>
-                </View>
-              </View>
+                  <View style={styles.sourceDivider} />
+                  <Text style={[styles.sourceLabel, { color: STEEL.cyan }]}>BLAST</Text>
+                  <KpiRow>
+                    <Kpi label="MAX BAT" value={fmt(blastStats.maxBatSpeed)} unit="mph" color={STEEL.cyan} size={20} />
+                    <Kpi label="AVG BAT" value={fmt(blastStats.avgBatSpeed)} unit="mph" color={STEEL.cyan} size={20} />
+                    <Kpi label="AVG AA" value={fmt(blastStats.avgAttackAngle)} unit="°" color={STEEL.purple} size={20} />
+                  </KpiRow>
 
-              {/* Total */}
-              <View style={styles.sourceDivider} />
-              <Text style={styles.totalSwingsText}>
-                {hittraxStats.totalSwings} HitTrax | {blastStats.totalSwings} Blast | {pairedSwingData.length} Paired
-              </Text>
-            </View>
-          )}
+                  <View style={styles.sourceDivider} />
+                  {summaryLine}
+                </View>
+              )}
 
-          {/* Full Swing - Compact Card Grid */}
-          {sessionType === 'fullswing' && (
-            <View style={styles.summaryGrid}>
-              {/* Row 1: Core metrics */}
-              <View style={styles.summaryCardRow}>
-                <View style={[styles.summaryCard, { borderColor: 'rgba(255,255,255,0.1)' }]}>
-                  <Text style={styles.summaryCardValue}>{fullSwingStats.totalSwings}</Text>
-                  <Text style={styles.summaryCardLabel}>Swings</Text>
+              {/* Full Swing grid */}
+              {sessionType === 'fullswing' && (
+                <View style={{ gap: 16 }}>
+                  <KpiRow>
+                    <Kpi label="SWINGS" value={String(fullSwingStats.totalSwings)} />
+                    <Kpi label="MAX BAT" value={fmt(fullSwingStats.maxBatSpeed)} unit="mph" color={STEEL.cyan} note={`Avg ${fmt(fullSwingStats.avgBatSpeed)}`} />
+                    <Kpi label="MAX EV" value={fmt(fullSwingStats.maxExitVelocity)} unit="mph" color={STEEL.hitting} note={`Avg ${fmt(fullSwingStats.avgExitVelocity)}`} />
+                  </KpiRow>
+                  <KpiRow>
+                    <Kpi label="MAX DIST" value={fmt(fullSwingStats.maxDistance, 0)} unit="ft" />
+                    <Kpi
+                      label="SMASH"
+                      value={fmt(fullSwingStats.avgSmashFactor, 2)}
+                      color={STEEL.purple}
+                      note={fullSwingSession?.max_smash_factor != null ? `Max ${fmt(fullSwingSession.max_smash_factor, 2)}` : undefined}
+                    />
+                    {fullSwingStats.squaredUpRate !== null && (
+                      <Kpi label="SQUARED UP" value={fmt(pct(fullSwingStats.squaredUpRate), 0)} unit="%" color={STEEL.good} />
+                    )}
+                    {fullSwingStats.hardHitRate !== null && (
+                      <Kpi
+                        label="HARD HIT"
+                        value={fmt(pct(fullSwingStats.hardHitRate), 0)}
+                        unit="%"
+                        color={STEEL.bad}
+                        note={`${fullSwingStats.hardHitCount} hits`}
+                      />
+                    )}
+                  </KpiRow>
                 </View>
-                <View style={[styles.summaryCard, { borderColor: 'rgba(34,211,238,0.3)' }]}>
-                  <Text style={[styles.summaryCardValue, { color: '#22D3EE' }]}>{fullSwingStats.maxBatSpeed.toFixed(1)}</Text>
-                  <Text style={styles.summaryCardLabel}>Max Bat Speed</Text>
-                  <Text style={styles.summaryCardSub}>Avg: {fullSwingStats.avgBatSpeed.toFixed(1)}</Text>
-                </View>
-                <View style={[styles.summaryCard, { borderColor: 'rgba(155,221,255,0.3)' }]}>
-                  <Text style={[styles.summaryCardValue, { color: '#9BDDFF' }]}>{fullSwingStats.maxExitVelocity.toFixed(1)}</Text>
-                  <Text style={styles.summaryCardLabel}>Max Exit Velo</Text>
-                  <Text style={styles.summaryCardSub}>Avg: {fullSwingStats.avgExitVelocity.toFixed(1)}</Text>
-                </View>
-              </View>
-
-              {/* Row 2: Distance and quality metrics */}
-              <View style={styles.summaryCardRow}>
-                <View style={[styles.summaryCard, { borderColor: 'rgba(74,143,173,0.3)' }]}>
-                  <Text style={[styles.summaryCardValue, { color: '#4A8FAD' }]}>{Math.round(fullSwingStats.maxDistance)} ft</Text>
-                  <Text style={styles.summaryCardLabel}>Max Distance</Text>
-                </View>
-                <View style={[styles.summaryCard, { borderColor: 'rgba(168,85,247,0.3)' }]}>
-                  <Text style={[styles.summaryCardValue, { color: '#A855F7' }]}>{fullSwingStats.avgSmashFactor.toFixed(2)}</Text>
-                  <Text style={styles.summaryCardLabel}>Smash Factor</Text>
-                </View>
-                {fullSwingStats.squaredUpRate !== null && (
-                  <View style={[styles.summaryCard, { borderColor: 'rgba(16,185,129,0.3)' }]}>
-                    <Text style={[styles.summaryCardValue, { color: '#10B981' }]}>
-                      {fullSwingStats.squaredUpRate > 1
-                        ? fullSwingStats.squaredUpRate.toFixed(0)
-                        : (fullSwingStats.squaredUpRate * 100).toFixed(0)}%
-                    </Text>
-                    <Text style={styles.summaryCardLabel}>Squared Up</Text>
-                  </View>
-                )}
-                {fullSwingStats.hardHitRate !== null && (
-                  <View style={[styles.summaryCard, { borderColor: 'rgba(239,68,68,0.3)' }]}>
-                    <Text style={[styles.summaryCardValue, { color: '#EF4444' }]}>
-                      {fullSwingStats.hardHitRate! > 1
-                        ? fullSwingStats.hardHitRate!.toFixed(0)
-                        : (fullSwingStats.hardHitRate! * 100).toFixed(0)}%
-                    </Text>
-                    <Text style={styles.summaryCardLabel}>Hard Hit Rate</Text>
-                    <Text style={styles.summaryCardSub}>{fullSwingStats.hardHitCount} hits</Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          )}
-        </View>
+              )}
+            </Section>
+          </View>
         </AnimatedSection>
+
+        {/* Every swing (HitTrax) — tap a row for the swing sheet */}
+        {sessionType === 'hittrax' && hittraxSwings.length > 0 && (
+          <View style={steelStyles.body}>
+            <Section title="EVERY SWING" right={`${hittraxSwings.length} swings`}>
+              <View style={styles.everyHeader}>
+                <Text style={[styles.everyHead, { flex: 0.5, textAlign: 'left' }]}>#</Text>
+                <Text style={styles.everyHead}>EV</Text>
+                <Text style={styles.everyHead}>LA</Text>
+                <Text style={styles.everyHead}>DIST</Text>
+                <Text style={styles.everyHead}>SPRAY</Text>
+              </View>
+              {hittraxSwings.map((swing, idx) => (
+                <TouchableOpacity key={swing.id} style={styles.everyRow} onPress={() => setSelectedSwing(swing)} activeOpacity={0.6}>
+                  <Text style={[styles.everyCell, { flex: 0.5, textAlign: 'left', color: STEEL.mute }]}>{idx + 1}</Text>
+                  <Text style={[styles.everyCell, styles.everyStrong, { color: evColor(swing.exit_velocity) }]}>{fmt(swing.exit_velocity)}</Text>
+                  <Text style={styles.everyCell}>{swing.launch_angle != null ? `${fmt(swing.launch_angle, 0)}°` : '—'}</Text>
+                  <Text style={styles.everyCell}>{fmt(swing.distance, 0)}</Text>
+                  <Text style={styles.everyCell}>
+                    {swing.horizontal_angle != null ? `${fmt(swing.horizontal_angle, 0)}°` : '—'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </Section>
+          </View>
+        )}
 
         <AnimatedSection delay={600}>
         {/* Full Swing: Bat Speed vs Exit Velocity Chart */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Bat Speed vs Exit Velocity</Text>
+            <Section title="BAT SPEED VS EXIT VELOCITY" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Each swing showing the relationship between bat speed and exit velocity. Higher smash factor = more efficient energy transfer.
             </Text>
@@ -921,9 +893,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     {validSwings.map((swing, idx) => {
                       const smash = swing.smash_factor || (swing.exit_velocity! / swing.bat_speed!);
                       let color = '#3d4f5f';
-                      if (smash >= 1.3) color = '#9BDDFF';
-                      else if (smash >= 1.2) color = '#6BB8DB';
-                      else if (smash >= 1.1) color = '#4A8FAD';
+                      if (smash >= 1.3) color = '#fb923c';
+                      else if (smash >= 1.2) color = '#fdba74';
+                      else if (smash >= 1.1) color = '#8d939c';
                       return (
                         <Circle
                           key={idx}
@@ -952,7 +924,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       y1={scaleY(avgEV)}
                       x2="350"
                       y2={scaleY(avgEV)}
-                      stroke="#9BDDFF"
+                      stroke="#fb923c"
                       strokeWidth="2"
                       strokeDasharray="4 4"
                       opacity={0.8}
@@ -963,7 +935,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <SvgText x="290" y="32" fill="#9ca3af" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                     <SvgText x="240" y="47" fill="#22D3EE" fontSize="9">Bat Speed:</SvgText>
                     <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgBS.toFixed(1)} mph</SvgText>
-                    <SvgText x="240" y="62" fill="#9BDDFF" fontSize="9">Exit Velo:</SvgText>
+                    <SvgText x="240" y="62" fill="#fb923c" fontSize="9">Exit Velo:</SvgText>
                     <SvgText x="340" y="62" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgEV.toFixed(1)} mph</SvgText>
 
                     {/* Axis labels */}
@@ -975,15 +947,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
             <View style={styles.legendRow}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
                 <Text style={styles.legendText}>Smash 1.3+</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fdba74' }]} />
                 <Text style={styles.legendText}>1.2-1.29</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#8d939c' }]} />
                 <Text style={styles.legendText}>1.1-1.19</Text>
               </View>
               <View style={styles.legendItem}>
@@ -997,7 +969,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Exit Velocity Distribution Histogram */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Exit Velocity Distribution</Text>
+            <Section title="EXIT VELOCITY DISTRIBUTION" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Distribution of exit velocities across all swings (5 mph buckets).
             </Text>
@@ -1074,7 +1046,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             y={y}
                             width={barWidth}
                             height={barHeight}
-                            fill="#9BDDFF"
+                            fill="#fb923c"
                             opacity={0.4}
                             rx={2}
                           />
@@ -1082,14 +1054,14 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       })}
 
                       {/* Smooth curve area fill */}
-                      <Path d={areaPath} fill="#9BDDFF" opacity={0.2} />
+                      <Path d={areaPath} fill="#fb923c" opacity={0.2} />
 
                       {/* Smooth curve line */}
-                      <Path d={pathD} stroke="#9BDDFF" strokeWidth="3" fill="none" />
+                      <Path d={pathD} stroke="#fb923c" strokeWidth="3" fill="none" />
 
                       {/* Data points */}
                       {points.map((point, idx) => (
-                        <Circle key={idx} cx={point.x} cy={point.y} r="4" fill="#9BDDFF" />
+                        <Circle key={idx} cx={point.x} cy={point.y} r="4" fill="#fb923c" />
                       ))}
 
                       {/* Average line */}
@@ -1128,7 +1100,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   {/* Stats summary row */}
                   <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 24, marginTop: 8, marginBottom: 4 }}>
-                    <Text style={{ fontSize: 12, color: '#9ca3af' }}>Avg: <Text style={{ color: '#9BDDFF', fontWeight: '600' }}>{avgEV.toFixed(1)} mph</Text></Text>
+                    <Text style={{ fontSize: 12, color: '#9ca3af' }}>Avg: <Text style={{ color: '#fb923c', fontWeight: '600' }}>{avgEV.toFixed(1)} mph</Text></Text>
                     <Text style={{ fontSize: 12, color: '#9ca3af' }}>Max: <Text style={{ color: '#F5F0E6', fontWeight: '600' }}>{Math.max(...velocities).toFixed(1)} mph</Text></Text>
                     <Text style={{ fontSize: 12, color: '#9ca3af' }}>Swings: <Text style={{ color: '#ffffff', fontWeight: '600' }}>{validSwings.length}</Text></Text>
                   </View>
@@ -1141,7 +1113,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Bat Speed Distribution Histogram */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Bat Speed Distribution</Text>
+            <Section title="BAT SPEED DISTRIBUTION" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Distribution of bat speeds across all swings (1 mph increments).
             </Text>
@@ -1288,9 +1260,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Exit Velocity vs Launch Angle */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Exit Velocity vs Launch Angle</Text>
+            <Section title="EXIT VELOCITY VS LAUNCH ANGLE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
-              Relationship between exit velocity and launch angle. Optimal launch angle for line drives: 10-25°.
+              Relationship between exit velocity and launch angle. Sweet spot launch angle: 8-32°.
             </Text>
 
             {(() => {
@@ -1310,11 +1282,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <Svg viewBox="0 0 360 360" style={styles.scatterChart}>
                       <Rect width="360" height="360" fill="#000000" />
 
-                      {/* Ideal launch angle zone (10-30°) */}
+                      {/* Ideal launch angle zone (SWEET_SPOT 8-32°) */}
                       {(() => {
-                        const yMin = 330 - ((30 + 20) / 100) * 320;
-                        const yMax = 330 - ((10 + 20) / 100) * 320;
-                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#6b7280" opacity={0.15} />;
+                        const yMin = 330 - ((SWEET_SPOT[1] + 20) / 100) * 320;
+                        const yMax = 330 - ((SWEET_SPOT[0] + 20) / 100) * 320;
+                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#34d399" opacity={0.07} />;
                       })()}
 
                       {/* Grid lines */}
@@ -1335,7 +1307,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {validSwings.map((swing, idx) => {
                         const x = scaleX(swing.exit_velocity!);
                         const y = scaleY(swing.launch_angle!);
-                        const inIdealRange = swing.launch_angle! >= 10 && swing.launch_angle! <= 30;
+                        const inIdealRange = swing.launch_angle! >= SWEET_SPOT[0] && swing.launch_angle! <= SWEET_SPOT[1];
 
                         return (
                           <Circle
@@ -1343,7 +1315,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="4"
-                            fill={inIdealRange ? '#9BDDFF' : '#6b7280'}
+                            fill={inIdealRange ? '#fb923c' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -1355,7 +1327,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={scaleX(avgExitVelo)}
                         y2="330"
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1365,7 +1337,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={scaleY(avgLaunchAngle)}
                         x2="350"
                         y2={scaleY(avgLaunchAngle)}
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1373,7 +1345,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="235" y="15" width="110" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="290" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="290" y="32" fill="#fb923c" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="240" y="47" fill="#9ca3af" fontSize="9">Exit Velo:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgExitVelo.toFixed(1)} mph</SvgText>
                       <SvgText x="240" y="62" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
@@ -1389,15 +1361,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
             <View style={styles.legendRow}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
                 <Text style={styles.legendText}>95+ mph</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fdba74' }]} />
                 <Text style={styles.legendText}>85-94</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#8d939c' }]} />
                 <Text style={styles.legendText}>75-84</Text>
               </View>
               <View style={styles.legendItem}>
@@ -1411,9 +1383,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Launch Angle vs Distance */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Launch Angle vs Distance</Text>
+            <Section title="LAUNCH ANGLE VS DISTANCE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
-              How launch angle affects ball distance. Optimal launch angle for power: 10-30°.
+              How launch angle affects ball distance. Sweet spot launch angle: 8-32°.
             </Text>
 
             {(() => {
@@ -1434,11 +1406,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <Svg viewBox="0 0 360 360" style={styles.scatterChart}>
                       <Rect width="360" height="360" fill="#000000" />
 
-                      {/* Ideal launch angle zone (10-30°) */}
+                      {/* Ideal launch angle zone (SWEET_SPOT 8-32°) */}
                       {(() => {
-                        const xMin = scaleX(10);
-                        const xMax = scaleX(30);
-                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#10b981" opacity={0.1} />;
+                        const xMin = scaleX(SWEET_SPOT[0]);
+                        const xMax = scaleX(SWEET_SPOT[1]);
+                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#34d399" opacity={0.07} />;
                       })()}
 
                       {/* Grid lines */}
@@ -1458,10 +1430,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {/* Plot points */}
                       {validSwings.map((swing, idx) => {
                         let color = '#3d4f5f';
-                        if (swing.distance! >= 300) color = '#9BDDFF';
-                        else if (swing.distance! >= 250) color = '#6BB8DB';
-                        else if (swing.distance! >= 200) color = '#4A8FAD';
-                        const inIdealRange = swing.launch_angle! >= 10 && swing.launch_angle! <= 30;
+                        if (swing.distance! >= 300) color = '#fb923c';
+                        else if (swing.distance! >= 250) color = '#fdba74';
+                        else if (swing.distance! >= 200) color = '#8d939c';
+                        const inIdealRange = swing.launch_angle! >= SWEET_SPOT[0] && swing.launch_angle! <= SWEET_SPOT[1];
 
                         return (
                           <Circle
@@ -1481,7 +1453,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={scaleX(avgLA)}
                         y2="330"
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1491,7 +1463,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={scaleY(avgDist)}
                         x2="350"
                         y2={scaleY(avgDist)}
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -1499,7 +1471,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="235" y="15" width="110" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="290" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="290" y="32" fill="#fb923c" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="240" y="47" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgLA.toFixed(1)}°</SvgText>
                       <SvgText x="240" y="62" fill="#9ca3af" fontSize="9">Distance:</SvgText>
@@ -1515,15 +1487,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
             <View style={styles.legendRow}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
                 <Text style={styles.legendText}>300+ ft</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#fdba74' }]} />
                 <Text style={styles.legendText}>250-299</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#8d939c' }]} />
                 <Text style={styles.legendText}>200-249</Text>
               </View>
               <View style={styles.legendItem}>
@@ -1537,7 +1509,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Smash Factor Distribution */}
         {sessionType === 'fullswing' && (fullSwingSwings.length > 0 || fullSwingSession?.avg_smash_factor) && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Smash Factor Distribution</Text>
+            <Section title="SMASH FACTOR DISTRIBUTION" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Energy transfer efficiency (Exit Velo ÷ Bat Speed). Elite hitters achieve 1.3+ consistently.
             </Text>
@@ -1553,7 +1525,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   // Estimate distribution based on avg smash factor
                   const estimatedLevel = avgSmash >= 1.3 ? 'Elite' : avgSmash >= 1.2 ? 'Excellent' : avgSmash >= 1.1 ? 'Good' : avgSmash >= 1.0 ? 'Average' : 'Below';
-                  const levelColor = avgSmash >= 1.3 ? '#9BDDFF' : avgSmash >= 1.2 ? '#6BB8DB' : avgSmash >= 1.1 ? '#4A8FAD' : avgSmash >= 1.0 ? '#6b7280' : '#3d4f5f';
+                  const levelColor = avgSmash >= 1.3 ? '#fb923c' : avgSmash >= 1.2 ? '#fdba74' : avgSmash >= 1.1 ? '#8d939c' : avgSmash >= 1.0 ? '#6b7280' : '#3d4f5f';
 
                   return (
                     <View>
@@ -1599,9 +1571,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
               const pctBelow = (below / total) * 100;
 
               const buckets = [
-                { label: 'Elite (1.3+)', count: elite, pct: pctElite, color: '#9BDDFF' },
-                { label: 'Excellent (1.2-1.29)', count: excellent, pct: pctExcellent, color: '#6BB8DB' },
-                { label: 'Good (1.1-1.19)', count: good, pct: pctGood, color: '#4A8FAD' },
+                { label: 'Elite (1.3+)', count: elite, pct: pctElite, color: '#fb923c' },
+                { label: 'Excellent (1.2-1.29)', count: excellent, pct: pctExcellent, color: '#fdba74' },
+                { label: 'Good (1.1-1.19)', count: good, pct: pctGood, color: '#8d939c' },
                 { label: 'Average (1.0-1.09)', count: average, pct: pctAverage, color: '#6b7280' },
                 { label: 'Below (<1.0)', count: below, pct: pctBelow, color: '#3d4f5f' },
               ];
@@ -1633,7 +1605,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       <Rect x="260" y="10" width="90" height="55" fill="#000000" opacity={0.9} rx="4" />
                       <SvgText x="305" y="27" fill="#9ca3af" fontSize="9" textAnchor="middle">Session Stats</SvgText>
                       <SvgText x="265" y="42" fill="#9ca3af" fontSize="9">Avg:</SvgText>
-                      <SvgText x="345" y="42" fill="#9BDDFF" fontSize="10" textAnchor="end" fontWeight="600">{avgSmash.toFixed(2)}</SvgText>
+                      <SvgText x="345" y="42" fill="#fb923c" fontSize="10" textAnchor="end" fontWeight="600">{avgSmash.toFixed(2)}</SvgText>
                       <SvgText x="265" y="55" fill="#9ca3af" fontSize="9">Max:</SvgText>
                       <SvgText x="345" y="55" fill="#ffffff" fontSize="10" textAnchor="end" fontWeight="600">{maxSmash.toFixed(2)}</SvgText>
                     </Svg>
@@ -1647,7 +1619,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Squared Up Analysis */}
         {sessionType === 'fullswing' && (fullSwingSwings.length > 0 || fullSwingSession?.squared_up_rate !== null) && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Squared Up Analysis</Text>
+            <Section title="SQUARED UP ANALYSIS" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Swings with 80%+ barrel contact are squared up, producing better ball flight and exit velocity.
             </Text>
@@ -1689,15 +1661,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                           cy="160"
                           r="100"
                           fill="none"
-                          stroke="#10B981"
+                          stroke="#34d399"
                           strokeWidth="30"
                           strokeDasharray={`${(sessionSquaredRate / 100) * 628} ${628}`}
                           strokeLinecap="round"
                           transform="rotate(-90 180 160)"
                         />
-                        <SvgText x="180" y="150" fill="#10B981" fontSize="36" fontWeight="bold" textAnchor="middle">{sessionSquaredRate.toFixed(0)}%</SvgText>
+                        <SvgText x="180" y="150" fill="#34d399" fontSize="36" fontWeight="bold" textAnchor="middle">{sessionSquaredRate.toFixed(0)}%</SvgText>
                         <SvgText x="180" y="175" fill="#9ca3af" fontSize="12" textAnchor="middle">Squared Up</SvgText>
-                        <Circle cx="100" cy="300" r="8" fill="#10B981" />
+                        <Circle cx="100" cy="300" r="8" fill="#34d399" />
                         <SvgText x="115" y="304" fill="#ffffff" fontSize="11">Squared: {squaredCount}</SvgText>
                         <Circle cx="230" cy="300" r="8" fill="#3d4f5f" />
                         <SvgText x="245" y="304" fill="#ffffff" fontSize="11">Not Squared: {notSquaredCount}</SvgText>
@@ -1707,8 +1679,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       <View style={styles.levelGrid}>
                         <View style={[styles.levelCard, { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.1)' }]}>
                           <View style={styles.levelCardHeader}>
-                            <Text style={[styles.levelCardLabel, { color: '#10B981' }]}>Squared Up</Text>
-                            <Text style={[styles.levelCardPct, { color: '#10B981' }]}>{avgEVSquared.toFixed(1)}</Text>
+                            <Text style={[styles.levelCardLabel, { color: '#34d399' }]}>Squared Up</Text>
+                            <Text style={[styles.levelCardPct, { color: '#34d399' }]}>{avgEVSquared.toFixed(1)}</Text>
                           </View>
                           <Text style={styles.levelCardCount}>Avg Exit Velo (mph)</Text>
                         </View>
@@ -1759,7 +1731,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         cy="160"
                         r="100"
                         fill="none"
-                        stroke="#10B981"
+                        stroke="#34d399"
                         strokeWidth="30"
                         strokeDasharray={`${(squaredPct / 100) * 628} ${628}`}
                         strokeLinecap="round"
@@ -1767,11 +1739,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       />
 
                       {/* Center text */}
-                      <SvgText x="180" y="150" fill="#10B981" fontSize="36" fontWeight="bold" textAnchor="middle">{squaredPct.toFixed(0)}%</SvgText>
+                      <SvgText x="180" y="150" fill="#34d399" fontSize="36" fontWeight="bold" textAnchor="middle">{squaredPct.toFixed(0)}%</SvgText>
                       <SvgText x="180" y="175" fill="#9ca3af" fontSize="12" textAnchor="middle">Squared Up</SvgText>
 
                       {/* Legend at bottom */}
-                      <Circle cx="100" cy="300" r="8" fill="#10B981" />
+                      <Circle cx="100" cy="300" r="8" fill="#34d399" />
                       <SvgText x="115" y="304" fill="#ffffff" fontSize="11">Squared: {squaredCount}</SvgText>
 
                       <Circle cx="230" cy="300" r="8" fill="#3d4f5f" />
@@ -1784,8 +1756,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <View style={styles.levelGrid}>
                       <View style={[styles.levelCard, { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.1)' }]}>
                         <View style={styles.levelCardHeader}>
-                          <Text style={[styles.levelCardLabel, { color: '#10B981' }]}>Squared Up</Text>
-                          <Text style={[styles.levelCardPct, { color: '#10B981' }]}>{avgEVSquared.toFixed(1)}</Text>
+                          <Text style={[styles.levelCardLabel, { color: '#34d399' }]}>Squared Up</Text>
+                          <Text style={[styles.levelCardPct, { color: '#34d399' }]}>{avgEVSquared.toFixed(1)}</Text>
                         </View>
                         <Text style={styles.levelCardCount}>Avg Exit Velo (mph)</Text>
                       </View>
@@ -1807,7 +1779,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing: Whiff Rate by Pitch Speed */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Whiff Rate by Pitch Speed</Text>
+            <Section title="WHIFF RATE BY PITCH SPEED" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Contact rate broken down by pitch velocity. Lower whiff % = better contact ability at that speed.
             </Text>
@@ -1868,10 +1840,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const y = 250 - barHeight;
 
                         // Color based on whiff rate (green = low, red = high)
-                        let barColor = '#10B981';
-                        if (bucket.whiffPct >= 40) barColor = '#EF4444';
+                        let barColor = '#34d399';
+                        if (bucket.whiffPct >= 40) barColor = '#ef4444';
                         else if (bucket.whiffPct >= 25) barColor = '#F59E0B';
-                        else if (bucket.whiffPct >= 15) barColor = '#6BB8DB';
+                        else if (bucket.whiffPct >= 15) barColor = '#fdba74';
 
                         return (
                           <G key={bucket.label}>
@@ -1891,11 +1863,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                   {/* Legend */}
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#34d399' }]} />
                       <Text style={styles.legendText}>&lt;15%</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#fdba74' }]} />
                       <Text style={styles.legendText}>15-24%</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -1903,7 +1875,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       <Text style={styles.legendText}>25-39%</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#EF4444' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
                       <Text style={styles.legendText}>40%+</Text>
                     </View>
                   </View>
@@ -1916,9 +1888,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Ideal Range Chart (Paired Only) */}
         {sessionType === 'paired' && pairedSwingData.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Ideal Range</Text>
+            <Section title="IDEAL RANGE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
-              Optimal swing path alignment. Green zone shows ideal launch angle (7-22°) and attack angle (5-20°) for maximum power and consistency.
+              Optimal swing path alignment. Green zone shows ideal launch angle (8-32°) and attack angle (5-20°) for maximum power and consistency.
               <Text style={{ color: '#22D3EE' }}> ({pairedSwingData.length} paired swings)</Text>
             </Text>
 
@@ -1932,7 +1904,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
               const swingsInZone = pairedSwings.filter(s =>
                 s.attackAngle >= 5 && s.attackAngle <= 20 &&
-                s.launchAngle >= 7 && s.launchAngle <= 22
+                s.launchAngle >= SWEET_SPOT[0] && s.launchAngle <= SWEET_SPOT[1]
               ).length;
 
               const percentageInZone = pairedSwings.length > 0
@@ -1947,8 +1919,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Ideal Range Zone (gray box) */}
                       {(() => {
-                        const x1 = 30 + ((7 + 10) / 60) * 320;
-                        const x2 = 30 + ((22 + 10) / 60) * 320;
+                        const x1 = 30 + ((SWEET_SPOT[0] + 10) / 60) * 320;
+                        const x2 = 30 + ((SWEET_SPOT[1] + 10) / 60) * 320;
                         const y1 = 330 - ((20 + 10) / 40) * 320;
                         const y2 = 330 - ((5 + 10) / 40) * 320;
                         return (
@@ -1957,8 +1929,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             y={y1}
                             width={x2 - x1}
                             height={y2 - y1}
-                            fill="#6b7280"
-                            opacity={0.2}
+                            fill="#34d399"
+                            opacity={0.07}
                           />
                         );
                       })()}
@@ -1982,7 +1954,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const x = 30 + ((swing.launchAngle + 10) / 60) * 320;
                         const y = 330 - ((swing.attackAngle + 10) / 40) * 320;
                         const inZone = swing.attackAngle >= 5 && swing.attackAngle <= 20 &&
-                                      swing.launchAngle >= 7 && swing.launchAngle <= 22;
+                                      swing.launchAngle >= SWEET_SPOT[0] && swing.launchAngle <= SWEET_SPOT[1];
 
                         return (
                           <Circle
@@ -1990,7 +1962,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="5"
-                            fill={inZone ? '#9BDDFF' : '#6b7280'}
+                            fill={inZone ? '#fb923c' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -2002,7 +1974,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="15" width="105" height="45" fill="#000000" opacity={0.8} rx="4" />
-                      <SvgText x="292" y="35" fill="#9BDDFF" fontSize="18" textAnchor="middle" fontWeight="700">
+                      <SvgText x="292" y="35" fill="#fb923c" fontSize="18" textAnchor="middle" fontWeight="700">
                         {percentageInZone.toFixed(0)}%
                       </SvgText>
                       <SvgText x="292" y="52" fill="#9ca3af" fontSize="9" textAnchor="middle">
@@ -2014,7 +1986,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                   {/* Legend */}
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
                       <Text style={styles.legendText}>Ideal Range</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -2031,7 +2003,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Squared Up Rate Chart (Paired Only) */}
         {sessionType === 'paired' && pairedSwingData.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Squared Up Rate</Text>
+            <Section title="SQUARED UP RATE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               How much exit velocity was obtained compared to the maximum possible exit velocity available, given the speed of the swing and pitch.
             </Text>
@@ -2044,6 +2016,8 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                 const pitchAtPlate = hittrax.pitch_velocity;
                 let pitchCoefficient: number;
+                // TODO(verify): coefficient table looks non-monotonic (0.50 below 40 mph, then 0.10 for 40–55).
+                // Left as-is intentionally — confirm against the source formula before changing.
                 if (pitchAtPlate < 40) pitchCoefficient = 0.50;
                 else if (pitchAtPlate < 55) pitchCoefficient = 0.10;
                 else if (pitchAtPlate < 70) pitchCoefficient = 0.17;
@@ -2096,7 +2070,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const actualBarY = 250 - actualBarHeight;
 
                         let color = '#ef4444';
-                        if (data.squaredUpRate >= 80) color = '#9BDDFF';
+                        if (data.squaredUpRate >= 80) color = '#fb923c';
                         else if (data.squaredUpRate >= 65) color = '#6b7280';
 
                         return (
@@ -2109,7 +2083,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="5" width="110" height="45" fill="#000000" opacity={0.8} rx="4" />
-                      <SvgText x="295" y="28" fill="#9BDDFF" fontSize="20" textAnchor="middle" fontWeight="700">
+                      <SvgText x="295" y="28" fill="#fb923c" fontSize="20" textAnchor="middle" fontWeight="700">
                         {wellSquaredPercentage.toFixed(0)}%
                       </SvgText>
                       <SvgText x="295" y="42" fill="#9ca3af" fontSize="9" textAnchor="middle">
@@ -2126,7 +2100,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF', borderRadius: 2 }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#fb923c', borderRadius: 2 }]} />
                       <Text style={styles.legendText}>≥80% (Squared-Up)</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -2147,7 +2121,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Attack Angle vs Bat Speed (Blast & Paired) */}
         {(sessionType === 'blast' || sessionType === 'paired') && blastSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Attack Angle vs Bat Speed</Text>
+            <Section title="ATTACK ANGLE VS BAT SPEED" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Relationship between swing path (attack angle) and swing speed. Ideal attack angle: 5-20°.
             </Text>
@@ -2175,7 +2149,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {(() => {
                         const yMin = 330 - ((20 + 20) / 60) * 320;
                         const yMax = 330 - ((5 + 20) / 60) * 320;
-                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#6b7280" opacity={0.15} />;
+                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#34d399" opacity={0.07} />;
                       })()}
 
                       {/* Grid lines */}
@@ -2204,7 +2178,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="4"
-                            fill={inIdealRange ? '#9BDDFF' : '#6b7280'}
+                            fill={inIdealRange ? '#a78bfa' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -2216,7 +2190,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgBatSpeed - 30) / 70) * 320}
                         y2="330"
-                        stroke="#9BDDFF"
+                        stroke="#a78bfa"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2226,7 +2200,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - ((avgAttackAngle + 20) / 60) * 320}
                         x2="350"
                         y2={330 - ((avgAttackAngle + 20) / 60) * 320}
-                        stroke="#9BDDFF"
+                        stroke="#a78bfa"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2234,7 +2208,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="240" y="15" width="105" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="292" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="292" y="32" fill="#a78bfa" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="245" y="47" fill="#9ca3af" fontSize="9">Bat Speed:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgBatSpeed.toFixed(1)} mph</SvgText>
                       <SvgText x="245" y="62" fill="#9ca3af" fontSize="9">Attack Angle:</SvgText>
@@ -2247,7 +2221,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#a78bfa' }]} />
                       <Text style={styles.legendText}>Ideal Range (5-20°)</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -2255,7 +2229,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       <Text style={styles.legendText}>Other</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDash, { backgroundColor: '#9BDDFF' }]} />
+                      <View style={[styles.legendDash, { backgroundColor: '#a78bfa' }]} />
                       <Text style={styles.legendText}>Average</Text>
                     </View>
                   </View>
@@ -2268,9 +2242,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Exit Velocity vs Launch Angle (HitTrax & Paired) */}
         {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Exit Velocity vs Launch Angle</Text>
+            <Section title="EXIT VELOCITY VS LAUNCH ANGLE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
-              Relationship between exit velocity and launch angle. Ideal launch angle for power: 10-30°.
+              Relationship between exit velocity and launch angle. Sweet spot launch angle: 8-32°.
             </Text>
 
             {(() => {
@@ -2292,11 +2266,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <Svg viewBox="0 0 360 360" style={styles.scatterChart}>
                       <Rect width="360" height="360" fill="#000000" />
 
-                      {/* Ideal launch angle zone (10-30°) */}
+                      {/* Ideal launch angle zone (SWEET_SPOT 8-32°) */}
                       {(() => {
-                        const yMin = 330 - ((30 + 20) / 100) * 320;
-                        const yMax = 330 - ((10 + 20) / 100) * 320;
-                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#6b7280" opacity={0.15} />;
+                        const yMin = 330 - ((SWEET_SPOT[1] + 20) / 100) * 320;
+                        const yMax = 330 - ((SWEET_SPOT[0] + 20) / 100) * 320;
+                        return <Rect x={30} y={yMin} width={320} height={yMax - yMin} fill="#34d399" opacity={0.07} />;
                       })()}
 
                       {/* Grid lines */}
@@ -2317,7 +2291,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       {validSwings.map((swing, idx) => {
                         const x = 30 + ((swing.exit_velocity - 40) / 80) * 320;
                         const y = 330 - ((swing.launch_angle! + 20) / 100) * 320;
-                        const inIdealRange = swing.launch_angle! >= 10 && swing.launch_angle! <= 30;
+                        const inIdealRange = swing.launch_angle! >= SWEET_SPOT[0] && swing.launch_angle! <= SWEET_SPOT[1];
 
                         return (
                           <Circle
@@ -2325,7 +2299,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             cx={Math.max(30, Math.min(350, x))}
                             cy={Math.max(10, Math.min(330, y))}
                             r="4"
-                            fill={inIdealRange ? '#9BDDFF' : '#6b7280'}
+                            fill={inIdealRange ? '#fb923c' : '#6b7280'}
                             opacity={0.8}
                           />
                         );
@@ -2337,7 +2311,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgExitVelo - 40) / 80) * 320}
                         y2="330"
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2347,7 +2321,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - ((avgLaunchAngle + 20) / 100) * 320}
                         x2="350"
                         y2={330 - ((avgLaunchAngle + 20) / 100) * 320}
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2355,7 +2329,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="235" y="15" width="110" height="60" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="290" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="290" y="32" fill="#fb923c" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="240" y="47" fill="#9ca3af" fontSize="9">Exit Velo:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgExitVelo.toFixed(1)} mph</SvgText>
                       <SvgText x="240" y="62" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
@@ -2368,15 +2342,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
-                      <Text style={styles.legendText}>Ideal Range (10-30°)</Text>
+                      <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
+                      <Text style={styles.legendText}>Sweet Spot (8-32°)</Text>
                     </View>
                     <View style={styles.legendItem}>
                       <View style={[styles.legendDot, { backgroundColor: '#6b7280' }]} />
                       <Text style={styles.legendText}>Other</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDash, { backgroundColor: '#9BDDFF' }]} />
+                      <View style={[styles.legendDash, { backgroundColor: '#fb923c' }]} />
                       <Text style={styles.legendText}>Average</Text>
                     </View>
                   </View>
@@ -2389,7 +2363,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Exit Velocity Distribution Histogram (HitTrax & Paired) */}
         {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Exit Velocity Distribution</Text>
+            <Section title="EXIT VELOCITY DISTRIBUTION" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Distribution of exit velocities across all swings (5 mph buckets).
             </Text>
@@ -2468,7 +2442,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                             y={y}
                             width={barWidth}
                             height={barHeight}
-                            fill="#9BDDFF"
+                            fill="#fb923c"
                             opacity={0.4}
                             rx={2}
                           />
@@ -2476,14 +2450,14 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                       })}
 
                       {/* Smooth curve area fill */}
-                      <Path d={areaPath} fill="#9BDDFF" opacity={0.2} />
+                      <Path d={areaPath} fill="#fb923c" opacity={0.2} />
 
                       {/* Smooth curve line */}
-                      <Path d={pathD} stroke="#9BDDFF" strokeWidth="3" fill="none" />
+                      <Path d={pathD} stroke="#fb923c" strokeWidth="3" fill="none" />
 
                       {/* Data points */}
                       {points.map((point, idx) => (
-                        <Circle key={idx} cx={point.x} cy={point.y} r="4" fill="#9BDDFF" />
+                        <Circle key={idx} cx={point.x} cy={point.y} r="4" fill="#fb923c" />
                       ))}
 
                       {/* Average line */}
@@ -2522,7 +2496,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   {/* Stats summary row */}
                   <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 24, marginTop: 8, marginBottom: 4 }}>
-                    <Text style={{ fontSize: 12, color: '#9ca3af' }}>Avg: <Text style={{ color: '#9BDDFF', fontWeight: '600' }}>{avgEV.toFixed(1)} mph</Text></Text>
+                    <Text style={{ fontSize: 12, color: '#9ca3af' }}>Avg: <Text style={{ color: '#fb923c', fontWeight: '600' }}>{avgEV.toFixed(1)} mph</Text></Text>
                     <Text style={{ fontSize: 12, color: '#9ca3af' }}>Max: <Text style={{ color: '#F5F0E6', fontWeight: '600' }}>{Math.max(...velocities).toFixed(1)} mph</Text></Text>
                     <Text style={{ fontSize: 12, color: '#9ca3af' }}>Swings: <Text style={{ color: '#ffffff', fontWeight: '600' }}>{validSwings.length}</Text></Text>
                   </View>
@@ -2535,7 +2509,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Bat Speed Distribution Histogram (Blast & Paired) */}
         {(sessionType === 'blast' || sessionType === 'paired') && blastSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Bat Speed Distribution</Text>
+            <Section title="BAT SPEED DISTRIBUTION" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Distribution of bat speeds across all swings (1 mph increments).
             </Text>
@@ -2684,9 +2658,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Launch Angle vs Distance (HitTrax & Paired) */}
         {(sessionType === 'hittrax' || sessionType === 'paired') && hittraxSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Launch Angle vs Distance</Text>
+            <Section title="LAUNCH ANGLE VS DISTANCE" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
-              How launch angle affects ball distance. Ideal launch angle for power: 10-30°.
+              How launch angle affects ball distance. Sweet spot launch angle: 8-32°.
             </Text>
 
             {(() => {
@@ -2708,11 +2682,11 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                     <Svg viewBox="0 0 360 360" style={styles.scatterChart}>
                       <Rect width="360" height="360" fill="#000000" />
 
-                      {/* Ideal launch angle zone (10-30°) */}
+                      {/* Ideal launch angle zone (SWEET_SPOT 8-32°) */}
                       {(() => {
-                        const xMin = 30 + ((10 + 20) / 100) * 320;
-                        const xMax = 30 + ((30 + 20) / 100) * 320;
-                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#6b7280" opacity={0.15} />;
+                        const xMin = 30 + ((SWEET_SPOT[0] + 20) / 100) * 320;
+                        const xMax = 30 + ((SWEET_SPOT[1] + 20) / 100) * 320;
+                        return <Rect x={xMin} y={10} width={xMax - xMin} height={320} fill="#34d399" opacity={0.07} />;
                       })()}
 
                       {/* Grid lines */}
@@ -2735,9 +2709,9 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         const y = 330 - (point.distance / 400) * 320;
 
                         let color = '#3d4f5f';
-                        if (point.distance >= 350) color = '#9BDDFF';
-                        else if (point.distance >= 300) color = '#6BB8DB';
-                        else if (point.distance >= 250) color = '#4A8FAD';
+                        if (point.distance >= 350) color = '#fb923c';
+                        else if (point.distance >= 300) color = '#fdba74';
+                        else if (point.distance >= 250) color = '#8d939c';
 
                         return (
                           <Circle
@@ -2757,7 +2731,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1="10"
                         x2={30 + ((avgLaunchAngle + 20) / 100) * 320}
                         y2="330"
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2767,7 +2741,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                         y1={330 - (avgDistance / 400) * 320}
                         x2="350"
                         y2={330 - (avgDistance / 400) * 320}
-                        stroke="#9BDDFF"
+                        stroke="#fb923c"
                         strokeWidth="2"
                         strokeDasharray="4 4"
                         opacity={0.8}
@@ -2775,7 +2749,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                       {/* Stats box */}
                       <Rect x="230" y="15" width="115" height="75" fill="#000000" opacity={0.85} rx="4" />
-                      <SvgText x="287" y="32" fill="#9BDDFF" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
+                      <SvgText x="287" y="32" fill="#fb923c" fontSize="10" textAnchor="middle" fontWeight="600">Averages</SvgText>
                       <SvgText x="235" y="47" fill="#9ca3af" fontSize="9">Launch Angle:</SvgText>
                       <SvgText x="340" y="47" fill="#ffffff" fontSize="9" textAnchor="end" fontWeight="600">{avgLaunchAngle.toFixed(1)}°</SvgText>
                       <SvgText x="235" y="62" fill="#9ca3af" fontSize="9">Distance:</SvgText>
@@ -2790,15 +2764,15 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
                   <View style={styles.legendRow}>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#9BDDFF' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#fb923c' }]} />
                       <Text style={styles.legendText}>350+ ft</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#6BB8DB' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#fdba74' }]} />
                       <Text style={styles.legendText}>300-349 ft</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#4A8FAD' }]} />
+                      <View style={[styles.legendDot, { backgroundColor: '#8d939c' }]} />
                       <Text style={styles.legendText}>250-299 ft</Text>
                     </View>
                     <View style={styles.legendItem}>
@@ -2815,7 +2789,7 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         {/* Full Swing Individual Swings Table */}
         {sessionType === 'fullswing' && fullSwingSwings.length > 0 && (
           <View style={styles.chartSection}>
-            <Text style={styles.chartTitle}>Individual Swings</Text>
+            <Section title="INDIVIDUAL SWINGS" style={styles.chartHead} />
             <Text style={styles.chartDescription}>
               Each swing with bat speed, exit velocity, and smash factor.
             </Text>
@@ -2834,16 +2808,16 @@ export default function HittingSessionScreen({ route, navigation }: any) {
                   <View style={{ flex: 1 }}><Text style={[styles.swingsTableCell, { color: '#22D3EE' }]}>
                     {swing.bat_speed ? swing.bat_speed.toFixed(1) : '-'}
                   </Text></View>
-                  <View style={{ flex: 1 }}><Text style={[styles.swingsTableCell, { color: '#9BDDFF' }]}>
+                  <View style={{ flex: 1 }}><Text style={[styles.swingsTableCell, { color: swing.exit_velocity ? evColor(swing.exit_velocity) : STEEL.mute, fontWeight: '800' }]}>
                     {swing.exit_velocity ? swing.exit_velocity.toFixed(1) : '-'}
                   </Text></View>
-                  <View style={{ flex: 0.8 }}><Text style={[styles.swingsTableCell, { color: '#A855F7' }]}>
+                  <View style={{ flex: 0.8 }}><Text style={[styles.swingsTableCell, { color: '#a78bfa' }]}>
                     {swing.smash_factor ? swing.smash_factor.toFixed(2) : '-'}
                   </Text></View>
-                  <View style={{ flex: 1 }}><Text style={[styles.swingsTableCell, { color: '#4A8FAD' }]}>
+                  <View style={{ flex: 1 }}><Text style={[styles.swingsTableCell, { color: '#8d939c' }]}>
                     {swing.distance ? Math.round(swing.distance) : '-'}
                   </Text></View>
-                  <View style={{ flex: 0.7 }}><Text style={[styles.swingsTableCell, { color: swing.squared_up === 1 ? '#10B981' : '#6b7280' }]}>
+                  <View style={{ flex: 0.7 }}><Text style={[styles.swingsTableCell, { color: swing.squared_up === 1 ? '#34d399' : '#6b7280' }]}>
                     {swing.squared_up === 1 ? 'Yes' : swing.squared_up === 0 ? 'No' : '-'}
                   </Text></View>
                 </View>
@@ -2873,10 +2847,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
               <View style={styles.modalRow}>
                 <Text style={styles.modalLabel}>Exit Velocity</Text>
-                <Text style={styles.modalValue}>{selectedSwing.exit_velocity.toFixed(1)} mph</Text>
+                <Text style={[styles.modalValue, { color: evColor(selectedSwing.exit_velocity) }]}>{fmt(selectedSwing.exit_velocity)} mph</Text>
               </View>
 
-              {selectedSwing.distance && (
+              {selectedSwing.distance != null && selectedSwing.distance > 0 && (
                 <View style={styles.modalRow}>
                   <Text style={styles.modalLabel}>Distance</Text>
                   <Text style={styles.modalValue}>{Math.round(selectedSwing.distance)} ft</Text>
@@ -2892,10 +2866,10 @@ export default function HittingSessionScreen({ route, navigation }: any) {
 
               <View style={styles.modalRow}>
                 <Text style={styles.modalLabel}>Pitch Speed</Text>
-                <Text style={styles.modalValue}>{selectedSwing.pitch_velocity.toFixed(1)} mph</Text>
+                <Text style={styles.modalValue}>{selectedSwing.pitch_velocity > 0 ? `${fmt(selectedSwing.pitch_velocity)} mph` : '—'}</Text>
               </View>
 
-              {selectedSwing.result && (
+              {!!selectedSwing.result && (
                 <View style={styles.modalRow}>
                   <Text style={styles.modalLabel}>Result</Text>
                   <Text style={styles.modalValue}>{selectedSwing.result}</Text>
@@ -2913,93 +2887,21 @@ export default function HittingSessionScreen({ route, navigation }: any) {
         </Modal>
       )}
 
-      {/* FAB Button */}
-      <View style={styles.fabContainer}>
-        {(unreadMessagesCount + newResourcesCount) > 0 && !fabOpen && (
-          <View style={styles.fabNotificationBadge}>
-            <Text style={styles.fabNotificationBadgeText}>
-              {(unreadMessagesCount + newResourcesCount) > 99 ? '99+' : unreadMessagesCount + newResourcesCount}
-            </Text>
-          </View>
-        )}
-        <TouchableOpacity onPress={() => setFabOpen(!fabOpen)} style={styles.fab}>
-          <LinearGradient colors={['#9BDDFF', '#B0E5FF', '#7BC5F0']} style={styles.fabGradient}>
-            <Text style={styles.fabIcon}>{fabOpen ? '✕' : '☰'}</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        <Modal
-          visible={fabOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setFabOpen(false)}
-        >
-          <TouchableOpacity style={styles.fabOverlay} activeOpacity={1} onPress={() => setFabOpen(false)}>
-            <View style={styles.fabMenu}>
-              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard'); }}>
-                <Ionicons name="home" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('Messages'); }}>
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
-                  {unreadMessagesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>{unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Messages</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('Leaderboard'); }}>
-                <Ionicons name="trophy" size={20} color="#FFFFFF" />
-                <Text style={styles.fabMenuLabel}>Leaderboard</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.fabMenuItem, styles.fabMenuItemActive]} onPress={() => { setFabOpen(false); navigation.navigate('HittingPerformance'); }}>
-                <MaterialCommunityIcons name="baseball-bat" size={20} color="#9BDDFF" />
-                <Text style={[styles.fabMenuLabel, styles.fabMenuLabelActive]}>Hitting</Text>
-              </TouchableOpacity>
-
-              {(hasPitchingData || hasArmCareData) && (
-                <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('PitchingPerformance', { athleteId }); }}>
-                  <MaterialCommunityIcons name="baseball" size={20} color="#3B82F6" />
-                  <Text style={styles.fabMenuLabel}>Pitching</Text>
-                </TouchableOpacity>
-              )}
-              {/* Arm Care moved inline onto the Pitching screen. */}
-
-              {hasForceData && (
-                <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('ForceProfile', { athleteId }); }}>
-                  <Ionicons name="trending-up" size={20} color="#A855F7" />
-                  <Text style={styles.fabMenuLabel}>Force Profile</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Notes/Resources - always visible, with badge for new items */}
-              <TouchableOpacity style={styles.fabMenuItem} onPress={() => { setFabOpen(false); navigation.navigate('Resources', { athleteId }); }}>
-                <View style={styles.fabMenuIconContainer}>
-                  <Ionicons name="document-text" size={20} color="#F59E0B" />
-                  {newResourcesCount > 0 && (
-                    <View style={styles.fabMenuItemBadge}>
-                      <Text style={styles.fabMenuItemBadgeText}>{newResourcesCount > 9 ? '9+' : newResourcesCount}</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.fabMenuLabel}>Notes/Resources</Text>
-              </TouchableOpacity>
-
-              {/* Book a Class - always visible */}
-              <TouchableOpacity style={styles.fabMenuItemBook} onPress={() => { setFabOpen(false); navigation.navigate('Booking'); }}>
-                <Ionicons name="calendar" size={20} color="#000000" />
-                <Text style={styles.fabMenuLabelBook}>Book a Class</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      </View>
+      <FABMenu
+        isOpen={fabOpen}
+        onToggle={() => setFabOpen(!fabOpen)}
+        totalBadgeCount={unreadMessagesCount + newResourcesCount}
+        items={[
+          { id: 'home', label: 'Home', icon: 'home', onPress: () => navigation.navigate(isParent ? 'ParentDashboard' : 'Dashboard') },
+          { id: 'messages', label: 'Messages', icon: 'chatbubble', badge: unreadMessagesCount, onPress: () => navigation.navigate('Messages') },
+          { id: 'leaderboard', label: 'Leaderboard', icon: 'trophy', onPress: () => navigation.navigate('Leaderboard') },
+          { id: 'hitting', label: 'Hitting', icon: 'baseball-bat', iconFamily: 'material-community', isActive: true, onPress: () => navigation.navigate('HittingPerformance', { athleteId }) },
+          ...(hasPitchingData || hasArmCareData ? [{ id: 'pitching', label: 'Pitching', icon: 'baseball', iconFamily: 'material-community' as const, onPress: () => navigation.navigate('PitchingPerformance', { athleteId }) }] : []),
+          ...(hasForceData ? [{ id: 'forceprofile', label: 'Force Profile', icon: 'trending-up', onPress: () => navigation.navigate('ForceProfile', { athleteId }) }] : []),
+          { id: 'resources', label: 'Notes/Resources', icon: 'document-text', badge: newResourcesCount, onPress: () => navigation.navigate('Resources', { athleteId, userId }) },
+          { id: 'book', label: 'Book a Class', icon: 'calendar', isBookButton: true, onPress: () => navigation.navigate('Booking') },
+        ]}
+      />
     </View>
   );
 }
@@ -3057,22 +2959,23 @@ const styles = StyleSheet.create({
   pairedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    backgroundColor: 'rgba(34,197,94,0.2)',
-    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: 'rgba(52,211,153,0.12)',
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.3)',
+    borderColor: 'rgba(52,211,153,0.35)',
     gap: 4,
   },
   pairedBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#4ADE80',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: STEEL.good,
   },
   subtitle: {
     fontSize: 13,
-    color: '#9BDDFF',
+    color: '#fb923c',
   },
   headerAccent: {
     height: 1,
@@ -3081,11 +2984,54 @@ const styles = StyleSheet.create({
   },
   chartSection: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
-    marginBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    paddingBottom: 18,
   },
+  chartHead: {
+    paddingBottom: 0,
+  },
+  headerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+  },
+  headerDate: {
+    color: STEEL.mute,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  notPairedBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: STEEL.hair,
+  },
+  notPairedBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: STEEL.mute,
+  },
+  kpiLabelLocal: { color: STEEL.mute, fontSize: 10, fontWeight: '800', letterSpacing: 1.3 },
+  kpiValueLocal: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  everyHeader: {
+    flexDirection: 'row',
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: STEEL.rule,
+  },
+  everyHead: { flex: 1, textAlign: 'right', color: STEEL.mute, fontSize: 9.5, fontWeight: '800', letterSpacing: 1.2 },
+  everyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: STEEL.rule,
+  },
+  everyCell: { flex: 1, textAlign: 'right', color: STEEL.day, fontSize: 13, fontVariant: ['tabular-nums'] },
+  everyStrong: { fontWeight: '800' },
   chartTitle: {
     fontSize: 12,
     fontWeight: '800',
@@ -3306,7 +3252,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#111111',
+    backgroundColor: '#11161d',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
@@ -3341,14 +3287,15 @@ const styles = StyleSheet.create({
   },
   modalValue: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#9BDDFF',
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    color: '#ffffff',
   },
   modalCloseButton: {
-    backgroundColor: 'rgba(155,221,255,0.15)',
+    backgroundColor: '#1b2430',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(155,221,255,0.3)',
+    borderColor: '#2a3442',
     paddingVertical: 14,
     marginTop: 24,
     alignItems: 'center',
@@ -3358,166 +3305,34 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  // FAB Styles
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-  },
-  fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: '#9BDDFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: 'bold',
-  },
-  fabOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 24,
-    paddingBottom: 100,
-  },
-  fabMenu: {
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 220,
-    padding: 8,
-  },
-  fabMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  fabMenuLabel: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-  fabNotificationBadge: {
-    position: 'absolute',
-    top: -4,
-    left: -4,
-    minWidth: 24,
-    height: 24,
-    backgroundColor: '#EF4444',
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#000000',
-    zIndex: 20,
-  },
-  fabNotificationBadgeText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 4,
-  },
-  fabMenuItemActive: {
-    backgroundColor: 'rgba(155, 221, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(155, 221, 255, 0.3)',
-  },
-  fabMenuLabelActive: {
-    color: '#9BDDFF',
-  },
-  fabMenuIconContainer: {
-    position: 'relative',
-  },
-  fabMenuItemBadge: {
-    position: 'absolute',
-    top: -6,
-    right: -8,
-    minWidth: 18,
-    height: 18,
-    backgroundColor: '#EF4444',
-    borderRadius: 9,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#000000',
-  },
-  fabMenuItemBadgeText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    paddingHorizontal: 3,
-  },
-  fabMenuItemBook: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#9BDDFF',
-    marginTop: 8,
-  },
-  fabMenuLabelBook: {
-    fontSize: 16,
-    color: '#000000',
-    fontWeight: '600',
-  },
   swingsTable: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    marginTop: 12,
+    marginTop: 8,
   },
   swingsTableHeader: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: STEEL.rule,
   },
   swingsTableHeaderCell: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: '#9ca3af',
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    color: STEEL.mute,
     textTransform: 'uppercase',
     textAlign: 'center',
   },
   swingsTableRow: {
     flexDirection: 'row',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
+    borderBottomColor: STEEL.rule,
   },
-  swingsTableRowAlt: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-  },
+  swingsTableRowAlt: {},
   swingsTableCell: {
-    fontSize: 12,
+    fontSize: 12.5,
     color: '#ffffff',
     textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
-
 });
