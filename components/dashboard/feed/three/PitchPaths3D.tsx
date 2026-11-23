@@ -7,14 +7,19 @@
  * m/s and m/s², referenced at y = 15.24 m = 50 ft; converted to feet here), so the curve is the measured trajectory,
  * not an illustration. Pitches missing the fit are skipped.
  *
+ * Rendered as SVG through a three.js perspective camera (projection math
+ * only). Two live expo-gl views on one screen stop presenting frames for
+ * the older one, which froze this view next to the hitting field.
+ *
  * Axes: the fit's x is the mirror of plate_loc_side (verified against a
  * real pitch), so with the camera looking toward +Z we use X = x, which
  * puts plate_loc_side > 0 on screen right. Y = z (up), Z = y (toward mound).
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
+import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import Svg, { Path as SvgPath, Circle, Rect, Line as SvgLine, Polygon, Ellipse, Defs, LinearGradient, Stop } from 'react-native-svg';
+// three is used only for its camera/projection math; rendering is SVG.
 import * as THREE from 'three';
 import { supabase } from '../../../../lib/supabase';
 import { useInView } from '../../../../hooks/useInView';
@@ -23,13 +28,14 @@ import { pitchDisplay } from '../pitchTypeDisplay';
 type PitchRow = {
   pitch_uid: string;
   tagged_pitch_type: string | null;
+  rel_speed: number | null;
   extension: number | null;
   x0_x: number; x0_y: number; x0_z: number;
   v0_x: number; v0_y: number; v0_z: number;
   a0_x: number; a0_y: number; a0_z: number;
 };
 
-type Path = { points: THREE.Vector3[]; color: string; type: string };
+type Path = { points: THREE.Vector3[]; color: string; type: string; mph: number | null };
 
 const M2FT = 3.28084;
 const PLATE_FRONT_FT = 17 / 12;
@@ -77,7 +83,7 @@ function buildPath(raw: PitchRow): Path | null {
     points.push(new THREE.Vector3(x, z, y));
   }
   const d = pitchDisplay(r.tagged_pitch_type ?? 'Fastball');
-  return { points, color: d.hex, type: d.full };
+  return { points, color: d.hex, type: d.full, mph: raw.rel_speed };
 }
 
 function usePitchPaths(athleteId: string | null | undefined) {
@@ -100,7 +106,7 @@ function usePitchPaths(athleteId: string | null | undefined) {
       }
       const { data } = await supabase
         .from('trackman_pitch_data')
-        .select('pitch_uid, tagged_pitch_type, extension, x0_x, x0_y, x0_z, v0_x, v0_y, v0_z, a0_x, a0_y, a0_z')
+        .select('pitch_uid, tagged_pitch_type, rel_speed, extension, x0_x, x0_y, x0_z, v0_x, v0_y, v0_z, a0_x, a0_y, a0_z')
         .eq('athlete_id', athleteId)
         .eq('session_id', sessionId)
         .not('a0_y', 'is', null)
@@ -117,175 +123,166 @@ function usePitchPaths(athleteId: string | null | undefined) {
   return paths;
 }
 
-function lineObject(points: THREE.Vector3[], color: string, opacity = 1) {
-  const g = new THREE.BufferGeometry().setFromPoints(points);
-  return new THREE.Line(g, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity }));
+const VIEW_H = 260;
+const FPS_MS = 1000 / 60;
+
+type Pt = { x: number; y: number };
+
+/** Camera backed up until every path point and the zone fit in view. */
+function makeCamera(paths: Path[], w: number, h: number) {
+  const cam = new THREE.PerspectiveCamera(26, w / h, 0.05, 200);
+  const probe: THREE.Vector3[] = [
+    new THREE.Vector3(-ZONE_W / 2, ZONE_BOTTOM, PLATE_FRONT_FT),
+    new THREE.Vector3(ZONE_W / 2, ZONE_TOP, PLATE_FRONT_FT),
+  ];
+  paths.forEach((p) => p.points.forEach((v, i) => i % 4 === 0 && probe.push(v)));
+  const look = new THREE.Vector3(0, 3.0, 30);
+  for (let back = 9; back <= 60; back += 1) {
+    cam.position.set(0, 3.2 + back * 0.08, -back);
+    cam.lookAt(look);
+    cam.updateMatrixWorld();
+    const ok = probe.every((v) => {
+      const q = v.clone().project(cam);
+      return Math.abs(q.x) < 0.92 && q.y < 0.82 && q.y > -0.9;
+    });
+    if (ok) break;
+  }
+  cam.updateMatrixWorld();
+  return cam;
 }
 
-function Scene({ paths, active }: { paths: Path[]; active: boolean }) {
-  // Own wall clock (not R3F's) so the loop starts when the section scrolls
-  // into view and restarts each time it comes back.
-  const t0 = useRef<number | null>(null);
-  const ball = useRef<THREE.Mesh>(null);
+function projector(cam: THREE.PerspectiveCamera, w: number, h: number) {
+  // Screen x is mirrored: the camera looks toward +Z, so +X is screen-left.
+  return (v: THREE.Vector3): Pt => {
+    const q = v.clone().project(cam);
+    return { x: ((q.x + 1) / 2) * w, y: ((1 - q.y) / 2) * h };
+  };
+}
 
-  // Zone frame sits on the plate's front edge (where every path ends), as
-  // solid bars (iOS GL ignores line width) over a dark backing so the
-  // ground grid never shows through. Plate lies flat, point toward catcher.
-  const zone = useMemo(() => {
-    const g = new THREE.Group();
+const d = (pts: Pt[]) => pts.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('');
+
+function PitchSvg({ paths, active }: { paths: Path[]; active: boolean }) {
+  const w = Dimensions.get('window').width;
+  const h = VIEW_H;
+  const { proj, staticLayer, screenPaths } = useMemo(() => {
+    const cam = makeCamera(paths, w, h);
+    const P = projector(cam, w, h);
+    const V = (x: number, y: number, z: number) => P(new THREE.Vector3(x, y, z));
     const Z = PLATE_FRONT_FT;
-    const L = -ZONE_W / 2, R = ZONE_W / 2, B = ZONE_BOTTOM, T = ZONE_TOP;
-    const W = ZONE_W, H = T - B;
-
-    const backing = new THREE.Mesh(
-      new THREE.PlaneGeometry(W, H),
-      new THREE.MeshBasicMaterial({ color: '#05070a', transparent: true, opacity: 0.82, side: THREE.DoubleSide }),
-    );
-    backing.position.set(0, B + H / 2, Z + 0.02);
-    g.add(backing);
-    const tint = new THREE.Mesh(
-      new THREE.PlaneGeometry(W, H),
-      new THREE.MeshBasicMaterial({ color: '#5ce1ff', transparent: true, opacity: 0.05, side: THREE.DoubleSide }),
-    );
-    tint.position.set(0, B + H / 2, Z + 0.01);
-    g.add(tint);
-
-    const bar = (w: number, h: number, x: number, y: number, color: string, opacity: number) => {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(w, h),
-        new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, side: THREE.DoubleSide }),
-      );
-      m.position.set(x, y, Z);
-      g.add(m);
-    };
-    const t = 0.045; // frame thickness, ft
-    bar(W + t, t, 0, T, '#ffffff', 0.9);
-    bar(W + t, t, 0, B, '#ffffff', 0.9);
-    bar(t, H + t, L, B + H / 2, '#ffffff', 0.9);
-    bar(t, H + t, R, B + H / 2, '#ffffff', 0.9);
-    const ti = 0.018;
+    const L = -ZONE_W / 2, R = ZONE_W / 2;
+    // ground grid lines, faint, from just past the plate to the mound
+    const grid: string[] = [];
+    for (let z = 4; z <= 70; z += 3) grid.push(d([V(-35, 0, z), V(35, 0, z)]));
+    for (let x = -36; x <= 36; x += 3) grid.push(d([V(x, 0, 4), V(x, 0, 70)]));
+    const horizon = V(0, 0, 70).y;
+    const zone = [V(L, ZONE_BOTTOM, Z), V(R, ZONE_BOTTOM, Z), V(R, ZONE_TOP, Z), V(L, ZONE_TOP, Z)];
+    const inner: string[] = [];
     for (let i = 1; i < 3; i++) {
-      bar(ti, H, L + (W * i) / 3, B + H / 2, '#ffffff', 0.22);
-      bar(W, ti, 0, B + (H * i) / 3, '#ffffff', 0.22);
+      const x = L + (ZONE_W * i) / 3;
+      const y = ZONE_BOTTOM + ((ZONE_TOP - ZONE_BOTTOM) * i) / 3;
+      inner.push(d([V(x, ZONE_BOTTOM, Z), V(x, ZONE_TOP, Z)]));
+      inner.push(d([V(L, y, Z), V(R, y, Z)]));
     }
+    const plate = [V(L, 0, Z), V(R, 0, Z), V(R, 0, Z - 8.5 / 12), V(0, 0, Z - 17 / 12), V(L, 0, Z - 8.5 / 12)];
+    const mound = V(0, 0, 60.5);
+    const moundEdge = V(4.5, 0, 60.5);
+    return {
+      proj: P,
+      staticLayer: { grid, horizon, zone, inner, plate, mound, moundRx: Math.abs(moundEdge.x - mound.x) },
+      screenPaths: paths.map((p) => p.points.map(P)),
+    };
+  }, [paths, w, h]);
 
-    // Home plate flat on the ground: 17" front edge under the zone, point toward the catcher.
-    const plate = new THREE.Shape([
-      new THREE.Vector2(-ZONE_W / 2, 0), new THREE.Vector2(ZONE_W / 2, 0), new THREE.Vector2(ZONE_W / 2, 8.5 / 12),
-      new THREE.Vector2(0, 17 / 12), new THREE.Vector2(-ZONE_W / 2, 8.5 / 12),
-    ]);
-    const pm = new THREE.Mesh(
-      new THREE.ShapeGeometry(plate),
-      new THREE.MeshBasicMaterial({ color: '#e5ecf3', transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
-    );
-    pm.rotation.x = -Math.PI / 2; // shape +y → world −z (toward catcher)
-    pm.position.set(0, 0.01, Z);
-    g.add(pm);
-
-    // Ground grid starts past the plate and stays faint.
-    const grid = new THREE.GridHelper(70, 28, '#121a24', '#121a24');
-    grid.position.z = 38;
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.7;
-    g.add(grid);
-    const mound = new THREE.Mesh(new THREE.CircleGeometry(4.5, 40), new THREE.MeshBasicMaterial({ color: '#141c27' }));
-    mound.rotation.x = -Math.PI / 2;
-    mound.position.set(0, 0.02, 60.5);
-    g.add(mound);
-    return g;
-  }, []);
-
-  const trails = useMemo(
-    () =>
-      paths.map((p) => {
-        const line = lineObject(p.points, p.color, 0.9);
-        line.geometry.setDrawRange(0, 0);
-        const dot = new THREE.Mesh(new THREE.CircleGeometry(0.12, 24), new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide }));
-        dot.position.copy(p.points[p.points.length - 1]).setZ(PLATE_FRONT_FT - 0.03);
-        dot.visible = false;
-        return { line, dot, n: p.points.length };
-      }),
-    [paths],
-  );
-
-  // Auto-frame: back the catcher camera up until every point of every path
-  // (plus the zone) projects inside the view, so slow high-arc throws are
-  // seen release-to-plate instead of dropping in from off-screen.
-  const { size } = useThree();
-  const framing = useMemo(() => {
-    const aspect = size.width / Math.max(1, size.height);
-    const probe = new THREE.PerspectiveCamera(26, aspect, 0.05, 200);
-    const pts: THREE.Vector3[] = [
-      new THREE.Vector3(-ZONE_W / 2, ZONE_BOTTOM, PLATE_FRONT_FT),
-      new THREE.Vector3(ZONE_W / 2, ZONE_TOP, PLATE_FRONT_FT),
-    ];
-    paths.forEach((p) => p.points.forEach((v, i) => i % 4 === 0 && pts.push(v)));
-    for (let back = 9; back <= 60; back += 1) {
-      const pos = new THREE.Vector3(0, 3.2 + back * 0.08, -back);
-      const look = new THREE.Vector3(0, 3.0, 30);
-      probe.position.copy(pos);
-      probe.lookAt(look);
-      probe.updateMatrixWorld();
-      const fits = pts.every((v) => {
-        const q = v.clone().project(probe);
-        return Math.abs(q.x) < 0.92 && q.y < 0.82 && q.y > -0.9;
-      });
-      if (fits) return { pos, look };
-    }
-    return { pos: new THREE.Vector3(0, 8, -60), look: new THREE.Vector3(0, 3, 30) };
-  }, [paths, size.width, size.height]);
-
-  useFrame((state) => {
-    // Pin the framing every frame (R3F can reset a lookAt set once in onCreated).
-    state.camera.position.copy(framing.pos);
-    state.camera.lookAt(framing.look);
+  // Own 60fps clock; restarts each time the section comes into view.
+  const [t, setT] = useState(0);
+  useEffect(() => {
     if (!active) {
-      t0.current = null;
-      trails.forEach((it) => {
-        it.line.geometry.setDrawRange(0, 0);
-        it.dot.visible = false;
-      });
-      if (ball.current) ball.current.visible = false;
+      setT(0);
       return;
     }
-    if (t0.current == null) t0.current = Date.now();
-    const t = (Date.now() - t0.current) / 1000;
-    const n = paths.length;
-    if (!n) return;
-    // Throw every one in turn, hold the full picture, then clear and replay.
-    const loopLen = n * SECONDS_PER_PITCH + HOLD_SECONDS;
-    const lt = t % loopLen;
-    const holding = lt >= n * SECONDS_PER_PITCH;
-    const cyc = holding ? n - 0.0001 : lt / SECONDS_PER_PITCH;
-    const idx = Math.min(n - 1, Math.floor(cyc));
-    const k = holding ? 0.9999 : cyc % 1;
-    const kk = Math.min(1, k / FLIGHT_SHARE);
-    trails.forEach((tr, i) => {
-      // Each cycle clears and redraws, so the session keeps replaying.
-      const full = i < idx;
-      tr.line.geometry.setDrawRange(0, full ? tr.n : i === idx ? Math.floor(kk * tr.n) : 0);
-      tr.dot.visible = full || (i === idx && kk >= 1);
-    });
-    if (ball.current) {
-      const pts = paths[idx].points;
-      ball.current.visible = kk < 1;
-      ball.current.position.copy(pts[Math.min(pts.length - 1, Math.floor(kk * (pts.length - 1)))]);
-    }
-  });
+    const t0 = Date.now();
+    let raf = 0;
+    let last = 0;
+    const tick = () => {
+      const now = Date.now();
+      if (now - last >= FPS_MS - 2) {
+        last = now;
+        setT((now - t0) / 1000);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+
+  const n = paths.length;
+  const loopLen = n * SECONDS_PER_PITCH + HOLD_SECONDS;
+  const lt = active ? t % loopLen : 0;
+  const holding = active && lt >= n * SECONDS_PER_PITCH;
+  const cyc = holding ? n - 0.0001 : lt / SECONDS_PER_PITCH;
+  const idx = Math.min(n - 1, Math.floor(cyc));
+  const kk = holding ? 1 : Math.min(1, (cyc % 1) / FLIGHT_SHARE);
+  const { grid, horizon, zone, inner, plate, mound, moundRx } = staticLayer;
+  const ballR = 5;
 
   return (
     <>
-      <primitive object={zone} />
-      {trails.map((tr, i) => (
-        <React.Fragment key={i}>
-          <primitive object={tr.line} />
-          <primitive object={tr.dot} />
-        </React.Fragment>
-      ))}
-      <mesh ref={ball}>
-        <sphereGeometry args={[0.2, 20, 20]} />
-        <meshBasicMaterial color="#ffffff" />
-      </mesh>
+      <Svg width={w} height={h} style={StyleSheet.absoluteFill}>
+        <Defs>
+          <LinearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor="#05070a" />
+            <Stop offset="1" stopColor="#0a1018" />
+          </LinearGradient>
+        </Defs>
+        <Rect x={0} y={0} width={w} height={h} fill="url(#sky)" />
+        <Rect x={0} y={horizon} width={w} height={h - horizon} fill="#070b11" />
+        {grid.map((g, i) => (
+          <SvgPath key={i} d={g} stroke="#16202c" strokeWidth={1} fill="none" />
+        ))}
+        <Ellipse cx={mound.x} cy={mound.y} rx={moundRx} ry={Math.max(1.5, moundRx * 0.12)} fill="#141c27" />
+        <Polygon points={plate.map((p) => `${p.x},${p.y}`).join(' ')} fill="#e5ecf3" fillOpacity={0.5} />
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#05070a" fillOpacity={0.82} />
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#5ce1ff" fillOpacity={0.05} />
+        {inner.map((g, i) => (
+          <SvgPath key={i} d={g} stroke="#ffffff" strokeOpacity={0.22} strokeWidth={1} fill="none" />
+        ))}
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#ffffff" strokeOpacity={0.9} strokeWidth={2.2} />
+        {active &&
+          screenPaths.map((pts, i) => {
+            if (i > idx) return null;
+            const current = i === idx;
+            const upto = current ? Math.max(1, Math.floor(kk * (pts.length - 1))) : pts.length - 1;
+            const bright = holding || current;
+            const color = paths[i].color;
+            const end = pts[pts.length - 1];
+            return (
+              <React.Fragment key={i}>
+                <SvgPath d={d(pts.slice(0, upto + 1))} stroke={color} strokeOpacity={bright ? 1 : 0.22} strokeWidth={bright ? 2.2 : 1.4} fill="none" strokeLinecap="round" />
+                {(!current || kk >= 1) && (
+                  <Circle cx={end.x} cy={end.y} r={4.5} fill={color} fillOpacity={bright ? 1 : 0.3} />
+                )}
+              </React.Fragment>
+            );
+          })}
+        {active && !holding && kk < 1 && screenPaths[idx] && (() => {
+          const pts = screenPaths[idx];
+          const p = pts[Math.min(pts.length - 1, Math.floor(kk * (pts.length - 1)))];
+          return <Circle cx={p.x} cy={p.y} r={ballR} fill="#ffffff" />;
+        })()}
+      </Svg>
+      {active && paths[idx] && (
+        <View style={styles.now} pointerEvents="none">
+          <Text style={styles.nowCount}>
+            PITCH {idx + 1}/{n}
+          </Text>
+          {paths[idx].mph != null && (
+            <Text style={[styles.nowMph, { color: paths[idx].color }]}>
+              {paths[idx].mph!.toFixed(1)}
+              <Text style={styles.nowUnit}> MPH</Text>
+            </Text>
+          )}
+        </View>
+      )}
     </>
   );
 }
@@ -303,12 +300,7 @@ export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
 
   return (
     <View ref={ref} style={styles.wrap} collapsable={false}>
-      <Canvas
-        style={styles.canvas}
-        camera={{ position: [0, 3.6, -9], fov: 26, near: 0.05, far: 200 }}
-      >
-        <Scene paths={paths} active={inView} />
-      </Canvas>
+      <PitchSvg paths={paths} active={inView} />
       <View style={styles.legend} pointerEvents="none">
         {legend.map(([type, color]) => (
           <View key={type} style={styles.legendItem}>
@@ -323,11 +315,14 @@ export function PitchPaths3D({ athleteId }: { athleteId?: string | null }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { height: 260, marginTop: 14, marginHorizontal: -16, backgroundColor: '#05070a', position: 'relative' },
-  canvas: { flex: 1 },
+  wrap: { height: VIEW_H, marginTop: 14, marginHorizontal: -16, backgroundColor: '#05070a', position: 'relative', overflow: 'hidden' },
   legend: { position: 'absolute', left: 16, top: 10, flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   legendDot: { width: 7, height: 7, borderRadius: 4 },
   legendText: { color: '#9ca3af', fontSize: 10, fontWeight: '700' },
+  now: { position: 'absolute', right: 16, top: 10, alignItems: 'flex-end' },
+  nowCount: { color: '#7f8b99', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  nowMph: { fontSize: 22, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  nowUnit: { fontSize: 10, color: '#7f8b99', fontWeight: '700' },
   caption: { position: 'absolute', right: 16, bottom: 8, color: '#46505c', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
 });

@@ -195,9 +195,12 @@ export function BallFlight3D({ athleteId }: { athleteId?: string | null }) {
   if (!arcs || arcs.length === 0) return null;
   return (
     <View ref={ref} style={styles.wrap} collapsable={false}>
-      <Canvas style={styles.canvas} camera={{ position: [0, 1.6, 1.9], fov: 46, near: 0.05, far: 100 }}>
-        <Scene arcs={arcs} active={inView} />
-      </Canvas>
+      {/* Mounted only while on screen — one live GL view at a time (see PitchPaths3D). */}
+      {inView && (
+        <Canvas style={styles.canvas} camera={{ position: [0, 1.6, 1.9], fov: 46, near: 0.05, far: 100 }}>
+          <Scene arcs={arcs} active />
+        </Canvas>
+      )}
       <View style={styles.legend} pointerEvents="none">
         {[['95+ mph', '#fb923c'], ['90–95', '#fdba74'], ['<90', '#8d939c']].map(([l, c]) => (
           <View key={l} style={styles.legendItem}>
