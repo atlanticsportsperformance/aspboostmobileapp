@@ -161,6 +161,36 @@ function projector(cam: THREE.PerspectiveCamera, w: number, h: number) {
 
 const d = (pts: Pt[]) => pts.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('');
 
+type StaticLayerData = { grid: string[]; horizon: number; zone: Pt[]; inner: string[]; plate: Pt[]; mound: Pt; moundRx: number };
+
+/** Grid, mound, plate and zone: drawn once, never re-rendered by the 60fps loop. */
+const StaticLayer = React.memo(function StaticLayer({ layer, w, h }: { layer: StaticLayerData; w: number; h: number }) {
+  const { grid, horizon, zone, inner, plate, mound, moundRx } = layer;
+  return (
+    <Svg width={w} height={h} style={StyleSheet.absoluteFill}>
+        <Defs>
+          <LinearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor="#05070a" />
+            <Stop offset="1" stopColor="#0a1018" />
+          </LinearGradient>
+        </Defs>
+        <Rect x={0} y={0} width={w} height={h} fill="url(#sky)" />
+        <Rect x={0} y={horizon} width={w} height={h - horizon} fill="#070b11" />
+        {grid.map((g, i) => (
+          <SvgPath key={i} d={g} stroke="#16202c" strokeWidth={1} fill="none" />
+        ))}
+        <Ellipse cx={mound.x} cy={mound.y} rx={moundRx} ry={Math.max(1.5, moundRx * 0.12)} fill="#141c27" />
+        <Polygon points={plate.map((p) => `${p.x},${p.y}`).join(' ')} fill="#e5ecf3" fillOpacity={0.5} />
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#05070a" fillOpacity={0.82} />
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#5ce1ff" fillOpacity={0.05} />
+        {inner.map((g, i) => (
+          <SvgPath key={i} d={g} stroke="#ffffff" strokeOpacity={0.22} strokeWidth={1} fill="none" />
+        ))}
+        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#ffffff" strokeOpacity={0.9} strokeWidth={2.2} />
+    </Svg>
+  );
+});
+
 function PitchSvg({ paths, active }: { paths: Path[]; active: boolean }) {
   const w = Dimensions.get('window').width;
   const h = VIEW_H;
@@ -222,31 +252,12 @@ function PitchSvg({ paths, active }: { paths: Path[]; active: boolean }) {
   const cyc = holding ? n - 0.0001 : lt / SECONDS_PER_PITCH;
   const idx = Math.min(n - 1, Math.floor(cyc));
   const kk = holding ? 1 : Math.min(1, (cyc % 1) / FLIGHT_SHARE);
-  const { grid, horizon, zone, inner, plate, mound, moundRx } = staticLayer;
   const ballR = 5;
 
   return (
     <>
+      <StaticLayer layer={staticLayer} w={w} h={h} />
       <Svg width={w} height={h} style={StyleSheet.absoluteFill}>
-        <Defs>
-          <LinearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0" stopColor="#05070a" />
-            <Stop offset="1" stopColor="#0a1018" />
-          </LinearGradient>
-        </Defs>
-        <Rect x={0} y={0} width={w} height={h} fill="url(#sky)" />
-        <Rect x={0} y={horizon} width={w} height={h - horizon} fill="#070b11" />
-        {grid.map((g, i) => (
-          <SvgPath key={i} d={g} stroke="#16202c" strokeWidth={1} fill="none" />
-        ))}
-        <Ellipse cx={mound.x} cy={mound.y} rx={moundRx} ry={Math.max(1.5, moundRx * 0.12)} fill="#141c27" />
-        <Polygon points={plate.map((p) => `${p.x},${p.y}`).join(' ')} fill="#e5ecf3" fillOpacity={0.5} />
-        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#05070a" fillOpacity={0.82} />
-        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="#5ce1ff" fillOpacity={0.05} />
-        {inner.map((g, i) => (
-          <SvgPath key={i} d={g} stroke="#ffffff" strokeOpacity={0.22} strokeWidth={1} fill="none" />
-        ))}
-        <Polygon points={zone.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#ffffff" strokeOpacity={0.9} strokeWidth={2.2} />
         {active &&
           screenPaths.map((pts, i) => {
             if (i > idx) return null;
