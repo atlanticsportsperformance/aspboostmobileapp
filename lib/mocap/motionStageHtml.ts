@@ -13,6 +13,9 @@
  *   {type:'needC3D'}       → WebView fetch failed (CORS) — RN fetches and
  *                            injects window.__loadC3D64(base64) once
  *   {type:'ready'} / {type:'error', message}
+ *   {type:'exportChunk', i, n, data} / {type:'exportDone', mime} → recorded
+ *                            video (base64, chunked); RN saves + shares it
+ *   {type:'exportError', message}
  * RN → WebView: window.__setActive(bool), window.__jumpTo(eventKey).
  */
 
@@ -103,16 +106,22 @@ html,body{background:#000;color:var(--text);font-family:-apple-system,BlinkMacSy
 .afr{display:flex;align-items:baseline;gap:6px;padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
 .afr span{flex:1;color:#9ca3af;font-size:12px;font-weight:600}.afr b{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums}.afr small{color:#6b7280;font-size:10px;font-weight:700;width:24px}
 .hidden{display:none!important}
+.vmodes .xbtn{margin-left:auto;padding:7px 13px;border-radius:999px;border:0;background:var(--acc);color:#000;font:800 12.5px/1.2 inherit;font-family:inherit;cursor:pointer}
+.xover{position:absolute;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+.xover .xt{font-size:13px;font-weight:800;letter-spacing:.4px}.xover .xt b{color:var(--acc)}
+.xover .xbar{width:60%;height:4px;border-radius:4px;background:var(--hair);overflow:hidden}.xover .xbar i{display:block;height:100%;width:0;background:var(--acc)}
+.xover button{padding:8px 16px;border-radius:999px;background:var(--card);border:1px solid var(--rule);color:var(--sub);font:700 12.5px/1.2 inherit;font-family:inherit}
 </style>
 </head>
 <body>
 <div id="root">
-  <div class="vmodes" id="vmodes"><button class="chip on" data-m="">3D</button><button class="chip" data-m="split">Split</button><button class="chip" data-m="vonly">Video</button></div>
+  <div class="vmodes" id="vmodes"><button class="chip on" data-m="">3D</button><button class="chip" data-m="split">Split</button><button class="chip" data-m="vonly">Video</button><button class="xbtn" id="xbtn">⤓ Export</button></div>
   <div class="stage" id="stage">
     <div class="loading" id="loading">Loading body…</div>
     <div class="phase" id="phase"> <span class="fr" id="phasefr"></span></div>
     <div class="pip" id="pip"><video id="vid" muted playsinline webkit-playsinline preload="auto"></video></div>
     <div class="camchips" id="cams"></div>
+    <div class="xover hidden" id="xover"><div class="xt" id="xt">Recording video… <b>0%</b></div><div class="xbar"><i id="xfill"></i></div><button id="xcancel">Cancel</button></div>
   </div>
   <div class="body">
     <div class="scrub" id="scrub"><div class="track"></div><div class="fill" id="fill"></div><div id="ticks"></div><div class="knob" id="knob"></div></div>
@@ -485,7 +494,7 @@ if(CFG.videoUrl){
 }
 $('pip').addEventListener('click',function(){if(!stage.classList.contains('split')&&!stage.classList.contains('vonly'))$('pip').classList.toggle('big')});
 $('pip').addEventListener('transitionend',resize); // pip animates width/height; re-measure once it settles (split height = 2 × pip)
-$('vmodes').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;[].forEach.call(this.children,function(c){c.classList.toggle('on',c===b)});stage.classList.remove('split','vonly');$('pip').classList.remove('big');if(b.dataset.m)stage.classList.add(b.dataset.m);requestAnimationFrame(resize)});
+$('vmodes').addEventListener('click',function(e){var b=e.target.closest('button');if(!b||b.id==='xbtn')return;[].forEach.call(this.children,function(c){c.classList.toggle('on',c===b)});stage.classList.remove('split','vonly');$('pip').classList.remove('big');if(b.dataset.m)stage.classList.add(b.dataset.m);requestAnimationFrame(resize)});
 function setPlaying(p){PLAYING=p;$('playb').textContent=p?'❚❚':'▶';if(VREADY){if(p&&ACTIVE){vid.playbackRate=SPEED;vid.play().catch(function(){})}else{vid.pause();if(!p)seekVideo()}}}
 function seekVideo(){if(VREADY&&isFinite(vid.duration))vid.currentTime=Math.max(0,Math.min(vid.duration-1e-3,(Math.round(frame)+.5)/FR))}
 $('playb').onclick=function(){setPlaying(!PLAYING)};
@@ -547,6 +556,69 @@ function updateUI(){var f=Math.round(frame);if(f===lastUI)return;lastUI=f;var t=
 function resize(){var sp=stage.classList.contains('split'),off=sp?$('pip').offsetHeight:0;stage.style.height=sp?(off*2)+'px':'';renderer.domElement.style.marginTop=off+'px';var w=stage.clientWidth,h=stage.clientHeight-off;if(!w||!h)return;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h);reportHeight()}
 window.addEventListener('resize',resize);
 
+// ════════════════ Video export (on-device) ════════════════
+// Plays the clip once on a separate CORS-enabled <video> (the on-screen one stays
+// untainted), drives the 3D from it, composites camera + skeleton + ASP watermark
+// onto a 1080×1920 canvas and records it with MediaRecorder. The file goes to RN
+// in base64 chunks; RN saves it and opens the share sheet. Nothing leaves the phone.
+var XP=null, XW=1080, XH=1920;
+var LOGO=new Image(); LOGO.crossOrigin='anonymous'; LOGO.src='asp-logo.png';
+if(!CFG.videoUrl||typeof MediaRecorder==='undefined'||!HTMLCanvasElement.prototype.captureStream)$('xbtn').classList.add('hidden');
+function xpill(ctx,t,x,y){ctx.font='800 24px -apple-system,system-ui,sans-serif';var w=ctx.measureText(t).width+32;ctx.fillStyle='rgba(0,0,0,.55)';ctx.strokeStyle='rgba(255,255,255,.18)';ctx.lineWidth=2;ctx.beginPath();if(ctx.roundRect)ctx.roundRect(x,y,w,44,22);else ctx.rect(x,y,w,44);ctx.fill();ctx.stroke();ctx.fillStyle='#fff';ctx.textBaseline='middle';ctx.fillText(t,x+16,y+23)}
+function exportStart(){
+  if(XP||!FC)return;
+  var ev=document.createElement('video');ev.crossOrigin='anonymous';ev.muted=true;ev.playsInline=true;ev.setAttribute('playsinline','');ev.preload='auto';
+  var cv=document.createElement('canvas');cv.width=XW;cv.height=XH;var ctx=cv.getContext('2d');
+  XP={ev:ev,cv:cv,ctx:ctx,rec:null,chunks:[],cancelled:false,started:false,vh:0};
+  setPlaying(false);
+  $('xover').classList.remove('hidden');$('xt').innerHTML='Preparing video…';$('xfill').style.width='0%';
+  ev.addEventListener('error',function(){exportFail('Couldn’t load the video for export.')});
+  ev.addEventListener('loadedmetadata',function(){
+    if(!XP||XP.ev!==ev)return;
+    XP.vh=Math.round(XW*(ev.videoHeight||9)/(ev.videoWidth||16));
+    renderer.setPixelRatio(1);renderer.setSize(XW,XH-XP.vh,false);camera.aspect=XW/(XH-XP.vh);camera.updateProjectionMatrix();
+    var mime=['video/mp4','video/webm'].filter(function(m){return MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(m)})[0]||'';
+    var rec;try{rec=new MediaRecorder(cv.captureStream(30),mime?{mimeType:mime,videoBitsPerSecond:8e6}:{})}catch(e){exportFail('Recording isn’t supported on this device.');return}
+    XP.rec=rec;rec.ondataavailable=function(e){if(e.data&&e.data.size)XP&&XP.chunks.push(e.data)};
+    rec.onstop=exportFinish;
+    ev.currentTime=0;ev.playbackRate=SPEED;
+    ev.play().then(function(){if(!XP)return;XP.started=true;rec.start(500)}).catch(function(){exportFail('Couldn’t play the video for export.')});
+  });
+  ev.src=CFG.videoUrl;
+}
+function exportStep(){
+  var x=XP;if(!x||!x.started)return;var ev=x.ev,ctx=x.ctx;
+  frame=Math.min(FC-1,ev.currentTime*FR);
+  applyFrame(frame);controls.target.copy(pelvisTarget);controls.update();renderer.render(scene,camera);
+  ctx.fillStyle='#000';ctx.fillRect(0,0,XW,XH);
+  try{ctx.drawImage(ev,0,0,XW,x.vh)}catch(e){}
+  ctx.drawImage(renderer.domElement,0,x.vh,XW,XH-x.vh);
+  ctx.fillStyle='rgba(255,255,255,.18)';ctx.fillRect(0,x.vh,XW,2);
+  xpill(ctx,'VIDEO',24,24);xpill(ctx,'3D MOTION CAPTURE',24,x.vh+24);
+  ctx.globalAlpha=.85;var lx=XW-24-64-14,ly=XH-24-64;
+  ctx.font='900 26px -apple-system,system-ui,sans-serif';var tw=ctx.measureText('ASP BOOST').width;
+  if(LOGO.complete&&LOGO.naturalWidth)ctx.drawImage(LOGO,lx-tw,ly,64,64);
+  ctx.fillStyle='#fff';ctx.textBaseline='middle';ctx.fillText('ASP BOOST',lx-tw+64+14,ly+33);ctx.globalAlpha=1;
+  var pct=Math.round(frame/(FC-1)*100);$('xt').innerHTML='Recording video… <b>'+pct+'%</b>';$('xfill').style.width=pct+'%';
+  if(ev.ended||frame>=FC-1.5){x.started=false;ev.pause();if(x.rec&&x.rec.state!=='inactive')x.rec.stop()}
+}
+function exportCleanup(){var x=XP;XP=null;if(x){try{x.ev.pause();x.ev.removeAttribute('src');x.ev.load()}catch(e){}}
+  $('xover').classList.add('hidden');renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));resize();frame=0;seekVideo()}
+function exportFail(m){post({type:'exportError',message:m});exportCleanup()}
+function exportFinish(){
+  var x=XP;if(!x)return;
+  if(x.cancelled||!x.chunks.length){if(!x.cancelled)post({type:'exportError',message:'The recording came out empty.'});exportCleanup();return}
+  $('xt').innerHTML='Saving video…';
+  var type=x.rec.mimeType||'video/mp4',blob=new Blob(x.chunks,{type:type}),fr=new FileReader();
+  fr.onload=function(){var b64=String(fr.result).split(',')[1]||'',CH=524288,n=Math.ceil(b64.length/CH);
+    for(var i=0;i<n;i++)post({type:'exportChunk',i:i,n:n,data:b64.slice(i*CH,(i+1)*CH)});
+    post({type:'exportDone',mime:type});exportCleanup()};
+  fr.onerror=function(){exportFail('Couldn’t save the recording.')};
+  fr.readAsDataURL(blob);
+}
+$('xbtn').addEventListener('click',function(e){e.stopPropagation();exportStart()});
+$('xcancel').addEventListener('click',function(){if(!XP)return;XP.cancelled=true;XP.started=false;if(XP.rec&&XP.rec.state!=='inactive')XP.rec.stop();else exportCleanup()});
+
 API.setActive=function(a){if(!VREADY)return;if(a&&PLAYING){vid.playbackRate=SPEED;vid.play().catch(function(){})}else vid.pause();if(a)requestAnimationFrame(resize)};
 API.jumpTo=jumpTo;
 if(API.pendingJump){jumpTo(API.pendingJump);API.pendingJump=null}
@@ -560,6 +632,7 @@ updateUI();
 post({type:'ready',frameCount:FC,frameRate:FR});
 var prevT=new THREE.Vector3().copy(controls.target);
 function tick(now){requestAnimationFrame(tick);var dt=Math.min(.1,(now-last)/1000);last=now;
+  if(XP){exportStep();return}
   if(!ACTIVE)return;
   if(PLAYING){
     if(VREADY&&!vid.paused){frame=vid.currentTime*FR; if(vid.ended||frame>=FC-1){vid.currentTime=0;frame=0;vid.play().catch(function(){})}}

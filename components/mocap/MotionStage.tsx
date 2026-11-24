@@ -8,7 +8,8 @@
  */
 
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState, useEffect } from 'react';
-import { View } from 'react-native';
+import { Alert, Share, View } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { fetchC3DBinary, isHittingDetail, type MocapPitchDetail } from '../../lib/mocap/api';
 import { buildMotionStageHtml, MESH_BASE_URL } from '../../lib/mocap/motionStageHtml';
@@ -47,6 +48,7 @@ const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionStage(
   const webRef = useRef<WebView>(null);
   const [height, setHeight] = useState(1050);
   const fallbackDone = useRef(false);
+  const exportParts = useRef<string[]>([]);
   const p = detail.pitch;
   const hitting = isHittingDetail(detail);
 
@@ -99,6 +101,28 @@ const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionStage(
             webRef.current?.injectJavaScript(`window.__loadC3D64(${JSON.stringify(b64)});true;`);
           })
           .catch((err) => console.error('[MotionStage] C3D fetch failed:', err));
+        break;
+      case 'exportChunk':
+        if (msg.i === 0) exportParts.current = [];
+        exportParts.current[msg.i] = msg.data;
+        break;
+      case 'exportDone': {
+        // Recorded on-device inside the WebView; save locally, then the iOS share sheet.
+        const b64 = exportParts.current.join('');
+        exportParts.current = [];
+        const ext = String(msg.mime || '').includes('webm') ? 'webm' : 'mp4';
+        const path = `${FileSystem.cacheDirectory}ASP-mocap-${p.id}.${ext}`;
+        FileSystem.writeAsStringAsync(path, b64, { encoding: FileSystem.EncodingType.Base64 })
+          .then(() => Share.share({ url: path }))
+          .catch((err) => {
+            console.error('[MotionStage] export save failed:', err);
+            Alert.alert('Export failed', 'The video couldn’t be saved. Please try again.');
+          });
+        break;
+      }
+      case 'exportError':
+        exportParts.current = [];
+        Alert.alert('Export failed', msg.message || 'Please try again.');
         break;
       case 'error':
         console.error('[MotionStage]', msg.message);
