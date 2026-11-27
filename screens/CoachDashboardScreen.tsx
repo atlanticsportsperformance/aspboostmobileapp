@@ -82,6 +82,7 @@ export default function CoachDashboardScreen() {
     { id: 'schedule', label: 'Schedule', icon: 'home', isActive: true, onPress: () => {} },
     { id: 'roster', label: 'Roster', icon: 'people', onPress: () => navigation.navigate('CoachRoster') },
     { id: 'tools', label: 'Tools', icon: 'construct', onPress: () => navigation.navigate('CoachTools') },
+    { id: 'pay', label: 'Pay', icon: 'cash', onPress: () => navigation.navigate('DirectDeposit') },
     { id: 'messages', label: 'Messages', icon: 'chatbubble', onPress: () => navigation.navigate('Messages') },
   ];
 

@@ -276,6 +276,7 @@ function AppContent() {
             <Stack.Screen name="Billing" getComponent={() => require('./screens/BillingScreen').default} />
             <Stack.Screen name="Waivers" getComponent={() => require('./screens/WaiversScreen').default} />
             <Stack.Screen name="CoachTools" getComponent={() => require('./screens/CoachToolsScreen').default} />
+            <Stack.Screen name="DirectDeposit" getComponent={() => require('./screens/DirectDepositScreen').default} />
             <Stack.Screen name="CoachArmCareSearch" getComponent={() => require('./screens/CoachArmCareSearchScreen').default} />
             <Stack.Screen name="CoachOverview" getComponent={() => require('./screens/CoachOverviewScreen').default} />
             <Stack.Screen name="CoachRoster" getComponent={() => require('./screens/CoachRosterScreen').default} />
